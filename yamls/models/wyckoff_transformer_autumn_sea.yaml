@@ -34,11 +34,11 @@ optimisation:
     config:
       factor: 0.8
       # note that scheduler is called every validation_period epochs
-      patience: 40
+      patience: 45
   validation_period: 10
   early_stopping_patience_epochs: 5000
   clip_grad_norm: 1.
-  epochs: 30000
+  epochs: 50000
 tokeniser:
   name: mp_20_naive
 evaluation:

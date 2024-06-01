@@ -74,6 +74,8 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
         map(itemgetter(config.token_fields.pure_categorical[0]),
             datasets_pd.values()))))
     
+
+    
     tensors = defaultdict(dict)
     for dataset_name, dataset in datasets_pd.items():
         for field in config.token_fields.pure_categorical:
@@ -87,13 +89,22 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                 dataset[field].map(partial(
                     tokenisers[field].tokenise_single,
                     dtype=dtype)).to_list())
+        # Conuter fields are processed into two tensors: tokenised values, and the counts
+        for field, tokeniser_filed in config.sequence_fields.counters:
+            tensors[dataset_name][f"{field}_tokens"] = torch.stack(
+                    dataset[field].map(lambda dict_:
+
+                        
+                        
+                    dtype=dtype)).to_list())
+            
         for field in config.augmented_token_fields:
             augmented_field = f"{field}_augmented"
             tensors[dataset_name][augmented_field] = dataset[augmented_field].map(lambda variants:
                     [tokenisers[field].tokenise_sequence(
                         variant, original_max_len=original_max_len, dtype=dtype)
                         for variant in variants]).to_list()
-        # Assuming all the fields have the same lenght
+        # Assuming all the fields have the same length
         tensors[dataset_name]["pure_sequence_length"] = torch.tensor(
             dataset[config.token_fields.pure_categorical[0]].map(len).to_list(), dtype=dtype)
     return tensors, tokenisers
