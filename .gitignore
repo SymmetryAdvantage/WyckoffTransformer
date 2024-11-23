@@ -24,3 +24,4 @@ data/2023-02-07-mp-computed-structure-entries.json.gz
 poetry.lock
 ignat_playground.ipynb
 AFLOW data.ipynb
+pyproject.toml

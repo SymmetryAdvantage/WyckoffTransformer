@@ -146,7 +146,8 @@ class CascadeTransformer(nn.Module):
                  perceptron_shape: str,
                  TransformerEncoderLayer_args: dict,
                  TransformerEncoder_args: dict,
-                 compile_perceptrons: bool = True):
+                 compile_perceptrons: bool = True,
+                 aggregation_weight: Optional[int] = None):
         """
         Expects tokens in the following format:
         START_k -> [] -> STOP -> PAD
@@ -167,6 +168,7 @@ class CascadeTransformer(nn.Module):
                 pad_i is padding_idx to be passed to torch.nn.Embedding
                 is_target is a boolean, if True, the model will have a separate head for predicting this token.
             token_aggregation: When predicting, concatenate to the MASK token aggregated values of all the tokens.
+            aggregation_weight: casacade index of the field to be used as aggregation weight.
         """
         super().__init__()
         self.embedding = CascadeEmbedding(cascade)
@@ -207,6 +209,9 @@ class CascadeTransformer(nn.Module):
         # Note that in the normal usage, we want to condition the cascade element prediction
         # on the previous element, so care should be taken as to which head to call.
         self.token_aggregation = token_aggregation
+        if aggregation_weight is not None and token_aggregation != "weighted_mean":
+            raise ValueError("aggregation_weight is only supported for token_aggregation=weighted_mean")
+        self.aggregation_weight = aggregation_weight
         if aggregation_inclsion == "None":
             self.aggregation_inclsion = None
         else:
@@ -266,6 +271,7 @@ class CascadeTransformer(nn.Module):
             aggregation_input = data
 
         # TODO padding mask for other aggregation types
+        demoninator_eps = 1e-5
         aggregation_start_idx = int(not self.include_start_in_aggregation)
         if self.token_aggregation == "sum":
             aggregation = aggregation_input[:, aggregation_start_idx:-1].sum(dim=1)
@@ -277,9 +283,15 @@ class CascadeTransformer(nn.Module):
             else:
                 aggregation = aggregation_input[:, aggregation_start_idx:-1].max(dim=1).values
         elif self.token_aggregation == "mean":
+            # In case of a zero-lenght sequence, we avoid division by zero
             aggregation = (
                 aggregation_input[:, aggregation_start_idx:] * (~padding_mask[:, aggregation_start_idx:])[..., None]
-            ).sum(dim=1) / (~padding_mask[:, aggregation_start_idx:]).sum(dim=1)[..., None]
+            ).sum(dim=1) / (demoninator_eps + (~padding_mask[:, aggregation_start_idx:]).sum(dim=1)[..., None])
+        elif self.token_aggregation == "weighted_mean":
+            aggregation = (
+                aggregation_input[:, aggregation_start_idx:] *
+                 (~padding_mask[:, aggregation_start_idx:]*cascade[self.aggregation_weight])[..., None]
+            ).sum(dim=1) / (demoninator_eps + (~padding_mask[:, aggregation_start_idx:]*cascade[self.aggregation_weight]).sum(dim=1)[..., None])
         elif self.token_aggregation is None:
             aggregation = []
         else:

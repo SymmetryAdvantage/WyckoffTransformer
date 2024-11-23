@@ -431,10 +431,15 @@ class WyckoffTrainer():
             prediction = self.model(start_tokens, masked_data, None, None)
         elif self.target == TargetClass.Scalar:
             logger.debug("Start tokens size: %s", start_tokens.size())
+            logger.debug("Start tokens isnan: %s", start_tokens.isnan().any())
+            logger.debug("Masked data isnan: %s", any((a.isnan().any() for a in masked_data)))
+            logger.debug("Padding mask isnan: %s", padding_mask.isnan().any())
             prediction = self.model(start_tokens, masked_data, padding_mask, None).squeeze()
+            logger.debug("Prediction isnan: %s", prediction.isnan().any())
         else:
             raise ValueError(f"Unknown target: {self.target}")
         # Step 3: Calculate the loss
+        logger.debug("Target isnan: %s", target.isnan().any())
         if testing:
             return self.testing_criterion(prediction, target)
         return self.criterion(prediction, target)

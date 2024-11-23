@@ -13,7 +13,10 @@ import numpy as np
 from pandas import DataFrame, Series, MultiIndex
 import torch
 import omegaconf
+from pandarallel import pandarallel
 from pyxtal.symmetry import Group
+
+from .pyxtal_fix import SS_CORRECTIONS
 
 # Order is important here, as we can use it to sort the tokens
 ServiceToken = Enum('ServiceToken', ['MASK', 'STOP', 'PAD'])
@@ -111,24 +114,14 @@ class EnumeratingTokeniser(dict):
 
 
 class FeatureEngineer():
-    @classmethod
-    def wp_symmetries(cls, space_groups, wp_letters):
-        symmetry_matrices = defaultdict(dict)
-        for group_number, these_wps in zip(space_groups, wp_letters):
-            group = Group(group_number)
-            for wp_letter in these_wps:
-                wp = group.get_wp_by_letter(wp_letter)
-                wp.get_site_symmetry()
-                #if key not in symmetry_matrices:
-
-
     def __init__(self,
             data: Dict[Tuple, int]|Series,
             inputs: Optional[Tuple] = None,
             name: Optional[str] = None,
             stop_token: Optional[int] = None,
             pad_token: Optional[int] = None,
-            mask_token: Optional[int] = None):
+            mask_token: Optional[int] = None,
+            include_stop: bool = True):
         if isinstance(data, Series):
             if inputs is not None or name is not None:
                 raise ValueError("If data is a DataFrame, inputs and name should be None")
@@ -141,8 +134,10 @@ class FeatureEngineer():
         self.pad_token = pad_token
         self.mask_token = mask_token
         self.default_value = 0
+        self.include_stop = include_stop
 
-    def get_feature_tensor_from_series(self,
+    def get_feature_tensor_from_series(
+        self,
         record: Series,
         original_max_len: int,
         **tensor_args) -> torch.Tensor:
@@ -150,16 +145,24 @@ class FeatureEngineer():
         indexed_record = record.loc[self.db.index.names]
         # No need to write the general solution, for now we only need multiplicity
         # WARNING(kazeevn): only one structure is supported:
-        # the first input is sequence-level, the next two are token-level        
+        # the first input is sequence-level, the next two are token-level    
         this_db = self.db.loc[indexed_record.iloc[0]]
         # Beautiful, but slow
         res = this_db.loc[map(tuple, zip(*indexed_record.iloc[1:]))].to_list()
         # Since in our infinite wisdom we decided to compute multiplicity
         # two times, we might as well just check
         if self.db.name in record.index:
-            assert record[self.db.name] == res
+            if record[self.db.name] != res:
+                logger.error("Record")
+                logger.error(record)
+                logger.error("Mismatch in %s", self.db.name)
+                logger.error(record[self.db.name])
+                logger.error(res)
+                raise ValueError("Mismatch")
         padding = [self.pad_token] * (original_max_len - len(res))
-        return torch.tensor(res + [self.stop_token] + padding, **tensor_args)
+        if self.include_stop:
+            padding = [self.stop_token] + padding
+        return torch.tensor(res + padding, **tensor_args)
     
     def get_feature_from_token_batch(
         self,
@@ -202,7 +205,18 @@ class PassThroughTokeniser():
 def tokenise_engineer(
     engineer: FeatureEngineer,
     tokenisers: EnumeratingTokeniser):
+    
+    include_stop_all = []
+    for field in engineer.db.index.names:
+        if hasattr(tokenisers[field], "include_stop"):
+            include_stop_all.append(tokenisers[field].include_stop)
 
+    if all(include_stop_all):
+        include_stop = True
+    elif not any(include_stop_all):
+        include_stop = False
+    else:
+        raise ValueError("Inconsistent include_stop")
     tokenised_data = {}
     for index, value in engineer.db.items():
         try:
@@ -211,7 +225,8 @@ def tokenise_engineer(
             continue
         tokenised_data[new_index] = value
     return FeatureEngineer(tokenised_data, engineer.db.index.names, name=engineer.db.name,
-        stop_token=engineer.stop_token, pad_token=engineer.pad_token, mask_token=engineer.mask_token)
+        stop_token=engineer.stop_token, pad_token=engineer.pad_token, mask_token=engineer.mask_token,
+        include_stop=include_stop)
 
 
 def argsort_multiple(*tensors: torch.Tensor, dim: int) -> torch.Tensor:
@@ -234,14 +249,16 @@ def argsort_multiple(*tensors: torch.Tensor, dim: int) -> torch.Tensor:
         return torch.argsort(megaindex)
     else:
         raise NotImplementedError("Only one or two tensors are supported")
-    
+
 
 def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                      config: omegaconf.OmegaConf,
-                     tokenizer_path: Optional[Path|str] = None) -> \
+                     tokenizer_path: Optional[Path|str] = None,
+                     n_jobs: int = None) -> \
                         Tuple[Dict[str, Dict[str, torch.Tensor|List[List[torch.Tensor]]]], Dict[str, EnumeratingTokeniser]]:
     dtype = getattr(torch, config.dtype)
     include_stop = config.get("include_stop", True)
+    pandarallel.initialize()
     if tokenizer_path is None:
         tokenisers = {}
         max_tokens = torch.iinfo(dtype).max
@@ -275,9 +292,10 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                 raw_engineer = pickle.load(f)
             raw_engineers[engineered_field_name] = raw_engineer
             # Now we need to convert the token values to token indices
+            # And adjust include_stop
             token_engineers[engineered_field_name] = tokenise_engineer(raw_engineer, tokenisers)
+            raw_engineers[engineered_field_name].include_stop = token_engineers[engineered_field_name].include_stop
             # The values haven't changed, only the keys, so we can reuse the stop, pad, and mask tokens
-
             tokenisers[engineered_field_name] = PassThroughTokeniser(
                 min(token_engineers[engineered_field_name].db.min().min(), raw_engineer.stop_token, raw_engineer.pad_token, raw_engineer.mask_token),
                 max(token_engineers[engineered_field_name].db.max().max(), raw_engineer.stop_token, raw_engineer.pad_token, raw_engineer.mask_token),
@@ -304,13 +322,15 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
 
         if "engineered" in config.token_fields:
             for field in config.token_fields.engineered:
-                tensors[dataset_name][field] = torch.stack(
-                    dataset.apply(partial(
-                        raw_engineers[field].get_feature_tensor_from_series,
-                        original_max_len=original_max_len,
-                        dtype=dtype), axis=1).to_list())
+                compute_feature_function = partial(
+                    raw_engineers[field].get_feature_tensor_from_series,
+                    original_max_len=original_max_len,
+                    dtype=dtype)
+                tensor_list = dataset.parallel_apply(
+                    compute_feature_function, axis=1).to_list()
+                tensors[dataset_name][field] = torch.stack(tensor_list)
                 logger.debug("Engineered field %s shape %s", field, tensors[dataset_name][field].shape)
-        
+   
         if "pure_categorical" in config.sequence_fields:
             for field in config.sequence_fields.pure_categorical:
                 tensors[dataset_name][field] = torch.stack(
@@ -378,7 +398,7 @@ def load_tensors_and_tokenisers(
     dataset: str,
     config_name: str,
     cache_path: Path = Path(__file__).parent.parent.resolve() / "cache"):
-    
+
     this_cache_path = cache_path / dataset
     with gzip.open(this_cache_path / 'tensors' / f'{config_name}.pkl.gz', "rb") as f:
         tensors = pickle.load(f)
@@ -395,7 +415,11 @@ def get_wp_index() -> dict:
         wp_index[group_number] = defaultdict(dict)
         for wp in group.Wyckoff_positions:
             wp.get_site_symmetry()
-            wp_index[group_number][wp.site_symm][wp.letter] = (wp.multiplicity, wp.get_dof())
+            try:
+                site_symm = SS_CORRECTIONS[group_number][wp.letter]
+            except KeyError:
+                site_symm = wp.site_symm
+            wp_index[group_number][site_symm][wp.letter] = (wp.multiplicity, wp.get_dof())
     return wp_index
 
 

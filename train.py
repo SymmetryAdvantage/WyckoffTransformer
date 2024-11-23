@@ -53,7 +53,13 @@ def main():
         job_type="train",
         tags=tags,
         config=wandb_config):
-        train_from_config(config, args.device, run_path=args.run_path)
+
+        if args.debug:
+            config["model"]['WyckoffTrainer_args']['compile_model'] = False
+            with torch.autograd.detect_anomaly():
+                train_from_config(config, args.device, run_path=args.run_path)
+        else:
+            train_from_config(config, args.device, run_path=args.run_path)
 
 
 if __name__ == '__main__':
