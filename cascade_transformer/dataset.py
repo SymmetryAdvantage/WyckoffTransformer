@@ -79,7 +79,7 @@ def jagged_batch_randperm(permutation_lengths: Tensor, max_sequence_length: int)
     # Fails for padding_mask.size()[0] == 0
     # logger.debug("Padding mask #0: %s", str(padding_mask[0]))
     random_tensor[padding_mask] = 3.
-    # Assign 2. to STOP at every permutation_lengths
+    # Assign 2. to retain STOP at every permutation_lengths
     stop_indices = permutation_lengths.unsqueeze(1)
     random_tensor.scatter_(1, stop_indices, 2.0)
     result = torch.argsort(random_tensor, dim=1)
@@ -360,16 +360,26 @@ class AugmentedCascadeDataset():
             else:
                 cascade_vector = self.data[name][batch_target_is_viable]
             if apply_permutation:
-                permuted_cascade_vector = cascade_vector.gather(1, permutation)
+                if cascade_vector.dim() == 2:
+                    permuted_cascade_vector = cascade_vector.gather(1, permutation)
+                else:
+                    expanded_permutation = permutation.unsqueeze(2).expand_as(cascade_vector)
+                    permuted_cascade_vector = cascade_vector.gather(1, expanded_permutation)
             else:
                 permuted_cascade_vector = cascade_vector
             # logger.debug("Permuted cascade size (%i, %i)", *permuted_cascade_vector.size())
             if cascade_index < known_cascade_len:
                 cascade_result.append(permuted_cascade_vector[:, :known_seq_len + 1])
             else:
-                cascade_result.append(torch.cat([
-                    permuted_cascade_vector[:, :known_seq_len],
-                    self.masks[name].expand(permuted_cascade_vector.size(0), 1)], dim=1))
+                if cascade_vector.dim() == 2:
+                    mask = self.masks[name].expand(permuted_cascade_vector.size(0), 1)
+                else:
+                    #print(name)
+                    #print(self.masks[name].size())
+                    mask = self.masks[name].unsqueeze(0).expand(
+                        permuted_cascade_vector.size(0), 1, self.masks[name].size(0))
+                    #print(mask.size())
+                cascade_result.append(torch.cat([permuted_cascade_vector[:, :known_seq_len], mask], dim=1))
                 if target_type == TargetClass.NextToken:
                     if cascade_index == known_cascade_len:
                         if multiclass_target:

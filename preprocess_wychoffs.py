@@ -4,15 +4,16 @@ from pathlib import Path
 import pickle
 import gzip
 import numpy as np
+import pandas as pd
 from pyxtal import Group
+from sklearn.cluster import KMeans
+from scipy.special import sph_harm
 
 from wyckoff_transformer.tokenization import FeatureEngineer
 from wyckoff_transformer.pyxtal_fix import SS_CORRECTIONS
 
 N_3D_SPACEGROUPS = 230
 
-
-from scipy.special import sph_harm
 
 def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     """
@@ -65,6 +66,7 @@ def enumerate_wychoffs_by_ss(
         np.array([0, 0, 0]),
         np.array([1, 1, 1]),
     )
+    signature_by_sg_ss_enum = {}
     for spacegroup_number in range(1, N_3D_SPACEGROUPS + 1):
         group = Group(spacegroup_number)
         ss_counts = Counter()
@@ -87,6 +89,7 @@ def enumerate_wychoffs_by_ss(
             multiplicity_from_ss_enum[(spacegroup_number, site_symm, ss_counts[site_symm])] = wp.multiplicity
             max_multiplicity = max(max_multiplicity, wp.multiplicity)
             ss_counts[site_symm] += 1
+        #signature_by_sg_ss_enum[spacegroup_number] = defaultdict(dict)
         for ss, opres_by_enum in opres_by_ss_enum.items():
             print(f"Spacegroup {spacegroup_number}, wp {ss} {letter_from_ss_enum[spacegroup_number][ss]}")
             # Step 1: find the position closest to the origin
@@ -100,6 +103,10 @@ def enumerate_wychoffs_by_ss(
             signatures = signatures.reshape(
                 spherical_harmonics_degree + 1, len(opres_by_enum), len(reference_vectors))
             assert np.unique(signatures, axis=1).shape == signatures.shape
+            for enum in opres_by_enum.keys():
+                signature_by_sg_ss_enum[(spacegroup_number, ss, enum)] = \
+                    np.concatenate([signatures[:, enum, :].real.ravel(), signatures[:, enum, :].imag.ravel()])
+                
     if output_file.suffix == ".gz":
         opener = gzip.open
     else:
@@ -115,7 +122,77 @@ def enumerate_wychoffs_by_ss(
         stop_token=max_multiplicity + 1, mask_token=max_multiplicity + 2, pad_token=0)
     with gzip.open(engineered_path / "multiplicity.pkl.gz", "wb") as f:
         pickle.dump(multiplicity_engineer, f)
+    harmonic_size = 2 * (spherical_harmonics_degree + 1) * len(reference_vectors)
+    harmonic_engineer = FeatureEngineer(
+        signature_by_sg_ss_enum, ("spacegroup_number", "site_symmetries", "sites_enumeration"),
+        name="harmonic_site_symmetries",
+        # This requires some thouhgt. PAD = 0, OK
+        pad_token=np.zeros(harmonic_size),
+        # STOP does not necessarily need to be different from PAD, so OK
+        stop_token=np.zeros(harmonic_size),
+        # Usually, the models are not supposed to see MASK, STOP, and PAD togeher
+        mask_token=np.ones(harmonic_size))
+    with gzip.open(engineered_path / "harmonic_site_symmetries.pkl.gz", "wb") as f:
+        pickle.dump(harmonic_engineer, f)
+    enum_to_cluster, cluster_to_enum = clasterize_harmonics(harmonic_engineer)
+    # Here we actually know the tokens - as this is their birthplace
+    max_cluster_id = enum_to_cluster.max()
+    enum_to_cluster_engineer = FeatureEngineer(
+        enum_to_cluster,
+        mask_token=max_cluster_id + 1,
+        stop_token=max_cluster_id + 2,
+        pad_token=max_cluster_id + 3)
+    with gzip.open(engineered_path / "harmonic_cluster.pkl.gz", "wb") as f:
+        pickle.dump(enum_to_cluster_engineer, f)
+    # We don't know yet the tokenization of enums, so we'll need to fill in the tokens later
+    cluster_to_enum_engineer = FeatureEngineer(
+        cluster_to_enum, mask_token=None, stop_token=None, pad_token=None)
+    with gzip.open(engineered_path / "sites_enumeration.pkl.gz", "wb") as f:
+        pickle.dump(cluster_to_enum_engineer, f)
+
+
+def assign_to_clusters(
+    distances: pd.DataFrame):
+
+    remaining_distances = distances.copy().droplevel((0, 1), axis=0)
+    assert (remaining_distances.index == np.arange(remaining_distances.shape[0])).all()
+    assert (remaining_distances.columns == np.arange(remaining_distances.shape[1])).all()
+    mapping = np.empty(distances.shape[0], dtype=int)
     
+    while not remaining_distances.empty:
+        row, col = np.unravel_index(np.argmin(remaining_distances.values), remaining_distances.shape)
+        row_label = remaining_distances.index[row]
+        col_label = remaining_distances.columns[col]
+        # enum -> cluster
+        mapping[row_label] = col_label
+        remaining_distances = remaining_distances.drop(row_label, axis=0).drop(col_label, axis=1)
+    inverse = pd.Series(distances.index.get_level_values(2), index=mapping)
+    return pd.Series(mapping, index=distances.index.get_level_values(2))
+
+
+def clasterize_harmonics(
+    harmonic_engineer: FeatureEngineer,
+    random_state: int = 42):
+    """
+    Harmoic fetures are nice and float, but when we predict the next token, we need
+    to predict a set of distinct values. Morever, we need to predict the probability
+    as enumeration can genuinly take several values, especially in the beginning.
+    """
+    n_enums = len(harmonic_engineer.db.index.get_level_values("sites_enumeration").unique())
+    clusters = KMeans(n_clusters=n_enums, random_state=random_state).fit(
+        harmonic_engineer.db.to_list())
+    cluster_distances = clusters.transform(np.array(harmonic_engineer.db.to_list()))
+    cluster_db = pd.DataFrame(cluster_distances, index=harmonic_engineer.db.index)
+    # Clusters are global, but enumeration is local per spacegroup and site symmetry
+    enum_to_cluster = cluster_db.groupby(
+        level=["spacegroup_number", "site_symmetries"]).apply(assign_to_clusters).sort_index()
+    enum_to_cluster.name = "harmonic_cluster"
+    inverse_index = pd.MultiIndex.from_arrays(
+        [enum_to_cluster.index.get_level_values(0), enum_to_cluster.index.get_level_values(1), enum_to_cluster.values],
+        names=[enum_to_cluster.index.names[0], enum_to_cluster.index.names[1], enum_to_cluster.name])
+    cluster_to_enum = pd.Series(enum_to_cluster.index.get_level_values(2), index=inverse_index, name="sites_enumeration")
+    return enum_to_cluster, cluster_to_enum
+
 
 def get_augmentation_dict():
     ascii_range = tuple(string.ascii_letters)

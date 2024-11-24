@@ -1,5 +1,5 @@
 # For the code to work, must be the same as the file name
-name: sg_multiplicity_energy
+name: sg_multiplicity_energy_band_gap
 # uint8 doesn't fit pure_sequence_length
 # uint16 fails with
 # AttributeError: type object 'torch.storage.UntypedStorage' has no attribute 'dtype'. Did you mean: 'type'?
@@ -15,7 +15,6 @@ token_fields:
     # for each site symmetry, hence the order is not important,
     # and it's a bona fide categorical field.
     - sites_enumeration
-    - wyckoff_letters
   engineered:
     multiplicity:
       type: map
@@ -31,3 +30,4 @@ sequence_fields:
     - spacegroup_number
   no_processing:
     - formation_energy_per_atom
+    - band_gap

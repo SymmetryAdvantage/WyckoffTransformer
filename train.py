@@ -10,7 +10,7 @@ from wyckoff_transformer.trainer import train_from_config
 def main():
     parser = argparse.ArgumentParser(description='Train a model')
     parser.add_argument("config", type=Path, help="The configuration file")
-    parser.add_argument("dataset", type=str, default="mp_20_biternary", help="Dataset to use")
+    parser.add_argument("dataset", type=str, help="Dataset to use")
     parser.add_argument("device", type=torch.device, help="Device to train on")
     parser.add_argument("--pilot", action="store_true", help="Run a pilot run by setting epochs to 101")
     parser.add_argument("--debug", action="store_true", help="Debug mode")

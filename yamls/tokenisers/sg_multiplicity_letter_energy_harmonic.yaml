@@ -1,21 +1,18 @@
 # For the code to work, must be the same as the file name
-name: sg_multiplicity_energy
+name: sg_multiplicity_letter_energy_harmonic
 # uint8 doesn't fit pure_sequence_length
 # uint16 fails with
 # AttributeError: type object 'torch.storage.UntypedStorage' has no attribute 'dtype'. Did you mean: 'type'?
 # int16 fails with CUDA memory error
-dtype: int32
-# pure_sequence_length_dtype: int16
+dtype: uint8
+pure_sequence_length_dtype: int16
 include_stop: false
 token_fields:
   pure_categorical:
+    - wyckoff_letters
     - site_symmetries
     - elements
-    # We don't use the original Wyckoff letter, but the enumeration
-    # for each site symmetry, hence the order is not important,
-    # and it's a bona fide categorical field.
     - sites_enumeration
-    - wyckoff_letters
   engineered:
     multiplicity:
       type: map
@@ -23,9 +20,13 @@ token_fields:
       - spacegroup_number
       - site_symmetries
       - sites_enumeration
-augmented_token_fields:
-  # must be named <field-name>_augmented in the dataframe
-  - sites_enumeration
+    harmonic_site_symmetries:
+      dtype: float32
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+      - sites_enumeration
 sequence_fields:
   space_group:
     - spacegroup_number

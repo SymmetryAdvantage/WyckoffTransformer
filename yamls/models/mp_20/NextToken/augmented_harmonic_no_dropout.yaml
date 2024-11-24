@@ -1,0 +1,72 @@
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - harmonic_site_symmetries
+    is_target:
+      elements: true
+      sites_enumeration: true
+      # Not going to work properly as site_symmetries are not augmented
+      site_symmetries: true
+      harmonic_site_symmetries: false
+    embedding_size:
+      elements: 16
+      site_symmetries: 16
+      sites_enumeration: 0
+      harmonic_site_symmetries:
+        pass_through_vector: 12
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 100
+    train_batch_size: null
+    compile_model: false
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    compile_perceptrons: false
+    concat_token_counts: false
+    # TODO enable
+    concat_token_presence: false
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    # multiplicity
+    # aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    #prediction_perceptron_dropout: 0.01
+    #emebdding_dropout: 0.01    
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      dropout: 0.2
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: SGD
+    config:
+      lr: 0.2
+  scheduler:
+    name: ReduceLROnPlateau
+    config:
+      factor: 0.8
+      # note that scheduler is called every validation_period epochs
+      patience: 20
+  validation_period: 1000
+  early_stopping_patience_epochs: 100000
+  clip_grad_norm: 2.
+  epochs: 1000000
+tokeniser:
+  name: with_stop/augmented_harmony
+evaluation:
+  n_structures_to_generate: 0

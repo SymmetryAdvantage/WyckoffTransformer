@@ -177,6 +177,7 @@ class WyckoffGenerator():
                                 log_probas, 1, target.unsqueeze(1)).squeeze()
             return log_likelihoods
 
+    @torch.no_grad()
     def generate_tensors(
         self,
         start: Tensor,
@@ -192,51 +193,54 @@ class WyckoffGenerator():
             The generated sequence of tokens. It has shape [batch_size, max_len, len(cascade_order)].
             It doesn't include the start token.
         """
-        with torch.no_grad():
-            self.model.eval()
-            batch_size = start.size(0)
-            # Since we are doing in-place operations, we can just pre-assign
-            # everything to be a mask
-            generated = []
-            for field in self.cascade_order:
+        self.model.eval()
+        batch_size = start.size(0)
+        # Since we are doing in-place operations, we can just pre-assign
+        # everything to be a mask
+        generated = []
+        for field in self.cascade_order:
+            if self.masks[field].dim() == 0:
                 generated.append(torch.full((batch_size, self.max_sequence_len), self.masks[field],
-                                            dtype=torch.int64, device=start.device))
-            cascade_index_by_name = {name: idx for idx, name in enumerate(self.cascade_order)}
-            if len(start.size()) > 1:
-                start_converted = list(map(tuple, start.tolist()))
+                                            dtype=self.masks[field].dtype, device=start.device))
             else:
-                start_converted = start.tolist()
-            for known_seq_len in range(self.max_sequence_len):
-                for known_cascade_len, cascade_name in enumerate(self.cascade_order):
-                    if self.cascade_is_target[cascade_name]:
-                        this_generation_input = [generated_cascade[:, :known_seq_len + 1] for generated_cascade in generated]
-                        logits = self.model(start, this_generation_input, None, known_cascade_len)
-                        if self.calibrators is not None:
-                            if known_seq_len < len(self.calibrators[known_cascade_len]):
-                                logits = self.calibrators[known_cascade_len][known_seq_len](logits)
-                            else:
-                                logits = self.tail_calibrators[known_cascade_len](logits)
-                        logits = logits / temperature
-                        # binary/ternary hack
-                        # if known_cascade_len == 0 and known_seq_len > 2:
-                        #    logits *= 3.
-                        # CONSIDER: remove probas for all special tokens aside from STOP
-                        calibrated_probas = torch.nn.functional.softmax(logits, dim=1)
-                        # calibrated_probas = probas.numpy()
-                        # calibrated_probas = calibrator.predict_proba(probas.numpy())
-                        generated[known_cascade_len][:, known_seq_len] = \
-                            torch.multinomial(calibrated_probas, num_samples=1).squeeze()
-                    else:
-                        if known_cascade_len != len(self.cascade_order) - 1:
-                            raise NotImplementedError("Only the last cascade field can be non-target")
-                        # If a field is not in the cascade, by exclusion it is the start token
-                        this_engineer_input = [generated[cascade_index_by_name[name]][:, known_seq_len].tolist() 
-                                                for name in self.token_engineers[cascade_name].inputs
-                                                    if name in cascade_index_by_name]
-                        #print(this_engineer_input)
-                        #print(len(this_engineer_input))
-                        #print(this_generation_input[0].shape)
-                        generated[known_cascade_len][:, known_seq_len] = \
-                            torch.from_numpy(
-                                self.token_engineers[cascade_name].get_feature_from_token_batch(start_converted, this_engineer_input))
-            return generated
+                generated.append(torch.tile(self.masks[field].unsqueeze(0), (batch_size, self.max_sequence_len)))   
+
+        cascade_index_by_name = {name: idx for idx, name in enumerate(self.cascade_order)}
+        if len(start.size()) > 1:
+            start_converted = list(map(tuple, start.tolist()))
+        else:
+            start_converted = start.tolist()
+        for known_seq_len in range(self.max_sequence_len):
+            for known_cascade_len, cascade_name in enumerate(self.cascade_order):
+                if self.cascade_is_target[cascade_name]:
+                    this_generation_input = [generated_cascade[:, :known_seq_len + 1] for generated_cascade in generated]
+                    logits = self.model(start, this_generation_input, None, known_cascade_len)
+                    if self.calibrators is not None:
+                        if known_seq_len < len(self.calibrators[known_cascade_len]):
+                            logits = self.calibrators[known_cascade_len][known_seq_len](logits)
+                        else:
+                            logits = self.tail_calibrators[known_cascade_len](logits)
+                    logits = logits / temperature
+                    # binary/ternary hack
+                    # if known_cascade_len == 0 and known_seq_len > 2:
+                    #    logits *= 3.
+                    # CONSIDER: remove probas for all special tokens aside from STOP
+                    calibrated_probas = torch.nn.functional.softmax(logits, dim=1)
+                    # calibrated_probas = probas.numpy()
+                    # calibrated_probas = calibrator.predict_proba(probas.numpy())
+                    generated[known_cascade_len][:, known_seq_len] = \
+                        torch.multinomial(calibrated_probas, num_samples=1).squeeze()
+                else:
+                    if known_cascade_len != len(self.cascade_order) - 1:
+                        raise NotImplementedError("Only the last cascade field can be non-target")
+                    # If a field is not in the cascade, by exclusion it is the start token
+                    this_engineer_input = [generated[cascade_index_by_name[name]][:, known_seq_len].tolist() 
+                                            for name in self.token_engineers[cascade_name].inputs
+                                                if name in cascade_index_by_name]
+                    #print(this_engineer_input)
+                    #print(len(this_engineer_input))
+                    #print(this_generation_input[0].shape)
+                    generated[known_cascade_len][:, known_seq_len] = \
+                        torch.from_numpy(
+                            self.token_engineers[cascade_name].get_feature_from_token_batch(start_converted, this_engineer_input))
+        return generated

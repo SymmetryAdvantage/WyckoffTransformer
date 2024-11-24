@@ -490,12 +490,14 @@ class WyckoffTrainer():
             The average loss on the dataset.
         """
         self.model.eval()
+        if dataset.batch_size is not None and not dataset.fix_batch_size:
+            raise NotImplementedError("Only fixed batch size is supported")
         if self.target == TargetClass.Scalar:
             known_seq_len = dataset.max_sequence_length - 1
             loss = torch.zeros(1, device=self.device)
             for _ in range(dataset.batches_per_epoch):
                 loss += self.get_loss(dataset, known_seq_len, None, False, True)
-            # Assumes that the batch size is the same for all batches
+            # Above we check that the batch size is the same for all batches
             return loss / dataset.batches_per_epoch
 
         loss = torch.zeros(self.cascade_len, device=self.device)
@@ -524,7 +526,7 @@ class WyckoffTrainer():
         wandb.define_metric("known_seq_len", hidden=True)
         wandb.define_metric("known_cascade_len", hidden=True)
 
-        for epoch in trange(self.epochs):
+        for epoch in (train_tqdm := trange(self.epochs)):
             self.train_epoch()
             if epoch % self.validation_period == 0 or epoch == self.epochs - 1:
                 raw_losses = {
@@ -544,21 +546,22 @@ class WyckoffTrainer():
                         loss_dict[name] = {name: loss[i] for i, name in enumerate(self.cascade_order)}
                         loss_dict[name]["total"] = loss.sum().item()
                 wandb.log({"loss.epoch": loss_dict,
-                            "lr": self.optimizer.param_groups[0]['lr'],
-                            "epoch": epoch}, commit=False)
+                           "lr": self.optimizer.param_groups[0]['lr'],
+                           "epoch": epoch}, commit=False)
                 if total_val_loss < best_val_loss:
                     best_val_loss = total_val_loss
                     best_val_epoch = epoch
                     torch.save(self.model.state_dict(), best_model_params_path)
                     wandb.save(best_model_params_path, base_path=self.run_path, policy="live")
-                    # \n due to tqdm leaving the cursor at the end of the line
-                    print(f"\nEpoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} saved to {best_model_params_path}")
+                    train_tqdm.set_description(
+                        f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
+                        f"saved to {best_model_params_path}")
                     wandb.log({"loss.epoch.val_best": best_val_loss}, commit=False)
                 if epoch - best_val_epoch > self.early_stopping_patience_epochs:
                     print(f"Early stopping at epoch {epoch} after more than "
                           f"{self.early_stopping_patience_epochs} epochs without improvement")
                     break
-                # Don't step the scheduler on the tail epoch, to presereve
+                # Don't step the scheduler on the tail epoch to presereve
                 # patience behaviour
                 if epoch % self.validation_period == 0:
                     self.scheduler.step(total_val_loss)
@@ -634,7 +637,9 @@ def train_from_config(config_dict: dict, device: torch.device, run_path: Optiona
         pickle.dump(trainer.token_engineers, f)
     wandb.save(this_run_path / "token_engineers.pkl.gz", base_path=this_run_path, policy="now")
     config = OmegaConf.create(config_dict)
-    if config.model.WyckoffTrainer_args.target == "NextToken":
+    if config.model.WyckoffTrainer_args.target == "NextToken" and \
+        config.evaluation.get("n_structures_to_generate", 0) > 0:
+
         print("Training complete, loading the best model")
         trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
         data_cache_path = Path(__file__).parent.parent.resolve() / "cache" / config.dataset / "data.pkl.gz"

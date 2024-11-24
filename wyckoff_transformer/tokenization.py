@@ -135,6 +135,30 @@ class FeatureEngineer():
         self.mask_token = mask_token
         self.default_value = 0
         self.include_stop = include_stop
+        if self.db.dtype == 'O':
+            all_feature_shapes = self.db.apply(np.shape)
+            unqiue_shapes = all_feature_shapes.unique()
+            if len(unqiue_shapes) != 1:
+                raise ValueError("Inconsistent shapes")
+            self.feature_shape = unqiue_shapes[0]
+        # Scalar
+        else:
+            self.feature_shape = tuple()
+
+
+    def pad_and_stop(self,
+        sequence,
+        original_max_len: int,
+        **tensor_args) -> torch.Tensor:
+
+        padding = [self.pad_token] * (original_max_len - len(sequence))
+        if self.include_stop:
+            padding = [self.stop_token] + padding
+        padded_sequence = sequence + padding
+        if self.feature_shape:
+            padded_sequence = np.array(padded_sequence)
+        return torch.tensor(padded_sequence, **tensor_args)
+
 
     def get_feature_tensor_from_series(
         self,
@@ -143,7 +167,6 @@ class FeatureEngineer():
         **tensor_args) -> torch.Tensor:
 
         indexed_record = record.loc[self.db.index.names]
-        # No need to write the general solution, for now we only need multiplicity
         # WARNING(kazeevn): only one structure is supported:
         # the first input is sequence-level, the next two are token-level    
         this_db = self.db.loc[indexed_record.iloc[0]]
@@ -159,11 +182,41 @@ class FeatureEngineer():
                 logger.error(record[self.db.name])
                 logger.error(res)
                 raise ValueError("Mismatch")
-        padding = [self.pad_token] * (original_max_len - len(res))
-        if self.include_stop:
-            padding = [self.stop_token] + padding
-        return torch.tensor(res + padding, **tensor_args)
-    
+        return self.pad_and_stop(res, original_max_len, **tensor_args)
+
+
+    def get_feature_from_augmented_series(
+        self,
+        record: Series,
+        augmented_field_orginal_name: str,
+        original_max_len: int,
+        **tensor_args) -> torch.Tensor:
+        """
+        Args:
+            record: The record to process
+            augmented_field_orginal_name: The original name of the field containing the augmented variants
+                e. g. "sites_enumeration"
+            original_max_len: The maximum length of the sequence
+            **tensor_args: Additional arguments for the torch.tensor
+        Returns:
+            A list of tensors with the augmented features processed by the engineer
+        """
+        # We need to unravel the augmented field
+        augmented_field = f"{augmented_field_orginal_name}_augmented"
+        augmentation_variants = record.at[augmented_field]
+        # WARNING(kazeevn): only one structure is supported:
+        # The first input is sequence-level, the next two are token-level
+        this_db = self.db.xs(record.at[self.db.index.names[0]], level=0)
+        assert len(self.db.index.names) == 3
+        assert self.db.index.names[2] == augmented_field_orginal_name
+        queries = [list(map(tuple, zip(record.at[self.db.index.names[1]], variant))) for variant in augmentation_variants]
+        padding_function = partial(
+            self.pad_and_stop,
+            original_max_len=original_max_len,
+            **tensor_args)
+        return [padding_function(this_db.loc[query].to_list()) for query in queries]
+
+
     def get_feature_from_token_batch(
         self,
         level_0: torch.Tensor,
@@ -180,23 +233,21 @@ class DummyItemGetter():
 
 
 class PassThroughTokeniser():
-    def __init__(self, min_value:int, max_value:int,
+    def __init__(self,
+        values_count: int,
         stop_token: Optional[int] = None,
         pad_token: Optional[int] = None,
         mask_token: Optional[int] = None):
-        """
-        min_value and max_value should include the service tokens
-        """
+        # Values count includes the service tokens
 
-        self.min_value = min_value
-        self.max_value = max_value
+        self.values_count = values_count
         self.stop_token = stop_token
         self.pad_token = pad_token
         self.mask_token = mask_token
         self.to_token = DummyItemGetter()
     
     def __len__(self):
-        return self.max_value - self.min_value + 1
+        return self.values_count
 
     def __getitem__(self, token):
         return token
@@ -258,7 +309,11 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                         Tuple[Dict[str, Dict[str, torch.Tensor|List[List[torch.Tensor]]]], Dict[str, EnumeratingTokeniser]]:
     dtype = getattr(torch, config.dtype)
     include_stop = config.get("include_stop", True)
-    pandarallel.initialize()
+    if n_jobs is not None:
+        pandarallel.initialize(nb_workers=n_jobs)
+    else:
+        # Preserve the NB_PHYSICAL_CORES default
+        pandarallel.initialize()
     if tokenizer_path is None:
         tokenisers = {}
         max_tokens = torch.iinfo(dtype).max
@@ -271,7 +326,7 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
             for sequence_field in config.sequence_fields.pure_categorical:
                 all_tokens = frozenset(chain.from_iterable(map(lambda df: frozenset(df[sequence_field].tolist()), datasets_pd.values())))
                 tokenisers[sequence_field] = EnumeratingTokeniser.from_token_set(all_tokens, max_tokens)
-        
+
         if "space_group" in config.sequence_fields:
             for sequence_field in config.sequence_fields.space_group:
                 all_space_groups = frozenset(chain.from_iterable(map(itemgetter(sequence_field), datasets_pd.values())))
@@ -297,8 +352,7 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
             raw_engineers[engineered_field_name].include_stop = token_engineers[engineered_field_name].include_stop
             # The values haven't changed, only the keys, so we can reuse the stop, pad, and mask tokens
             tokenisers[engineered_field_name] = PassThroughTokeniser(
-                min(token_engineers[engineered_field_name].db.min().min(), raw_engineer.stop_token, raw_engineer.pad_token, raw_engineer.mask_token),
-                max(token_engineers[engineered_field_name].db.max().max(), raw_engineer.stop_token, raw_engineer.pad_token, raw_engineer.mask_token),
+                len(token_engineers[engineered_field_name].db),
                 stop_token = raw_engineer.stop_token,
                 pad_token = raw_engineer.pad_token,
                 mask_token = raw_engineer.mask_token)
@@ -321,11 +375,15 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                     dtype=dtype)).to_list())
 
         if "engineered" in config.token_fields:
-            for field in config.token_fields.engineered:
+            for field, field_config in config.token_fields.engineered.items():
+                if "dtype" in field_config:
+                    field_dtype = getattr(torch, field_config.dtype)
+                else:
+                    field_dtype = dtype
                 compute_feature_function = partial(
                     raw_engineers[field].get_feature_tensor_from_series,
                     original_max_len=original_max_len,
-                    dtype=dtype)
+                    dtype=field_dtype)
                 tensor_list = dataset.parallel_apply(
                     compute_feature_function, axis=1).to_list()
                 tensors[dataset_name][field] = torch.stack(tensor_list)
@@ -344,7 +402,12 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
 
         if "no_processing" in config.sequence_fields:
             for field in config.sequence_fields.no_processing:
-                tensors[dataset_name][field] = torch.Tensor(dataset[field].array)
+                try:
+                    tensors[dataset_name][field] = torch.Tensor(dataset[field].array)
+                except KeyError as e:
+                    logger.warning("Field %s not found in the dataset", field)
+                    logger.warning(e)
+
 
         if "counters" in config.sequence_fields:
             # Counter fields are processed into two tensors: tokenised values, and the counts
@@ -366,6 +429,20 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                         [tokenisers[field].tokenise_sequence(
                             variant, original_max_len=original_max_len, dtype=dtype)
                             for variant in variants]).to_list()
+
+        for field, field_config in config.token_fields.get("augmented_engineered", {}).items():
+            augmented_field = f"{field}_augmented"
+            if "dtype" in config.token_fields.engineered[field]:
+                field_dtype = getattr(torch, config.token_fields.engineered[field].dtype)
+            else:
+                field_dtype = dtype
+            tensors[dataset_name][augmented_field] = dataset.parallel_apply(
+                partial(
+                    raw_engineers[field].get_feature_from_augmented_series,
+                    augmented_field_orginal_name=field_config.augmented_input,
+                    original_max_len=original_max_len,
+                    dtype=field_dtype), axis=1).to_list()
+
         # We can have long sequences, but still a limited number of tokens
         if "pure_sequence_length_dtype" in config:
             pure_sequence_length_dtype = getattr(torch, config.pure_sequence_length_dtype)
@@ -400,8 +477,12 @@ def load_tensors_and_tokenisers(
     cache_path: Path = Path(__file__).parent.parent.resolve() / "cache"):
 
     this_cache_path = cache_path / dataset
-    with gzip.open(this_cache_path / 'tensors' / f'{config_name}.pkl.gz', "rb") as f:
-        tensors = pickle.load(f)
+    try:
+        tensors = torch.load(this_cache_path / 'tensors' / f'{config_name}.pt', weights_only=True)
+    except FileNotFoundError:
+        logger.warning("Tensors not found, trying to load obsolete .pkl.gz")
+        with gzip.open(this_cache_path / 'tensors' / f'{config_name}.pkl.gz', "rb") as f:
+            tensors = pickle.load(f)
     with gzip.open(this_cache_path / 'tokenisers' / f'{config_name}.pkl.gz', "rb") as f:
         tokenisers = pickle.load(f)
         token_engineers = pickle.load(f)

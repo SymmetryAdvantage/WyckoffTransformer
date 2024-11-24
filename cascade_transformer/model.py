@@ -1,4 +1,5 @@
 from typing import Tuple, List, Optional, Iterable
+from enum import Enum
 import logging
 import numpy as np
 import torch
@@ -9,10 +10,22 @@ from omegaconf import OmegaConf
 
 from cascade_transformer.dataset import batched_bincount
 
+logger = logging.getLogger(__name__)
+
+class SpecialEmbedding(torch.nn.Module):
+    ScalarPassThrough = 0
+    VectorPassThrough = 1
+    Drop = 2
+
+    def __init__(self, type_):
+        super().__init__()
+        self.type_ = type_
+
 
 class CascadeEmbedding(nn.Module):
     def __init__(self,
                  cascade,
+                 dropout: Optional[float] = None,
                  **kwargs):
         """
         Arguments:
@@ -22,34 +35,62 @@ class CascadeEmbedding(nn.Module):
         """
         super().__init__()
         self.embeddings = torch.nn.ModuleList()
+        self.dropout = dropout
         self.total_embedding_dim = 0
         for n, d, pad, _ in cascade:
             if d is None:
-                self.embeddings.append(None)
+                logger.debug("Scalar pass-through for %i values", n)
+                self.embeddings.append(SpecialEmbedding(SpecialEmbedding.ScalarPassThrough))
                 self.total_embedding_dim += 1
+            elif isinstance(d, Iterable):
+                self.embeddings.append(SpecialEmbedding(SpecialEmbedding.VectorPassThrough))
+                logger.debug("Vector pass-through for %i values, dim %i", n, d["pass_through_vector"])
+                self.total_embedding_dim += d["pass_through_vector"]
+            elif d == 0:
+                logger.debug("Not adding embedding for %i values, dim %i", n, d)
+                self.embeddings.append(SpecialEmbedding(SpecialEmbedding.Drop))
             else:
+                logger.debug("Adding embedding for %i values, dim %i", n, d)
                 self.embeddings.append(nn.Embedding(n, d, padding_idx=pad, **kwargs))
                 self.total_embedding_dim += d
+        if dropout is not None:
+            self.dropout_layer = nn.Dropout(dropout)
+        logging.debug("Total embedding dim: %i", self.total_embedding_dim)
 
 
     def forward(self, x: List[Tensor]) -> Tensor:
         """
         Arguments:
-            x: Tensor of shape ``[batch_size, seq_len, len(cascade)]``
+            x: List of tensors of shape ``[batch_size, seq_len, len(cascade)]``
 
         Returns:
             Tensor of shape ``[batch_size, seq_len, self.total_embedding_dim]``
         """
         list_of_embeddings = []
         for tensor, emb in zip(x, self.embeddings):
-            if emb is None:
-                list_of_embeddings.append(tensor.unsqueeze(-1))
+            if isinstance(emb, SpecialEmbedding):
+                if emb.type_ == SpecialEmbedding.Drop:
+                    continue
+                if emb.type_ == SpecialEmbedding.ScalarPassThrough:
+                    shaped_tensor = tensor.unsqueeze(2)
+                elif emb.type_ == SpecialEmbedding.VectorPassThrough:
+                    shaped_tensor = tensor.flatten(start_dim=2)
+                else:
+                    raise ValueError(f"Unknown SpecialEmbedding {emb}")
+                list_of_embeddings.append(shaped_tensor)
             else:
-                list_of_embeddings.append(emb(tensor))
-        return torch.cat(list_of_embeddings, dim=2)
+                list_of_embeddings.append(emb(tensor))            
+        full_embedding = torch.cat(list_of_embeddings, dim=2)
+        if self.dropout:
+            return self.dropout_layer(full_embedding)
+        return full_embedding
 
 
-def get_perceptron(input_dim: int, output_dim:int, num_layers:int) -> torch.nn.Module:
+def get_perceptron(
+    input_dim: int,
+    output_dim:int,
+    num_layers:int,
+    dropout: Optional[float] = None) -> torch.nn.Module:
     """
     Returns a perceptron with num_layers layers, with ReLU activation.
     If num_layers is 1, returns a single linear layer.
@@ -61,6 +102,8 @@ def get_perceptron(input_dim: int, output_dim:int, num_layers:int) -> torch.nn.M
         this_sequence = []
         for _ in range(num_layers - 1):
             this_sequence.append(nn.Linear(input_dim, input_dim))
+            if dropout is not None:
+                this_sequence.append(nn.Dropout(dropout))
             this_sequence.append(nn.ReLU())
         this_sequence.append(nn.Linear(input_dim, output_dim))
     return nn.Sequential(*this_sequence)
@@ -147,7 +190,9 @@ class CascadeTransformer(nn.Module):
                  TransformerEncoderLayer_args: dict,
                  TransformerEncoder_args: dict,
                  compile_perceptrons: bool = True,
-                 aggregation_weight: Optional[int] = None):
+                 aggregation_weight: Optional[int] = None,
+                 emebdding_dropout: Optional[float] = None,
+                 prediction_perceptron_dropout: Optional[float] = None):
         """
         Expects tokens in the following format:
         START_k -> [] -> STOP -> PAD
@@ -171,7 +216,7 @@ class CascadeTransformer(nn.Module):
             aggregation_weight: casacade index of the field to be used as aggregation weight.
         """
         super().__init__()
-        self.embedding = CascadeEmbedding(cascade)
+        self.embedding = CascadeEmbedding(cascade, dropout=emebdding_dropout)
         self.d_model = self.embedding.total_embedding_dim
         self.encoder_layers = TransformerEncoderLayer(self.d_model, batch_first=True, **TransformerEncoderLayer_args)
         self.transformer_encoder = TransformerEncoder(self.encoder_layers, **TransformerEncoder_args)
@@ -226,18 +271,33 @@ class CascadeTransformer(nn.Module):
             raise ValueError("num_fully_connected_layers must be at least 1 for dimensionality reasons.")
         self.cascade = tuple(cascade)
         if outputs == "token_scores":
-            for output_size, _, _, is_target in cascade:
+            for output_size, embedding_dim, _, is_target in cascade:
+                logger.debug("Creating head for %i values; embedding_dim %s",
+                             output_size, str(embedding_dim))
                 if is_target:
                     this_head_size = prediction_head_size
-                    if concat_token_counts:
-                        this_head_size += output_size
-                    if concat_token_presence:
-                        this_head_size += output_size
-                    self.prediction_heads.append(percepron_generator(this_head_size, output_size, num_fully_connected_layers))
+                    try:
+                        embedding_dim["pass_through_vector"]
+                        logger.warning("Not using cascade presence for a head,"
+                                        " because the input is not categorial")
+                    except (KeyError, TypeError):
+                        if concat_token_counts:
+                            this_head_size += output_size
+                        if concat_token_presence:
+                            this_head_size += output_size
+                    logger.debug("Head size: %i", this_head_size)
+                    self.prediction_heads.append(percepron_generator(
+                        this_head_size, output_size, num_fully_connected_layers,
+                        dropout=prediction_perceptron_dropout))
                 else:
                     self.prediction_heads.append(None)
         else:
-            self.the_prediction_head = percepron_generator(prediction_head_size, outputs, num_fully_connected_layers)
+            if concat_token_counts or concat_token_presence:
+                raise ValueError("concat_token_counts and concat_token_presence are only"
+                                 " supported for outputs=token_scores")
+            self.the_prediction_head = percepron_generator(
+                prediction_head_size, outputs, num_fully_connected_layers,
+                dropout=prediction_perceptron_dropout)
 
 
     def forward(self,
@@ -309,15 +369,17 @@ class CascadeTransformer(nn.Module):
         else:
             raise ValueError(f"Unknown aggregation_inclsion {self.aggregation_inclsion}")
 
-        if self.concat_token_counts:
-            token_counts = batched_bincount(
-                cascade[prediction_head], dim=1, max_value=self.cascade[prediction_head][0])
-            prediction_inputs.append(token_counts)
-
-        if self.concat_token_presence:
-            token_counts = batched_bincount(
-                cascade[prediction_head], dim=1, max_value=self.cascade[prediction_head][0], dtype=torch.bool)
-            prediction_inputs.append(token_counts)
+        if prediction_head is not None and cascade[prediction_head].size(1) == 1:
+            if self.concat_token_counts:
+                token_counts = batched_bincount(
+                    cascade[prediction_head], dim=1, max_value=self.cascade[prediction_head][0])
+                prediction_inputs.append(token_counts)
+            if self.concat_token_presence:
+                token_counts = batched_bincount(
+                    cascade[prediction_head], dim=1, max_value=self.cascade[prediction_head][0], dtype=torch.bool)
+                prediction_inputs.append(token_counts)
+        else:
+            logger.debug("Not concatenating token counts and presence, because the input is not categorial")
         
         prediction_input = torch.cat(prediction_inputs, dim=1)
 
