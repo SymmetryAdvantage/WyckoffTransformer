@@ -269,7 +269,7 @@ def read_all_MP_csv(
     file_format: str = "csv",
     n_jobs: Optional[int] = None,
     symmetry_precision: float = 0.1,
-    symmetry_a_tol) -> tuple[dict[str, pd.DataFrame], int]:
+    symmetry_a_tol = 5) -> tuple[dict[str, pd.DataFrame], int]:
     """
     Reads all Materials Project CSV files and returns a dictionary of DataFrames.
 
