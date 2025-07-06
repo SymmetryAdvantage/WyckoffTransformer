@@ -40,11 +40,13 @@ def dive_and_cache(
     transformations: List[str],
     dataset_name: str,
     config_file: Path,
-    last_transformation: Optional[str] = None) -> list:
+    last_transformation: Optional[str] = None,
+    starting_transformations: Optional[List[str]] = None) -> list:
 
     failed_transformations = []
     if DATA_KEYS.intersection(this_config.keys()) and (
-        not last_transformation or last_transformation == transformations[-1]):
+        not last_transformation or last_transformation == transformations[-1]) and (
+        not starting_transformations or transformations[:len(starting_transformations)] == starting_transformations):
 
         print(f"From {dataset_name} loading ({', '.join(transformations)})")
         try:
@@ -59,7 +61,8 @@ def dive_and_cache(
         if new_transformation in DATA_KEYS:
             continue
         failed_transformations.extend(
-            dive_and_cache(new_config, transformations + [new_transformation], dataset_name, config_file, last_transformation))
+            dive_and_cache(new_config, transformations + [new_transformation],
+                           dataset_name, config_file, last_transformation, starting_transformations))
 
     return failed_transformations
 
@@ -70,6 +73,8 @@ def main():
     parser.add_argument("--transformations", type=str, nargs="+")
     parser.add_argument("--last-transformation", type=str,
                         help="Only process the datasets with this transformation as the last one")
+    parser.add_argument("--starting-transformations", type=str, nargs="*",
+                        help="Only process the datasets with these transformations as the first ones")
     args = parser.parse_args()
     if args.transformations:
         data = GeneratedDataset.from_transformations(
@@ -84,7 +89,9 @@ def main():
             if args.dataset and args.dataset != dataset_name:
                 continue
             failed_transformations.extend(
-                dive_and_cache(dataset_config, [], str(dataset_name), args.config_file, args.last_transformation))
+                dive_and_cache(
+                    dataset_config, [], str(dataset_name), args.config_file,
+                    args.last_transformation, args.starting_transformations))
         if failed_transformations:
             print("Some transformations failed:")
             for dataset_name, transformations, error in failed_transformations:
