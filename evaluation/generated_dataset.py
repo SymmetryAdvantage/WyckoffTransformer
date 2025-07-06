@@ -660,7 +660,7 @@ class GeneratedDataset():
         wyckoffs = compute_symmetry_sites({"_": self.data}, n_jobs=n_jobs)["_"]
         self.data.loc[:, wyckoffs.columns] = wyckoffs
         # TODO fix data / lib
-        self.data.dropna(axis=0, inplace=True)
+        self.data.dropna(axis=0, subset=wyckoffs.columns, inplace=True)
 
     def convert_wyckoffs_to_pyxtal(self):
         pyxtal_series = self.data.apply(record_to_pyxtal, axis=1)
