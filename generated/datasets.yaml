@@ -328,21 +328,25 @@ mp_20:
         path: mp_20/MatterGen/MatterGen_10k/MatterGen_10k.csv
         storage_type: CDVAE_csv_cif
         generated_by: "Tomiya Yamamoto"
+      DFT-10k:
+        structures:
+          path: mp_20/MatterGen/MatterGen_10k/mattergen-10K-MP GGA static.csv.gz
+          storage_type: atomated_csv
       DFT:
         structures:
-          path: mp_20/MatterGen/MatterGen_10k/DFT/df_105_raw_dft.csv
+          path: mp_20/MatterGen/MatterGen_10k/DFT-UN-105/df_105_raw_dft.csv
           storage_type: CDVAE_csv_cif
           generated_by: "Huang Yuyao"
-        e_hull: mp_20/MatterGen/MatterGen_10k/DFT/df_105_raw_dft_w_chg_e_hull.ehull.csv.gz
+        e_hull: mp_20/MatterGen/MatterGen_10k/DFT-UN-105/df_105_raw_dft_w_chg_e_hull.ehull.csv.gz
       CHGNet_fix:
         structures:
-          path: mp_20/MatterGen/CHGNet_fix/MatterGen_10k_CHGNet_fix.csv
+          path: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/MatterGen_10k_CHGNet_fix.csv
           storage_type: CDVAE_csv_cif
           generated_by: "Tomiya Yamamoto"
-        e_hull: mp_20/MatterGen/CHGNet_fix/MatterGen_10k_CHGNet_fix_e_hull.ehull.csv.gz
+        e_hull: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/MatterGen_10k_CHGNet_fix_e_hull.ehull.csv.gz
         DFT: 
           structures: 
-            path: mp_20/MatterGen/CHGNet_fix/DFT/df_105_chgnet_dft.csv
+            path: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/DFT-UN-105/df_105_chgnet_dft.csv
             storage_type: csv_cif_with_missing_values
             generated_by: "Huang Yuyao"  
 mp_20_biternary:
