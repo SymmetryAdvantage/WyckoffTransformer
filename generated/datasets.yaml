@@ -346,7 +346,7 @@ mp_20:
         e_hull: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/MatterGen_10k_CHGNet_fix_e_hull.ehull.csv.gz
         DFT: 
           structures: 
-            path: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/DFT-UN-105/df_105_chgnet_dft.csv
+            path: mp_20/MatterGen/MatterGen_10k/DFT-UN-105/df_105_chgnet_dft.csv
             storage_type: csv_cif_with_missing_values
             generated_by: "Huang Yuyao"  
 mp_20_biternary:
@@ -543,3 +543,8 @@ mp_2022:
       structures:
         path: ../data/matbench_discovery_mp_2022/val.csv.gz
         storage_type: CDVAE_csv_cif
+mp_20_h:
+  DiffCSP:
+    structures:
+      path: mp_20_h/DiffCSP/eval_gen.pt
+      storage_type: DiffCSP_pt

@@ -64,6 +64,7 @@ DATASET_TO_CDVAE = {
     "mpts_52": "mp20",
     "mp_20": "mp20",
     "mp_2022": "mp20",
+    "mp_20_h": "mp20",
     "perov_5": "perovskite",
     "carbon_24": "carbon"}
 
