@@ -563,8 +563,9 @@ def tensor_to_pyxtal(
     enforced_min_elements: Optional[int] = None,
     enforced_max_elements: Optional[int] = None) -> Optional[dict]:
     """
-    The function supports two cascade modes:
+    The function supports three cascade modes:
         (elements, site_symmetries, sites_enumeration)
+        (elements, site_symmetries, harmonic_cluster)
         (elements, wyckoff_letters)
     Args:
         space_group_tensor: The tensor with the space group
