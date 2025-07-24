@@ -339,8 +339,6 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
     else:
         with gzip.open(tokenizer_path, "rb") as f:
             tokenisers = pickle.load(f)
-    import pdb
-    pdb.set_trace()
     raw_engineers = {}
     token_engineers = {}
     if "engineered" in config.token_fields:
