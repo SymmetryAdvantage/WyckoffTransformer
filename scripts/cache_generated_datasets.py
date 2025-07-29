@@ -10,6 +10,7 @@ if __name__ == "__main__":
     sys.path.append(str(Path(__file__).parent.parent))
 
 from typing import List, Optional
+import warnings
 from argparse import ArgumentParser
 from pathlib import Path
 from omegaconf import OmegaConf
@@ -17,20 +18,40 @@ from omegaconf import OmegaConf
 from evaluation.generated_dataset import GeneratedDataset, DATA_KEYS
 
 def compute_fields_and_cache(data: GeneratedDataset) -> GeneratedDataset:
-    if "site_symmetries" not in data.data.columns:
-        data.compute_wyckoffs()
-    data.compute_wyckoff_fingerprints()
-    if "numIons" not in data.data.columns:
-        data.convert_wyckoffs_to_pyxtal()
-    data.compute_smact_validity()
-    if "structure" in data.data.columns:
-        data.compute_cdvae_crystals()
-        data.compute_naive_validity()
-        try:
-            data.compute_cdvae_e()
-        except ImportError as e:
-            print("Required libraries are not installed. Skipping cdvae_e computation.")
-            print("Error message:", e)
+    """Compute all derived fields for a dataset and cache it."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="No oxidation states specified on sites.*",
+            category=UserWarning,
+            module="pymatgen.analysis.local_env"
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="CrystalNN: cannot locate an appropriate radius.*",
+            category=UserWarning,
+            module="matminer.featurizers.site.fingerprint"
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message="No Pauling electronegativity for.*",
+            category=UserWarning,
+            module="pymatgen.analysis.local_env"
+        )
+        if "site_symmetries" not in data.data.columns:
+            data.compute_wyckoffs()
+        data.compute_wyckoff_fingerprints()
+        if "numIons" not in data.data.columns:
+            data.convert_wyckoffs_to_pyxtal()
+        data.compute_smact_validity()
+        if "structure" in data.data.columns:
+            data.compute_cdvae_crystals()
+            data.compute_naive_validity()
+            try:
+                data.compute_cdvae_e()
+            except ImportError as e:
+                print("Required libraries are not installed. Skipping cdvae_e computation.")
+                print("Error message:", e)
 
     data.dump_to_cache()
     return data
