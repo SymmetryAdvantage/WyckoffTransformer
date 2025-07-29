@@ -321,7 +321,7 @@ class StatisticalEvaluator():
             dataset = novelty_filter.get_novel(dataset)
             logger.info("Dataset size after novelty filtering: %d", len(dataset))
             if compute_novelty:                
-                result["Novelty"] = 100 * (intial_size - len(dataset)) / intial_size
+                result["Novelty"] = 100 * len(dataset) / intial_size
         elif compute_novelty:
             raise ValueError("Novelty filter is not provided, but compute_novelty is True.")
         # The original CDVAE paper uses 10k structures for validity and coverage metrics
