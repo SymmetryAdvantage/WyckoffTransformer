@@ -402,6 +402,11 @@ mp_20_biternary:
         storage_type: WTCache
         cache_key: val
 perov_5:
+  MiAD:
+    structures:
+      path: perov_5/MiAD/eval_results.pt
+      storage_type: DiffCSP_pt
+      generated_by: "Okhotin et. al"
   WyckoffTransformer:
     wyckoffs:
       path: perov_5/WyckoffTransformer/ICLR_perov_5.json.gz
@@ -448,6 +453,11 @@ perov_5:
         storage_type: WTCache
         cache_key: val
 carbon_24:
+  MiAD:
+    structures:
+      path: carbon_24/MiAD/eval_results.pt
+      storage_type: DiffCSP_pt
+      generated_by: "Okhotin et. al"
   WyckoffTransformer:
     wyckoffs:
       path: carbon_24/WyckoffTransformer/ICLR_carbon_24.json.gz
