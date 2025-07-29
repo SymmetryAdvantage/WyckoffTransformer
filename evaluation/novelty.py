@@ -173,6 +173,8 @@ class NoveltyFilter():
                 'fingerprint' with a hashable fingerprint
                 'structure' with a Structure for fine comparison
         """
+        if n_jobs > 1:
+            raise NotImplementedError("The naive n_jobs implementation is actually rather slow")
         self.reference_index_type = reference_index_type
         reference_dict = defaultdict(list)
         for _, record in reference_dataset.iterrows():
