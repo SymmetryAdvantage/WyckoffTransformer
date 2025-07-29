@@ -297,7 +297,8 @@ class StatisticalEvaluator():
     def compute_cdvae_metrics(self, dataset: pd.DataFrame,
                               novelty_filter: Optional[NoveltyFilter] = None,
                               sample_size_for_precision: int = 10000,
-                              random_seed: int = 42) -> Dict[str, float]:
+                              random_seed: int = 42,
+                              compute_novelty = False) -> Dict[str, float]:
         """
         Computes the "CDVAE metrics" for a given dataset, from
         Xie et al. "Crystal Diffusion Variational AutoEncoder" [ICLR 2022].
@@ -316,8 +317,13 @@ class StatisticalEvaluator():
         logger.info("Computing CDVAE metrics...")
         logger.info("Dataset size: %d", len(dataset))
         if novelty_filter is not None:
+            intial_size = len(dataset)
             dataset = novelty_filter.get_novel(dataset)
             logger.info("Dataset size after novelty filtering: %d", len(dataset))
+            if compute_novelty:                
+                result["Novelty"] = 100 * (intial_size - len(dataset)) / intial_size
+        elif compute_novelty:
+            raise ValueError("Novelty filter is not provided, but compute_novelty is True.")
         # The original CDVAE paper uses 10k structures for validity and coverage metrics
         # Validity is a binary per-sample metric, so its expected value does not depend on the sample size
         result["Compositional"] = 100*dataset.smact_validity.mean()
