@@ -3,6 +3,7 @@ from math import gcd
 from collections import defaultdict, Counter
 from pandas import Series
 import pandas as pd
+from joblib import Parallel, delayed
 from pymatgen.analysis.structure_matcher import StructureMatcher
 
 
@@ -163,7 +164,8 @@ class NoveltyFilter():
     """
     def __init__(self,
                  reference_dataset: pd.DataFrame,
-                 reference_index_type: str = 'fingerprint'):
+                 reference_index_type: str = 'fingerprint',
+                 n_jobs: int = 1):
         """
         Args:
             reference_dataset: The dataset to use as reference for novelty detection
@@ -177,7 +179,8 @@ class NoveltyFilter():
             reference_dict[self.get_reference_index(record)].append(record)
         self.reference_dict = dict(zip(reference_dict.keys(), map(tuple, reference_dict.values())))
         self.matcher = StructureMatcher()
-     
+        self.n_jobs = n_jobs
+
 
     def get_reference_index(self, record: pd.Series):
         if self.reference_index_type == 'fingerprint':
@@ -219,4 +222,9 @@ class NoveltyFilter():
             If 'structure' is present, it will be used for fine comparison,
             if not, structures with same fingerprints will be considered same
         """
-        return dataset.loc[dataset.apply(self.is_novel, axis=1)]
+        if self.n_jobs == 1:
+            return dataset.loc[dataset.apply(self.is_novel, axis=1)]
+        else:
+            novel_records = Parallel(n_jobs=self.n_jobs)(
+                delayed(self.is_novel)(record) for _, record in dataset.iterrows())
+            return dataset.loc[novel_records]
