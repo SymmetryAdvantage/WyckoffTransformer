@@ -320,7 +320,7 @@ class StatisticalEvaluator():
             intial_size = len(dataset)
             dataset = novelty_filter.get_novel(dataset)
             logger.info("Dataset size after novelty filtering: %d", len(dataset))
-            if compute_novelty:                
+            if compute_novelty:               
                 result["Novelty"] = 100 * len(dataset) / intial_size
         elif compute_novelty:
             raise ValueError("Novelty filter is not provided, but compute_novelty is True.")

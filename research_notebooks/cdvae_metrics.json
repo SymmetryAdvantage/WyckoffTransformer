@@ -1,0 +1,134 @@
+{
+    "mp_20": {
+        "no_filter": {
+            "MiAD": {
+                "Compositional": 84.8639455782313,
+                "Structural": 99.24969987995198,
+                "Recall": 99.85991594956974,
+                "Precision": 91.66482423170463,
+                "EMD_rho": 0.3268988175883144,
+                "EMD_E": 0.041994520734942836,
+                "EMD_Elements": 0.0197986579732577
+            },
+            "DiffCSP": {
+                "Compositional": 83.22,
+                "Structural": 100.0,
+                "Recall": 99.76,
+                "Precision": 93.74309086889234,
+                "EMD_rho": 0.35132433121888396,
+                "EMD_E": 0.09464513769567062,
+                "EMD_Elements": 0.34605405159551145
+            }
+        },
+        "only_novel": {
+            "MiAD": {
+                "Novelty": 72.32893157262905,
+                "Compositional": 81.75656984785616,
+                "Structural": 98.96265560165975,
+                "Recall": 99.82014388489209,
+                "Precision": 91.66482423170463,
+                "EMD_rho": 0.32448768100433334,
+                "EMD_E": 0.0822903467245075,
+                "EMD_Elements": 0.021134561704621253
+            },
+            "DiffCSP": {
+                "Novelty": 90.41,
+                "Compositional": 82.13693175533679,
+                "Structural": 100.0,
+                "Recall": 99.7345426390886,
+                "Precision": 92.58235684280345,
+                "EMD_rho": 0.4331020903104689,
+                "EMD_E": 0.077321540129392,
+                "EMD_Elements": 0.38207955758219114
+            }
+        }
+    },
+    "perov_5": {
+        "no_filter": {
+            "MiAD": {
+                "Compositional": 98.30956154252509,
+                "Structural": 94.82303222398309,
+                "Recall": 92.91380222104706,
+                "Precision": 73.60634081902245,
+                "EMD_rho": 0.10409915899996078,
+                "EMD_E": NaN,
+                "EMD_Elements": 0.07376713463285031
+            },
+            "DiffCSP": {
+                "Compositional": 98.75,
+                "Structural": 99.99,
+                "Recall": 98.24859887910328,
+                "Precision": 70.93791281373845,
+                "EMD_rho": 0.07798843397328936,
+                "EMD_E": NaN,
+                "EMD_Elements": 0.03512827010022443
+            }
+        },
+        "only_novel": {
+            "MiAD": {
+                "Novelty": 52.74696249339672,
+                "Compositional": 98.14722083124687,
+                "Structural": 90.18527791687532,
+                "Recall": 88.2589061716006,
+                "Precision": 75.13870541611625,
+                "EMD_rho": 0.09855129012072128,
+                "EMD_E": NaN,
+                "EMD_Elements": 0.08405986064937296
+            },
+            "DiffCSP": {
+                "Novelty": 51.64,
+                "Compositional": 98.72192099147948,
+                "Structural": 99.98063516653757,
+                "Recall": 98.31264546159814,
+                "Precision": 72.89299867899604,
+                "EMD_rho": 0.05355473185553273,
+                "EMD_E": NaN,
+                "EMD_Elements": 0.0591445896762645
+            }
+        }
+    },
+    "carbon_24": {
+        "no_filter": {
+            "MiAD": {
+                "Compositional": 100.0,
+                "Structural": 99.85221674876847,
+                "Recall": 99.45812807881774,
+                "Precision": 98.91625615763546,
+                "EMD_rho": 0.06050786992620305,
+                "EMD_E": 0.03435652018955595,
+                "EMD_Elements": 0.0
+            },
+            "DiffCSP": {
+                "Compositional": 100.0,
+                "Structural": 100.0,
+                "Recall": 98.41,
+                "Precision": 99.50738916256158,
+                "EMD_rho": 0.0764893203896129,
+                "EMD_E": 0.04499201659404585,
+                "EMD_Elements": 0.0
+            }
+        },
+        "only_novel": {
+            "MiAD": {
+                "Novelty": 25.41871921182266,
+                "Compositional": 100.0,
+                "Structural": 99.4186046511628,
+                "Recall": 97.86821705426357,
+                "Precision": 96.7487684729064,
+                "EMD_rho": 0.0919956153975727,
+                "EMD_E": 0.1234106630136986,
+                "EMD_Elements": 0.0
+            },
+            "DiffCSP": {
+                "Novelty": 19.54,
+                "Compositional": 100.0,
+                "Structural": 100.0,
+                "Recall": 92.01637666325486,
+                "Precision": 95.86206896551724,
+                "EMD_rho": 0.09481282397338842,
+                "EMD_E": 0.1803200047844083,
+                "EMD_Elements": 0.0
+            }
+        }
+    }
+}
