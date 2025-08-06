@@ -1,13 +1,14 @@
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, List, Dict, Optional, Set, Union
 from pathlib import Path
 import logging
 import torch
 from torch import nn, Tensor
 import numpy as np
+from pymatgen.core.periodic_table import Element
 
 from cascade_transformer.dataset import AugmentedCascadeDataset, TargetClass, jagged_batch_randperm
 from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer
-from preprocess_wychoffs import inverse_series
+from scripts.preprocess_wychoffs import inverse_series
 
 logger = logging.getLogger(__name__)
 
@@ -249,15 +250,21 @@ class WyckoffGenerator():
                         else:
                             logits = self.tail_calibrators[known_cascade_len](logits)
                     logits = logits / temperature
+                    print(f"[DEBUG] Cascade: {cascade_name}, Logits shape: {logits.shape}") # debug
+                    print(f"[DEBUG] Cascade: {cascade_name}, Logits: {logits}") # debug
                     # binary/ternary hack
                     # if known_cascade_len == 0 and known_seq_len > 2:
                     #    logits *= 3.
                     # CONSIDER: remove probas for all special tokens aside from STOP
                     calibrated_probas = torch.nn.functional.softmax(logits, dim=1)
+                    print(f"[DEBUG] Cascade: {cascade_name}, Calibrated probas shape: {calibrated_probas.shape}") # debug
+                    print(f"[DEBUG] Cascade: {cascade_name}, Calibrated probas: {calibrated_probas}") # debug
                     # calibrated_probas = probas.numpy()
                     # calibrated_probas = calibrator.predict_proba(probas.numpy())
                     generated[known_cascade_len][:, known_seq_len] = \
                         torch.multinomial(calibrated_probas, num_samples=1).squeeze()
+                    print(f"[DEBUG] Cascade: {cascade_name}, Sampled token shape: {generated[known_cascade_len][:, known_seq_len].shape}") # debug
+                    print(f"[DEBUG] Cascade: {cascade_name}, Sampled token: {generated[known_cascade_len][:, known_seq_len]}") # debug
                     if self.stops is not None:
                         stop_generated |= generated[known_cascade_len][:, known_seq_len] == self.stops[cascade_name]
                 else:
@@ -321,4 +328,245 @@ class WyckoffGenerator():
             print(f"ENUM validity: {sum(enum_validity) / len(enum_validity)}")
             #import pdb
             #pdb.set_trace()
+        return generated
+    
+    @torch.no_grad()
+    def generate_csx_tensors(
+        self,
+        start: Tensor,
+        required_element_set: Union[str, Set[int]],
+        allowed_element_set: Union[str, Set[int]] = "all",
+        *,
+        temperature: float = 1.0,
+        max_length: Optional[int] = None,
+        elements_vocab: Optional[Dict] = None,
+        delimiter: str = "-",
+    ) -> List[Tensor]:
+        """
+        Generate a sequence of tokens in Chemical System eXploration mode (CSX).
+
+        Parameters
+        ----------
+        start : Tensor
+            The start token. It should be a tensor of shape [batch_size].
+        required_element_set : Union[str, Set[int]]
+            A set of required element token IDs or a dash-separated string
+            (e.g., "Li-O") of elements that MUST be present.
+        allowed_element_set : Union[str, Set[int]], default "all"
+            Controls the pool of allowed elements. It has three modes:
+            - "all": All elements in the `elements_vocab` are allowed.
+            - "fix": Only elements from `required_element_set` are allowed.
+            - str (e.g., "Li-Co-Mn-Ni-Fe-P-O"): A custom pool of allowed elements defined by
+              a dash-separated string.
+            - Set[int]: A custom pool of allowed elements defined by token IDs.
+        temperature : float
+            Softmax temperature used after optional calibration.
+        max_length : Optional[int]
+            Maximum number of sequence sites to generate. Defaults to self.max_sequence_len.
+        elements_vocab : Optional[Dict]
+            Vocabulary dict mapping element keys to token IDs.
+        delimiter : str
+            Delimiter for parsing the string form, default "-".
+
+        Returns
+        -------
+        List[Tensor]
+            Same layout as `generate_tensors`: one tensor per cascade, each of shape
+            [batch_size, max_sequence_len, ...].
+        """
+
+        self.model.eval()
+        device = start.device
+        batch_size = start.size(0)
+        if max_length is None:
+            max_length = self.max_sequence_len
+
+        if elements_vocab is not None and 'STOP' in elements_vocab:
+            stop_id = elements_vocab['STOP']
+        else:
+            raise RuntimeError("STOP token for 'elements' cascade not defined.")
+
+        def _symbol_to_id(sym: str) -> int:
+            if elements_vocab is None:
+                raise RuntimeError("elements_vocab must be provided for string-based element sets.")
+            try:
+                key = Element(sym)
+                if key in elements_vocab: return elements_vocab[key]
+            except Exception: pass
+            k2 = f"Element {sym}"
+            if k2 in elements_vocab: return elements_vocab[k2]
+            if sym in elements_vocab: return elements_vocab[sym]
+            raise KeyError(f"Element symbol '{sym}' not found in provided elements_vocab.")
+
+        def _parse_string_to_ids(s: str) -> set:
+            syms = [x.strip() for x in s.split(delimiter) if x.strip()]
+            if not syms: raise ValueError("Empty element string provided.")
+            return { _symbol_to_id(x) for x in syms }
+
+        # Normalize required_element_set to a set of token IDs
+        if isinstance(required_element_set, str):
+            required_id_set = _parse_string_to_ids(required_element_set)
+        else:
+            required_id_set = set(required_element_set)
+
+        if allowed_element_set == "all":
+            # Option 1: Use all elements from the vocabulary.
+            if elements_vocab is None:
+                raise ValueError("elements_vocab must be provided when allowed_element_set is 'all'.")
+            allowed_id_set = {v for k, v in elements_vocab.items() if isinstance(k, Element)}
+        elif allowed_element_set == "fix":
+            # Option 2: The allowed set is strictly the required set.
+            allowed_id_set = set(required_id_set)
+        elif isinstance(allowed_element_set, str):
+            # Option 3: A custom set defined by a string.
+            allowed_id_set = _parse_string_to_ids(allowed_element_set)
+        elif isinstance(allowed_element_set, set):
+            # Support direct set input for programmatic use.
+            allowed_id_set = set(allowed_element_set)
+        else:
+            raise ValueError(f"Invalid value for allowed_element_set: {allowed_element_set}")
+
+        # Always allow the STOP token in the allowed set.
+        allowed_id_set.add(stop_id)
+
+        # Validate that required elements are a subset of allowed elements.
+        if not required_id_set.issubset(allowed_id_set):
+            raise ValueError("The required_element_set must be a subset of the allowed_element_set.")
+
+        generated: List[Tensor] = []
+        for field in self.cascade_order:
+            if np.issubdtype(type(self.masks[field]), np.integer) or self.masks[field].ndim == 0:
+                dtype = torch.int64 if np.issubdtype(type(self.masks[field]), np.integer) else self.masks[field].dtype
+                generated.append(
+                    torch.full((batch_size, max_length), self.masks[field], dtype=dtype, device=device)
+                )
+            else:
+                unsqueezed_mask = self.masks[field].unsqueeze(0)
+                if self.masks[field].dim() == 0:
+                    generated.append(torch.tile(unsqueezed_mask, (batch_size, max_length)))
+                elif self.masks[field].dim() == 1:
+                    generated.append(torch.tile(unsqueezed_mask.unsqueeze(0), (batch_size, max_length, 1)))
+                else:
+                    raise NotImplementedError("Mask should be a scalar or a vector")
+        
+        if 'harmonic_site_symmetries' in self.cascade_order and 'sites_enumeration' not in self.cascade_order:
+            cluster_to_enum = inverse_series(self.token_engineers["harmonic_cluster"].db)
+            self.token_engineers['sites_enumeration'] = FeatureEngineer(
+                cluster_to_enum, mask_token=None, stop_token=None, pad_token=None)
+
+        cascade_index_by_name = {name: idx for idx, name in enumerate(self.cascade_order)}
+        if len(start.size()) > 1:
+            start_converted = list(map(tuple, start.tolist()))
+        else:
+            start_converted = start.tolist()
+
+        stop_generated = np.zeros(batch_size, dtype=bool)
+        placed_required = [set() for _ in range(batch_size)]
+        elements_idx = cascade_index_by_name["elements"]
+        elements_stop_generated = np.zeros(batch_size, dtype=bool)
+
+        for known_seq_len in range(max_length):
+            for known_cascade_len, cascade_name in enumerate(self.cascade_order):
+                if cascade_name == "elements" and self.cascade_is_target[cascade_name]:
+                    model_inputs = [gen_cascade[:, : known_seq_len + 1] for gen_cascade in generated]
+                    logits = self.model(start, model_inputs, None, known_cascade_len)
+
+                    if self.calibrators is not None:
+                        if known_seq_len < len(self.calibrators[known_cascade_len]):
+                            logits = self.calibrators[known_cascade_len][known_seq_len](logits)
+                        else:
+                            logits = self.tail_calibrators[known_cascade_len](logits)
+
+                    logits_masked = torch.full_like(logits, float("-inf"))
+                    allowed_idx_tensor = torch.tensor(
+                        sorted(list(allowed_id_set)), dtype=torch.long, device=device
+                    )
+                    logits_masked[:, allowed_idx_tensor] = logits[:, allowed_idx_tensor]
+                    logits = logits_masked
+
+                    logits = logits / temperature
+                    calibrated_probas = torch.softmax(logits, dim=1)
+                    next_tokens = torch.empty(batch_size, dtype=torch.long, device=device)
+
+                    for b in range(batch_size):
+                        if elements_stop_generated[b]:
+                            next_tokens[b] = stop_id
+                            continue
+
+                        missing_required = required_id_set - placed_required[b]
+
+                        if missing_required:
+                            subset_idx = torch.tensor(sorted(list(missing_required)), dtype=torch.long, device=device)
+                            chosen_local = torch.argmax(calibrated_probas[b, subset_idx]).item()
+                            next_tokens[b] = subset_idx[chosen_local]
+                        else:
+                            next_tokens[b] = torch.multinomial(calibrated_probas[b], num_samples=1)
+
+                    generated[elements_idx][:, known_seq_len] = next_tokens
+
+                    for b in range(batch_size):
+                        tok = next_tokens[b].item()
+                        if tok == stop_id:
+                            elements_stop_generated[b] = True
+                        elif tok in required_id_set:
+                            placed_required[b].add(tok)
+                    
+                    if self.stops is not None:
+                        stop_generated |= generated[known_cascade_len][:, known_seq_len].cpu() == self.stops[cascade_name]
+
+                elif self.cascade_is_target.get(cascade_name, False):
+                    model_inputs = [gen_cascade[:, : known_seq_len + 1] for gen_cascade in generated]
+                    logits = self.model(start, model_inputs, None, known_cascade_len)
+
+                    if self.calibrators is not None:
+                        if known_seq_len < len(self.calibrators[known_cascade_len]):
+                            logits = self.calibrators[known_cascade_len][known_seq_len](logits)
+                        else:
+                            logits = self.tail_calibrators[known_cascade_len](logits)
+
+                    logits = logits / temperature
+                    probas = torch.softmax(logits, dim=1)
+                    generated[known_cascade_len][:, known_seq_len] = torch.multinomial(probas, 1).squeeze()
+                    
+                    if self.stops is not None:
+                        stop_generated |= generated[known_cascade_len][:, known_seq_len].cpu() == self.stops[cascade_name]
+
+                else:
+                    if known_cascade_len != len(self.cascade_order) - 1:
+                        raise NotImplementedError("Only the last cascade field can be non-target")
+                    if self.token_engineers[cascade_name].inputs[0] != "spacegroup_number":
+                        raise NotImplementedError("Only engineers with spacegroup_number first input are supported")
+                    
+                    engineer_inputs = []
+                    for input_field in self.token_engineers[cascade_name].inputs[1:]:
+                        if input_field in cascade_index_by_name:
+                            this_cascade_input = generated[cascade_index_by_name[input_field]][:, known_seq_len]
+                        elif cascade_name == 'harmonic_site_symmetries' and input_field == 'sites_enumeration':
+                            enumerations = self.token_engineers['sites_enumeration'].get_feature_from_token_batch(
+                                start_converted, [
+                                    generated[cascade_index_by_name['site_symmetries']][:, known_seq_len].tolist(),
+                                    generated[cascade_index_by_name['harmonic_cluster']][:, known_seq_len].tolist()])
+                            this_cascade_input = torch.tensor(enumerations)
+                        else:
+                            raise NotImplementedError(f"Unknown input field {input_field} for engineer {cascade_name}")
+                        engineer_inputs.append(this_cascade_input.tolist())
+
+                    feature_np = self.token_engineers[cascade_name].get_feature_from_token_batch(
+                        start_converted, engineer_inputs
+                    )
+                    if feature_np.dtype == "O": feature_np = np.stack(feature_np)
+                    generated[known_cascade_len][:, known_seq_len] = torch.from_numpy(feature_np).to(device)
+            
+            ss_validitity, enum_validity = [], []
+            for structure_index, this_start in enumerate(start_converted):
+                if stop_generated[structure_index]: continue
+                ss_validitity.append((this_start, generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item()) in self.token_engineers["multiplicity"].db)
+                if 'sites_enumeration' in cascade_index_by_name:
+                    enum_validity.append((this_start, generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(), generated[cascade_index_by_name['sites_enumeration']][structure_index, known_seq_len].item()) in self.token_engineers["multiplicity"].db)
+                elif "harmonic_cluster" in cascade_index_by_name:
+                    enum_validity.append((this_start, generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(), generated[cascade_index_by_name['harmonic_cluster']][structure_index, known_seq_len].item()) in self.token_engineers["sites_enumeration"].db)
+            
+            if len(ss_validitity) > 0: print(f"Known sequence length: {known_seq_len}, SS validity: {sum(ss_validitity) / len(ss_validitity)}")
+            if len(enum_validity) > 0: print(f"ENUM validity: {sum(enum_validity) / len(enum_validity)}")
+
         return generated

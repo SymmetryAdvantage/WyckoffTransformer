@@ -35,12 +35,19 @@ def main():
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"), help="The device to use.")
     parser.add_argument("--calibrate", action="store_true", help="Calibrate the generator.")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode.")
+    parser.add_argument("--csx", action="store_true",
+                        help="Enable Chemical System eXploration (CSX).")
+    parser.add_argument("--required-elements", "--r", type=str,
+                        help="Required elements for CSX mode (e.g., 'Li-S'). Must be provided if --csx is used.")
+    parser.add_argument("--allowed-elements", "--a", type=str, default="all",
+                        help="Allowed elements for CSX mode: 'all', 'fix', or a custom set (e.g., 'Li-S-P-O').")
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     if args.output.suffixes != [".json", ".gz"]:
         raise ValueError("Output file must be a .json.gz file.")
-
+    if args.csx and not args.required_elements:
+        parser.error("--required-elements is required when --csx is enabled.")
     if args.wandb_run:
         if args.update_wandb:
             wandb_run = wandb.init(project="WyckoffTransformer", id=args.wandb_run, resume=True)
@@ -58,7 +65,19 @@ def main():
     trainer = WyckoffTrainer.from_config(
         config, device=args.device, use_cached_tensors=args.use_cached_tensors, run_path=run_path)
     trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
-    generated_wp = trainer.generate_structures(args.initial_n_samples, args.calibrate)
+
+    if args.csx:
+        print("--- Running in Chemical System eXploration (CSX) mode ---")
+        generated_wp = trainer.generate_csx_structures(
+            n_structures=args.initial_n_samples,
+            calibrate=args.calibrate,
+            required_element_set=args.required_elements,
+            allowed_element_set=args.allowed_elements
+        )
+    else:
+        print("--- Running in Default Generation mode ---")
+        generated_wp = trainer.generate_structures(args.initial_n_samples, args.calibrate)
+
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")
     # print(f"Tensor generation took {tensor_generated_time - generation_start_time} seconds")

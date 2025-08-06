@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Optional, List
+from typing import Tuple, Dict, Optional, List, Union, Set
 import importlib
 from random import randint
 import logging
@@ -517,24 +517,48 @@ class WyckoffTrainer():
             # Above we check that the batch size is the same for all batches
             return loss / self.evaluation_samples / dataset.batches_per_epoch
 
-        loss = torch.zeros(self.cascade_len, device=self.device)
+        loss = torch.zeros(self.cascade_len, device=self.device)          
+
         for _ in range(self.evaluation_samples):
-            for known_seq_len in range(dataset.max_sequence_length):
-                if self.target == TargetClass.NextToken:
-                    for known_cascade_len in range(self.cascade_target_count):
-                        loss[known_cascade_len] += self.get_loss(
-                            dataset, known_seq_len, known_cascade_len, True)
-                else: # NumUniqueTokens
-                    loss += self.get_loss(dataset, known_seq_len, 0, True).sum(dim=0)
+            for _ in range(dataset.batches_per_epoch):
+                for known_seq_len in range(dataset.max_sequence_length):
+
+                    if self.target == TargetClass.NextToken:
+                        for known_cascade_len in range(self.cascade_target_count):
+                            loss[known_cascade_len] += self.get_loss(
+                                dataset,
+                                known_seq_len=known_seq_len,
+                                known_cascade_len=known_cascade_len,
+                                no_batch=False,      # mini-batch mode
+                            )
+                    else:  # TargetClass.NumUniqueTokens
+                        loss += self.get_loss(
+                            dataset,
+                            known_seq_len=known_seq_len,
+                            known_cascade_len=0,
+                            no_batch=False,          # mini-batch mode
+                        ).sum(dim=0)
+
+        return loss / self.evaluation_samples / len(dataset)
+
+        # for _ in range(self.evaluation_samples):
+        #     for known_seq_len in range(dataset.max_sequence_length):
+        #         if self.target == TargetClass.NextToken:
+        #             for known_cascade_len in range(self.cascade_target_count):
+        #                 loss[known_cascade_len] += self.get_loss(
+        #                     dataset, known_seq_len, known_cascade_len, True) # True if no_batch
+        #         else: # NumUniqueTokens
+        #             loss += self.get_loss(dataset, known_seq_len, 0, True).sum(dim=0) # True if no_batch
             # ln(P) = ln p(t_n|t_n-1, ..., t_1) + ... + ln p(t_2|t_1)
             # We are minimising the negative log likelihood of the whole sequences
-        return loss / self.evaluation_samples / len(dataset)
+        # return loss / self.evaluation_samples / len(dataset)
 
 
     def train(self):
         best_val_loss = float('inf')
         best_val_epoch = 0
         self.run_path.mkdir(exist_ok=False)
+        # self.run_path.mkdir(exist_ok=True)
         best_model_params_path = self.run_path / "best_model_params.pt"
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
@@ -632,6 +656,100 @@ class WyckoffTrainer():
         valid_structures = [s for s in structures if s is not None]
         print(f"From which {len(valid_structures)} are valid")
         return valid_structures
+
+    def generate_csx_structures(
+        self,
+        n_structures: int,
+        calibrate: bool,
+        required_element_set: Union[str, Set[int]],
+        allowed_element_set: Union[str, Set[int]] = "all",
+        temperature: float = 1.0,
+    ) -> List[dict]:
+        """
+        Generate crystal structures in Chemical System eXploration mode (CSX).
+
+        Parameters
+        ----------
+        n_structures : int
+            The number of structures to generate.
+        calibrate : bool
+            Whether to calibrate the generator on the validation set.
+        required_element_set : Union[str, Set[int]]
+            A set of required element token IDs or a dash-separated string
+            (e.g., "Li-O") of elements that MUST be present.
+        allowed_element_set : Union[str, Set[int]], default "all"
+            Controls the pool of allowed elements. It has three modes:
+            - "all": All elements in the `elements_vocab` are allowed.
+            - "fix": Only elements from `required_element_set` are allowed.
+            - str (e.g., "Li-Co-Mn-Ni-Fe-P-O"): A custom pool of allowed elements defined by
+              a dash-separated string.
+            - Set[int]: A custom pool of allowed elements defined by token IDs.
+        temperature : float, optional
+            The softmax temperature for sampling. By default 1.0.
+
+        Returns
+        -------
+        List[dict]
+            A list of valid generated pyxtal structure objects.
+        """
+
+        generator = WyckoffGenerator(
+            self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
+            self.train_dataset.masks, self.train_dataset.max_sequence_length)
+        if calibrate:
+            generator.calibrate(self.val_dataset)
+
+        if self.model.start_type == "categorial":
+            max_start = self.model.start_embedding.num_embeddings
+            start_counts = torch.bincount(
+                self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
+                    self.val_dataset.start_tokens, minlength=max_start)
+            start_tensor = torch.distributions.Categorical(probs=start_counts.float()).sample((n_structures,))
+        elif self.model.start_type == "one_hot":
+            all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
+            start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
+        else:
+            raise ValueError(f"Unknown start type: {self.model.start_type}")
+
+        if 'elements' not in self.tokenisers:
+            raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
+
+        generated_tensors = generator.generate_csx_tensors(
+            start=start_tensor,
+            required_element_set=required_element_set,
+            allowed_element_set=allowed_element_set,   
+            temperature=temperature,
+            elements_vocab=self.tokenisers['elements']
+        )
+
+        generated_cascade_order = self.cascade_order
+        if self.cascade_order[-1] == "harmonic_site_symmetries":
+            del generated_tensors[-1]
+            generated_cascade_order = generated_cascade_order[:-1]
+        
+        generated_tensors = torch.stack(generated_tensors, dim=-1)
+
+        if 'sites_enumeration' in self.tokenisers:
+            letter_from_ss_enum_idx = get_letter_from_ss_enum_idx(self.tokenisers['sites_enumeration'])
+        else:
+            letter_from_ss_enum_idx = None
+ 
+        with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
+            ss_from_letter = pickle.load(f)[2]
+            
+        to_pyxtal = partial(tensor_to_pyxtal,
+                            tokenisers=self.tokenisers,
+                            token_engineers=self.token_engineers,
+                            cascade_order=generated_cascade_order,
+                            letter_from_ss_enum_idx=letter_from_ss_enum_idx,
+                            ss_from_letter=ss_from_letter,
+                            wp_index=get_wp_index())
+
+        structures = list(map(to_pyxtal, start_tensor.detach().cpu(), generated_tensors.detach().cpu()))
+        print(f"Generated {len(structures)} Wyckoffs (CSX mode)")
+        valid_structures = [s for s in structures if s is not None]
+        print(f"From which {len(valid_structures)} are valid")
+        return valid_structures
     
     def generate_evaluate_and_log_wp(
         self,
@@ -656,7 +774,7 @@ def train_from_config(
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
-    trainer = WyckoffTrainer.from_config(config_dict, device, this_run_path)    
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)    
     trainer.train()
     with gzip.open(this_run_path / "tokenizers.pkl.gz", "wb") as f:
         pickle.dump(trainer.tokenisers, f)
