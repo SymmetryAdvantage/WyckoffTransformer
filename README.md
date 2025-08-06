@@ -139,14 +139,23 @@ wylm-dcpp,8,Na4Lu4F16,-149.18192
 ### DFT relaxation
 We followed the [Materials Project protocol](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details), [`atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker`](https://materialsproject.github.io/atomate2/reference/atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker.html). There isn't much to add, as the rest of the details of running DFT, unfortunately, depend on the HPC setup, and VASP is not open source. [Here](https://github.com/kazeevn/NSCC-VASP-computer) is the code to run at ASPIRE2.
 # Generated Data Analysis
-## Preprocessing
-Most analyzed datasets are available at [Figshare](https://figshare.com/articles/dataset/Generated_crystals_for_WyFormer_DiffCSP_DiffCSP_WyCryst_SymmCD_CrystalFormer_MiAD/29145101). The raw files are stored in a private Dropbox:
+## Storage
+### Public Figshare
+Most analyzed datasets in a uniform format are available at [Figshare](https://figshare.com/articles/dataset/Generated_crystals_for_WyFormer_DiffCSP_DiffCSP_WyCryst_SymmCD_CrystalFormer_MiAD/29145101).
+### Private Dropbox
+The raw files are stored in a private Dropbox. To pull:
 ```bash
-# tar is used to speed up the transfer, as we have a lot of small files
-rclone copy "NUS_Dropbox:/Nikita Kazeev/Wyckoff Transformer data/generated.tar.gz" .
+rclone copy "NUS_Dropbox:/Nikita Kazeev/Wyckoff Transformer data/generated.tar.gz" . --progress
 tar -xvf generated.tar.gz
 ```
+To push:
+```bash
+tar --use-compress-program=pigz -cvf generated.tar.gz generated
+rclone copy generated.tar.gz "NUS_Dropbox:/Nikita Kazeev/Wyckoff Transformer data/" --progress
+```
+Tar is used to handle the large number of small files, and `pigz` is used to speed up the compression. The Dropbox folder is private, if you are a collaborator, please contact for access.
 
+## Preprocessing
 In order to be analyzed the data must be preprocessed and cached. To preprocess all generated datasets in `generated/datasets.yaml`:
 ```bash
 poetry run python scripts/cache_generated_datasets.py

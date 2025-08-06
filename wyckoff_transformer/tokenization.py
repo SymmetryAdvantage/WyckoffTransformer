@@ -339,8 +339,6 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
     else:
         with gzip.open(tokenizer_path, "rb") as f:
             tokenisers = pickle.load(f)
-    import pdb
-    pdb.set_trace()
     raw_engineers = {}
     token_engineers = {}
     if "engineered" in config.token_fields:
@@ -565,8 +563,9 @@ def tensor_to_pyxtal(
     enforced_min_elements: Optional[int] = None,
     enforced_max_elements: Optional[int] = None) -> Optional[dict]:
     """
-    The function supports two cascade modes:
+    The function supports three cascade modes:
         (elements, site_symmetries, sites_enumeration)
+        (elements, site_symmetries, harmonic_cluster)
         (elements, wyckoff_letters)
     Args:
         space_group_tensor: The tensor with the space group

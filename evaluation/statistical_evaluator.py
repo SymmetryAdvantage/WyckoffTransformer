@@ -10,6 +10,7 @@ from pymatgen.core import Element
 
 from wyckoff_transformer.evaluation import DoFCounter, count_unique
 from .cdvae_metrics import COV_Cutoffs, compute_cov, Crystal
+from .novelty import NoveltyFilter
 
 logger = logging.getLogger(__name__)
 
@@ -292,3 +293,56 @@ class StatisticalEvaluator():
             return chi2, filtered_generated_counts
         else:
             return chi2
+
+    def compute_cdvae_metrics(self, dataset: pd.DataFrame,
+                              novelty_filter: Optional[NoveltyFilter] = None,
+                              sample_size_for_precision: int = 10000,
+                              random_seed: int = 42,
+                              compute_novelty = False) -> Dict[str, float]:
+        """
+        Computes the "CDVAE metrics" for a given dataset, from
+        Xie et al. "Crystal Diffusion Variational AutoEncoder" [ICLR 2022].
+        Optionally applies a novelty filter to the dataset to prevent rewarding the models 
+        for generating non-novel structures, see
+        "Wyckoff transformer: Generation of symmetric crystals" [ICML 2025] for details.
+        Args:
+            dataset (pd.DataFrame): DataFrame containing the dataset to evaluate.
+            sample_size_for_precision (int): Number of samples to use for COV-P calculation.
+                It's the only metric which expetected value depends on the sample size, so we must ensure that
+                the same sample size is used for all datasets.
+            novelty_filter (Optional[NoveltyFilter]): If provided, applies the novelty filter to the
+                dataset before computing the metrics.
+        """
+        result = {}
+        logger.info("Computing CDVAE metrics...")
+        logger.info("Dataset size: %d", len(dataset))
+        if novelty_filter is not None:
+            intial_size = len(dataset)
+            dataset = novelty_filter.get_novel(dataset)
+            logger.info("Dataset size after novelty filtering: %d", len(dataset))
+            if compute_novelty:               
+                result["Novelty"] = 100 * len(dataset) / intial_size
+        elif compute_novelty:
+            raise ValueError("Novelty filter is not provided, but compute_novelty is True.")
+        # The original CDVAE paper uses 10k structures for validity and coverage metrics
+        # Validity is a binary per-sample metric, so its expected value does not depend on the sample size
+        result["Compositional"] = 100*dataset.smact_validity.mean()
+        result["Structural"] = 100*dataset.structural_validity.mean()
+        cov_metrics = self.get_coverage(dataset.cdvae_crystal)
+        result["Recall"] = 100*cov_metrics["cov_recall"]
+        if sample_size_for_precision == len(dataset):
+            result["Precision"] = 100*cov_metrics["cov_precision"]
+        else:
+            precision_samples = dataset.sample(
+                sample_size_for_precision, random_state=random_seed, replace=False)
+            cov_metrics_sampled = self.get_coverage(
+                precision_samples.cdvae_crystal)
+            result["Precision"] = 100*cov_metrics_sampled["cov_precision"]
+        valid = dataset.loc[dataset.naive_validity]
+        logger.info("Valid samples for EMD: %d", len(valid))
+        # The original CDVAE paper uses 1k structures for property metrics
+        # But EMD does not depend on the sample size, so we can use the whole valid set
+        result["EMD_rho"] = self.get_density_emd(valid)
+        result["EMD_E"] = self.get_cdvae_e_emd(valid)
+        result["EMD_Elements"] = self.get_num_elements_emd(valid)
+        return result

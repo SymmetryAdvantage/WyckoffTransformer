@@ -122,12 +122,18 @@ mp_20:
           storage_type: old_atomated_csv
       CHGNet_free:
         index_preserved: false
+        structures:
+          path: mp_20/DiffCSP/1k-sample/CHGNet_free/CIF-FMT-1000_original-diffcsp-chgnet-prerelax-mp20.csv
+          storage_type: invalid_cifs
         DFT:
           structures:
             path: mp_20/DiffCSP/1k-sample/CHGNet_free/DFT/DiffCSP-CHGNet-1k.csv.gz
             storage_type: old_atomated_csv
       eq-V2_free:
         index_preserved: false
+        structures:
+          path: mp_20/DiffCSP/1k-sample/eq-V2_free/CIF-FMT-1000_original-code-diffcsp-mp20.csv.gz
+          storage_type: invalid_cifs
         DFT:
           structures:
             path: mp_20/DiffCSP/1k-sample/eq-V2_free/DFT/Mirage-14-v2.csv.gz
@@ -307,6 +313,7 @@ mp_20:
       generated_by: "Okhotin et. al"
     CHGNet_free:
       index_preserved: false
+      index_preserved: false
       structures:
         path: mp_20/MiAD/CHGNet_free/CIF-FMT-10000_miad-s333-mp20.csv
         storage_type: CDVAE_csv_cif
@@ -327,27 +334,27 @@ mp_20:
         path: mp_20/MatterGen/MatterGen_10k/MatterGen_10k.csv
         storage_type: CDVAE_csv_cif
         generated_by: "Tomiya Yamamoto"
+      DFT-10k:
+        structures:
+          path: mp_20/MatterGen/MatterGen_10k/mattergen-10K-MP GGA static.csv.gz
+          storage_type: atomated_csv
       DFT:
         structures:
-          path: mp_20/MatterGen/MatterGen_10k/DFT/df_105_raw_dft.csv
+          path: mp_20/MatterGen/MatterGen_10k/DFT-UN-105/df_105_raw_dft.csv
           storage_type: CDVAE_csv_cif
           generated_by: "Huang Yuyao"
-        e_hull: mp_20/MatterGen/MatterGen_10k/DFT/df_105_raw_dft_w_chg_e_hull.ehull.csv.gz
+        e_hull: mp_20/MatterGen/MatterGen_10k/DFT-UN-105/df_105_raw_dft_w_chg_e_hull.ehull.csv.gz
       CHGNet_fix:
         structures:
-          path: mp_20/MatterGen/CHGNet_fix/MatterGen_10k_CHGNet_fix.csv
+          path: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/MatterGen_10k_CHGNet_fix.csv
           storage_type: CDVAE_csv_cif
           generated_by: "Tomiya Yamamoto"
-        e_hull: mp_20/MatterGen/CHGNet_fix/MatterGen_10k_CHGNet_fix_e_hull.ehull.csv.gz
+        e_hull: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/MatterGen_10k_CHGNet_fix_e_hull.ehull.csv.gz
         DFT: 
           structures: 
-            path: mp_20/MatterGen/CHGNet_fix/DFT/df_105_chgnet_dft.csv
-            storage_type: CDVAE_csv_cif
-            generated_by: "Huang Yuyao"
-  WyckoffTransformerNew:
-    wyckoffs:
-      path: mp_20/WyckoffTransformerNew/3ubr94x3.json.gz
-      storage_type: pyxtal_json
+            path: mp_20/MatterGen/MatterGen_10k/DFT-UN-105/df_105_chgnet_dft.csv
+            storage_type: csv_cif_with_missing_values
+            generated_by: "Huang Yuyao"  
 mp_20_biternary:
   WyckoffTransformer:
     wyckoffs:
@@ -401,6 +408,11 @@ mp_20_biternary:
         storage_type: WTCache
         cache_key: val
 perov_5:
+  MiAD:
+    structures:
+      path: perov_5/MiAD/eval_results.pt
+      storage_type: DiffCSP_pt
+      generated_by: "Okhotin et. al"
   WyckoffTransformer:
     wyckoffs:
       path: perov_5/WyckoffTransformer/ICLR_perov_5.json.gz
@@ -447,6 +459,11 @@ perov_5:
         storage_type: WTCache
         cache_key: val
 carbon_24:
+  MiAD:
+    structures:
+      path: carbon_24/MiAD/eval_results.pt
+      storage_type: DiffCSP_pt
+      generated_by: "Okhotin et. al"
   WyckoffTransformer:
     wyckoffs:
       path: carbon_24/WyckoffTransformer/ICLR_carbon_24.json.gz
@@ -542,3 +559,8 @@ mp_2022:
       structures:
         path: ../data/matbench_discovery_mp_2022/val.csv.gz
         storage_type: CDVAE_csv_cif
+mp_20_h:
+  DiffCSP:
+    structures:
+      path: mp_20_h/DiffCSP/eval_gen.pt
+      storage_type: DiffCSP_pt

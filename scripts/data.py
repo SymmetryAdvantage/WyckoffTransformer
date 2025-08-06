@@ -181,7 +181,10 @@ def structure_to_sites(
     return sites_dict
 
 
-def read_MP(MP_csv: Path|str, n_jobs: Optional[int] = None):
+def read_MP(
+    MP_csv: Path|str,
+    n_jobs: Optional[int] = None,
+    drop_na: bool = False) -> pd.DataFrame:
     """
     Reads a Materials Project CSV file and returns a DataFrame with structures.
 
@@ -192,7 +195,11 @@ def read_MP(MP_csv: Path|str, n_jobs: Optional[int] = None):
         pd.DataFrame: The DataFrame with structures.
     """
     MP_df = pd.read_csv(MP_csv, index_col=0)
-    print("Parsing CIFs...")
+    if drop_na:
+        print("Dropping NaN values in 'cif' column.")
+        print(f"Initial number of rows: {len(MP_df)}")
+        MP_df.dropna(subset=["cif"], inplace=True)
+        print(f"Number of rows after dropping NaN values: {len(MP_df)}")
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
