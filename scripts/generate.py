@@ -21,11 +21,12 @@ def main():
     model_source.add_argument("--wandb-run", type=str, help="The W&B run to use for the model.")
     model_source.add_argument("--model-path", type=Path,
         help="The path to the model directory. Should contain a best_model_params.pt, tokenizers.pkl.gz, "
-             "token_engineers.pkl.gz, config.yaml")
+             "token_engineers.pkl.gz, config.yaml, and optionally start_token_distribution.pt")
     parser.add_argument("--use-cached-tensors", action="store_true",
-        help="Generation process requires tensors of the original dataset. Mostly for technical reasons, "
-             "but also for sampling the start tokens. If you are sure that the tokenization "
-             "didn't change between training and generation, you can use this flag to speed up the process.")
+        help="Generation process may require tensors of the original dataset for technical reasons. "
+             "If a saved start token distribution is not available, it will also be used for sampling start tokens. "
+             "If you are sure that the tokenization didn't change between training and generation, "
+             "you can use this flag to speed up the process.")
     parser.add_argument("--initial-n-samples", type=int, help="The number of samples to try"
         " before filtering out the invalid ones.", default=1100)
     parser.add_argument("--firm-n-samples", type=int, help="The number of samples after generation, "
@@ -56,7 +57,7 @@ def main():
 
     generation_start_time = time.time()
     trainer = WyckoffTrainer.from_config(
-        config, device=args.device, use_cached_tensors=args.use_cached_tensors, run_path=run_path)
+        config, device=args.device, use_cached_tensors=False, run_path=run_path)
     trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
     generated_wp = trainer.generate_structures(args.initial_n_samples, args.calibrate)
     generation_end_time = time.time()
