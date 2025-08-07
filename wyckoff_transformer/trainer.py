@@ -58,6 +58,7 @@ class WyckoffTrainer():
         weights_path: Optional[Path] = None,
         test_dataset: Optional[Dict[str, torch.tensor]] = None,
         compile_model: bool = False,
+        start_token_distribution: Optional[torch.Tensor] = None,
     ):
         """
         Args:
@@ -82,6 +83,7 @@ class WyckoffTrainer():
         self.kl_samples = kl_samples
         self.token_engineers = token_engineers
         self.cascade_is_target = cascade_is_target
+        self.start_token_distribution = start_token_distribution
         # Nothing else will work in foreseeable future
         self.dtype = torch.int64
         if batch_size is not None:
@@ -123,21 +125,22 @@ class WyckoffTrainer():
         self.num_classes_dict = {field: len(tokenisers[field]) for field in cascade_order}
         self.start_name = start_name
 
-        self.train_dataset = AugmentedCascadeDataset(
-            data=train_dataset,
-            cascade_order=cascade_order,
-            masks=self.masks_dict,
-            pads=self.pad_dict,
-            stops=self.stops_dict,
-            num_classes=self.num_classes_dict,
-            start_field=start_name,
-            augmented_fields=augmented_fields,
-            batch_size=train_batch_size,
-            dtype=self.dtype,
-            start_dtype=start_dtype,
-            device=self.device,
-            augmented_storage_device=augmented_storage_device,
-            target_name=target_name)
+        if train_dataset:
+            self.train_dataset = AugmentedCascadeDataset(
+                data=train_dataset,
+                cascade_order=cascade_order,
+                masks=self.masks_dict,
+                pads=self.pad_dict,
+                stops=self.stops_dict,
+                num_classes=self.num_classes_dict,
+                start_field=start_name,
+                augmented_fields=augmented_fields,
+                batch_size=train_batch_size,
+                dtype=self.dtype,
+                start_dtype=start_dtype,
+                device=self.device,
+                augmented_storage_device=augmented_storage_device,
+                target_name=target_name)
         
         if "lr_per_sqrt_n_samples" in optimisation_config.optimiser:
             if "config" in optimisation_config.optimiser and "lr" in optimisation_config.optimiser.config:
@@ -157,22 +160,23 @@ class WyckoffTrainer():
         else:
             self.scheduler = None
 
-        self.val_dataset = AugmentedCascadeDataset(
-            data=val_dataset,
-            cascade_order=cascade_order,
-            masks=self.masks_dict,
-            pads=self.pad_dict,
-            stops=self.stops_dict,
-            num_classes=self.num_classes_dict,
-            start_field=start_name,
-            augmented_fields=augmented_fields,
-            batch_size=val_batch_size,
-            dtype=self.dtype,
-            start_dtype=start_dtype,
-            device=device,
-            augmented_storage_device=augmented_storage_device,
-            target_name=target_name
-            )
+        if val_dataset:
+            self.val_dataset = AugmentedCascadeDataset(
+                data=val_dataset,
+                cascade_order=cascade_order,
+                masks=self.masks_dict,
+                pads=self.pad_dict,
+                stops=self.stops_dict,
+                num_classes=self.num_classes_dict,
+                start_field=start_name,
+                augmented_fields=augmented_fields,
+                batch_size=val_batch_size,
+                dtype=self.dtype,
+                start_dtype=start_dtype,
+                device=device,
+                augmented_storage_device=augmented_storage_device,
+                target_name=target_name
+                )
 
         if test_dataset is None:
             self.test_dataset = None
@@ -193,8 +197,8 @@ class WyckoffTrainer():
                 augmented_storage_device=augmented_storage_device,
                 target_name=target_name
             )
-
-        assert self.train_dataset.max_sequence_length == self.val_dataset.max_sequence_length
+        if train_dataset and val_dataset:
+            assert self.train_dataset.max_sequence_length == self.val_dataset.max_sequence_length
     
         self.clip_grad_norm = optimisation_config.clip_grad_norm
         self.cascade_len = len(cascade_order)
@@ -221,9 +225,16 @@ class WyckoffTrainer():
 
             raise ValueError("Multiclass target with order permutation requires learned positional encoding only masked, ",
                             "otherwise the Transformer is not permutation invariant.")
-        tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
-            config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
-            tokenizer_path=run_path / "tokenizers.pkl.gz" if not use_cached_tensors else None)
+        if use_cached_tensors:
+            tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
+                config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
+                tokenizer_path=run_path / "tokenizers.pkl.gz" if not use_cached_tensors else None)
+        else:
+            tensors = {}
+            with gzip.open(run_path / "tokenizers.pkl.gz", "rb") as f:
+                tokenisers = pickle.load(f)
+            with gzip.open(run_path / "token_engineers.pkl.gz", "rb") as f:
+                token_engineers = pickle.load(f)
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
         # torch._dynamo.config.cache_size_limit = 128
@@ -235,15 +246,30 @@ class WyckoffTrainer():
             start_dtype = torch.float32
         else:
             raise ValueError(f"Unknown start type: {config.model.CascadeTransformer_args.start_type}")
+
+        start_token_distribution_path = run_path / "start_token_distribution.pt"
+        if start_token_distribution_path.exists():
+            start_token_distribution = torch.load(start_token_distribution_path)
+        else:
+            start_token_distribution = None
+
+        if use_cached_tensors:
+            train_dataset = tensors["train"]
+            val_dataset = tensors["val"]
+            test_dataset = tensors.get("test")
+        else:
+            train_dataset, val_dataset, test_dataset = None, None, None
+
         return cls(
-            model, tensors["train"], tensors["val"], tokenisers, token_engineers, config.model.cascade.order,
+            model, train_dataset, val_dataset, tokenisers, token_engineers, config.model.cascade.order,
             config.model.cascade.get("is_target", None),
             config.model.cascade.get("augmented", None),
             config.model.start_token,
             optimisation_config=config.optimisation, device=device,
             run_path=run_path,
             start_dtype=start_dtype,
-            test_dataset=tensors["test"] if "test" in tensors else None,
+            test_dataset=test_dataset,
+            start_token_distribution=start_token_distribution,
             **config.model.WyckoffTrainer_args)
 
 
@@ -531,7 +557,7 @@ class WyckoffTrainer():
         return loss / self.evaluation_samples / len(dataset)
 
 
-    def train(self):
+    def train(self, config_dict: dict):
         best_val_loss = float('inf')
         best_val_epoch = 0
         self.run_path.mkdir(exist_ok=False)
@@ -569,7 +595,7 @@ class WyckoffTrainer():
                     best_val_loss = total_val_loss
                     best_val_epoch = epoch
                     torch.save(self.model.state_dict(), best_model_params_path)
-                    wandb.save(best_model_params_path, base_path=self.run_path, policy="live")
+                    wandb.save(str(best_model_params_path), base_path=self.run_path, policy="live")
                     train_tqdm.set_description(
                         f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
                         f"saved to {best_model_params_path}")
@@ -586,25 +612,55 @@ class WyckoffTrainer():
         # Make sure we log the last evaluation results
         wandb.log({}, commit=True)
 
+        # Save configs and distributions
+        config_path = self.run_path / "config.yaml"
+        OmegaConf.save(config_dict, config_path)
+        wandb.save(str(config_path), base_path=self.run_path, policy="now")
 
-    def generate_structures(self, n_structures: int, calibrate: bool) -> List[dict]:
-        generator = WyckoffGenerator(
-            self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
-            self.train_dataset.masks, self.train_dataset.max_sequence_length)
-        if calibrate:
-            generator.calibrate(self.val_dataset)
         if self.model.start_type == "categorial":
             max_start = self.model.start_embedding.num_embeddings
-            start_counts = torch.bincount(
+            start_token_distribution = torch.bincount(
                 self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
                     self.val_dataset.start_tokens, minlength=max_start)
-            start_tensor = torch.distributions.Categorical(probs=start_counts.float()).sample((n_structures,))
         elif self.model.start_type == "one_hot":
-            # We are going to sample with replacement from train+val datasets
-            all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
-            start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
+            start_token_distribution = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
         else:
             raise ValueError(f"Unknown start type: {self.model.start_type}")
+
+        start_token_distribution_path = self.run_path / "start_token_distribution.pt"
+        torch.save(start_token_distribution, start_token_distribution_path)
+        wandb.save(str(start_token_distribution_path), base_path=self.run_path, policy="now")
+
+
+    def generate_structures(self, n_structures: int, calibrate: bool) -> List[dict]:
+        masks = {field: tokeniser.mask_token for field, tokeniser in self.tokenisers.items() if hasattr(tokeniser, 'mask_token')}
+        max_sequence_length = 50
+        generator = WyckoffGenerator(
+            self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
+            masks, max_sequence_length)
+        if calibrate:
+            generator.calibrate(self.val_dataset)
+
+        if self.start_token_distribution is not None:
+            if self.model.start_type == "categorial":
+                start_tensor = torch.distributions.Categorical(probs=self.start_token_distribution.float()).sample((n_structures,))
+            elif self.model.start_type == "one_hot":
+                start_tensor = self.start_token_distribution[torch.randint(len(self.start_token_distribution), (n_structures,))]
+            else:
+                raise ValueError(f"Unknown start type: {self.model.start_type}")
+        else:
+            if self.model.start_type == "categorial":
+                max_start = self.model.start_embedding.num_embeddings
+                start_counts = torch.bincount(
+                    self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
+                        self.val_dataset.start_tokens, minlength=max_start)
+                start_tensor = torch.distributions.Categorical(probs=start_counts.float()).sample((n_structures,))
+            elif self.model.start_type == "one_hot":
+                # We are going to sample with replacement from train+val datasets
+                all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
+                start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
+            else:
+                raise ValueError(f"Unknown start type: {self.model.start_type}")
         generated_tensors = generator.generate_tensors(start_tensor)
         generated_cascade_order = self.cascade_order
         if self.cascade_order[-1] == "harmonic_site_symmetries":
@@ -652,18 +708,30 @@ def train_from_config(
     config_dict: dict,
     device: torch.device,
     run_path: Path = Path(__file__).parent.parent / "runs"):
+    import time
 
     if wandb.run is None:
-        raise ValueError("W&B run must be initialized")
-    this_run_path = run_path / wandb.run.id
-    trainer = WyckoffTrainer.from_config(config_dict, device, this_run_path)    
-    trainer.train()
+        # wandb is disabled
+        run_id = f"pilot-{int(time.time())}"
+    else:
+        run_id = wandb.run.id
+
+    this_run_path = run_path / run_id
+    # When running a pilot without wandb, we are likely doing it for the first time,
+    # so we should not use cached tensors.
+    use_cached_tensors = wandb.run is not None
+    trainer = WyckoffTrainer.from_config(
+        config_dict=config_dict,
+        device=device,
+        use_cached_tensors=use_cached_tensors,
+        run_path=this_run_path)
+    trainer.train(config_dict)
     with gzip.open(this_run_path / "tokenizers.pkl.gz", "wb") as f:
         pickle.dump(trainer.tokenisers, f)
-    wandb.save(this_run_path / "tokenizers.pkl.gz", base_path=this_run_path, policy="now")
+    wandb.save(str(this_run_path / "tokenizers.pkl.gz"), base_path=this_run_path, policy="now")
     with gzip.open(this_run_path / "token_engineers.pkl.gz", "wb") as f:
         pickle.dump(trainer.token_engineers, f)
-    wandb.save(this_run_path / "token_engineers.pkl.gz", base_path=this_run_path, policy="now")
+    wandb.save(str(this_run_path / "token_engineers.pkl.gz"), base_path=this_run_path, policy="now")
     config = OmegaConf.create(config_dict)
     if config.model.WyckoffTrainer_args.target == "NextToken" and \
         config.evaluation.get("n_structures_to_generate", 0) > 0:

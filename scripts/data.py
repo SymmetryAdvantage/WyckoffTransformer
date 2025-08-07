@@ -194,7 +194,12 @@ def read_MP(
     Returns:
         pd.DataFrame: The DataFrame with structures.
     """
-    MP_df = pd.read_csv(MP_csv, index_col=0)
+    print(f"Reading {MP_csv}")
+    try:
+        MP_df = pd.read_csv(MP_csv, index_col=0)
+    except Exception as e:
+        print(f"Error reading {MP_csv}: {e}")
+        return None
     if drop_na:
         print("Dropping NaN values in 'cif' column.")
         print(f"Initial number of rows: {len(MP_df)}")
@@ -281,7 +286,7 @@ def compute_symmetry_sites(
 
 
 def read_all_MP_csv(
-    mp_path: Path = Path(__file__).parent.parent / "cdvae"/"data"/"mp_20",
+    mp_path: Path,
     wychoffs_enumerated_by_ss_file: Path = \
         Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
     file_format: str = "csv",
@@ -306,7 +311,7 @@ def read_all_MP_csv(
             - val: DataFrame with validation data
     """
     datasets_pd = {}
-    print("Reading datasets...")
+    print(f"Reading datasets from {mp_path}")
     for dataset_name in ("train", "test", "val"):
         try:
             datasets_pd[dataset_name] = read_MP(mp_path / f"{dataset_name}.{file_format}")
