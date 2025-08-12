@@ -313,7 +313,6 @@ mp_20:
       generated_by: "Okhotin et. al"
     CHGNet_free:
       index_preserved: false
-      index_preserved: false
       structures:
         path: mp_20/MiAD/CHGNet_free/CIF-FMT-10000_miad-s333-mp20.csv
         storage_type: CDVAE_csv_cif
