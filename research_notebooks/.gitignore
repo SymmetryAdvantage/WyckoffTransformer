@@ -3,3 +3,6 @@
 *.pkl.gz
 *.cif
 ideal_test_structure.json
+WyFormer-DiffCSP++
+WyFormer-DiffCSP++-DFT
+*.zip
