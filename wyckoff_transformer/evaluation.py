@@ -359,7 +359,10 @@ class StatisticalEvaluator():
 
 
 def smac_validity_from_counter(counter: Dict[Element, float], apply_gcd=True) -> bool:
-    return smact_validity_optimised(tuple((elem.symbol for elem in counter.keys())), tuple(map(int, counter.values())), apply_gcd=apply_gcd)
+    res = smact_validity_optimised(tuple((elem.symbol for elem in counter.keys())), tuple(map(int, counter.values())), apply_gcd=apply_gcd)
+    if res is None:
+        return False
+    return res
 
 
 def ks_to_dict(ks_statistic) -> Dict[str, float]:

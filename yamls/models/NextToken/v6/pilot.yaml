@@ -18,7 +18,7 @@ model:
     target: NextToken
     evaluation_samples: 100
   CascadeTransformer_args:
-    start_type: categorial
+    start_type: one_hot
     perceptron_shape: pyramid
     concat_token_counts: false
     concat_token_presence: false
@@ -57,6 +57,6 @@ optimisation:
   clip_grad_norm: 2.
   epochs: 3
 tokeniser:
-  name: mp_20_CSP
+  name: mp_20_sg_multiplicity
 evaluation:
   n_structures_to_generate: 10
