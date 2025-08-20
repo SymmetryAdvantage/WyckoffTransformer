@@ -26,3 +26,4 @@ preferred-citation:
       value: "2503.02407"
   url: "https://arxiv.org/abs/2503.02407" # Derived from the arXiv ID
   date-released: 2025-03 # Year from BibTeX, month from arXiv ID (2503.xxxxx)
+  notes: "Published in ICML 2025"
