@@ -45,7 +45,7 @@ class SpaceGroupEncoder(dict):
         for group_number in all_space_groups:
             group = Group(group_number)
             all_spgs_raw[group_number] = np.concatenate(
-                [group.get_spg_symmetry_object().to_matrix_representation_spg().ravel(),
+                [group.get_spg_symmetry_object().to_matrix_representation().ravel(),
                  symbol_to_one_hot[group.symbol[0]]])
         all_spgs_sum = sum(all_spgs_raw.values())
         varying_indices = ~((all_spgs_sum == 0) | (all_spgs_sum == len(all_spgs_raw)))

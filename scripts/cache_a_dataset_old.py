@@ -1,6 +1,3 @@
-"""
-This module provides functions for reading the structures and extracting the symmetry information.
-"""
 if __name__ == "__main__":
     # We want to avoid messing with the environment variables in case we are used as a module.
     # The code is parallelised by structure
@@ -13,9 +10,8 @@ import argparse
 import gzip
 import pickle
 from pathlib import Path
-import sys
-sys.path.append(str(Path(__file__).parent.parent.resolve()))
-from scripts.data import read_all_MP_csv
+
+from data import read_all_MP_csv
 
 
 cache_folder = Path(__file__).parent.parent / "cache"  # Adjusted path
@@ -38,14 +34,9 @@ def cache_dataset(
         datasets_pd = read_all_MP_csv(
             mp_path=Path(__file__).parent.parent.resolve() / "cdvae" / "data" / dataset,  # Adjusted path
             n_jobs=n_jobs, symmetry_precision=symmetry_precision, symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
-    elif dataset == 'mp_20_pilot':
-        datasets_pd = read_all_MP_csv(
-            mp_path=Path(__file__).parent.parent.resolve() / "data" / dataset,
-            file_format="csv.gz", n_jobs=n_jobs, symmetry_precision=symmetry_precision,
-            symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
     else:
         datasets_pd = read_all_MP_csv(
-            mp_path=Path(__file__).parent.parent.resolve() / "data" / dataset,  # Adjusted path
+            Path(__file__).parent.parent.resolve() / "data" / dataset,  # Adjusted path
             file_format="csv.gz", n_jobs=n_jobs, symmetry_precision=symmetry_precision,
             symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
 
