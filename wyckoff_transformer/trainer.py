@@ -9,12 +9,13 @@ import json
 import pickle
 import numpy as np
 import torch
+import math
 from torch import nn
 from torch import Tensor
 from omegaconf import OmegaConf, DictConfig
 from tqdm import trange
 import wandb
-
+from sklearn.metrics import roc_auc_score 
 
 from cascade_transformer.dataset import AugmentedCascadeDataset, TargetClass, jagged_batch_randperm
 from cascade_transformer.model import CascadeTransformer
@@ -71,7 +72,7 @@ class WyckoffTrainer():
         """
         if isinstance(target, str):
             target = TargetClass[target]
-        if target != TargetClass.Scalar:
+        if target not in (TargetClass.Scalar, TargetClass.Classification):
             is_target_in_order = [cascade_is_target[field] for field in cascade_order]
             if not all(is_target_in_order[:-1]):
                 raise NotImplementedError("Only one not targret field is supported "
@@ -105,6 +106,10 @@ class WyckoffTrainer():
             # Assumes the batch size is the same for all batches
             self.criterion = nn.MSELoss(reduction='mean')
             self.testing_criterion = nn.L1Loss(reduction='mean')
+        elif target == TargetClass.Classification:
+            # Classification loss
+            self.criterion = nn.CrossEntropyLoss(reduction='mean')
+            self.testing_criterion = nn.CrossEntropyLoss(reduction='mean')
         else:
             raise ValueError(f"Unknown target: {target}")
         
@@ -428,7 +433,7 @@ class WyckoffTrainer():
                 raise ValueError(f"Target {self.target} is not supported by "
                                   "multiclass_next_token_with_order_permutation")
         else:
-            if self.target == TargetClass.Scalar:
+            if self.target in (TargetClass.Scalar, TargetClass.Classification):
                 start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(no_batch=no_batch)
             else:
                 start_tokens, masked_data, target = dataset.get_masked_cascade_data(known_seq_len, known_cascade_len)
@@ -446,12 +451,29 @@ class WyckoffTrainer():
             #logger.debug("Padding mask isnan: %s", padding_mask.isnan().any())
             prediction = self.model(start_tokens, masked_data, padding_mask, None).squeeze()
             #logger.debug("Prediction isnan: %s", prediction.isnan().any())
+        elif self.target == TargetClass.Classification:
+            logger.debug("Start tokens size: %s", start_tokens.size())
+            # Sequence-level classification: expect logits of shape [batch_size, num_classes]
+            prediction = self.model(start_tokens, masked_data, padding_mask, None)
+            if prediction.dim() == 1:
+                prediction = prediction.unsqueeze(1)
+            assert prediction.dim() == 2, f"Classification logits must be [N, C], got {tuple(prediction.shape)}"
+            assert prediction.size(1) >= 2, (
+                "Binary classification with CrossEntropyLoss requires 2 logits ([N,2]). "
+                f"Got C={prediction.size(1)}."
+            )
+            if target.dim() > 1:
+                target = target.squeeze(-1)
+            target = target.long()
         else:
             raise ValueError(f"Unknown target: {self.target}")
         # Step 3: Calculate the loss
         # logger.debug("Target isnan: %s", target.isnan().any())
         logger.debug("Target min: %s, max: %s", target.min(), target.max())
         logger.debug("Prediction shape: %s", prediction.shape)
+        if self.target == TargetClass.Classification:
+            # CrossEntropyLoss expects class indices as int64
+            target = target.long()
         if testing:
             return self.testing_criterion(prediction, target)
         return self.criterion(prediction, target)
@@ -469,10 +491,11 @@ class WyckoffTrainer():
             elif self.target == TargetClass.NumUniqueTokens:
                 known_cascade_len = 0
                 known_seq_len = randint(0, self.train_dataset.max_sequence_length - 1)
-            elif self.target == TargetClass.Scalar:
+            elif self.target in (TargetClass.Scalar, TargetClass.Classification):
                 # Use full sequences
                 known_cascade_len = None
                 known_seq_len = self.train_dataset.max_sequence_length - 1
+                
             else:
                 raise ValueError(f"Unknown target: {self.target}")
             loss = self.get_loss(self.train_dataset, known_seq_len, known_cascade_len)
@@ -508,7 +531,7 @@ class WyckoffTrainer():
             self.optimizer.eval()
         if dataset.batch_size is not None and not dataset.fix_batch_size:
             raise NotImplementedError("Only fixed batch size is supported")
-        if self.target == TargetClass.Scalar:
+        if self.target in (TargetClass.Scalar, TargetClass.Classification):
             loss = torch.zeros(1, device=self.device)
             # Augmentation
             for sample_ids in range(self.evaluation_samples):
@@ -530,11 +553,70 @@ class WyckoffTrainer():
             # We are minimising the negative log likelihood of the whole sequences
         return loss / self.evaluation_samples / len(dataset)
 
+    def evaluate_classification_metrics(self, dataset: AugmentedCascadeDataset) -> dict:
+        """
+        Compute Accuracy, Precision, Recall, F1, and AUC for a classification dataset.
+        Returns a dict with keys: accuracy, precision, recall, f1, auc.
+        - For binary classification (C=2): positive class is index 1.
+        - For multiclass (C>2): macro-averaged precision/recall/F1; AUC is OVO macro if sklearn is available.
+        """
+        self.model.eval()
+        if hasattr(self.optimizer, "eval"):
+            self.optimizer.eval()
 
+        with torch.no_grad():
+            logits_list = []
+            targets_list = []
+            for _ in range(dataset.batches_per_epoch):
+                start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(no_batch=False)
+                logits = self.model(start_tokens, masked_data, padding_mask, None)
+                if logits.dim() == 1:
+                    logits = logits.unsqueeze(1)
+                logits_list.append(logits.detach().cpu())
+                targets_list.append(target.detach().long().view(-1).cpu())
+            logits = torch.cat(logits_list, dim=0)
+            targets = torch.cat(targets_list, dim=0)
+            num_classes = logits.size(1)
+            probs = torch.softmax(logits, dim=1)
+            preds = torch.argmax(logits, dim=1)
+                    # Accuracy
+            accuracy = (preds == targets).float().mean().item()
+
+            eps = 1e-12
+            if num_classes == 2:
+                # Binary metrics (positive=1)
+                pos = 1
+                tp = ((preds == pos) & (targets == pos)).sum().item()
+                fp = ((preds == pos) & (targets != pos)).sum().item()
+                fn = ((preds != pos) & (targets == pos)).sum().item()
+                precision = tp / (tp + fp + eps)
+                recall = tp / (tp + fn + eps)
+                f1 = 2.0 * precision * recall / (precision + recall + eps)
+                # AUC (if sklearn available)
+                try:
+                    auc = float(roc_auc_score(targets.numpy(), probs[:, 1].numpy()))
+                except Exception:
+                    auc = float('nan')
+            else:
+                raise ValueError(f"Classification metrics currently only support binary classification, but got num_classes={num_classes}")
+
+            return {
+                "accuracy": float(accuracy),
+                "precision": float(precision),
+                "recall": float(recall),
+                "f1": float(f1),
+                "auc": float(auc),
+            }
+    
     def train(self):
         best_val_loss = float('inf')
         best_val_epoch = 0
-        self.run_path.mkdir(exist_ok=False)
+
+        run_path = Path(__file__).parent.parent / "runs"
+
+        self.run_path = run_path / wandb.run.id
+        self.run_path.mkdir(parents=True, exist_ok=True)
+
         best_model_params_path = self.run_path / "best_model_params.pt"
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
@@ -553,26 +635,72 @@ class WyckoffTrainer():
                 if self.test_dataset is not None:
                     raw_losses['test'] = self.evaluate(self.test_dataset)
                 loss_dict = {}
+                metrics_dict = {}
                 if self.target == TargetClass.Scalar:
                     total_val_loss = raw_losses['val']
                     for name, loss in raw_losses.items():
                         loss_dict[name] = {"mae": loss.item()}
+                elif self.target == TargetClass.Classification:
+                    total_val_loss = raw_losses['val']
+                    for name, loss in raw_losses.items():
+                        loss_dict[name] = {"cross_entropy": loss.item()}
+                    # Compute classification metrics (Acc, Precision, Recall, F1, AUC)
+                    metrics_dict = {}
+                    metrics_dict["train"] = self.evaluate_classification_metrics(self.train_dataset)
+                    metrics_dict["val"] = self.evaluate_classification_metrics(self.val_dataset)
+                    if self.test_dataset is not None:
+                        metrics_dict["test"] = self.evaluate_classification_metrics(self.test_dataset)
                 else:
                     total_val_loss = raw_losses['val'].sum()
                     for name, loss in raw_losses.items():
                         loss_dict[name] = {name: loss[i] for i, name in enumerate(self.cascade_order)}
                         loss_dict[name]["total"] = loss.sum().item()
-                wandb.log({"loss.epoch": loss_dict,
-                           "lr": self.optimizer.param_groups[0]['lr'],
-                           "epoch": epoch}, commit=False)
+                # wandb.log({"loss.epoch": loss_dict,
+                #            "lr": self.optimizer.param_groups[0]['lr'],
+                #            "epoch": epoch}, commit=False)
+                wandb.log({
+                    "loss.epoch": loss_dict,
+                    "metrics.epoch": metrics_dict if self.target == TargetClass.Classification else {},
+                    "lr": self.optimizer.param_groups[0]['lr'],
+                    "epoch": epoch,
+                }, commit=False)
+                # Persist latest classification metrics into summary
+                if self.target == TargetClass.Classification:
+                    try:
+                        # Ensure a stable nested structure in summary
+                        if "metrics" not in wandb.run.summary:
+                            wandb.run.summary["metrics"] = {}
+                        wandb.run.summary["metrics"]["train"] = metrics_dict.get("train", {})
+                        wandb.run.summary["metrics"]["val"] = metrics_dict.get("val", {})
+                        if "test" in metrics_dict:
+                            wandb.run.summary["metrics"]["test"] = metrics_dict["test"]
+                        # Track best validation AUC
+                        val_auc = metrics_dict.get("val", {}).get("auc", float("nan"))
+                        if not hasattr(self, "_best_val_auc"):
+                            self._best_val_auc = float("-inf")
+                        if not math.isnan(val_auc) and val_auc > self._best_val_auc:
+                            self._best_val_auc = val_auc
+                            wandb.run.summary["best.val.auc"] = val_auc
+                    except Exception as e:
+                        logger.warning("Failed to update W&B summary metrics: %s", e)
                 if total_val_loss < best_val_loss:
                     best_val_loss = total_val_loss
                     best_val_epoch = epoch
                     torch.save(self.model.state_dict(), best_model_params_path)
                     wandb.save(best_model_params_path, base_path=self.run_path, policy="live")
-                    train_tqdm.set_description(
-                        f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
-                        f"saved to {best_model_params_path}")
+                    if self.target == TargetClass.Classification:
+                        train_tqdm.set_description(
+                            f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
+                            f"saved to {best_model_params_path} | "
+                            f"Accuracy {metrics_dict['val'].get('accuracy', float('nan')):.4f}, "
+                            f"Precision {metrics_dict['val'].get('precision', float('nan')):.4f}, "
+                            f"Recall {metrics_dict['val'].get('recall', float('nan')):.4f}, "
+                            f"F1 {metrics_dict['val'].get('f1', float('nan')):.4f}, "
+                            f"AUC {metrics_dict['val'].get('auc', float('nan')):.4f}")
+                    else:        
+                        train_tqdm.set_description(
+                            f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
+                            f"saved to {best_model_params_path}")
                     wandb.log({"loss.epoch.val_best": best_val_loss}, commit=False)
                 if epoch - best_val_epoch > self.early_stopping_patience_epochs:
                     print(f"Early stopping at epoch {epoch} after more than "
@@ -648,6 +776,8 @@ class WyckoffTrainer():
         evaluate_and_log(generated_wp, generation_name, n_structures, evaluator)
 
 
+
+
 def train_from_config(
     config_dict: dict,
     device: torch.device,
@@ -658,6 +788,7 @@ def train_from_config(
     this_run_path = run_path / wandb.run.id
     trainer = WyckoffTrainer.from_config(config_dict, device, this_run_path)    
     trainer.train()
+    this_run_path.mkdir(parents=True, exist_ok=True)
     with gzip.open(this_run_path / "tokenizers.pkl.gz", "wb") as f:
         pickle.dump(trainer.tokenisers, f)
     wandb.save(this_run_path / "tokenizers.pkl.gz", base_path=this_run_path, policy="now")

@@ -276,6 +276,9 @@ def compute_symmetry_sites(
             symmetry_dataset['formation_energy_per_atom'] = dataset['formation_energy_per_atom']
         if "band_gap" in dataset.columns:
             symmetry_dataset['band_gap'] = dataset['band_gap']
+        if "band_gap_high_low" in dataset.columns:
+            print("Adding band_gap_high_low to symmetry dataset.")
+            symmetry_dataset['band_gap_high_low'] = dataset['band_gap_high_low']
         result[dataset_name] = symmetry_dataset
     return result
 

@@ -1,0 +1,22 @@
+# For the code to work, must be the same as the file name
+name: sg_binary_classification
+dtype: uint8
+# not only memory savings, but also debug assist!
+# if we forget to propely convert dtype somewhere ahead
+# torch will highly likely complain about it
+token_fields:
+  pure_categorical:
+    - site_symmetries
+    - elements
+    # We don't use the original Wyckoff letter, but the enumeration
+    # for each site symmetry, hence the order is not important,
+    # and it's a bona fide categorical field.
+    - sites_enumeration
+augmented_token_fields:
+  # must be named <field-name>_augmented in the dataframe
+  - sites_enumeration
+sequence_fields:
+  space_group:
+    - spacegroup_number
+  no_processing:
+    - band_gap_high_low

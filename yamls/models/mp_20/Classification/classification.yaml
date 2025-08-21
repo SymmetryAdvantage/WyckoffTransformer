@@ -1,0 +1,64 @@
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - site_symmetries
+      - elements
+      - harmonic_site_symmetries
+      - multiplicity
+    embedding_size:
+      elements: 32
+      site_symmetries: 64
+      multiplicity: null
+      harmonic_site_symmetries:
+        pass_through_vector: 12
+    augmented:
+      - harmonic_site_symmetries
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Classification
+    target_name: band_gap_high_low
+    evaluation_samples: 1
+    train_batch_size: 1000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    compile_perceptrons: false
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    # multiplicity
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 2 # Binary classification
+    num_fully_connected_layers: 3
+    prediction_perceptron_dropout: 0.03
+    emebdding_dropout: 0.05
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      dropout: 0.2
+    TransformerEncoder_args:
+      num_layers: 1
+      enable_nested_tensor: true
+optimisation:
+  optimiser:
+    name: Adam
+    config:
+      lr: 0.001
+  scheduler:
+    name: ReduceLROnPlateau
+    config:
+      factor: 0.5
+      # note that scheduler is called every validation_period epochs
+      patience: 20
+  validation_period: 10
+  early_stopping_patience_epochs: 1000
+  clip_grad_norm: 2.
+  epochs: 50000
+tokeniser:
+  name: no_stop/augmented_harmony
