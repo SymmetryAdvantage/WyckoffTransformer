@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "If you use this work, please cite it as below."
 preferred-citation:
-  type: article
-  title: "Wyckoff transformer: Generation of symmetric crystals"
+  type: conference-paper
+  title: "Wyckoff Transformer: Generation of Symmetric Crystals"
   authors:
     - family-names: "Kazeev"
       given-names: "Nikita"
@@ -18,12 +18,37 @@ preferred-citation:
       given-names: "Shuya"
     - family-names: "Hippalgaonkar"
       given-names: "Kedar"
-  journal: "arXiv" # The BibTeX entry lists "arXiv preprint arXiv:2503.02407"
-  # It is common practice to use "arXiv" as the journal for preprints
-  # and specify the arXiv ID in the identifiers section.
+  abstract: >-
+    Crystal symmetry plays a fundamental role in determining its physical,
+    chemical, and electronic properties such as electrical and thermal
+    conductivity, optical and polarization behavior, and mechanical strength.
+    Almost all known crystalline materials have internal symmetry. However,
+    this is often inadequately addressed by existing generative models,
+    making the consistent generation of stable and symmetrically valid
+    crystal structures a significant challenge. We introduce WyFormer, a
+    generative model that directly tackles this by formally conditioning on
+    space group symmetry. It achieves this by using Wyckoff positions as the
+    basis for an elegant, compressed, and discrete structure representation.
+    To model the distribution, we develop a permutation-invariant
+    autoregressive model based on the Transformer encoder and an absence of
+    positional encoding. Extensive experimentation demonstrates WyFormer’s
+    compelling combination of attributes: it achieves best-in-class
+    symmetry-conditioned generation, incorporates a physics-motivated
+    inductive bias, produces structures with competitive stability, predicts
+    material properties with competitive accuracy even without atomic
+    coordinates, and exhibits unparalleled inference speed.
+  conference:
+    name: "Proceedings of the 42nd International Conference on Machine Learning"
+    series: "Proceedings of Machine Learning Research"
+    publisher:
+      name: "PMLR"
+  date-released: 2025-07-13
+  volume: 267
+  start: 29495
+  end: 29526
+  url: "https://proceedings.mlr.press/v267/kazeev25a.html"
   identifiers:
-    - type: arxiv
-      value: "2503.02407"
-  url: "https://arxiv.org/abs/2503.02407" # Derived from the arXiv ID
-  date-released: 2025-03 # Year from BibTeX, month from arXiv ID (2503.xxxxx)
-  notes: "ICML 2025"
+    - type: url
+      value: "https://raw.githubusercontent.com/mlresearch/v267/main/assets/kazeev25a/kazeev25a.pdf"
+      description: "PDF"
+    notes: "ICML 2025"
