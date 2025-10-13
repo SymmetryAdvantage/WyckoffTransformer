@@ -51,4 +51,4 @@ preferred-citation:
     - type: url
       value: "https://raw.githubusercontent.com/mlresearch/v267/main/assets/kazeev25a/kazeev25a.pdf"
       description: "PDF"
-    notes: "ICML 2025"
+  notes: "ICML 2025"
