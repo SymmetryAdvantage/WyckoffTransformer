@@ -1,0 +1,33 @@
+# For the code to work, must be the same as the file name
+name: alex_mp_20_sg_multiplicity
+# tokens will be just numbered in a random order, withot a guarantee of reproducibility
+dtype: int16
+# not only memory savings, but also debug assist!
+# if we forget to propely convert dtype somewhere ahead
+# torch will highly likely complain about it
+token_fields:
+  pure_categorical:
+    - site_symmetries
+    - elements
+    # We don't use the original Wyckoff letter, but the enumeration
+    # for each site symmetry, hence the order is not important,
+    # and it's a bona fide categorical field.
+    - sites_enumeration
+  engineered:
+    multiplicity:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+      - sites_enumeration
+augmented_token_fields:
+  # must be named <field-name>_augmented in the dataframe
+  - sites_enumeration
+sequence_fields:
+  space_group:
+    - spacegroup_number
+  # converts a Counter into tokens, uses the specified field name embedding
+  # Basically, aimed at e. g.
+  # {Element Nd: 1.0, Element Al: 8.0, Element Cu: 4.0}
+  counters:
+    composition: elements

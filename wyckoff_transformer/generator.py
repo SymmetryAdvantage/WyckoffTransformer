@@ -250,21 +250,21 @@ class WyckoffGenerator():
                         else:
                             logits = self.tail_calibrators[known_cascade_len](logits)
                     logits = logits / temperature
-                    print(f"[DEBUG] Cascade: {cascade_name}, Logits shape: {logits.shape}") # debug
-                    print(f"[DEBUG] Cascade: {cascade_name}, Logits: {logits}") # debug
+                    # print(f"[DEBUG] Cascade: {cascade_name}, Logits shape: {logits.shape}") # debug
+                    # print(f"[DEBUG] Cascade: {cascade_name}, Logits: {logits}") # debug
                     # binary/ternary hack
                     # if known_cascade_len == 0 and known_seq_len > 2:
                     #    logits *= 3.
                     # CONSIDER: remove probas for all special tokens aside from STOP
                     calibrated_probas = torch.nn.functional.softmax(logits, dim=1)
-                    print(f"[DEBUG] Cascade: {cascade_name}, Calibrated probas shape: {calibrated_probas.shape}") # debug
-                    print(f"[DEBUG] Cascade: {cascade_name}, Calibrated probas: {calibrated_probas}") # debug
+                    # print(f"[DEBUG] Cascade: {cascade_name}, Calibrated probas shape: {calibrated_probas.shape}") # debug
+                    # print(f"[DEBUG] Cascade: {cascade_name}, Calibrated probas: {calibrated_probas}") # debug
                     # calibrated_probas = probas.numpy()
                     # calibrated_probas = calibrator.predict_proba(probas.numpy())
                     generated[known_cascade_len][:, known_seq_len] = \
                         torch.multinomial(calibrated_probas, num_samples=1).squeeze()
-                    print(f"[DEBUG] Cascade: {cascade_name}, Sampled token shape: {generated[known_cascade_len][:, known_seq_len].shape}") # debug
-                    print(f"[DEBUG] Cascade: {cascade_name}, Sampled token: {generated[known_cascade_len][:, known_seq_len]}") # debug
+                    # print(f"[DEBUG] Cascade: {cascade_name}, Sampled token shape: {generated[known_cascade_len][:, known_seq_len].shape}") # debug
+                    # print(f"[DEBUG] Cascade: {cascade_name}, Sampled token: {generated[known_cascade_len][:, known_seq_len]}") # debug
                     if self.stops is not None:
                         stop_generated |= generated[known_cascade_len][:, known_seq_len] == self.stops[cascade_name]
                 else:

@@ -276,6 +276,10 @@ def compute_symmetry_sites(
             symmetry_dataset['formation_energy_per_atom'] = dataset['formation_energy_per_atom']
         if "band_gap" in dataset.columns:
             symmetry_dataset['band_gap'] = dataset['band_gap']
+        if "log_klat" in dataset.columns:
+            symmetry_dataset['log_klat'] = dataset['log_klat']
+        if "klat" in dataset.columns:
+            symmetry_dataset['klat'] = dataset['klat']
         result[dataset_name] = symmetry_dataset
     return result
 

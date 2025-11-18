@@ -1,17 +1,156 @@
-import time
-from pathlib import Path
 import argparse
+import collections
+import gzip
+import json
+import pickle
+import logging
+import numbers
+import time
+from collections import Counter
+from pathlib import Path
+from typing import Tuple
+
 import torch
 # torch.set_float32_matmul_precision('high')
-import json
-import gzip
 import wandb
-import logging
 from omegaconf import OmegaConf
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from wyckoff_transformer.trainer import WyckoffTrainer
+
+
+def _resolve_sg_cache_path(dataset_name: str) -> Path:
+    """Resolve dataset path inside cache directory."""
+    cache_root = Path(__file__).parent.parent.resolve() / "cache"
+    candidates = [dataset_name]
+    if "-" in dataset_name:
+        candidates.append(dataset_name.replace("-", "_"))
+    for candidate in candidates:
+        candidate_path = cache_root / candidate
+        if candidate_path.exists():
+            return candidate_path
+    raise FileNotFoundError(f"Dataset '{dataset_name}' not found under {cache_root}")
+
+
+def _select_tensor_and_tokeniser(cache_path: Path) -> Tuple[Path, Path]:
+    """Select matching tensor/tokeniser files."""
+    tensor_dir = cache_path / "tensors"
+    tokeniser_dir = cache_path / "tokenisers"
+    if not tensor_dir.exists() or not tokeniser_dir.exists():
+        raise FileNotFoundError(f"Cache path {cache_path} lacks 'tensors' or 'tokenisers' directories.")
+    for tensor_path in sorted(tensor_dir.glob("*.pt")):
+        tokeniser_path = tokeniser_dir / f"{tensor_path.stem}.pkl.gz"
+        if tokeniser_path.exists():
+            return tensor_path, tokeniser_path
+    raise FileNotFoundError(f"No matching tensor/tokeniser pair found in {cache_path}.")
+
+
+def _decode_space_groups(
+    start_tensor: torch.Tensor,
+    source_tokeniser,
+) -> Counter:
+    """Decode space group identifiers from stored start tensors."""
+    counts: Counter = Counter()
+    # EnumeratingTokeniser case: 1D tensor with token indices
+    if start_tensor.dim() == 1:
+        indices = start_tensor.flatten().tolist()
+        for idx in indices:
+            counts[source_tokeniser.to_token[idx]] += 1
+        return counts
+
+    if not hasattr(source_tokeniser, "encode_spacegroups"):
+        raise ValueError("Unsupported start tensor structure for provided tokeniser.")
+
+    dtype = start_tensor.dtype
+    sg_numbers = list(source_tokeniser.keys())
+    encoded_reference = source_tokeniser.encode_spacegroups(sg_numbers, dtype=dtype, device="cpu").cpu()
+    reference_map = {tuple(row.tolist()): sg for row, sg in zip(encoded_reference, sg_numbers)}
+    for row in start_tensor.cpu():
+        key = tuple(row.tolist())
+        try:
+            counts[reference_map[key]] += 1
+        except KeyError as exc:
+            raise ValueError("Encountered unknown space group encoding in cached tensors.") from exc
+    return counts
+
+
+def prepare_start_tensor_from_cache(
+    trainer: WyckoffTrainer,
+    dataset_name: str,
+    n_samples: int,
+) -> torch.Tensor:
+    """Prepare start tensor sampled from cached dataset distribution."""
+    cache_path = _resolve_sg_cache_path(dataset_name)
+    tensor_path, tokeniser_path = _select_tensor_and_tokeniser(cache_path)
+
+    try:
+        cached_tensors = torch.load(tensor_path, map_location="cpu")
+    except pickle.UnpicklingError as exc:
+        if "collections.defaultdict" not in str(exc):
+            raise
+        try:
+            torch.serialization.add_safe_globals([collections.defaultdict])  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
+        cached_tensors = torch.load(tensor_path, map_location="cpu", weights_only=False)
+    with gzip.open(tokeniser_path, "rb") as f:
+        cached_tokenisers = pickle.load(f)
+        _ = pickle.load(f)  # token engineers, unused here
+
+    start_field = trainer.start_name
+    if start_field not in cached_tokenisers:
+        raise ValueError(f"Start field '{start_field}' missing in cached tokenisers for dataset '{dataset_name}'.")
+    source_tokeniser = cached_tokenisers[start_field]
+
+    space_group_counts: Counter = Counter()
+    for split_name in ("train", "val", "test"):
+        split = cached_tensors.get(split_name)
+        if not split:
+            continue
+        split_tensor = split.get(start_field)
+        if split_tensor is None:
+            continue
+        space_group_counts.update(_decode_space_groups(split_tensor, source_tokeniser))
+
+    if not space_group_counts:
+        raise ValueError(f"No space group data found for start field '{start_field}' in dataset '{dataset_name}'.")
+
+    target_tokeniser = trainer.tokenisers[start_field]
+    filtered_counts = Counter({
+        sg: count for sg, count in space_group_counts.items()
+        if isinstance(sg, numbers.Integral) and sg in target_tokeniser
+    })
+    if not filtered_counts:
+        raise ValueError(
+            "None of the space groups from the requested distribution are available in the target tokeniser.")
+
+    total = sum(filtered_counts.values())
+    weights = torch.tensor(
+        [filtered_counts[sg] / total for sg in filtered_counts],
+        dtype=torch.float32,
+        device=trainer.device,
+    )
+    sg_values = torch.tensor(list(filtered_counts.keys()), dtype=torch.long, device=trainer.device)
+    sampled_indices = torch.multinomial(weights, n_samples, replacement=True)
+    sampled_sgs = sg_values[sampled_indices].tolist()
+
+    start_dtype = trainer.train_dataset.start_tokens.dtype
+    if trainer.model.start_type == "categorial":
+        token_ids = torch.tensor(
+            [target_tokeniser[sg] for sg in sampled_sgs],
+            dtype=start_dtype,
+            device=trainer.device,
+        )
+        return token_ids
+    if trainer.model.start_type == "one_hot":
+        start_tensor = target_tokeniser.encode_spacegroups(
+            sampled_sgs,
+            dtype=start_dtype,
+            device=trainer.device,
+        )
+        return start_tensor
+    raise ValueError(f"Unsupported start type '{trainer.model.start_type}' for custom sg distribution.")
 
 
 def main():
@@ -41,6 +180,8 @@ def main():
                         help="Required elements for CSX mode (e.g., 'Li-S'). Must be provided if --csx is used.")
     parser.add_argument("--allowed-elements", "--a", type=str, default="all",
                         help="Allowed elements for CSX mode: 'all', 'fix', or a custom set (e.g., 'Li-S-P-O').")
+    parser.add_argument("--sg-dist", type=str, default=None,
+                        help="Override the initial space group distribution using tensors cached under cache/<dataset>.")
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
@@ -65,6 +206,13 @@ def main():
     trainer = WyckoffTrainer.from_config(
         config, device=args.device, use_cached_tensors=args.use_cached_tensors, run_path=run_path)
     trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
+    start_tensor_override = None
+    if args.sg_dist is not None:
+        start_tensor_override = prepare_start_tensor_from_cache(
+            trainer=trainer,
+            dataset_name=args.sg_dist,
+            n_samples=args.initial_n_samples,
+        )
 
     if args.csx:
         print("--- Running in Chemical System eXploration (CSX) mode ---")
@@ -72,11 +220,16 @@ def main():
             n_structures=args.initial_n_samples,
             calibrate=args.calibrate,
             required_element_set=args.required_elements,
-            allowed_element_set=args.allowed_elements
+            allowed_element_set=args.allowed_elements,
+            start_tensor=start_tensor_override,
         )
     else:
         print("--- Running in Default Generation mode ---")
-        generated_wp = trainer.generate_structures(args.initial_n_samples, args.calibrate)
+        generated_wp = trainer.generate_structures(
+            args.initial_n_samples,
+            args.calibrate,
+            start_tensor=start_tensor_override,
+        )
 
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")

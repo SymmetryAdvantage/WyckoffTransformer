@@ -46,6 +46,34 @@ def main():
     if args.pilot:
         datasets_pd = {name: dataset.sample(100) for name, dataset in datasets_pd.items()}
         print("Piloting with 100 samples")
+
+    # print("--- Starting Debug Check ---")
+    # # Replace 'composition' with the actual counter field from your config if it's different
+    # field_to_check = 'composition' 
+    # dtype_to_check = torch.uint8
+
+    # for name, dataset in datasets_pd.items():
+    #     print(f"Checking dataset: {name}")
+    #     for i, row in dataset.iterrows():
+    #         dict_ = row.get(field_to_check)
+    #         if dict_ is None:
+    #             continue
+        
+    #         values = list(dict_.values())
+    #         try:
+    #             # This is the operation that fails
+    #             torch.tensor(values, dtype=dtype_to_check)
+    #         except RuntimeError:
+    #             print(f"\n[!] Overflow ERROR found in dataset '{name}' at index {i}:")
+    #             print(f"    Dictionary: {dict_}")
+    #             offending_values = [v for v in values if v < 0 or v > 255]
+    #             print(f"    Value(s) causing overflow: {offending_values}")
+    #             # Exit after finding the first error to avoid flooding the console
+    #             import sys
+    #             sys.exit("Exiting after finding first error.")
+
+    # print("--- Debug Check Complete ---")
+
     tensors, tokenisers, token_engineers = tokenise_dataset(
         datasets_pd, config, args.tokenizer_path, n_jobs=args.n_jobs)
     if args.debug and "multiplicity" in token_engineers:
