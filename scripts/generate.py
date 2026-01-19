@@ -57,7 +57,13 @@ def main():
     generation_start_time = time.time()
     trainer = WyckoffTrainer.from_config(
         config, device=args.device, use_cached_tensors=args.use_cached_tensors, run_path=run_path)
-    trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
+    trainer.model.load_state_dict(
+        torch.load(
+            trainer.run_path / "best_model_params.pt",
+            weights_only=True,
+            map_location=torch.device('cpu'),
+        )
+    )
     generated_wp = trainer.generate_structures(args.initial_n_samples, args.calibrate)
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")
