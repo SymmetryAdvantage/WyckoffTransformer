@@ -4,6 +4,7 @@ import logging
 from omegaconf import OmegaConf
 import torch
 import wandb
+import yaml
 
 import sys
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
@@ -52,6 +53,8 @@ def main():
 
     wandb_config = OmegaConf.to_container(config)
     args.run_path.mkdir(parents=True, exist_ok=True)
+    with open(args.run_path / "config.yaml", "w") as f:
+        yaml.safe_dump(wandb_config, f)
     with wandb.init(
         project="WyckoffTransformer",
         job_type="train",

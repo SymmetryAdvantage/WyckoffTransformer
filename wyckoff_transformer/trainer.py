@@ -534,7 +534,7 @@ class WyckoffTrainer():
     def train(self):
         best_val_loss = float('inf')
         best_val_epoch = 0
-        self.run_path.mkdir(exist_ok=False)
+        self.run_path.mkdir(exist_ok=True)
         best_model_params_path = self.run_path / "best_model_params.pt"
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
