@@ -17,9 +17,11 @@ model:
     multiclass_next_token_with_order_permutation: true
     target: NextToken
     evaluation_samples: 100
+    compile_model: false
   CascadeTransformer_args:
     start_type: one_hot
     perceptron_shape: pyramid
+    compile_perceptrons: false
     concat_token_counts: false
     concat_token_presence: true
     aggregate_after_encoder: false
