@@ -107,9 +107,9 @@ class WyckoffTrainer():
             raise ValueError(f"Unknown target: {target}")
         
         self.model = model
-        # Transformer doesn't support fullgraph=True
-        self.compiled_model = torch.compile(self.model, fullgraph=False)
         if compile_model:
+            # Transformer doesn't support fullgraph=True
+            self.compiled_model = torch.compile(self.model, fullgraph=False)
             self.model = self.compiled_model
         self.tokenisers = tokenisers
         self.device = device

@@ -296,14 +296,17 @@ def argsort_multiple(*tensors: torch.Tensor, dim: int) -> torch.Tensor:
     """
     if len(tensors) == 1:
         return torch.argsort(tensors[0], dim=dim)
-    elif len(tensors) == 2:
+    if len(tensors) == 2:
         if tensors[0].dtype != torch.uint8 or tensors[1].dtype != torch.uint8:
             # Will need to check for overflow
             raise NotImplementedError("Only uint8 tensors are supported")
-        megaindex = tensors[0].type(torch.int64) * tensors[1].max().type(torch.int64) + tensors[1].type(torch.int64)
-        return torch.argsort(megaindex)
-    else:
-        raise NotImplementedError("Only one or two tensors are supported")
+        # Use max + 1 as radix to avoid collisions:
+        # (a, b) -> a * radix + b
+        radix = tensors[1].max().type(torch.int64) + 1
+        megaindex = tensors[0].type(torch.int64) * radix + tensors[1].type(torch.int64)
+        return torch.argsort(megaindex, dim=dim)
+
+    raise NotImplementedError("Only one or two tensors are supported")
 
 
 def tokenise_dataset(datasets_pd: Dict[str, DataFrame],

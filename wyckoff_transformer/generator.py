@@ -280,8 +280,6 @@ class WyckoffGenerator():
                             generated[cascade_index_by_name['harmonic_cluster']][structure_index, known_seq_len].item()
                         ) in self.token_engineers["sites_enumeration"].db)
             print(f"Known sequence length: {known_seq_len}")
-            print(f"SS validity: {sum(ss_validitity) / len(ss_validitity)}")
-            print(f"ENUM validity: {sum(enum_validity) / len(enum_validity)}")
-            #import pdb
-            #pdb.set_trace()
+            print(f"SS validity: {sum(ss_validitity) / len(ss_validitity) if len(ss_validitity) > 0 else '0/0'}")
+            print(f"ENUM validity: {sum(enum_validity) / len(enum_validity) if len(enum_validity) > 0 else '0/0'}")
         return generated

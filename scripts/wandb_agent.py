@@ -10,9 +10,9 @@ from wyckoff_transformer.trainer import train_from_config
 def agent_function(device, run_path):
     wandb.init()
     base_config_name = wandb.config.base_config
-    base_config = OmegaConf.load(Path(__file__).parent.resolve() / "yamls" / "models" / f"{base_config_name}.yaml")
+    base_config = OmegaConf.load(Path(__file__).parent.parent.resolve() / "yamls" / "models" / f"{base_config_name}.yaml")
     final_config = OmegaConf.merge(base_config, dict(wandb.config))
-    tokeniser_config_path = Path(__file__).parent.resolve() / "yamls" / "tokenisers" / f"{final_config.tokeniser.name}.yaml"
+    tokeniser_config_path = Path(__file__).parent.parent.resolve() / "yamls" / "tokenisers" / f"{final_config.tokeniser.name}.yaml"
     tokeniser_config = OmegaConf.load(tokeniser_config_path)
     final_config['tokeniser'] = tokeniser_config
     train_from_config(final_config, device, run_path=run_path)
