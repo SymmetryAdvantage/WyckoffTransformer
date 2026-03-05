@@ -146,43 +146,6 @@ class WyckoffGenerator():
                 self.tail_calibrators.append(TemperatureScaling().to(tail_targets.device).fit(tail_predictions, tail_targets))
 
 
-    def compute_likelihoods(self,
-        dataset: AugmentedCascadeDataset,
-        n_permutations: int = 1,
-        n_augmentations: int = 1) -> Tensor:
-        """
-        Computes the likelihood of the dataset.
-        """
-        with torch.no_grad():
-            self.model.eval()
-            log_likelihoods = torch.zeros(
-                n_permutations, n_augmentations, dataset.start_tokens.size()[0],
-                device=dataset.device, dtype=torch.float32)
-            if n_augmentations > 1:
-                augmentations = [dataset.get_augmentation() for _ in range(n_augmentations)]
-            else:
-                augmentations = [None]
-            for permutation_idx in range(n_permutations):
-                if n_permutations > 1:
-                    full_permutation = jagged_batch_randperm(
-                        dataset.pure_sequences_lengths, dataset.max_sequence_length)
-                    applied_permutation = True
-                else:
-                    full_permutation = None
-                    applied_permutation = False
-                for augmentation_idx, augmented_data in enumerate(augmentations):
-                    for known_seq_len in range(self.max_sequence_len):
-                        for known_cascade_len in range(len(self.cascade_order)):
-                            start, this_data, target, batch_target_is_viable = dataset.get_masked_multiclass_cascade_data(
-                                known_seq_len, known_cascade_len, TargetClass.NextToken, multiclass_target=False,
-                                augmented_data=augmented_data, full_permutation=full_permutation,
-                                apply_permutation=applied_permutation, return_chosen_indices=True)
-                            logits = self.model(start, this_data, None, known_cascade_len)
-                            log_probas = torch.nn.functional.log_softmax(logits, dim=1)
-                            log_likelihoods[permutation_idx, augmentation_idx, batch_target_is_viable] += torch.gather(
-                                log_probas, 1, target.unsqueeze(1)).squeeze()
-            return log_likelihoods
-
     @torch.no_grad()
     def generate_tensors(
         self,
