@@ -21,11 +21,9 @@ def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     
     Parameters:
     vectors_batch : ndarray
-        A 3D array of shape (num_batches, num_objects, 3) representing the vectors.
+        A 3D array of shape (num_batches, num_objects, 3) representing the vectors
     degree : int
-        The degree of the spherical harmonics.
-    order : int
-        The order of the spherical harmonics.
+        The degree of the spherical harmonics
     
     Returns:
     ndarray
@@ -33,13 +31,9 @@ def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     """
     # Normalize the vectors
     norms = np.linalg.norm(vectors_batch, axis=-1, keepdims=True)
-    x, y = vectors_batch[..., 0], vectors_batch[..., 1]
-    theta = np.arctan2(y, x)
-    # Avoid division by zero
-    nonzero_norms = norms.copy()
-    nonzero_norms[nonzero_norms == 0] = 1
-    z = vectors_batch[..., 2] / nonzero_norms.squeeze(-1)
-    phi = np.arccos(z)
+    x, y, z = vectors_batch[..., 0], vectors_batch[..., 1], vectors_batch[..., 2]
+    theta = np.arctan2(np.hypot(x, y), z)
+    phi = np.mod(np.arctan2(y, x), 2 * np.pi)
 
     # Compute spherical harmonics for all vectors
     res = np.array([sph_harm_y(degree, order, theta, phi) for order in range(degree+1)])
@@ -182,6 +176,7 @@ def inverse_series(input_series: pd.Series) -> pd.Series:
         names=[input_series.index.names[0], input_series.index.names[1], input_series.name])
     return pd.Series(input_series.index.get_level_values(2), index=inverse_index, name=input_series.index.names[2])
 
+
 def clasterize_harmonics(
     harmonic_engineer: FeatureEngineer,
     random_state: int = 42):
@@ -227,8 +222,12 @@ def get_augmentation_dict():
     return alternatives_by_sg
 
 
-if __name__ == "__main__":
+def main():
     enumerate_wychoffs_by_ss()
     print("Done enumerating Wyckoff positions inside site symmetry.")
     get_augmentation_dict()
     print("Done test-running Wyckoff positions augmentation.")
+
+
+if __name__ == "__main__":
+    main()
