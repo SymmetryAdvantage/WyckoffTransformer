@@ -30,7 +30,7 @@ def read_cif(cif: str) -> Structure:
     Returns:
         Structure: The structure.
     """
-    return Structure.from_str(cif, fmt='cif', primitive=False)
+    return CifParser.from_str(cif).parse_structures(primitive=False)[0]
 
 def pyxtal_notation_to_sites(
     pyxtal_record: dict,
@@ -221,8 +221,7 @@ def read_MP(
             message=r"Issues encountered while parsing CIF: \d+"
                 " fractional coordinates rounded to ideal"
                 " values to avoid issues with finite precision.",
-            category=UserWarning,
-            module="pymatgen.core.structure"
+            category=UserWarning
         )
         print("Suppressed warnings: CIF rounding & Pauling electronegativity")
         with Pool(n_jobs) as pool:
@@ -319,8 +318,8 @@ def read_all_MP_csv(
             - val: DataFrame with validation data
     """
     datasets_pd = {}
-    print("Reading datasets...")
     for dataset_name in ("train", "test", "val"):
+        print(f"Reading dataset {dataset_name}...")
         try:
             datasets_pd[dataset_name] = read_MP(mp_path / f"{dataset_name}")
         except FileNotFoundError:
