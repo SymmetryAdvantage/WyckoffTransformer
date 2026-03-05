@@ -45,6 +45,9 @@ class TestArgsortMultiple(unittest.TestCase):
 
 class TestSpaceGroupEncoder(unittest.TestCase):
     def test_space_group_encoder(self):
+        """
+        By design, all space groups must have uniqe encodings
+        """
         all_group_encoder = SpaceGroupEncoder.from_sg_set(range(1, 231))
         all_groups = set()
         for group_number in range(1, 231):
