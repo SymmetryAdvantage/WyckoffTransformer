@@ -19,7 +19,7 @@ echo "WANDB_ENTITY=symmetry-advantage" > .env
 python scripts/preprocess_wychoffs.py
 ```
 # Running a pilot model
-To veryfy that the installation is working, run a pilot model. Next token prediction:
+To verify that the installation is working, run a pilot model. Next token prediction:
 ```bash
 python scripts/cache_a_dataset.py mp_20
 python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
