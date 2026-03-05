@@ -39,6 +39,7 @@ CompScaler = StandardScaler(
 
 logger = logging.getLogger(__name__)
 
+
 COV_Cutoffs = {
     'mp20': {'struc': 0.4, 'comp': 10.},
     'carbon': {'struc': 0.2, 'comp': 4.},
@@ -218,52 +219,56 @@ def load_config(model_path):
         cfg = compose(config_name='hparams')
     return cfg
 
-def load_model(model_path, load_data=False, testing=True):
+def load_model(model_path):
+    # Hydra config requires a global vairable
     os.environ["PROJECT_ROOT"] = str(Path(__file__).resolve().parents[3])
+    # Older checkpoints may refer to modules under `cdvae.*`; map that import
+    # path to the vendored package used in this repository.
+    import sys
+    import wyckoff_transformer.cdvae_evals as cdvae_evals
+    sys.modules.setdefault("cdvae", cdvae_evals)
+
     with initialize_config_dir(str(model_path), version_base="1.1"):
         cfg = compose(config_name='hparams')
-        template_model = hydra.utils.instantiate(
-            cfg.model,
-            optim=cfg.optim,
-            data=cfg.data,
-            logging=cfg.logging,
-            _recursive_=False,
-        )
+        model_cls = hydra.utils.get_class(cfg.model._target_)
         ckpts = list(model_path.glob('*.ckpt'))
-        if len(ckpts) > 0:
-            ckpt = None
-            for ck in ckpts:
-                if 'last' in ck.parts[-1]:
-                    ckpt = str(ck)
-            if ckpt is None:
-                ckpt_epochs = np.array(
-                    [int(ckpt.parts[-1].split('-')[0].split('=')[1]) for ckpt in ckpts if 'last' not in ckpt.parts[-1]])
-                ckpt = str(ckpts[ckpt_epochs.argsort()[-1]])
-        #hparams = os.path.join(model_path, "model.yaml")
-        #print("Loading model from checkpoint:", ckpt)
-        model = template_model.__class__.load_from_checkpoint(ckpt, strict=True)
-        #try:
+        if not ckpts:
+            raise FileNotFoundError(f"No checkpoint files found in {model_path}")
+        ckpt = None
+        for ck in ckpts:
+            if 'last' in ck.parts[-1]:
+                ckpt = str(ck)
+        if ckpt is None:
+            ckpt_epochs = np.array(
+                [int(ckpt.parts[-1].split('-')[0].split('=')[1]) for ckpt in ckpts if 'last' not in ckpt.parts[-1]])
+            ckpt = str(ckpts[ckpt_epochs.argsort()[-1]])
+        try:
+            model = model_cls.load_from_checkpoint(
+                ckpt,
+                strict=True,
+                weights_only=False,
+                encoder=cfg.model.encoder,
+            )
+        except TypeError:
+            from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+            if hasattr(torch.serialization, "safe_globals"):
+                with torch.serialization.safe_globals([EarlyStopping]):
+                    model = model_cls.load_from_checkpoint(
+                        ckpt,
+                        strict=True,
+                        encoder=cfg.model.encoder,
+                    )
+            else:
+                torch.serialization.add_safe_globals([EarlyStopping])
+                model = model_cls.load_from_checkpoint(
+                    ckpt,
+                    strict=True,
+                    encoder=cfg.model.encoder,
+                )
         model.lattice_scaler = torch.load(model_path / 'lattice_scaler.pt', weights_only=False)
         model.scaler = torch.load(model_path / 'prop_scaler.pt', weights_only=False)
-        #except:
-        #    pass
 
-        if load_data:
-            datamodule = hydra.utils.instantiate(
-                cfg.data.datamodule, _recursive_=False, scaler_path=model_path
-            )
-            if testing:
-                datamodule.setup('test')
-                test_loader = datamodule.test_dataloader()[0]
-            else:
-                datamodule.setup()
-                train_loader = datamodule.train_dataloader(shuffle=False)
-                val_loader = datamodule.val_dataloader()[0]
-                test_loader = (train_loader, val_loader)
-        else:
-            test_loader = None
-
-    return model, test_loader, cfg
+    return model
 
 
 def prop_model_eval(
@@ -273,7 +278,7 @@ def prop_model_eval(
 
     model_path = get_model_path(eval_model_name)
 
-    model, _, _ = load_model(model_path)
+    model = load_model(model_path)
     model.to(device)
     cfg = load_config(model_path)
 

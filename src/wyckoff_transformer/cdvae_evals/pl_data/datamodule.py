@@ -67,8 +67,8 @@ class CrystDataModule(pl.LightningDataModule):
                 key=train_dataset.prop)
         else:
             self.lattice_scaler = torch.load(
-                Path(scaler_path) / 'lattice_scaler.pt')
-            self.scaler = torch.load(Path(scaler_path) / 'prop_scaler.pt')
+                Path(scaler_path) / 'lattice_scaler.pt', weights_only=False)
+            self.scaler = torch.load(Path(scaler_path) / 'prop_scaler.pt', weights_only=False)
 
     def setup(self, stage: Optional[str] = None):
         """
