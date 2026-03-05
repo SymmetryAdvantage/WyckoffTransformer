@@ -56,6 +56,11 @@ def main():
         tags=tags,
         config=wandb_config):
 
+        configuration_artifact = wandb.Artifact(name=f"config_{config.name}", type="config")
+        configuration_artifact.add_file(args.config, name="model.yaml")
+        configuration_artifact.add_file(tokeniser_config_path, name="tokeniser.yaml")
+        wandb.log_artifact(configuration_artifact)
+
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():

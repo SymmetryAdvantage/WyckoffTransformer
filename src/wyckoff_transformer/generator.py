@@ -150,17 +150,20 @@ class WyckoffGenerator():
     def generate_tensors(
         self,
         start: Tensor,
-        temperature: float = 1) -> List[Tensor]:
+        temperature: float = 1,
+        compute_validity: bool = False) -> List[Tensor] | Tuple[List[Tensor], List[float], List[float]]:
         """
         Generates a sequence of tokens.
 
         Arguments:
             start: The start token. It should be a tensor of shape [batch_size].
             temperature: The temperature to use for the generation
-
+            compute_validity: Whether to compute the validity of the generated sequences
         Returns:
             The generated sequence of tokens. It has shape [batch_size, max_len, len(cascade_order)].
-            It doesn't include the start token.
+                It doesn't include the start token.
+            If compute_validity is True, also returns the formal validity of the generated sequences
+                for the site symmetries and the enumeration (if applicable) for each known sequence length.
         """
         self.model.eval()
         batch_size = start.size(0)
@@ -198,6 +201,8 @@ class WyckoffGenerator():
         else:
             start_converted = start.tolist()
         stop_generated = np.zeros(batch_size, dtype=bool)
+        global_ss_validitity = []
+        global_enum_validity = []
         for known_seq_len in range(self.max_sequence_len):
             for known_cascade_len, cascade_name in enumerate(self.cascade_order):
                 if self.cascade_is_target[cascade_name]:
@@ -240,46 +245,40 @@ class WyckoffGenerator():
                                     generated[cascade_index_by_name['site_symmetries']][:, known_seq_len].tolist(),
                                     generated[cascade_index_by_name['harmonic_cluster']][:, known_seq_len].tolist()])
                             this_cascade_input = enumerations
-                            #import pdb
-                            #pdb.set_trace()
                         else:
                             raise NotImplementedError(
                                 f"Unknown input field {input_field} for engineer {cascade_name}")
                         this_engineer_input.append(this_cascade_input.tolist())
-                    #print(this_engineer_input)
-                    #print(len(this_engineer_input))
-                    #print(this_generation_input[0].shape)
-                    # print(f"Generating {cascade_name}")
                     feature_np = self.token_engineers[cascade_name].get_feature_from_token_batch(
                         start_converted, this_engineer_input)
-                    if feature_np.dtype == "O": # Object, in this case array of array
-                        # import pdb
-                        # pdb.set_trace()
+                    if feature_np.dtype == "O": # Object, in this case array of arrays
                         feature_np = np.stack(feature_np)
                     generated[known_cascade_len][:, known_seq_len] = \
                         torch.from_numpy(feature_np)
-            ss_validitity = []
-            enum_validity = []
-            for structure_index, this_start in enumerate(start_converted):
-                if stop_generated[structure_index]:
-                    continue
-                ss_validitity.append(
-                    (this_start,
-                     generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item()
-                     ) in self.token_engineers["multiplicity"].db)
-                if 'sites_enumeration' in cascade_index_by_name:
-                    enum_validity.append(
+            if compute_validity:
+                ss_validitity = []
+                enum_validity = []
+                for structure_index, this_start in enumerate(start_converted):
+                    if stop_generated[structure_index]:
+                        continue
+                    ss_validitity.append(
                         (this_start,
-                            generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(),
-                            generated[cascade_index_by_name['sites_enumeration']][structure_index, known_seq_len].item()
+                        generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item()
                         ) in self.token_engineers["multiplicity"].db)
-                elif "harmonic_cluster" in cascade_index_by_name:
-                    enum_validity.append(
-                        (this_start,
-                            generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(),
-                            generated[cascade_index_by_name['harmonic_cluster']][structure_index, known_seq_len].item()
-                        ) in self.token_engineers["sites_enumeration"].db)
-            print(f"Known sequence length: {known_seq_len}")
-            print(f"SS validity: {sum(ss_validitity) / len(ss_validitity) if len(ss_validitity) > 0 else '0/0'}")
-            print(f"ENUM validity: {sum(enum_validity) / len(enum_validity) if len(enum_validity) > 0 else '0/0'}")
+                    if 'sites_enumeration' in cascade_index_by_name:
+                        enum_validity.append(
+                            (this_start,
+                                generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(),
+                                generated[cascade_index_by_name['sites_enumeration']][structure_index, known_seq_len].item()
+                            ) in self.token_engineers["multiplicity"].db)
+                    elif "harmonic_cluster" in cascade_index_by_name:
+                        enum_validity.append(
+                            (this_start,
+                                generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(),
+                                generated[cascade_index_by_name['harmonic_cluster']][structure_index, known_seq_len].item()
+                            ) in self.token_engineers["sites_enumeration"].db)
+                global_ss_validitity.append(np.mean(ss_validitity))
+                global_enum_validity.append(np.mean(enum_validity))
+        if compute_validity:
+            return generated, global_ss_validitity, global_enum_validity
         return generated

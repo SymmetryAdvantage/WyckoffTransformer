@@ -378,8 +378,9 @@ class WyckoffTrainer():
     def train(self):
         best_val_loss = float('inf')
         best_val_epoch = 0
-        self.run_path.mkdir(exist_ok=False)
+        self.run_path.mkdir(exist_ok=True)
         best_model_params_path = self.run_path / "best_model_params.pt"
+
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.val_best", step_metric="epoch", summary="min")
@@ -413,7 +414,12 @@ class WyckoffTrainer():
                     best_val_loss = total_val_loss
                     best_val_epoch = epoch
                     torch.save(self.model.state_dict(), best_model_params_path)
-                    wandb.save(best_model_params_path, base_path=self.run_path, policy="now")
+                    best_model_artifact = wandb.Artifact(
+                        name="best_model",
+                        type="model",
+                        metadata={"epoch": epoch})
+                    best_model_artifact.add_file(best_model_params_path)
+                    wandb.log_artifact(best_model_artifact)
                     train_tqdm.set_description(
                         f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
                         f"saved to {best_model_params_path}")
@@ -431,7 +437,20 @@ class WyckoffTrainer():
         wandb.log({}, commit=True)
 
 
-    def generate_structures(self, n_structures: int, calibrate: bool) -> List[dict]:
+    def generate_structures(
+            self,
+            n_structures: int,
+            calibrate: bool,
+            compute_validity_per_known_sequence_length: bool = False
+            ) -> List[dict] | Tuple[List[dict], List, List]:
+        """
+        Generates structures by autoregressively sampling from the model.
+        Args:
+            n_structures: The number of structures to generate.
+            calibrate: Whether to calibrate the generation probabilities on the validation dataset.
+            compute_validity_per_known_sequence_length: Whether to compute the formal validity of
+                the generated tensors separately for each known sequence length.
+        """
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
             self.train_dataset.masks, self.train_dataset.max_sequence_length)
@@ -449,7 +468,11 @@ class WyckoffTrainer():
             start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
         else:
             raise ValueError(f"Unknown start type: {self.model.start_type}")
-        generated_tensors = generator.generate_tensors(start_tensor)
+        if compute_validity_per_known_sequence_length:
+            generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
+                start_tensor, compute_validity=True)
+        else:
+            generated_tensors = generator.generate_tensors(start_tensor, compute_validity=False)
         generated_cascade_order = self.cascade_order
         if self.cascade_order[-1] == "harmonic_site_symmetries":
             del generated_tensors[-1]
@@ -469,12 +492,12 @@ class WyckoffTrainer():
                             letter_from_ss_enum_idx=letter_from_ss_enum_idx,
                             ss_from_letter=ss_from_letter,
                             wp_index=get_wp_index())
-        #with Pool() as pool:
-            #structures = pool.starmap(to_pyxtal, zip(start_tensor.detach().cpu(), generated_tensors.detach().cpu()))
         structures = list(map(to_pyxtal, start_tensor.detach().cpu(), generated_tensors.detach().cpu()))
         print(f"Generated {len(structures)} Wyckoffs")
         valid_structures = [s for s in structures if s is not None]
         print(f"From which {len(valid_structures)} are valid")
+        if compute_validity_per_known_sequence_length:
+            return valid_structures, ss_validitity, enum_validity
         return valid_structures
     
     def generate_evaluate_and_log_wp(
@@ -484,11 +507,26 @@ class WyckoffTrainer():
         n_structures: int,
         evaluator: StatisticalEvaluator):
     
-        generated_wp = self.generate_structures(n_structures, calibrate)
+        generated_wp, ss_validitity, enum_validity = self.generate_structures(
+            n_structures, calibrate, compute_validity_per_known_sequence_length=True)
+        validity_data = [[known_seq_len, ss_validitity, enum_validity] for
+            known_seq_len, (ss_validitity, enum_validity) in
+            enumerate(zip(ss_validitity, enum_validity))]
+        validity_table = wandb.Table(data=validity_data, columns=["known_seq_len", "ss_validity", "enumeration_validity"])
+        # Important note. The logged values denote the validity specifially *at* given known sequence length,
+        # not the validity of the sequences from the start up to the known sequence length.
+        wandb.log({
+            "ss_validity": wandb.plot.line(validity_table, "known_seq_len", "ss_validity",
+                title="Site Symmetry validity"),
+            "enumeration_validity": wandb.plot.line(validity_table, "known_seq_len", "enumeration_validity",
+                title="Enumeration validity")
+        })
         file_name = self.run_path / f"generated_wp_{generation_name}.json.gz"
+        saved_wyckoffs = wandb.Artifact(name=f"generated_wp_{generation_name}", type="generated_data")
         with gzip.open(file_name, "wt") as f:
             json.dump(generated_wp, f)
-        wandb.save(file_name, base_path=self.run_path, policy="now")
+        saved_wyckoffs.add_file(file_name)
+        wandb.log_artifact(saved_wyckoffs)
         evaluate_and_log(generated_wp, generation_name, n_structures, evaluator)
 
 
@@ -500,14 +538,17 @@ def train_from_config(
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)    
-    trainer.train()
+    this_run_path.mkdir(parents=True, exist_ok=False)
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)
+    tokenizers_engineers = wandb.Artifact(name="processors", type="processors")
     with gzip.open(this_run_path / "tokenizers.pkl.gz", "wb") as f:
         pickle.dump(trainer.tokenisers, f)
-    wandb.save(this_run_path / "tokenizers.pkl.gz", base_path=this_run_path, policy="now")
+    tokenizers_engineers.add_file(this_run_path / "tokenizers.pkl.gz")
     with gzip.open(this_run_path / "token_engineers.pkl.gz", "wb") as f:
         pickle.dump(trainer.token_engineers, f)
-    wandb.save(this_run_path / "token_engineers.pkl.gz", base_path=this_run_path, policy="now")
+    tokenizers_engineers.add_file(this_run_path / "token_engineers.pkl.gz")
+    wandb.log_artifact(tokenizers_engineers)
+    trainer.train()
     config = OmegaConf.create(config_dict)
     if config.model.WyckoffTrainer_args.target == "NextToken" and \
         config.evaluation.get("n_structures_to_generate", 0) > 0:
