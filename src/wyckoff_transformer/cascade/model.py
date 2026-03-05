@@ -195,7 +195,7 @@ class CascadeTransformer(nn.Module):
                  TransformerEncoder_args: dict,
                  learned_positional_encoding_max_size: Optional[int] = None,
                  learned_positional_encoding_only_masked: Optional[bool] = None,
-                 compile_perceptrons: bool = True,
+                 compile_perceptrons: bool = False,
                  aggregation_weight: Optional[int] = None,
                  emebdding_dropout: Optional[float] = None,
                  prediction_perceptron_dropout: Optional[float] = None,
