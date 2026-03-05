@@ -30,7 +30,7 @@ def read_cif(cif: str) -> Structure:
     Returns:
         Structure: The structure.
     """
-    return CifParser.from_str(cif).parse_structures(primitive=False)[0]
+    return Structure.from_str(cif, fmt='cif', primitive=False)
 
 def pyxtal_notation_to_sites(
     pyxtal_record: dict,
@@ -211,13 +211,20 @@ def read_MP(
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
+            message=r"No Pauling electronegativity for \w+. "
+                "Setting to NaN. This has no physical meaning, and is "
+                "mainly done to avoid errors caused by the code expecting a float.",
+            category=UserWarning
+        )
+        warnings.filterwarnings(
+            "ignore",
             message=r"Issues encountered while parsing CIF: \d+"
                 " fractional coordinates rounded to ideal"
                 " values to avoid issues with finite precision.",
             category=UserWarning,
-            module="pymatgen.io.cif"
+            module="pymatgen.core.structure"
         )
-        print("Suppressed CIF rounding warnings.")
+        print("Suppressed warnings: CIF rounding & Pauling electronegativity")
         with Pool(n_jobs) as pool:
             MP_df["structure"] = pool.map(read_cif, MP_df["cif"])
     MP_df.drop(columns=["cif"], inplace=True)
@@ -323,4 +330,3 @@ def read_all_MP_csv(
         datasets_pd, wychoffs_enumerated_by_ss_file, n_jobs=n_jobs,
         symmetry_precision=symmetry_precision, symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
     return symmetry_datasets
-
