@@ -5,7 +5,7 @@ import torch
 from torch import nn, Tensor
 import numpy as np
 
-from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass, jagged_batch_randperm
+from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
 from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer
 from scripts.preprocess_wychoffs import inverse_series
 
