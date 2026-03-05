@@ -42,7 +42,7 @@ def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     phi = np.arccos(z)
 
     # Compute spherical harmonics for all vectors
-    res = np.array([sph_harm_y(n=degree, m=order, theta=theta, phi=phi) for order in range(degree+1)])
+    res = np.array([sph_harm_y(degree, order, theta, phi) for order in range(degree+1)])
     res *= np.expand_dims(norms.squeeze(-1), 0)
     return res.mean(axis=-1)
 
