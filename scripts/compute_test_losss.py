@@ -27,7 +27,7 @@ def main():
     if not run_dir.exists():
         run_dir.mkdir(parents=True)
         wandb_run.file("best_model_params.pt").download(run_dir)
-    trainer = WyckoffTrainer.from_config(final_config, args.device, run_dir)
+    trainer = WyckoffTrainer.from_config(final_config, args.device, run_path=run_dir)
     trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt",
         weights_only=False, map_location=args.device))
     if args.compile_model:
