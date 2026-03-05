@@ -187,12 +187,22 @@ def read_MP(
     Reads a Materials Project CSV file and returns a DataFrame with structures.
 
     Args:
-        MP_csv (Path|str): The path to the Materials Project CSV file.
+        MP_csv (Path|str): The path to the Materials Project CSV file. If it is not found as is, adding
+            ".csv" and ".csv.gz" will be tried.
+        n_jobs (int, optional): The number of jobs to use. Defaults to None (take all cores).
+        drop_na (bool, optional): Whether to drop rows with NaN values in the "cif" column. Defaults to False.
 
     Returns:
         pd.DataFrame: The DataFrame with structures.
     """
-    MP_df = pd.read_csv(MP_csv, index_col=0)
+    try:
+        MP_df = pd.read_csv(MP_csv, index_col=0)
+    except FileNotFoundError:
+        try:
+            MP_df = pd.read_csv(f"{MP_csv}.csv", index_col=0)
+        except FileNotFoundError:
+            MP_df = pd.read_csv(f"{MP_csv}.csv.gz", index_col=0)
+
     if drop_na:
         print("Dropping NaN values in 'cif' column.")
         print(f"Initial number of rows: {len(MP_df)}")
@@ -279,10 +289,9 @@ def compute_symmetry_sites(
 
 
 def read_all_MP_csv(
-    mp_path: Path = Path(__file__).parent.parent / "data" / "cdvae" / "mp_20",
+    mp_path: Path = Path(__file__).parent.parent / "data" / "mp_20",
     wychoffs_enumerated_by_ss_file: Path = \
         Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
-    file_format: str = "csv",
     n_jobs: Optional[int] = None,
     symmetry_precision: float = 0.1,
     symmetry_a_tol: float = 5.,
@@ -293,7 +302,6 @@ def read_all_MP_csv(
     Args:
         mp_path (Path, optional): The path to the Materials Project CSV files. Defaults to "data/cdvae/mp_20".
         wychoffs_enumerated_by_ss_file (Path, optional): The path to the Wyckoff positions enumerated by space group file. Defaults to "wychoffs_enumerated_by_ss.pkl.gz".
-        file_format (str, optional): The file format. Defaults to "csv". Can be archived csv openable by pandas.
         n_jobs (int, optional): The number of jobs to use. Defaults to None.
         symmetry_precision (float, optional): The precision for the symmetry sites. Defaults to 0.1.
 
@@ -307,7 +315,7 @@ def read_all_MP_csv(
     print("Reading datasets...")
     for dataset_name in ("train", "test", "val"):
         try:
-            datasets_pd[dataset_name] = read_MP(mp_path / f"{dataset_name}.{file_format}")
+            datasets_pd[dataset_name] = read_MP(mp_path / f"{dataset_name}")
         except FileNotFoundError:
             logger.warning("Dataset %s not found.", dataset_name)
     print("Computing symmetry sites...")

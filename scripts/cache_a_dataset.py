@@ -30,15 +30,10 @@ def cache_dataset(
     """
     Loads a dataset, tokenizes and caches it.
     """
-    if dataset in ('mp_20', 'perov_5', 'carbon_24'):
-        datasets_pd = read_all_MP_csv(
-            mp_path=Path(__file__).parent.parent.resolve() / "cdvae" / "data" / dataset,  # Adjusted path
-            n_jobs=n_jobs, symmetry_precision=symmetry_precision, symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
-    else:
-        datasets_pd = read_all_MP_csv(
-            Path(__file__).parent.parent.resolve() / "data" / dataset,  # Adjusted path
-            file_format="csv.gz", n_jobs=n_jobs, symmetry_precision=symmetry_precision,
-            symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
+    datasets_pd = read_all_MP_csv(
+        Path(__file__).parent.parent.resolve() / "data" / dataset,
+        n_jobs=n_jobs, symmetry_precision=symmetry_precision,
+        symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
 
     cache_data_file_name = get_cache_data_file_name(dataset)
     cache_data_file_name.parent.mkdir(parents=True, exist_ok=True)
