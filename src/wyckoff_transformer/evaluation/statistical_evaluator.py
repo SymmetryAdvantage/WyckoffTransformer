@@ -8,7 +8,7 @@ import numpy as np
 import random
 from pymatgen.core import Element
 
-from wyckoff_transformer.evaluation import DoFCounter, count_unique
+from .core import DoFCounter, count_unique
 from .cdvae_metrics import COV_Cutoffs, compute_cov, Crystal
 from .novelty import NoveltyFilter
 

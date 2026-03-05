@@ -7,7 +7,7 @@ if __name__ == "__main__":
 from typing import Dict, List
 from collections import defaultdict, Counter
 import argparse
-from pathlib import Path
+
 from multiprocessing import Pool
 import torch
 import json
@@ -15,10 +15,8 @@ import gzip
 import pickle
 import numpy as np
 import logging
-from pathlib import Path
+
 from pymatgen.core.structure import Structure, Lattice
-import sys
-sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from scripts.data import structure_to_sites
 
 logger = logging.getLogger(__name__)
@@ -57,7 +55,7 @@ def get_crystals_list(
 
 class StructureToSites():
     def __init__(self, tol=0.1):
-        with open(Path(__file__).parent.joinpath("cache", "wychoffs_enumerated_by_ss.pkl.gz"), "rb") as f:
+        with open(Path(__file__).resolve().parents[3].joinpath("cache", "wychoffs_enumerated_by_ss.pkl.gz"), "rb") as f:
             self.wychoffs_enumerated_by_ss = pickle.load(f)[0]
         self.tol = tol
     

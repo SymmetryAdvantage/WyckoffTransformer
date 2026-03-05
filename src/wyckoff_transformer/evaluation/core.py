@@ -203,7 +203,7 @@ class StatisticalEvaluator():
         self.dof_counter = None
         if train_dataset is not None:
             self.train_fingerprints = frozenset(chain.from_iterable(train_dataset.apply(record_to_augmented_fingerprints, axis=1)))
-            with open(Path(__file__).parent.parent.resolve() / "cache" / "wychoffs_enumerated_by_ss.pkl.gz", "rb") as f:
+            with open(Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz", "rb") as f:
                 self.letter_to_enum, _ , self.letter_to_ss = pickle.load(f)[:3]
             self.generated_to_fingerprint = partial(
                 generated_to_fingerprint, letter_to_ss=self.letter_to_ss, letter_to_enum=self.letter_to_enum)

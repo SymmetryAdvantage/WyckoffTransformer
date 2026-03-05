@@ -12,8 +12,8 @@ import pickle
 from tqdm.auto import tqdm
 from pymatgen.io.cif import CifWriter
 from pymatgen.core import Structure
-from evaluation.generated_dataset import GeneratedDataset, load_all_from_config
-from evaluation.novelty import NoveltyFilter, filter_by_unique_structure
+from wyckoff_transformer.evaluation.generated_dataset import GeneratedDataset, load_all_from_config
+from wyckoff_transformer.evaluation.novelty import NoveltyFilter, filter_by_unique_structure
 
 from collections import Counter
 from operator import itemgetter

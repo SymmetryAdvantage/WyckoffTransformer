@@ -350,7 +350,7 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                 raise ValueError("Only map engineered_field fields are supported")
             if len(engineered_field_definiton.inputs) != 3:
                 raise NotImplementedError("Only 3 inputs are supported")
-            with gzip.open(Path(__file__).parent.parent.resolve() / "cache" / "engineers" / f"{engineered_field_name}.pkl.gz", "rb") as f:
+            with gzip.open(Path(__file__).resolve().parents[2] / "cache" / "engineers" / f"{engineered_field_name}.pkl.gz", "rb") as f:
                 raw_engineer = pickle.load(f)
             raw_engineers[engineered_field_name] = raw_engineer
             # Now we need to convert the token values to token indices
@@ -495,7 +495,7 @@ def load_tensors_and_tokenisers(
     dataset: str,
     config_name: str,
     use_cached_tensors: bool = True,
-    cache_path: Path = Path(__file__).parent.parent.resolve() / "cache",
+    cache_path: Path = Path(__file__).resolve().parents[2] / "cache",
     tokenizer_path: Optional[Path] = None):
 
     this_cache_path = cache_path / dataset
@@ -511,13 +511,13 @@ def load_tensors_and_tokenisers(
                 tensors = pickle.load(f)
         return tensors, tokenisers, token_engineers
     else:
-        cache_path = Path(__file__).parent.parent.resolve() / "cache" / dataset
+        cache_path = Path(__file__).resolve().parents[2] / "cache" / dataset
         with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
             datasets_pd = pickle.load(f)
         return tokenise_dataset(
             datasets_pd=datasets_pd,
             config=OmegaConf.load(
-                Path(__file__).parent.parent.resolve() / 'yamls' / 'tokenisers' / f'{config_name}.yaml'),
+                Path(__file__).resolve().parents[2] / 'yamls' / 'tokenisers' / f'{config_name}.yaml'),
             tokenizer_path=tokenizer_path,
         )
 
@@ -541,7 +541,7 @@ def get_letter_from_ss_enum_idx(
     into a dict indexed by space group, site symmetry, and enumeration TOKEN to make the generation
     a tiny-tiny little bit faster.
     """
-    preprocessed_wyckhoffs_cache_path = Path(__file__).parent.parent.resolve() / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
+    preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parents[2] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
     with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
         letter_from_ss_enum = pickle.load(f)[1]
     letter_from_ss_enum_idx = defaultdict(dict)

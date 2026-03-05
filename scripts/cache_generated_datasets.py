@@ -15,7 +15,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 from omegaconf import OmegaConf
 
-from evaluation.generated_dataset import GeneratedDataset, DATA_KEYS
+from wyckoff_transformer.evaluation.generated_dataset import GeneratedDataset, DATA_KEYS
 
 def compute_fields_and_cache(data: GeneratedDataset) -> GeneratedDataset:
     """Compute all derived fields for a dataset and cache it."""

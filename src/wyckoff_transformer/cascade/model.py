@@ -7,7 +7,7 @@ from torch import Tensor
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from omegaconf import OmegaConf
 
-from cascade_transformer.dataset import batched_bincount
+from wyckoff_transformer.cascade.dataset import batched_bincount
 
 logger = logging.getLogger(__name__)
 

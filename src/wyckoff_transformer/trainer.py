@@ -16,8 +16,8 @@ from tqdm import trange
 import wandb
 
 
-from cascade_transformer.dataset import AugmentedCascadeDataset, TargetClass, jagged_batch_randperm
-from cascade_transformer.model import CascadeTransformer
+from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
+from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers, tensor_to_pyxtal,
     get_letter_from_ss_enum_idx, get_wp_index)
@@ -25,9 +25,10 @@ from wyckoff_transformer.generator import WyckoffGenerator
 from wyckoff_transformer.evaluation import (
     evaluate_and_log, StatisticalEvaluator, smac_validity_from_counter)
 
+StatisticalEvaluator=str
 
 logger = logging.getLogger(__file__)
-preprocessed_wyckhoffs_cache_path = Path(__file__).parent.parent.resolve() / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
+preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
 
 class WyckoffTrainer():
     def __init__(
@@ -496,7 +497,7 @@ class WyckoffTrainer():
 def train_from_config(
     config_dict: dict,
     device: torch.device,
-    run_path: Path = Path(__file__).parent.parent / "runs"):
+    run_path: Path = Path(__file__).resolve().parent.parent / "runs"):
 
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
@@ -515,7 +516,7 @@ def train_from_config(
 
         print("Training complete, loading the best model")
         trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
-        data_cache_path = Path(__file__).parent.parent.resolve() / "cache" / config.dataset / "data.pkl.gz"
+        data_cache_path = Path(__file__).resolve().parents[2] / "cache" / config.dataset / "data.pkl.gz"
         with gzip.open(data_cache_path, "rb") as f:
             datasets_pd = pickle.load(f)
         del datasets_pd["train"]

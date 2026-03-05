@@ -20,11 +20,9 @@ import numpy as np
 import torch
 import pandas as pd
 from .novelty import record_to_augmented_fingerprint
-import sys
-sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from scripts.data import read_cif, compute_symmetry_sites, read_MP, pyxtal_notation_to_sites
 from scripts.preprocess_wychoffs import get_augmentation_dict
-from wyckoff_transformer.evaluation import wycryst_to_pyxtal_dict
+from .core import wycryst_to_pyxtal_dict
 from wyckoff_transformer.tokenization import get_wp_index
 
 from .DiffCSP_to_sites import load_diffcsp_dataset, record_to_pyxtal
@@ -73,7 +71,7 @@ DATA_KEYS = frozenset(("structures", "wyckoffs", "e_hull", "index_preserved"))
 def load_all_from_config(
     datasets: Optional[List[Tuple[str]]] = None,
     dataset_name: str = "mp_20",
-    config_path: Path = Path(__file__).parent.parent / "generated" / "datasets.yaml"):
+    config_path: Path = Path(__file__).resolve().parents[3] / "generated" / "datasets.yaml"):
 
     config = OmegaConf.load(config_path)
     if datasets is None:
@@ -297,8 +295,8 @@ def save_as_json_csv(path: Path, data: pd.DataFrame) -> None:
 
 class LetterDictToSitesConverter:
     def __init__(self, 
-        wyckoffs_db_file = Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
-        multiplicity_engineer_file = Path(__file__).parent.parent / "cache" / "engineers" / "multiplicity.pkl.gz"):
+        wyckoffs_db_file = Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
+        multiplicity_engineer_file = Path(__file__).resolve().parents[3] / "cache" / "engineers" / "multiplicity.pkl.gz"):
             with gzip.open(wyckoffs_db_file, "rb") as f:
                 self.wychoffs_enumerated_by_ss, _, self.ss_from_letter = pickle.load(f)
             with gzip.open(multiplicity_engineer_file, "rb") as f:
@@ -376,8 +374,8 @@ class LetterDictToSitesConverter:
 
 class SiteSymmetryToRecordConverter:
     def __init__(self, 
-        wyckoffs_db_file = Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
-        multiplicity_engineer_file = Path(__file__).parent.parent / "cache" / "engineers" / "multiplicity.pkl.gz"):
+        wyckoffs_db_file = Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
+        multiplicity_engineer_file = Path(__file__).resolve().parents[3] / "cache" / "engineers" / "multiplicity.pkl.gz"):
             with gzip.open(wyckoffs_db_file, "rb") as f:
                 self.wychoffs_enumerated_by_ss, self.letter_from_ss_enum, _ = pickle.load(f)
             self.letter_to_record_converter = LetterDictToSitesConverter(
@@ -484,7 +482,7 @@ class GeneratedDataset():
         cls,
         transformations: Iterable[str],
         dataset: str = "mp_20",
-        cache_path: Path = Path(__file__).parent.parent / "cache"):
+        cache_path: Path = Path(__file__).resolve().parents[3] / "cache"):
 
         cache_location = cache_path.joinpath(
             dataset, "analysis_datasets", *transformations).with_suffix(".pkl.gz")
@@ -497,9 +495,9 @@ class GeneratedDataset():
         cls,
         transformations: Sequence[str],
         dataset: str = "mp_20",
-        config_path: Path = Path(__file__).parent.parent / "generated" / "datasets.yaml",
-        root_path: Path = Path(__file__).parent.parent / "generated",
-        cache_path: Path = Path(__file__).parent.parent / "cache",
+        config_path: Path = Path(__file__).resolve().parents[3] / "generated" / "datasets.yaml",
+        root_path: Path = Path(__file__).resolve().parents[3] / "generated",
+        cache_path: Path = Path(__file__).resolve().parents[3] / "cache",
         sort: bool = True):
 
         result = cls(dataset, cache_path.joinpath(dataset, "analysis_datasets", *transformations).with_suffix(".pkl.gz"))
@@ -638,7 +636,7 @@ class GeneratedDataset():
             self.data.loc[:, wcykoffs.columns] = wcykoffs
         if "site_symmetries" not in self.data.columns:
             # We have read the pyXtal format
-            wyckoffs_db_file = Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
+            wyckoffs_db_file = Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
             with gzip.open(wyckoffs_db_file, "rb") as f:
                 wychoffs_enumerated_by_ss, _, ss_from_letter = pickle.load(f)
             augmentation_dict = get_augmentation_dict()

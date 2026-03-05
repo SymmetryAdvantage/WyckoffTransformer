@@ -5,8 +5,6 @@ from omegaconf import OmegaConf
 import torch
 import wandb
 
-import sys
-sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from wyckoff_transformer.trainer import train_from_config
 
 
@@ -21,6 +19,7 @@ def main():
                         help="Set the path for saving run data")
     parser.add_argument("--torch-num-thread", type=int, help="Number of threads for torch")
     args = parser.parse_args()
+    return
 
     if args.debug:
         torch.autograd.set_detect_anomaly(True)

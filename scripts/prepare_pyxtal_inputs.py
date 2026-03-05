@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from evaluation.generated_dataset import GeneratedDataset
+from wyckoff_transformer.evaluation.generated_dataset import GeneratedDataset
 
 def remove_all_extensions(file_path):
     path = Path(file_path)

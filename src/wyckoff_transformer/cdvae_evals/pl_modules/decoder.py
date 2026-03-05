@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from cdvae.pl_modules.embeddings import MAX_ATOMIC_NUM
-from cdvae.pl_modules.gemnet.gemnet import GemNetT
+from .embeddings import MAX_ATOMIC_NUM
+from .gemnet.gemnet import GemNetT
 
 
 def build_mlp(in_dim, hidden_dim, fc_num_layers, out_dim):

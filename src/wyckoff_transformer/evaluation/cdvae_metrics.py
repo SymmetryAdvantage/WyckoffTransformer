@@ -27,10 +27,10 @@ from pymatgen.core import Composition, Structure
 from matminer.featurizers.site.fingerprint import CrystalNNFingerprint
 from matminer.featurizers.composition.composite import ElementProperty
 
-from cdvae.common.data_utils import StandardScaler
-from cdvae.common.constants import CompScalerMeans, CompScalerStds
-from cdvae.pl_data.dataset import TensorCrystDataset
-from cdvae.pl_data.datamodule import worker_init_fn
+from wyckoff_transformer.cdvae_evals.common.data_utils import StandardScaler
+from wyckoff_transformer.cdvae_evals.common.constants import CompScalerMeans, CompScalerStds
+from wyckoff_transformer.cdvae_evals.pl_data.dataset import TensorCrystDataset
+from wyckoff_transformer.cdvae_evals.pl_data.datamodule import worker_init_fn
 
 CompScaler = StandardScaler(
     means=np.array(CompScalerMeans),
@@ -210,7 +210,7 @@ def filter_fps(struc_fps, comp_fps):
 
 def get_model_path(eval_model_name):
     model_path = (
-        Path(__file__).parent.parent / 'cdvae' / 'prop_models' / eval_model_name)
+        Path(__file__).resolve().parents[1] / 'cdvae_evals' / 'prop_models' / eval_model_name)
     return model_path
 
 def load_config(model_path):
@@ -219,7 +219,7 @@ def load_config(model_path):
     return cfg
 
 def load_model(model_path, load_data=False, testing=True):
-    os.environ["PROJECT_ROOT"] = str(Path(__file__).parent.parent.parent / 'cdvae')
+    os.environ["PROJECT_ROOT"] = str(Path(__file__).resolve().parents[3])
     with initialize_config_dir(str(model_path), version_base="1.1"):
         cfg = compose(config_name='hparams')
         template_model = hydra.utils.instantiate(

@@ -7,10 +7,9 @@ import numpy as np
 import pandas as pd
 from pyxtal import Group
 from sklearn.cluster import KMeans
-from scipy.special import sph_harm
+from scipy.special import sph_harm_y
 
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
+
 from wyckoff_transformer.tokenization import FeatureEngineer
 
 N_3D_SPACEGROUPS = 230
@@ -35,15 +34,15 @@ def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     # Normalize the vectors
     norms = np.linalg.norm(vectors_batch, axis=-1, keepdims=True)
     x, y = vectors_batch[..., 0], vectors_batch[..., 1]
-    phi = np.arctan2(y, x)
+    theta = np.arctan2(y, x)
     # Avoid division by zero
     nonzero_norms = norms.copy()
     nonzero_norms[nonzero_norms == 0] = 1
     z = vectors_batch[..., 2] / nonzero_norms.squeeze(-1)
-    theta = np.arccos(z)
+    phi = np.arccos(z)
 
     # Compute spherical harmonics for all vectors
-    res = np.array([sph_harm(order, degree, phi, theta) for order in range(degree+1)])
+    res = np.array([sph_harm_y(n=degree, m=order, theta=theta, phi=phi) for order in range(degree+1)])
     res *= np.expand_dims(norms.squeeze(-1), 0)
     return res.mean(axis=-1)
 

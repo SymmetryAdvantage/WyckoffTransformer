@@ -281,7 +281,7 @@ def compute_symmetry_sites(
 
 
 def read_all_MP_csv(
-    mp_path: Path = Path(__file__).parent.parent / "cdvae"/"data"/"mp_20",
+    mp_path: Path = Path(__file__).parent.parent / "data" / "cdvae" / "mp_20",
     wychoffs_enumerated_by_ss_file: Path = \
         Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
     file_format: str = "csv",
@@ -293,7 +293,7 @@ def read_all_MP_csv(
     Reads all Materials Project CSV files and returns a dictionary of DataFrames.
 
     Args:
-        mp_path (Path, optional): The path to the Materials Project CSV files. Defaults to "cdvae/data/mp_20".
+        mp_path (Path, optional): The path to the Materials Project CSV files. Defaults to "data/cdvae/mp_20".
         wychoffs_enumerated_by_ss_file (Path, optional): The path to the Wyckoff positions enumerated by space group file. Defaults to "wychoffs_enumerated_by_ss.pkl.gz".
         file_format (str, optional): The file format. Defaults to "csv". Can be archived csv openable by pandas.
         n_jobs (int, optional): The number of jobs to use. Defaults to None.

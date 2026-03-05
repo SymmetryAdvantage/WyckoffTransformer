@@ -5,9 +5,9 @@ import torch
 from torch import nn, Tensor
 import numpy as np
 
-from cascade_transformer.dataset import AugmentedCascadeDataset, TargetClass, jagged_batch_randperm
+from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass, jagged_batch_randperm
 from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer
-from preprocess_wychoffs import inverse_series
+from scripts.preprocess_wychoffs import inverse_series
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ class WyckoffGenerator():
         device: torch.device = torch.device("cpu")):
         import wandb
         from omegaconf import OmegaConf
-        from cascade_transformer.model import CascadeTransformer
+        from wyckoff_transformer.cascade.model import CascadeTransformer
 
         if update_wandb:
             wandb_run = wandb.init(project="WyckoffTransformer", id=wandb_run_id, resume=True)
