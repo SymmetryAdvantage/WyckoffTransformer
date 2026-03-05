@@ -51,6 +51,8 @@ def main():
             raise ValueError("Cannot update W&B run when using a local model path.")
         run_path = args.model_path
         config = OmegaConf.load(run_path / "config.yaml")
+    else:
+        raise ValueError("Either --wandb-run or --model-path must be provided.")
 
     generation_start_time = time.time()
     trainer = WyckoffTrainer.from_config(
