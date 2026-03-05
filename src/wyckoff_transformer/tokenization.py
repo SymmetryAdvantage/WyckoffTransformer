@@ -115,6 +115,12 @@ class EnumeratingTokeniser(dict):
 
 
 class FeatureEngineer():
+    @staticmethod
+    def _lexsort_db(db: Series) -> Series:
+        if isinstance(db.index, MultiIndex):
+            return db.sort_index()
+        return db
+
     def __init__(self,
             data: Dict[Tuple, int]|Series,
             inputs: Optional[Tuple] = None,
@@ -131,6 +137,9 @@ class FeatureEngineer():
         else:
             index = MultiIndex.from_tuples(data.keys(), names=inputs)
             self.db = Series(data=data.values(), index=index, name=name)
+        # Ensure MultiIndex lookups are lexsorted once at construction time.
+        # This avoids repeated runtime warnings and slower indexing paths.
+        self.db = self._lexsort_db(self.db)
         self.inputs = self.db.index.names
         self.stop_token = stop_token
         self.pad_token = pad_token
