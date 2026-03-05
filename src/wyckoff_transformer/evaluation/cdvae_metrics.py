@@ -242,29 +242,12 @@ def load_model(model_path):
             ckpt_epochs = np.array(
                 [int(ckpt.parts[-1].split('-')[0].split('=')[1]) for ckpt in ckpts if 'last' not in ckpt.parts[-1]])
             ckpt = str(ckpts[ckpt_epochs.argsort()[-1]])
-        try:
-            model = model_cls.load_from_checkpoint(
-                ckpt,
-                strict=True,
-                weights_only=False,
-                encoder=cfg.model.encoder,
-            )
-        except TypeError:
-            from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-            if hasattr(torch.serialization, "safe_globals"):
-                with torch.serialization.safe_globals([EarlyStopping]):
-                    model = model_cls.load_from_checkpoint(
-                        ckpt,
-                        strict=True,
-                        encoder=cfg.model.encoder,
-                    )
-            else:
-                torch.serialization.add_safe_globals([EarlyStopping])
-                model = model_cls.load_from_checkpoint(
-                    ckpt,
-                    strict=True,
-                    encoder=cfg.model.encoder,
-                )
+        model = model_cls.load_from_checkpoint(
+            ckpt,
+            strict=True,
+            weights_only=False,
+            encoder=cfg.model.encoder)
+
         model.lattice_scaler = torch.load(model_path / 'lattice_scaler.pt', weights_only=False)
         model.scaler = torch.load(model_path / 'prop_scaler.pt', weights_only=False)
 
