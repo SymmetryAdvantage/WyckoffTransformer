@@ -786,7 +786,7 @@ def train_from_config(
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
-    trainer = WyckoffTrainer.from_config(config_dict, device, this_run_path)    
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)
     trainer.train()
     this_run_path.mkdir(parents=True, exist_ok=True)
     with gzip.open(this_run_path / "tokenizers.pkl.gz", "wb") as f:
