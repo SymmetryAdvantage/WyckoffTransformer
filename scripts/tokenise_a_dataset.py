@@ -7,9 +7,6 @@ import pickle
 import gzip
 import logging
 
-import sys
-sys.path.append(str(Path(__file__).parent.parent.resolve()))
-
 from wyckoff_transformer.tokenization import tokenise_dataset
 
 logger = logging.getLogger(__name__)

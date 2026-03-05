@@ -1,9 +1,3 @@
-if __name__ == "__main__":
-    # Ensure the parent directory is in the system path for imports
-    import sys
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).parent.parent))
-
 from typing import Tuple, Optional
 from argparse import ArgumentParser
 from pathlib import Path

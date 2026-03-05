@@ -4,10 +4,6 @@ if __name__ == "__main__":
     import os
     os.environ["OMP_NUM_THREADS"] = "1"
     os.environ["OMP_THREAD_LIMIT"] = "1"
-    # Add the project root to sys.path to allow imports from the root directory
-    import sys
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).parent.parent))
 
 from typing import List, Optional
 import warnings

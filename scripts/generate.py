@@ -9,8 +9,6 @@ import wandb
 import logging
 from omegaconf import OmegaConf
 
-import sys
-sys.path.append(str(Path(__file__).parent.parent.resolve()))
 from wyckoff_transformer.trainer import WyckoffTrainer
 
 
