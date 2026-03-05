@@ -25,10 +25,8 @@ from wyckoff_transformer.generator import WyckoffGenerator
 from wyckoff_transformer.evaluation import (
     evaluate_and_log, StatisticalEvaluator, smac_validity_from_counter)
 
-StatisticalEvaluator=str
-
 logger = logging.getLogger(__file__)
-preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
+preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parent.parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
 
 class WyckoffTrainer():
     def __init__(
@@ -415,7 +413,7 @@ class WyckoffTrainer():
                     best_val_loss = total_val_loss
                     best_val_epoch = epoch
                     torch.save(self.model.state_dict(), best_model_params_path)
-                    wandb.save(best_model_params_path, base_path=self.run_path, policy="live")
+                    wandb.save(best_model_params_path, base_path=self.run_path, policy="now")
                     train_tqdm.set_description(
                         f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
                         f"saved to {best_model_params_path}")
