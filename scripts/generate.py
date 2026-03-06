@@ -18,8 +18,8 @@ def main():
     model_source = parser.add_mutually_exclusive_group(required=True)
     model_source.add_argument("--wandb-run", type=str, help="The W&B run to use for the model.")
     model_source.add_argument("--model-path", type=Path,
-        help="The path to the model directory. Should contain a best_model_params.pt, tokenizers.pkl.gz, "
-             "token_engineers.pkl.gz, config.yaml")
+           help="The path to the model directory. Should contain best_model_params.pt, "
+               "wyckoff_processor.json, config.yaml")
     parser.add_argument("--use-cached-tensors", action="store_true",
            help="Load cached tensors and datasets as before. By default generation does not require datasets and "
                "samples start tokens from the saved space-group distribution.")

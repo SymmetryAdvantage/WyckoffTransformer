@@ -15,6 +15,7 @@ import torch
 from pandarallel import pandarallel
 from pyxtal.symmetry import Group, site_symmetry
 from omegaconf import OmegaConf, DictConfig
+from pydantic import BaseModel
 
 
 # Order is important here, as we can use it to sort the tokens
@@ -22,6 +23,31 @@ ServiceToken = Enum('ServiceToken', ['MASK', 'STOP', 'PAD'])
 logger = logging.getLogger(__name__)
 
 generation_modes = Enum('GenerationModes', ["SiteSymmetry", "WyckoffLetters", "HarmonicCluster"])
+
+JsonPrimitive = str | int | float | bool | None
+JsonContainer = Dict[str, object] | List[object]
+
+
+class _SerialisedTokeniser(BaseModel):
+    kind: str
+    payload: Dict[str, object]
+
+
+class _SerialisedFeatureEngineer(BaseModel):
+    name: Optional[str]
+    inputs: List[Optional[str]]
+    stop_token: object = None
+    pad_token: object = None
+    mask_token: object = None
+    default_value: object = 0
+    include_stop: bool = True
+    entries: List[Tuple[List[object], object]]
+
+
+class _WyckoffProcessorState(BaseModel):
+    config: Dict[str, object]
+    tokenisers: Dict[str, _SerialisedTokeniser]
+    token_engineers: Dict[str, _SerialisedFeatureEngineer]
 
 class TupleDict(UserDict):
     def __getitem__(self, key):
@@ -36,10 +62,15 @@ class SpaceGroupEncoder(dict):
     get_spg_symmetry_object().to_matrix_representation()
     Removes constants among the present groups.
     """
-    def __init__(self):
-        super().__init__()
-        self.np_dict = dict()
-        self.to_token = TupleDict()
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.np_dict = {
+            group_number: np.array(encoded_group)
+            for group_number, encoded_group in self.items()
+        }
+        self.to_token = TupleDict(
+            {tuple(encoded_group): group_number for group_number, encoded_group in self.items()}
+        )
 
     @classmethod
     def from_sg_set(cls, all_space_groups: Set[int]|FrozenSet[int]):
@@ -82,11 +113,10 @@ class SpaceGroupEncoder(dict):
         varying_indices = ~((all_spgs_sum == 0) | (all_spgs_sum == len(all_spgs_raw)))
         logger.info("Space group one-hot encoding: %i groups, %i varying elements", len(all_space_groups), varying_indices.sum())
         # Numpy array is unhashable, so we convert it to tuple for compatibility reasons
-        instance = cls()
+        encoded_mapping = {}
         for group_number, spg in all_spgs_raw.items():
-            instance.np_dict[group_number] = spg[varying_indices]
-            instance[group_number] = tuple(spg[varying_indices])
-            instance.to_token[tuple(spg[varying_indices])] = group_number
+            encoded_mapping[group_number] = tuple(spg[varying_indices])
+        instance = cls(encoded_mapping)
 
         if len(set(instance.values())) != len(all_spgs_raw):
             raise ValueError("Space group encoding is not unique")
@@ -108,13 +138,13 @@ class SpaceGroupEncoder(dict):
 
 class EnumeratingTokeniser(dict):
     def __init__(self, *args, stop_token=None, pad_token=None, mask_token=None,
-                 include_stop=True, to_token=[], **kwargs):
+                 include_stop=True, **kwargs):
         super().__init__(*args, **kwargs)
         self.stop_token: Optional[int] = stop_token
         self.pad_token: Optional[int] = pad_token
         self.mask_token: Optional[int] = mask_token
         self.include_stop: bool = include_stop
-        self.to_token: List = to_token
+        self.to_token: List = [token for token, idx in sorted(self.items(), key=itemgetter(1))]
 
     @classmethod
     def from_token_set(cls,
@@ -132,7 +162,6 @@ class EnumeratingTokeniser(dict):
             pad_token=token_map[ServiceToken.PAD.name],
             mask_token=token_map[ServiceToken.MASK.name],
             include_stop=include_stop,
-            to_token=[token for token, idx in sorted(token_map.items(), key=itemgetter(1))],
         )
         # Theoretically, we can check it in the beginnig, but
         # the performance hit is negligible
@@ -155,6 +184,24 @@ class EnumeratingTokeniser(dict):
 
     def tokenise_single(self, token, **tensor_args) -> torch.Tensor:
         return torch.tensor(self[token], **tensor_args)
+
+    def get_letter_from_ss_enum_idx(self) -> dict:
+        """
+        Processes the real-space index of Wyckhoff letters by space group, site symmetry,
+        and enumeration into a dict indexed by space group, site symmetry, and
+        enumeration TOKEN to make generation a little faster.
+        """
+        preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parents[2] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
+        with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
+            letter_from_ss_enum = pickle.load(f)[1]
+        letter_from_ss_enum_idx = defaultdict(dict)
+        for space_group, ss_enum_dict in letter_from_ss_enum.items():
+            for ss, enum_dict in ss_enum_dict.items():
+                letter_from_ss_enum_idx[space_group][ss] = dict()
+                for enum, letter in enum_dict.items():
+                    if enum in self:
+                        letter_from_ss_enum_idx[space_group][ss][self[enum]] = letter
+        return letter_from_ss_enum_idx
 
 
 class FeatureEngineer():
@@ -309,6 +356,9 @@ class PassThroughTokeniser():
         return token
 
 
+TokeniserType = EnumeratingTokeniser | SpaceGroupEncoder | PassThroughTokeniser
+
+
 def tokenise_engineer(
     engineer: FeatureEngineer,
     tokenisers: EnumeratingTokeniser):
@@ -361,6 +411,507 @@ def argsort_multiple(*tensors: torch.Tensor, dim: int) -> torch.Tensor:
     raise NotImplementedError("Only one or two tensors are supported")
 
 
+class WyckoffProcessor:
+    """
+    Master object encapsulating tokeniser/token-engineer lifecycle.
+    """
+
+    def __init__(
+        self,
+        config: Optional[DictConfig | Dict[str, object]] = None,
+        tokenisers: Optional[Dict[str, TokeniserType]] = None,
+        token_engineers: Optional[Dict[str, FeatureEngineer]] = None,
+    ):
+        if config is None:
+            config = {}
+        self.config = OmegaConf.create(config)
+        self.tokenisers: Dict[str, TokeniserType] = tokenisers or {}
+        self.token_engineers: Dict[str, FeatureEngineer] = token_engineers or {}
+
+    @staticmethod
+    def _normalise_path(path: Path | str) -> Path:
+        path = Path(path)
+        if path.suffix == ".json":
+            return path
+        return path / "wyckoff_processor.json"
+
+    @staticmethod
+    def _to_jsonable(value: object) -> JsonPrimitive | JsonContainer:
+        if isinstance(value, np.ndarray):
+            return {"__ndarray__": value.tolist()}
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, tuple):
+            return [WyckoffProcessor._to_jsonable(v) for v in value]
+        if isinstance(value, list):
+            return [WyckoffProcessor._to_jsonable(v) for v in value]
+        if isinstance(value, dict):
+            return {k: WyckoffProcessor._to_jsonable(v) for k, v in value.items()}
+        return value
+
+    @staticmethod
+    def _from_jsonable(value: object) -> object:
+        if isinstance(value, dict) and "__ndarray__" in value:
+            return np.array(value["__ndarray__"])
+        if isinstance(value, list):
+            return [WyckoffProcessor._from_jsonable(v) for v in value]
+        if isinstance(value, dict):
+            return {k: WyckoffProcessor._from_jsonable(v) for k, v in value.items()}
+        return value
+
+    @staticmethod
+    def _restore_hashable(value: object) -> object:
+        if isinstance(value, list):
+            return tuple(WyckoffProcessor._restore_hashable(v) for v in value)
+        if isinstance(value, dict):
+            return {k: WyckoffProcessor._restore_hashable(v) for k, v in value.items()}
+        return value
+
+    @staticmethod
+    def _serialise_tokeniser(tokeniser: TokeniserType) -> _SerialisedTokeniser:
+        if isinstance(tokeniser, EnumeratingTokeniser):
+            mapping = [
+                [
+                    WyckoffProcessor._to_jsonable(k),
+                    WyckoffProcessor._to_jsonable(v),
+                ]
+                for k, v in tokeniser.items()
+            ]
+            return _SerialisedTokeniser(
+                kind="enumerating",
+                payload={
+                    "mapping": mapping,
+                    "stop_token": WyckoffProcessor._to_jsonable(tokeniser.stop_token),
+                    "pad_token": WyckoffProcessor._to_jsonable(tokeniser.pad_token),
+                    "mask_token": WyckoffProcessor._to_jsonable(tokeniser.mask_token),
+                    "include_stop": tokeniser.include_stop,
+                },
+            )
+        if isinstance(tokeniser, SpaceGroupEncoder):
+            return _SerialisedTokeniser(
+                kind="space_group",
+                payload={
+                    "mapping": [
+                        [
+                            WyckoffProcessor._to_jsonable(k),
+                            WyckoffProcessor._to_jsonable(list(v)),
+                        ]
+                        for k, v in tokeniser.items()
+                    ],
+                },
+            )
+        if isinstance(tokeniser, PassThroughTokeniser):
+            return _SerialisedTokeniser(
+                kind="pass_through",
+                payload={
+                    "values_count": WyckoffProcessor._to_jsonable(tokeniser.values_count),
+                    "stop_token": WyckoffProcessor._to_jsonable(tokeniser.stop_token),
+                    "pad_token": WyckoffProcessor._to_jsonable(tokeniser.pad_token),
+                    "mask_token": WyckoffProcessor._to_jsonable(tokeniser.mask_token),
+                },
+            )
+        raise TypeError(f"Unsupported tokeniser type: {type(tokeniser)}")
+
+    @staticmethod
+    def _deserialise_tokeniser(serialised: _SerialisedTokeniser) -> TokeniserType:
+        payload = serialised.payload
+        if serialised.kind == "enumerating":
+            return EnumeratingTokeniser(
+                {WyckoffProcessor._restore_hashable(k): v for k, v in payload["mapping"]},
+                stop_token=payload["stop_token"],
+                pad_token=payload["pad_token"],
+                mask_token=payload["mask_token"],
+                include_stop=payload["include_stop"],
+            )
+        if serialised.kind == "space_group":
+            return SpaceGroupEncoder({group_number: tuple(spg) for group_number, spg in payload["mapping"]})
+        if serialised.kind == "pass_through":
+            return PassThroughTokeniser(
+                values_count=payload["values_count"],
+                stop_token=payload["stop_token"],
+                pad_token=payload["pad_token"],
+                mask_token=payload["mask_token"],
+            )
+        raise ValueError(f"Unknown tokeniser kind: {serialised.kind}")
+
+    @staticmethod
+    def _serialise_feature_engineer(engineer: FeatureEngineer) -> _SerialisedFeatureEngineer:
+        entries = []
+        for index, value in engineer.db.items():
+            if isinstance(index, tuple):
+                index_items = [WyckoffProcessor._to_jsonable(v) for v in index]
+            else:
+                index_items = [WyckoffProcessor._to_jsonable(index)]
+            entries.append((index_items, WyckoffProcessor._to_jsonable(value)))
+        return _SerialisedFeatureEngineer(
+            name=engineer.db.name,
+            inputs=list(engineer.db.index.names),
+            stop_token=WyckoffProcessor._to_jsonable(engineer.stop_token),
+            pad_token=WyckoffProcessor._to_jsonable(engineer.pad_token),
+            mask_token=WyckoffProcessor._to_jsonable(engineer.mask_token),
+            default_value=WyckoffProcessor._to_jsonable(engineer.default_value),
+            include_stop=engineer.include_stop,
+            entries=entries,
+        )
+
+    @staticmethod
+    def _deserialise_feature_engineer(serialised: _SerialisedFeatureEngineer) -> FeatureEngineer:
+        data = {
+            tuple(WyckoffProcessor._restore_hashable(v) for v in index): WyckoffProcessor._from_jsonable(value)
+            for index, value in serialised.entries
+        }
+        return FeatureEngineer(
+            data=data,
+            inputs=tuple(serialised.inputs),
+            name=serialised.name,
+            stop_token=WyckoffProcessor._from_jsonable(serialised.stop_token),
+            pad_token=WyckoffProcessor._from_jsonable(serialised.pad_token),
+            mask_token=WyckoffProcessor._from_jsonable(serialised.mask_token),
+            default_value=WyckoffProcessor._from_jsonable(serialised.default_value),
+            include_stop=serialised.include_stop,
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        config: DictConfig | Dict[str, object],
+        tokenizer_path: Optional[Path | str] = None,
+    ):
+        if tokenizer_path is not None:
+            return cls.from_pretrained(tokenizer_path)
+        return cls(config=config)
+
+    def save_pretrained(self, path: Path | str) -> Path:
+        destination = self._normalise_path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        config_payload = OmegaConf.to_container(self.config, resolve=True)
+        state = _WyckoffProcessorState(
+            config=config_payload,
+            tokenisers={
+                key: self._serialise_tokeniser(tokeniser)
+                for key, tokeniser in self.tokenisers.items()
+            },
+            token_engineers={
+                key: self._serialise_feature_engineer(engineer)
+                for key, engineer in self.token_engineers.items()
+            },
+        )
+        destination.write_text(state.model_dump_json(indent=2), encoding="ascii")
+        return destination
+
+    @classmethod
+    def from_pretrained(cls, path: Path | str):
+        source = cls._normalise_path(path)
+        state = _WyckoffProcessorState.model_validate_json(source.read_text(encoding="ascii"))
+        return cls(
+            config=OmegaConf.create(state.config),
+            tokenisers={
+                key: cls._deserialise_tokeniser(tokeniser)
+                for key, tokeniser in state.tokenisers.items()
+            },
+            token_engineers={
+                key: cls._deserialise_feature_engineer(engineer)
+                for key, engineer in state.token_engineers.items()
+            },
+        )
+
+    def tokenise_dataset(
+        self,
+        datasets_pd: Dict[str, DataFrame],
+        tokenizer_path: Optional[Path | str] = None,
+        n_jobs: Optional[int] = None,
+    ) -> Tuple[Dict[str, Dict[str, torch.Tensor | List[List[torch.Tensor]]]], Dict[str, TokeniserType], Dict[str, FeatureEngineer]]:
+        config = self.config
+        dtype = getattr(torch, config.dtype)
+        include_stop = config.get("include_stop", True)
+        if n_jobs is not None:
+            pandarallel.initialize(nb_workers=n_jobs)
+        else:
+            # Preserve the NB_PHYSICAL_CORES default
+            pandarallel.initialize()
+        if tokenizer_path is None:
+            tokenisers = {}
+            max_tokens = torch.iinfo(dtype).max
+            for token_field in config.token_fields.pure_categorical:
+                all_tokens = frozenset(chain.from_iterable(chain.from_iterable(map(itemgetter(token_field), datasets_pd.values()))))
+                tokenisers[token_field] = EnumeratingTokeniser.from_token_set(all_tokens, max_tokens, include_stop=include_stop)
+
+            if "pure_categorical" in config.sequence_fields:
+                # Cell variable sequence_field defined in loopPylintW0640:cell-var-from-loop
+                for sequence_field in config.sequence_fields.pure_categorical:
+                    all_tokens = frozenset(chain.from_iterable(map(lambda df: frozenset(df[sequence_field].tolist()), datasets_pd.values())))
+                    tokenisers[sequence_field] = EnumeratingTokeniser.from_token_set(all_tokens, max_tokens)
+
+            if "space_group" in config.sequence_fields:
+                for sequence_field in config.sequence_fields.space_group:
+                    all_space_groups = frozenset(chain.from_iterable(map(itemgetter(sequence_field), datasets_pd.values())))
+                    tokenisers[sequence_field] = SpaceGroupEncoder.from_sg_set(all_space_groups)
+        else:
+            preloaded_processor = WyckoffProcessor.from_pretrained(tokenizer_path)
+            tokenisers = preloaded_processor.tokenisers
+        raw_engineers = {}
+        token_engineers = {}
+        if "engineered" in config.token_fields:
+            for engineered_field_name, engineered_field_definiton in config.token_fields.engineered.items():
+                if engineered_field_definiton.type != "map":
+                    raise ValueError("Only map engineered_field fields are supported")
+                if len(engineered_field_definiton.inputs) != 3:
+                    raise NotImplementedError("Only 3 inputs are supported")
+                with gzip.open(Path(__file__).resolve().parents[2] / "cache" / "engineers" / f"{engineered_field_name}.pkl.gz", "rb") as f:
+                    raw_engineer = pickle.load(f)
+                raw_engineers[engineered_field_name] = raw_engineer
+                # Now we need to convert the token values to token indices
+                # And adjust include_stop
+                token_engineers[engineered_field_name] = tokenise_engineer(raw_engineer, tokenisers)
+                raw_engineers[engineered_field_name].include_stop = token_engineers[engineered_field_name].include_stop
+                # The values haven't changed, only the keys, so we can reuse the stop, pad, and mask tokens
+                if token_engineers[engineered_field_name].db.dtype == 'O':
+                    try:
+                        value_counts = token_engineers[engineered_field_name].db.nunique()
+                    except TypeError: # unhashable type: 'numpy.ndarray', etc.
+                        value_counts = len(token_engineers[engineered_field_name].db)
+                else:
+                    if token_engineers[engineered_field_name].db.min() != 0:
+                        logger.warning("The minimum value in the engineered field %s is not 0", engineered_field_name)
+                        # We still set the count to max, potentially inluding some never used values
+                        # +1 for token #0
+                    value_counts = token_engineers[engineered_field_name].db.max() + 1
+
+                tokenisers[engineered_field_name] = PassThroughTokeniser(
+                    values_count=value_counts + 3, # For service tokens
+                    stop_token=raw_engineer.stop_token,
+                    pad_token=raw_engineer.pad_token,
+                    mask_token=raw_engineer.mask_token)
+
+        # We don't check consistency among the fields here
+        # The value is for the original sequences, withot service tokens
+        original_max_len = max(map(len, chain.from_iterable(
+            map(itemgetter(config.token_fields.pure_categorical[0]),
+                datasets_pd.values()))))
+
+        tensors = defaultdict(dict)
+        for dataset_name, dataset in datasets_pd.items():
+            dataset = dataset[dataset['spacegroup_number'].isin(tokenisers['spacegroup_number'])]
+
+            for field in config.token_fields.pure_categorical:
+                tensors[dataset_name][field] = torch.stack(
+                    dataset[field].map(partial(
+                        tokenisers[field].tokenise_sequence,
+                        original_max_len=original_max_len,
+                        dtype=dtype)).to_list())
+
+            if "engineered" in config.token_fields:
+                for field, field_config in config.token_fields.engineered.items():
+                    logger.debug("Processing engineered field %s", field)
+                    if "dtype" in field_config:
+                        field_dtype = getattr(torch, field_config.dtype)
+                    else:
+                        field_dtype = dtype
+                    compute_feature_function = partial(
+                        raw_engineers[field].get_feature_tensor_from_series,
+                        original_max_len=original_max_len,
+                        dtype=field_dtype)
+                    tensor_list = dataset.parallel_apply(
+                        compute_feature_function, axis=1).to_list()
+                    tensors[dataset_name][field] = torch.stack(tensor_list)
+                    logger.debug("Engineered field %s shape %s", field, tensors[dataset_name][field].shape)
+
+            if "pure_categorical" in config.sequence_fields:
+                for field in config.sequence_fields.pure_categorical:
+                    tensors[dataset_name][field] = torch.stack(
+                        dataset[field].map(partial(
+                            tokenisers[field].tokenise_single,
+                            dtype=dtype)).to_list())
+
+            if "space_group" in config.sequence_fields:
+                for field in config.sequence_fields.space_group:
+                    tensors[dataset_name][field] = tokenisers[field].encode_spacegroups(dataset[field], dtype=dtype)
+
+            if "no_processing" in config.sequence_fields:
+                for field in config.sequence_fields.no_processing:
+                    try:
+                        tensors[dataset_name][field] = torch.Tensor(dataset[field].array)
+                    except KeyError as e:
+                        logger.warning("Field %s not found in the dataset", field)
+                        logger.warning(e)
+
+
+            if "counters" in config.sequence_fields:
+                # Counter fields are processed into two tensors: tokenised values, and the counts
+                # WARNING Cell variable tokeniser_filed defined in loopPylintW0640:cell-var-from-loop
+                for field, tokeniser_field in config.sequence_fields.counters.items():
+                    tensors[dataset_name][f"{field}_tokens"] = \
+                            dataset[field].map(lambda dict_:
+                                torch.stack([tokenisers[tokeniser_field].tokenise_single(key, dtype=dtype)
+                                    for key in dict_.keys()])).to_list()
+                    tensors[dataset_name][f"{field}_counts"] = \
+                            dataset[field].map(lambda dict_:
+                                torch.tensor(tuple(dict_.values()), dtype=dtype)).to_list()
+
+            if "augmented_token_fields" in config:
+                # WARNING Cell variable field defined in loopPylintW0640:cell-var-from-loop
+                for field in config.augmented_token_fields:
+                    augmented_field = f"{field}_augmented"
+                    tensors[dataset_name][augmented_field] = dataset[augmented_field].map(lambda variants:
+                            [tokenisers[field].tokenise_sequence(
+                                variant, original_max_len=original_max_len, dtype=dtype)
+                                for variant in variants]).to_list()
+
+            for field, field_config in config.token_fields.get("augmented_engineered", {}).items():
+                augmented_field = f"{field}_augmented"
+                if "dtype" in config.token_fields.engineered[field]:
+                    field_dtype = getattr(torch, config.token_fields.engineered[field].dtype)
+                else:
+                    field_dtype = dtype
+                tensors[dataset_name][augmented_field] = dataset.parallel_apply(
+                    partial(
+                        raw_engineers[field].get_feature_from_augmented_series,
+                        augmented_field_orginal_name=field_config.augmented_input,
+                        original_max_len=original_max_len,
+                        dtype=field_dtype), axis=1).to_list()
+
+            # We can have long sequences, but still a limited number of tokens
+            if "pure_sequence_length_dtype" in config:
+                pure_sequence_length_dtype = getattr(torch, config.pure_sequence_length_dtype)
+            else:
+                pure_sequence_length_dtype = dtype
+            # Assuming all the fields have the same length
+            tensors[dataset_name]["pure_sequence_length"] = torch.tensor(
+                dataset[config.token_fields.pure_categorical[0]].map(len).to_list(),
+                dtype=pure_sequence_length_dtype)
+
+            if "token_sort" in config:
+                if "augmented_token_fields" in config:
+                    raise NotImplementedError("Token sort is not implemented for augmented fields")
+                key_tensors = [tensors[dataset_name][field] for field in config.token_sort]
+                order = argsort_multiple(*key_tensors, dim=1)
+                logger.debug("Order tensor")
+                logger.debug(order[:5])
+                fields_to_sort = list(config.token_fields.pure_categorical)
+                fields_to_sort.extend(config.token_fields.get("engineered", []))
+                for field in fields_to_sort:
+                    logger.debug("Sorting tensor %s", field)
+                    logger.debug(tensors[dataset_name][field][:5])
+                    tensors[dataset_name][field] = tensors[dataset_name][field].gather(1, order)
+                    logger.debug("Sorted tensor %s", field)
+                    logger.debug(tensors[dataset_name][field][:5])
+
+        self.tokenisers = tokenisers
+        self.token_engineers = token_engineers
+        return tensors, tokenisers, token_engineers
+
+    def tensor_to_pyxtal(
+        self,
+        space_group_tensor: torch.Tensor,
+        wp_tensor: torch.Tensor,
+        cascade_order: Tuple[str, ...],
+        letter_from_ss_enum_idx,
+        ss_from_letter,
+        wp_index,
+        enforced_min_elements: Optional[int] = None,
+        enforced_max_elements: Optional[int] = None,
+    ) -> Optional[dict]:
+        if not self.tokenisers:
+            raise ValueError("Tokenisers are not initialised")
+        ss_pyxtal_cascde_order = ("elements", "site_symmetries", "sites_enumeration")
+        letters_pyxtal_cascade_order = ("elements", "wyckoff_letters")
+        harmonic_pyxtal_cascade_order = ("elements", "site_symmetries", "harmonic_cluster")
+        if set(cascade_order) == set(ss_pyxtal_cascde_order):
+            pyxtal_cascade_order = ss_pyxtal_cascde_order
+            mode = generation_modes.SiteSymmetry
+        elif set(cascade_order) == set(letters_pyxtal_cascade_order):
+            pyxtal_cascade_order = letters_pyxtal_cascade_order
+            mode = generation_modes.WyckoffLetters
+        elif set(cascade_order) == set(harmonic_pyxtal_cascade_order):
+            pyxtal_cascade_order = harmonic_pyxtal_cascade_order
+            mode = generation_modes.HarmonicCluster
+        else:
+            raise NotImplementedError("Unsupported cascade")
+
+        cascade_permutation = [cascade_order.index(field) for field in pyxtal_cascade_order]
+        cononical_wp_tensor = wp_tensor[:, cascade_permutation]
+
+        stop_tokens = torch.tensor([self.tokenisers[field].stop_token for field in pyxtal_cascade_order], device=wp_tensor.device)
+        mask_tokens = torch.tensor([self.tokenisers[field].mask_token for field in pyxtal_cascade_order], device=wp_tensor.device)
+        pad_tokens = torch.tensor([self.tokenisers[field].pad_token for field in pyxtal_cascade_order], device=wp_tensor.device)
+
+        if space_group_tensor.size() == (1,):
+            space_group_input = space_group_tensor.item()
+        else:
+            space_group_input = space_group_tensor.numpy()
+        space_group_real = self.tokenisers["spacegroup_number"].to_token[space_group_input]
+        pyxtal_args = defaultdict(lambda: [0, []])
+        available_sites = deepcopy(wp_index[space_group_real])
+        for this_token_cascade in cononical_wp_tensor:
+            # Valid stop. In principle, tokens should only be either with
+            # all stops, or all not stops, so an argumnet can be made for
+            # invalidating the structure.
+            if (this_token_cascade == stop_tokens).any():
+                break
+            if (this_token_cascade == pad_tokens).any():
+                logger.info("PAD token in generated sequence")
+                return
+            if (this_token_cascade == mask_tokens).any():
+                logger.info("MASK token in generated sequence")
+                return
+            if mode == generation_modes.SiteSymmetry:
+                element_idx, ss_idx, enum_idx = this_token_cascade.tolist()
+                ss = self.tokenisers["site_symmetries"].to_token[ss_idx]
+                try:
+                    wp_letter = letter_from_ss_enum_idx[space_group_real][ss][enum_idx]
+                except KeyError:
+                    logger.info("Invalid combination: space group %i, site symmetry %s, enum token %i", space_group_real,
+                                ss, enum_idx)
+                    return
+            elif mode == generation_modes.WyckoffLetters:
+                element_idx, wp_letter_idx = this_token_cascade.tolist()
+                wp_letter = self.tokenisers["wyckoff_letters"].to_token[wp_letter_idx]
+                try:
+                    ss = ss_from_letter[space_group_real][wp_letter]
+                except KeyError:
+                    logger.info("Invalid combination: space group %i, wp letter %s", space_group_real, wp_letter)
+                    return
+            elif mode == generation_modes.HarmonicCluster:
+                element_idx, ss_idx, cluster_idx = this_token_cascade.tolist()
+                ss = self.tokenisers["site_symmetries"].to_token[ss_idx]
+                try:
+                    # WARNING tuple might fail for some SG encodings
+                    enum = self.token_engineers["sites_enumeration"].db.loc[tuple(space_group_input), ss_idx, cluster_idx]
+                except KeyError:
+                    logger.info("Invalid combination: space group %i, site symmetry %s, cluster token %i", space_group_real,
+                                ss, cluster_idx)
+                    return
+                wp_letter = letter_from_ss_enum_idx[space_group_real][ss][enum]
+            else:
+                raise NotImplementedError("Unsupported cascade")
+            try:
+                our_site = available_sites[ss][wp_letter]
+            except KeyError:
+                logger.info("Repeated special WP: %i, %s, %s", space_group_real, ss, wp_letter)
+                return
+            element = self.tokenisers["elements"].to_token[element_idx]
+            pyxtal_args[element][0] += our_site[0]
+            pyxtal_args[element][1].append(str(our_site[0]) + wp_letter)
+            if our_site[1] == 0: # The position is special
+                del available_sites[ss][wp_letter]
+        if enforced_min_elements is not None and len(pyxtal_args.keys()) < enforced_min_elements:
+            logger.info("Not enough elements")
+            return
+        if enforced_max_elements is not None and len(pyxtal_args.keys()) > enforced_max_elements:
+            logger.info("Too many elements")
+            return
+        if len(pyxtal_args) == 0:
+            logger.info("No structure generated, STOP in the first token")
+            return
+        return {
+                "group": space_group_real,
+                "sites": [x[1] for x in pyxtal_args.values()],
+                "species": list(map(str, pyxtal_args.keys())),
+                "numIons": [x[0] for x in pyxtal_args.values()]
+            }
+
+
 def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                      config: DictConfig,
                      tokenizer_path: Optional[Path|str] = None,
@@ -380,180 +931,8 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
             The tokenised tensors are a dict with the dataset name as key and a dict with the field name as key and the tokenised tensor as value.
             The tokenisers are a dict with the field name as key and the tokeniser as value.
     """
-    dtype = getattr(torch, config.dtype)
-    include_stop = config.get("include_stop", True)
-    if n_jobs is not None:
-        pandarallel.initialize(nb_workers=n_jobs)
-    else:
-        # Preserve the NB_PHYSICAL_CORES default
-        pandarallel.initialize()
-    if tokenizer_path is None:
-        tokenisers = {}
-        max_tokens = torch.iinfo(dtype).max
-        for token_field in config.token_fields.pure_categorical:
-            all_tokens = frozenset(chain.from_iterable(chain.from_iterable(map(itemgetter(token_field), datasets_pd.values()))))
-            tokenisers[token_field] = EnumeratingTokeniser.from_token_set(all_tokens, max_tokens, include_stop=include_stop)
-
-        if "pure_categorical" in config.sequence_fields:
-            # Cell variable sequence_field defined in loopPylintW0640:cell-var-from-loop
-            for sequence_field in config.sequence_fields.pure_categorical:
-                all_tokens = frozenset(chain.from_iterable(map(lambda df: frozenset(df[sequence_field].tolist()), datasets_pd.values())))
-                tokenisers[sequence_field] = EnumeratingTokeniser.from_token_set(all_tokens, max_tokens)
-
-        if "space_group" in config.sequence_fields:
-            for sequence_field in config.sequence_fields.space_group:
-                all_space_groups = frozenset(chain.from_iterable(map(itemgetter(sequence_field), datasets_pd.values())))
-                tokenisers[sequence_field] = SpaceGroupEncoder.from_sg_set(all_space_groups)
-    else:
-        with gzip.open(tokenizer_path, "rb") as f:
-            tokenisers = pickle.load(f)
-    raw_engineers = {}
-    token_engineers = {}
-    if "engineered" in config.token_fields:
-        for engineered_field_name, engineered_field_definiton in config.token_fields.engineered.items():
-            if engineered_field_definiton.type != "map":
-                raise ValueError("Only map engineered_field fields are supported")
-            if len(engineered_field_definiton.inputs) != 3:
-                raise NotImplementedError("Only 3 inputs are supported")
-            with gzip.open(Path(__file__).resolve().parents[2] / "cache" / "engineers" / f"{engineered_field_name}.pkl.gz", "rb") as f:
-                raw_engineer = pickle.load(f)
-            raw_engineers[engineered_field_name] = raw_engineer
-            # Now we need to convert the token values to token indices
-            # And adjust include_stop
-            token_engineers[engineered_field_name] = tokenise_engineer(raw_engineer, tokenisers)
-            raw_engineers[engineered_field_name].include_stop = token_engineers[engineered_field_name].include_stop
-            # The values haven't changed, only the keys, so we can reuse the stop, pad, and mask tokens
-            if token_engineers[engineered_field_name].db.dtype == 'O':
-                try:
-                    value_counts = token_engineers[engineered_field_name].db.nunique()
-                except TypeError: # unhashable type: 'numpy.ndarray', etc.
-                    value_counts = len(token_engineers[engineered_field_name].db)
-            else:
-                if token_engineers[engineered_field_name].db.min() != 0:
-                    logger.warning("The minimum value in the engineered field %s is not 0", engineered_field_name)
-                    # We still set the count to max, potentially inluding some never used values
-                    # +1 for token #0
-                value_counts = token_engineers[engineered_field_name].db.max() + 1
-            
-            tokenisers[engineered_field_name] = PassThroughTokeniser(
-                values_count=value_counts + 3, # For service tokens
-                stop_token=raw_engineer.stop_token,
-                pad_token=raw_engineer.pad_token,
-                mask_token=raw_engineer.mask_token)
-
-    # We don't check consistency among the fields here
-    # The value is for the original sequences, withot service tokens
-    original_max_len = max(map(len, chain.from_iterable(
-        map(itemgetter(config.token_fields.pure_categorical[0]),
-            datasets_pd.values()))))
-  
-    tensors = defaultdict(dict)
-    for dataset_name, dataset in datasets_pd.items():
-        dataset = dataset[dataset['spacegroup_number'].isin(tokenisers['spacegroup_number'])]
-
-        for field in config.token_fields.pure_categorical:
-            tensors[dataset_name][field] = torch.stack(
-                dataset[field].map(partial(
-                    tokenisers[field].tokenise_sequence,
-                    original_max_len=original_max_len,
-                    dtype=dtype)).to_list())
-
-        if "engineered" in config.token_fields:
-            for field, field_config in config.token_fields.engineered.items():
-                logger.debug("Processing engineered field %s", field)
-                if "dtype" in field_config:
-                    field_dtype = getattr(torch, field_config.dtype)
-                else:
-                    field_dtype = dtype
-                compute_feature_function = partial(
-                    raw_engineers[field].get_feature_tensor_from_series,
-                    original_max_len=original_max_len,
-                    dtype=field_dtype)
-                tensor_list = dataset.parallel_apply(
-                    compute_feature_function, axis=1).to_list()
-                tensors[dataset_name][field] = torch.stack(tensor_list)
-                logger.debug("Engineered field %s shape %s", field, tensors[dataset_name][field].shape)
-   
-        if "pure_categorical" in config.sequence_fields:
-            for field in config.sequence_fields.pure_categorical:
-                tensors[dataset_name][field] = torch.stack(
-                    dataset[field].map(partial(
-                        tokenisers[field].tokenise_single,
-                        dtype=dtype)).to_list())
-
-        if "space_group" in config.sequence_fields:
-            for field in config.sequence_fields.space_group:
-                tensors[dataset_name][field] = tokenisers[field].encode_spacegroups(dataset[field], dtype=dtype)
-
-        if "no_processing" in config.sequence_fields:
-            for field in config.sequence_fields.no_processing:
-                try:
-                    tensors[dataset_name][field] = torch.Tensor(dataset[field].array)
-                except KeyError as e:
-                    logger.warning("Field %s not found in the dataset", field)
-                    logger.warning(e)
-
-
-        if "counters" in config.sequence_fields:
-            # Counter fields are processed into two tensors: tokenised values, and the counts
-            # WARNING Cell variable tokeniser_filed defined in loopPylintW0640:cell-var-from-loop
-            for field, tokeniser_field in config.sequence_fields.counters.items():
-                tensors[dataset_name][f"{field}_tokens"] = \
-                        dataset[field].map(lambda dict_:
-                            torch.stack([tokenisers[tokeniser_field].tokenise_single(key, dtype=dtype)
-                                for key in dict_.keys()])).to_list()
-                tensors[dataset_name][f"{field}_counts"] = \
-                        dataset[field].map(lambda dict_:
-                            torch.tensor(tuple(dict_.values()), dtype=dtype)).to_list()
-
-        if "augmented_token_fields" in config:
-            # WARNING Cell variable field defined in loopPylintW0640:cell-var-from-loop
-            for field in config.augmented_token_fields:
-                augmented_field = f"{field}_augmented"
-                tensors[dataset_name][augmented_field] = dataset[augmented_field].map(lambda variants:
-                        [tokenisers[field].tokenise_sequence(
-                            variant, original_max_len=original_max_len, dtype=dtype)
-                            for variant in variants]).to_list()
-
-        for field, field_config in config.token_fields.get("augmented_engineered", {}).items():
-            augmented_field = f"{field}_augmented"
-            if "dtype" in config.token_fields.engineered[field]:
-                field_dtype = getattr(torch, config.token_fields.engineered[field].dtype)
-            else:
-                field_dtype = dtype
-            tensors[dataset_name][augmented_field] = dataset.parallel_apply(
-                partial(
-                    raw_engineers[field].get_feature_from_augmented_series,
-                    augmented_field_orginal_name=field_config.augmented_input,
-                    original_max_len=original_max_len,
-                    dtype=field_dtype), axis=1).to_list()
-
-        # We can have long sequences, but still a limited number of tokens
-        if "pure_sequence_length_dtype" in config:
-            pure_sequence_length_dtype = getattr(torch, config.pure_sequence_length_dtype)
-        else:
-            pure_sequence_length_dtype = dtype
-        # Assuming all the fields have the same length
-        tensors[dataset_name]["pure_sequence_length"] = torch.tensor(
-            dataset[config.token_fields.pure_categorical[0]].map(len).to_list(),
-            dtype=pure_sequence_length_dtype)
-
-        if "token_sort" in config:
-            if "augmented_token_fields" in config:
-                raise NotImplementedError("Token sort is not implemented for augmented fields")
-            key_tensors = [tensors[dataset_name][field] for field in config.token_sort]
-            order = argsort_multiple(*key_tensors, dim=1)
-            logger.debug("Order tensor")
-            logger.debug(order[:5])
-            fields_to_sort = list(config.token_fields.pure_categorical)
-            fields_to_sort.extend(config.token_fields.get("engineered", []))
-            for field in fields_to_sort:
-                logger.debug("Sorting tensor %s", field)
-                logger.debug(tensors[dataset_name][field][:5])
-                tensors[dataset_name][field] = tensors[dataset_name][field].gather(1, order)
-                logger.debug("Sorted tensor %s", field)
-                logger.debug(tensors[dataset_name][field][:5])
-    return tensors, tokenisers, token_engineers
+    processor = WyckoffProcessor.from_config(config, tokenizer_path=tokenizer_path)
+    return processor.tokenise_dataset(datasets_pd=datasets_pd, n_jobs=n_jobs)
 
 
 def load_tensors_and_tokenisers(
@@ -565,15 +944,14 @@ def load_tensors_and_tokenisers(
 
     this_cache_path = cache_path / dataset
     if use_cached_tensors:
-        with gzip.open(this_cache_path / 'tokenisers' / f'{config_name}.pkl.gz', "rb") as f:
-            tokenisers = pickle.load(f)
-            token_engineers = pickle.load(f)
+        processor = WyckoffProcessor.from_pretrained(this_cache_path / "tokenisers" / f"{config_name}.json")
+        tokenisers = processor.tokenisers
+        token_engineers = processor.token_engineers
         try:
             tensors = torch.load(this_cache_path / 'tensors' / f'{config_name}.pt', weights_only=False)
         except FileNotFoundError:
-            logger.warning("Tensors not found, trying to load obsolete .pkl.gz")
-            with gzip.open(this_cache_path / 'tensors' / f'{config_name}.pkl.gz', "rb") as f:
-                tensors = pickle.load(f)
+            logger.warning("Tensors not found at %s", this_cache_path / 'tensors' / f'{config_name}.pt')
+            raise
         return tensors, tokenisers, token_engineers
     else:
         cache_path = Path(__file__).resolve().parents[2] / "cache" / dataset
@@ -597,146 +975,3 @@ def get_wp_index() -> dict:
             site_symm = wp.site_symm
             wp_index[group_number][site_symm][wp.letter] = (wp.multiplicity, wp.get_dof())
     return wp_index
-
-
-def get_letter_from_ss_enum_idx(
-    enum_tokeniser: EnumeratingTokeniser) -> dict:
-    """
-    Processes the real-space index of Wyckhoff letters by space group, site symmetry, and enumeration
-    into a dict indexed by space group, site symmetry, and enumeration TOKEN to make the generation
-    a tiny-tiny little bit faster.
-    """
-    preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parents[2] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
-    with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
-        letter_from_ss_enum = pickle.load(f)[1]
-    letter_from_ss_enum_idx = defaultdict(dict)
-    for space_group, ss_enum_dict in letter_from_ss_enum.items():
-        for ss, enum_dict in ss_enum_dict.items():
-            letter_from_ss_enum_idx[space_group][ss] = dict()
-            for enum, letter in enum_dict.items():
-                if enum in enum_tokeniser:
-                    letter_from_ss_enum_idx[space_group][ss][enum_tokeniser[enum]] = letter
-    return letter_from_ss_enum_idx  
-
-
-def tensor_to_pyxtal(
-    space_group_tensor: torch.Tensor,
-    wp_tensor: torch.Tensor,
-    tokenisers: Dict[str, EnumeratingTokeniser],
-    token_engineers: Dict[str, FeatureEngineer],
-    cascade_order: Tuple[str, ...],
-    letter_from_ss_enum_idx,
-    ss_from_letter,
-    wp_index,
-    enforced_min_elements: Optional[int] = None,
-    enforced_max_elements: Optional[int] = None) -> Optional[dict]:
-    """
-    The function supports three cascade modes:
-        (elements, site_symmetries, sites_enumeration)
-        (elements, site_symmetries, harmonic_cluster)
-        (elements, wyckoff_letters)
-    Args:
-        space_group_tensor: The tensor with the space group
-        wp_tensor: The tensor with the Wyckoff positions
-        tokenisers: The tokenisers for the fields
-        letter_from_ss_enum_idx: A dict with the Wyckoff positions
-            indexed by space group, site symmetry, and enumeration TOKEN
-        enforced_min_elements: The minimum number of elements in the structure
-        enforced_max_elements: The maximum number of elements in the structure
-    """
-    ss_pyxtal_cascde_order = ("elements", "site_symmetries", "sites_enumeration")
-    letters_pyxtal_cascade_order = ("elements", "wyckoff_letters")
-    harmonic_pyxtal_cascade_order = ("elements", "site_symmetries", "harmonic_cluster")
-    if set(cascade_order) == set(ss_pyxtal_cascde_order):
-        pyxtal_cascade_order = ss_pyxtal_cascde_order
-        mode = generation_modes.SiteSymmetry
-    elif set(cascade_order) == set(letters_pyxtal_cascade_order):
-        pyxtal_cascade_order = letters_pyxtal_cascade_order
-        mode = generation_modes.WyckoffLetters
-    elif set(cascade_order) == set(harmonic_pyxtal_cascade_order):
-        pyxtal_cascade_order = harmonic_pyxtal_cascade_order
-        mode = generation_modes.HarmonicCluster
-    else:
-        raise NotImplementedError("Unsupported cascade")
-
-    cascade_permutation = [cascade_order.index(field) for field in pyxtal_cascade_order]
-    cononical_wp_tensor = wp_tensor[:, cascade_permutation]
-
-    stop_tokens = torch.tensor([tokenisers[field].stop_token for field in pyxtal_cascade_order], device=wp_tensor.device)
-    mask_tokens = torch.tensor([tokenisers[field].mask_token for field in pyxtal_cascade_order], device=wp_tensor.device)
-    pad_tokens = torch.tensor([tokenisers[field].pad_token for field in pyxtal_cascade_order], device=wp_tensor.device)
-
-    if space_group_tensor.size() == (1,):
-        space_group_input = space_group_tensor.item()
-    else:
-        space_group_input = space_group_tensor.numpy()
-    space_group_real = tokenisers["spacegroup_number"].to_token[space_group_input]
-    pyxtal_args = defaultdict(lambda: [0, []])
-    available_sites = deepcopy(wp_index[space_group_real])
-    for this_token_cascade in cononical_wp_tensor:
-        # Valid stop. In principle, tokens should only be either with
-        # all stops, or all not stops, so an argumnet can be made for
-        # invalidating the structure.
-        if (this_token_cascade == stop_tokens).any():
-            break
-        if (this_token_cascade == pad_tokens).any():
-            logger.info("PAD token in generated sequence")
-            return
-        if (this_token_cascade == mask_tokens).any():
-            logger.info("MASK token in generated sequence")
-            return
-        if mode == generation_modes.SiteSymmetry:
-            element_idx, ss_idx, enum_idx = this_token_cascade.tolist()
-            ss = tokenisers["site_symmetries"].to_token[ss_idx]
-            try:
-                wp_letter = letter_from_ss_enum_idx[space_group_real][ss][enum_idx]
-            except KeyError:
-                logger.info("Invalid combination: space group %i, site symmetry %s, enum token %i", space_group_real,
-                            ss, enum_idx)
-                return
-        elif mode == generation_modes.WyckoffLetters:
-            element_idx, wp_letter_idx = this_token_cascade.tolist()
-            wp_letter = tokenisers["wyckoff_letters"].to_token[wp_letter_idx]
-            try:
-                ss = ss_from_letter[space_group_real][wp_letter]
-            except KeyError:
-                logger.info("Invalid combination: space group %i, wp letter %s", space_group_real, wp_letter)
-                return
-        elif mode == generation_modes.HarmonicCluster:
-            element_idx, ss_idx, cluster_idx = this_token_cascade.tolist()
-            ss = tokenisers["site_symmetries"].to_token[ss_idx]
-            try:
-                # WARNING tuple might fail for some SG encodings
-                enum = token_engineers["sites_enumeration"].db.loc[tuple(space_group_input), ss_idx, cluster_idx]
-            except KeyError:
-                logger.info("Invalid combination: space group %i, site symmetry %s, cluster token %i", space_group_real,
-                            ss, cluster_idx)
-                return
-            wp_letter = letter_from_ss_enum_idx[space_group_real][ss][enum]
-        else:
-            raise NotImplementedError("Unsupported cascade")
-        try:
-            our_site = available_sites[ss][wp_letter]
-        except KeyError:
-            logger.info("Repeated special WP: %i, %s, %s", space_group_real, ss, wp_letter)
-            return
-        element = tokenisers["elements"].to_token[element_idx]
-        pyxtal_args[element][0] += our_site[0]
-        pyxtal_args[element][1].append(str(our_site[0]) + wp_letter)
-        if our_site[1] == 0: # The position is special
-            del available_sites[ss][wp_letter]
-    if enforced_min_elements is not None and len(pyxtal_args.keys()) < enforced_min_elements:
-        logger.info("Not enough elements")
-        return
-    if enforced_max_elements is not None and len(pyxtal_args.keys()) > enforced_max_elements:
-        logger.info("Too many elements")
-        return
-    if len(pyxtal_args) == 0:
-        logger.info("No structure generated, STOP in the first token")
-        return
-    return {
-            "group": space_group_real,
-            "sites": [x[1] for x in pyxtal_args.values()],
-            "species": list(map(str, pyxtal_args.keys())),
-            "numIons": [x[0] for x in pyxtal_args.values()]
-        }

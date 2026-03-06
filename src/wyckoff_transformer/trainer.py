@@ -19,8 +19,8 @@ import wandb
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.tokenization import (
-    load_tensors_and_tokenisers, tensor_to_pyxtal,
-    get_letter_from_ss_enum_idx, get_wp_index)
+    load_tensors_and_tokenisers,
+    get_wp_index, WyckoffProcessor)
 from wyckoff_transformer.generator import WyckoffGenerator
 from wyckoff_transformer.evaluation import (
     evaluate_and_log, StatisticalEvaluator, smac_validity_from_counter)
@@ -59,6 +59,7 @@ class WyckoffTrainer():
         compile_model: bool = False,
         max_sequence_length: Optional[int] = None,
         start_token_distribution: Optional[Dict[str, Any]] = None,
+        processor: Optional[WyckoffProcessor] = None,
     ):
         """
         Args:
@@ -81,6 +82,11 @@ class WyckoffTrainer():
         else:
             self.cascade_target_count = 0
         self.token_engineers = token_engineers
+        self.processor = processor or WyckoffProcessor(
+            config={},
+            tokenisers=tokenisers,
+            token_engineers=token_engineers,
+        )
         self.cascade_is_target = cascade_is_target
         # Nothing else will work in foreseeable future
         self.dtype = torch.int64
@@ -319,17 +325,22 @@ class WyckoffTrainer():
         if load_datasets:
             tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
                 config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
-                tokenizer_path=run_path / "tokenizers.pkl.gz" if not use_cached_tensors else None)
+                tokenizer_path=run_path / "wyckoff_processor.json" if not use_cached_tensors else None)
+            processor = WyckoffProcessor(
+                config=config.get("tokeniser", {}),
+                tokenisers=tokenisers,
+                token_engineers=token_engineers,
+            )
             train_data = tensors["train"]
             val_data = tensors["val"]
             test_data = tensors["test"] if "test" in tensors else None
             distribution = None
             max_sequence_length = None
         else:
-            with gzip.open(run_path / "tokenizers.pkl.gz", "rb") as f:
-                tokenisers = pickle.load(f)
-            with gzip.open(run_path / "token_engineers.pkl.gz", "rb") as f:
-                token_engineers = pickle.load(f)
+            processor_path = run_path / "wyckoff_processor.json"
+            processor = WyckoffProcessor.from_pretrained(processor_path)
+            tokenisers = processor.tokenisers
+            token_engineers = processor.token_engineers
             train_data = None
             val_data = None
             test_data = None
@@ -361,6 +372,7 @@ class WyckoffTrainer():
             test_dataset=test_data,
             max_sequence_length=max_sequence_length,
             start_token_distribution=distribution,
+            processor=processor,
             **config.model.WyckoffTrainer_args)
 
 
@@ -596,14 +608,12 @@ class WyckoffTrainer():
         generated_tensors = torch.stack(generated_tensors, dim=-1)
 
         if 'sites_enumeration' in self.tokenisers:
-            letter_from_ss_enum_idx = get_letter_from_ss_enum_idx(self.tokenisers['sites_enumeration'])
+            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx()
         else:
             letter_from_ss_enum_idx = None
         with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
             ss_from_letter = pickle.load(f)[2]
-        to_pyxtal = partial(tensor_to_pyxtal,
-                            tokenisers=self.tokenisers,
-                            token_engineers=self.token_engineers,
+        to_pyxtal = partial(self.processor.tensor_to_pyxtal,
                             cascade_order=generated_cascade_order,
                             letter_from_ss_enum_idx=letter_from_ss_enum_idx,
                             ss_from_letter=ss_from_letter,
@@ -657,12 +667,8 @@ def train_from_config(
     this_run_path.mkdir(parents=True, exist_ok=False)
     trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)
     tokenizers_engineers = wandb.Artifact(name="processors", type="processors")
-    with gzip.open(this_run_path / "tokenizers.pkl.gz", "wb") as f:
-        pickle.dump(trainer.tokenisers, f)
-    tokenizers_engineers.add_file(this_run_path / "tokenizers.pkl.gz")
-    with gzip.open(this_run_path / "token_engineers.pkl.gz", "wb") as f:
-        pickle.dump(trainer.token_engineers, f)
-    tokenizers_engineers.add_file(this_run_path / "token_engineers.pkl.gz")
+    processor_json = trainer.processor.save_pretrained(this_run_path)
+    tokenizers_engineers.add_file(processor_json)
     wandb.log_artifact(tokenizers_engineers)
     trainer.train()
     config = OmegaConf.create(config_dict)

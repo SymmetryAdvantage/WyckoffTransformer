@@ -327,11 +327,14 @@ class TestTokeniseDataset(unittest.TestCase):
         )
         _, saved_tokenisers, _ = tok.tokenise_dataset(datasets_pd, config, n_jobs=1)
 
-        with tempfile.NamedTemporaryFile(suffix=".pkl.gz", delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp_file:
             tokeniser_path = Path(tmp_file.name)
         try:
-            with gzip.open(tokeniser_path, "wb") as f:
-                pickle.dump(saved_tokenisers, f)
+            tok.WyckoffProcessor(
+                config=config,
+                tokenisers=saved_tokenisers,
+                token_engineers={},
+            ).save_pretrained(tokeniser_path)
             _, loaded_tokenisers, _ = tok.tokenise_dataset(
                 datasets_pd,
                 config,
@@ -343,6 +346,128 @@ class TestTokeniseDataset(unittest.TestCase):
             tokeniser_path.unlink(missing_ok=True)
 
 
+class TestWyckoffProcessor(unittest.TestCase):
+    @staticmethod
+    def _load_fixture() -> dict[str, pd.DataFrame]:
+        fixture_path = Path(__file__).resolve().parent / "data" / "tokenization_subsample.json"
+        payload = json.loads(fixture_path.read_text())
+        return {name: pd.DataFrame(rows) for name, rows in payload.items()}
+
+    @patch.object(tok.pandarallel, "initialize")
+    def test_processor_from_config_and_tokenise_dataset(self, _mock_init):
+        datasets_pd = self._load_fixture()
+        config = OmegaConf.create(
+            {
+                "dtype": "int64",
+                "include_stop": True,
+                "token_fields": {"pure_categorical": ["elements"]},
+                "sequence_fields": {
+                    "pure_categorical": ["formation_bin"],
+                    "space_group": ["spacegroup_number"],
+                },
+            }
+        )
+        processor = tok.WyckoffProcessor.from_config(config)
+        tensors, tokenisers, token_engineers = processor.tokenise_dataset(datasets_pd, n_jobs=1)
+
+        self.assertIn("train", tensors)
+        self.assertIn("elements", tokenisers)
+        self.assertIn("spacegroup_number", tokenisers)
+        self.assertEqual(token_engineers, {})
+        self.assertIs(processor.tokenisers, tokenisers)
+        self.assertIs(processor.token_engineers, token_engineers)
+
+    def test_processor_save_and_load_pretrained_json(self):
+        enum = tok.EnumeratingTokeniser.from_token_set({"Na", "Cl"}, include_stop=True)
+        passthrough = tok.PassThroughTokeniser(values_count=8, stop_token=5, pad_token=6, mask_token=7)
+
+        sg = tok.SpaceGroupEncoder()
+        sg[1] = (1.0, 0.0)
+        sg.np_dict[1] = np.array([1.0, 0.0])
+        sg.to_token = tok.TupleDict({(1.0, 0.0): 1})
+
+        engineer = tok.FeatureEngineer(
+            data={(1, "m", 0): 3},
+            inputs=("spacegroup_number", "site_symmetries", "sites_enumeration"),
+            name="sites_enumeration",
+            stop_token=9,
+            pad_token=8,
+            mask_token=7,
+        )
+
+        processor = tok.WyckoffProcessor(
+            config=OmegaConf.create({"dtype": "int64", "token_fields": {"pure_categorical": ["elements"]}}),
+            tokenisers={
+                "elements": enum,
+                "spacegroup_number": sg,
+                "dummy": passthrough,
+            },
+            token_engineers={"sites_enumeration": engineer},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved_path = processor.save_pretrained(Path(tmpdir))
+            loaded = tok.WyckoffProcessor.from_pretrained(saved_path)
+
+        self.assertIn("elements", loaded.tokenisers)
+        self.assertIn("spacegroup_number", loaded.tokenisers)
+        self.assertIn("dummy", loaded.tokenisers)
+        self.assertIsInstance(loaded.tokenisers["elements"], tok.EnumeratingTokeniser)
+        self.assertIsInstance(loaded.tokenisers["spacegroup_number"], tok.SpaceGroupEncoder)
+        self.assertIsInstance(loaded.tokenisers["dummy"], tok.PassThroughTokeniser)
+        self.assertEqual(loaded.tokenisers["elements"]["Na"], enum["Na"])
+        self.assertTrue(np.array_equal(loaded.tokenisers["spacegroup_number"].np_dict[1], sg.np_dict[1]))
+        self.assertEqual(loaded.token_engineers["sites_enumeration"].db.loc[(1, "m", 0)], 3)
+
+    def test_processor_save_pretrained_handles_numpy_scalar_tokens(self):
+        processor = tok.WyckoffProcessor(
+            config=OmegaConf.create({"dtype": "int64"}),
+            tokenisers={
+                "dummy": tok.PassThroughTokeniser(
+                    values_count=np.int64(8),
+                    stop_token=np.int64(5),
+                    pad_token=np.int64(6),
+                    mask_token=np.int64(7),
+                )
+            },
+            token_engineers={},
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            saved_path = processor.save_pretrained(Path(tmpdir))
+            loaded = tok.WyckoffProcessor.from_pretrained(saved_path)
+
+        self.assertEqual(loaded.tokenisers["dummy"].values_count, 8)
+        self.assertEqual(loaded.tokenisers["dummy"].stop_token, 5)
+        self.assertEqual(loaded.tokenisers["dummy"].pad_token, 6)
+        self.assertEqual(loaded.tokenisers["dummy"].mask_token, 7)
+
+    def test_processor_tensor_to_pyxtal(self):
+        tokenisers = {
+            "elements": tok.EnumeratingTokeniser.from_token_set({"Na"}),
+            "site_symmetries": tok.EnumeratingTokeniser.from_token_set({"m"}),
+            "sites_enumeration": tok.EnumeratingTokeniser.from_token_set({0}),
+        }
+        sg = tok.PassThroughTokeniser(values_count=2)
+        sg.to_token = tok.TupleDict({(1, 0): 1})
+        tokenisers["spacegroup_number"] = sg
+
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
+        element_idx = tokenisers["elements"]["Na"]
+        ss_idx = tokenisers["site_symmetries"]["m"]
+        enum_idx = tokenisers["sites_enumeration"][0]
+        result = processor.tensor_to_pyxtal(
+            space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
+            wp_tensor=torch.tensor([[element_idx, ss_idx, enum_idx]], dtype=torch.int64),
+            cascade_order=("elements", "site_symmetries", "sites_enumeration"),
+            letter_from_ss_enum_idx={1: {"m": {enum_idx: "a"}}},
+            ss_from_letter={1: {"a": "m"}},
+            wp_index={1: {"m": {"a": (1, 1)}}},
+        )
+        self.assertEqual(result["group"], 1)
+        self.assertEqual(result["species"], ["Na"])
+
+
 class TestLoadTensorsAndHelpers(unittest.TestCase):
     def test_load_tensors_and_tokenisers_from_cache_pt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -351,11 +476,15 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
             (ds_dir / "tokenisers").mkdir(parents=True)
             (ds_dir / "tensors").mkdir(parents=True)
 
-            tokenisers = {"a": 1}
-            token_engineers = {"b": 2}
-            with gzip.open(ds_dir / "tokenisers" / "cfg.pkl.gz", "wb") as f:
-                pickle.dump(tokenisers, f)
-                pickle.dump(token_engineers, f)
+            tokenisers = {
+                "elements": tok.EnumeratingTokeniser.from_token_set({"Na"}, include_stop=True),
+            }
+            token_engineers = {}
+            tok.WyckoffProcessor(
+                config=OmegaConf.create({"dtype": "int64", "token_fields": {"pure_categorical": ["elements"]}}),
+                tokenisers=tokenisers,
+                token_engineers=token_engineers,
+            ).save_pretrained(ds_dir / "tokenisers" / "cfg.json")
             torch.save({"train": {"x": torch.tensor([1])}}, ds_dir / "tensors" / "cfg.pt")
 
             tensors, loaded_tokenisers, loaded_token_engineers = tok.load_tensors_and_tokenisers(
@@ -366,29 +495,27 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
             )
 
             self.assertIn("train", tensors)
-            self.assertEqual(loaded_tokenisers, tokenisers)
+            self.assertEqual(set(loaded_tokenisers.keys()), set(tokenisers.keys()))
             self.assertEqual(loaded_token_engineers, token_engineers)
 
-    def test_load_tensors_and_tokenisers_from_cache_obsolete_pickle(self):
+    def test_load_tensors_and_tokenisers_missing_pt_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             ds_dir = base / "toy"
             (ds_dir / "tokenisers").mkdir(parents=True)
             (ds_dir / "tensors").mkdir(parents=True)
 
-            with gzip.open(ds_dir / "tokenisers" / "cfg.pkl.gz", "wb") as f:
-                pickle.dump({"a": 1}, f)
-                pickle.dump({"b": 2}, f)
-            with gzip.open(ds_dir / "tensors" / "cfg.pkl.gz", "wb") as f:
-                pickle.dump({"train": {"x": torch.tensor([1])}}, f)
-
-            tensors, _, _ = tok.load_tensors_and_tokenisers(
-                dataset="toy",
-                config_name="cfg",
-                use_cached_tensors=True,
-                cache_path=base,
+            tok.WyckoffProcessor(config={}, tokenisers={}, token_engineers={}).save_pretrained(
+                ds_dir / "tokenisers" / "cfg.json"
             )
-            self.assertIn("train", tensors)
+
+            with self.assertRaises(FileNotFoundError):
+                tok.load_tensors_and_tokenisers(
+                    dataset="toy",
+                    config_name="cfg",
+                    use_cached_tensors=True,
+                    cache_path=base,
+                )
 
     def test_load_tensors_and_tokenisers_without_cache_calls_tokenise_dataset(self):
         fake_datasets = {"train": pd.DataFrame([{"elements": ["H"]}])}
@@ -448,7 +575,7 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
             stream = io.BytesIO(payload)
             mock_open.return_value.__enter__.return_value = stream
             enum_tokeniser = tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True)
-            result = tok.get_letter_from_ss_enum_idx(enum_tokeniser)
+            result = enum_tokeniser.get_letter_from_ss_enum_idx()
 
         enum_token = enum_tokeniser[0]
         self.assertEqual(result[1]["m"][enum_token], "a")
@@ -472,6 +599,7 @@ class TestTensorToPyxtal(unittest.TestCase):
 
     def test_tensor_to_pyxtal_site_symmetry_mode(self):
         tokenisers = self._build_tokenisers_for_modes()
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
         element = tokenisers["elements"]["Na"]
         ss = tokenisers["site_symmetries"]["m"]
         enum = tokenisers["sites_enumeration"][0]
@@ -487,11 +615,9 @@ class TestTensorToPyxtal(unittest.TestCase):
             ],
             dtype=torch.int64,
         )
-        result = tok.tensor_to_pyxtal(
+        result = processor.tensor_to_pyxtal(
             space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
             wp_tensor=wp_tensor,
-            tokenisers=tokenisers,
-            token_engineers={},
             cascade_order=("elements", "site_symmetries", "sites_enumeration"),
             letter_from_ss_enum_idx={1: {"m": {enum: "a"}}},
             ss_from_letter={1: {"a": "m"}},
@@ -504,17 +630,16 @@ class TestTensorToPyxtal(unittest.TestCase):
 
     def test_tensor_to_pyxtal_wyckoff_letters_mode(self):
         tokenisers = self._build_tokenisers_for_modes()
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
         element = tokenisers["elements"]["Cl"]
         letter = tokenisers["wyckoff_letters"]["a"]
         wp_tensor = torch.tensor(
             [[element, letter]],
             dtype=torch.int64,
         )
-        result = tok.tensor_to_pyxtal(
+        result = processor.tensor_to_pyxtal(
             space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
             wp_tensor=wp_tensor,
-            tokenisers=tokenisers,
-            token_engineers={},
             cascade_order=("elements", "wyckoff_letters"),
             letter_from_ss_enum_idx={1: {"m": {0: "a"}}},
             ss_from_letter={1: {"a": "m"}},
@@ -535,11 +660,14 @@ class TestTensorToPyxtal(unittest.TestCase):
             inputs=("spacegroup_number", "site_symmetries", "harmonic_cluster"),
             name="sites_enumeration",
         )
-        result = tok.tensor_to_pyxtal(
-            space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
-            wp_tensor=torch.tensor([[element, ss_idx, cluster_idx]], dtype=torch.int64),
+        processor = tok.WyckoffProcessor(
+            config={},
             tokenisers=tokenisers,
             token_engineers={"sites_enumeration": fe},
+        )
+        result = processor.tensor_to_pyxtal(
+            space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
+            wp_tensor=torch.tensor([[element, ss_idx, cluster_idx]], dtype=torch.int64),
             cascade_order=("elements", "site_symmetries", "harmonic_cluster"),
             letter_from_ss_enum_idx={1: {"m": {enum_token: "a"}}},
             ss_from_letter={1: {"a": "m"}},
@@ -550,16 +678,15 @@ class TestTensorToPyxtal(unittest.TestCase):
 
     def test_tensor_to_pyxtal_rejects_invalid_tokens_and_constraints(self):
         tokenisers = self._build_tokenisers_for_modes()
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
         element = tokenisers["elements"]["Na"]
         ss = tokenisers["site_symmetries"]["m"]
         enum = tokenisers["sites_enumeration"][0]
 
         # PAD in sequence is invalid.
-        invalid_pad = tok.tensor_to_pyxtal(
+        invalid_pad = processor.tensor_to_pyxtal(
             space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
             wp_tensor=torch.tensor([[element, ss, tokenisers["sites_enumeration"].pad_token]], dtype=torch.int64),
-            tokenisers=tokenisers,
-            token_engineers={},
             cascade_order=("elements", "site_symmetries", "sites_enumeration"),
             letter_from_ss_enum_idx={1: {"m": {enum: "a"}}},
             ss_from_letter={1: {"a": "m"}},
@@ -569,11 +696,9 @@ class TestTensorToPyxtal(unittest.TestCase):
 
         # Element-count constraint can invalidate otherwise correct sample.
         valid_tensor = torch.tensor([[element, ss, enum]], dtype=torch.int64)
-        too_many = tok.tensor_to_pyxtal(
+        too_many = processor.tensor_to_pyxtal(
             space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
             wp_tensor=valid_tensor,
-            tokenisers=tokenisers,
-            token_engineers={},
             cascade_order=("elements", "site_symmetries", "sites_enumeration"),
             letter_from_ss_enum_idx={1: {"m": {enum: "a"}}},
             ss_from_letter={1: {"a": "m"}},
@@ -584,12 +709,11 @@ class TestTensorToPyxtal(unittest.TestCase):
 
     def test_tensor_to_pyxtal_unsupported_cascade_raises(self):
         tokenisers = self._build_tokenisers_for_modes()
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
         with self.assertRaises(NotImplementedError):
-            tok.tensor_to_pyxtal(
+            processor.tensor_to_pyxtal(
                 space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
                 wp_tensor=torch.tensor([[0]], dtype=torch.int64),
-                tokenisers=tokenisers,
-                token_engineers={},
                 cascade_order=("bad",),
                 letter_from_ss_enum_idx={},
                 ss_from_letter={},
@@ -698,9 +822,9 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
             ds_dir = base / "toy"
             (ds_dir / "tokenisers").mkdir(parents=True)
             (ds_dir / "tensors").mkdir(parents=True)
-            with gzip.open(ds_dir / "tokenisers" / "cfg.pkl.gz", "wb") as f:
-                pickle.dump({"a": 1}, f)
-                pickle.dump({"b": 2}, f)
+            tok.WyckoffProcessor(config={}, tokenisers={}, token_engineers={}).save_pretrained(
+                ds_dir / "tokenisers" / "cfg.json"
+            )
             torch.save({"train": {"x": torch.tensor([1])}}, ds_dir / "tensors" / "cfg.pt")
             _ = tok.load_tensors_and_tokenisers(
                 dataset="toy",
@@ -732,7 +856,7 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
         payload = pickle.dumps((None, {1: {"m": {0: "a"}}}))
         with patch.object(tok.gzip, "open") as mock_open:
             mock_open.return_value.__enter__.return_value = io.BytesIO(payload)
-            _ = tok.get_letter_from_ss_enum_idx(tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True))
+            _ = tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True).get_letter_from_ss_enum_idx()
 
         # tensor_to_pyxtal
         tks = {
@@ -743,11 +867,12 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
         spg_tok = tok.PassThroughTokeniser(values_count=2)
         spg_tok.to_token = tok.TupleDict({(1, 0): 1})
         tks["spacegroup_number"] = spg_tok
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tks, token_engineers={})
 
         element_idx = tks["elements"]["Na"]
         ss_idx = tks["site_symmetries"]["m"]
         enum_idx = tks["sites_enumeration"][0]
-        _ = tok.tensor_to_pyxtal(
+        _ = processor.tensor_to_pyxtal(
             space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
             wp_tensor=torch.tensor(
                 [
@@ -760,8 +885,6 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
                 ],
                 dtype=torch.int64,
             ),
-            tokenisers=tks,
-            token_engineers={},
             cascade_order=("elements", "site_symmetries", "sites_enumeration"),
             letter_from_ss_enum_idx={1: {"m": {enum_idx: "a"}}},
             ss_from_letter={1: {"a": "m"}},
@@ -804,8 +927,8 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
             "tokenise_dataset": tok.tokenise_dataset,
             "load_tensors_and_tokenisers": tok.load_tensors_and_tokenisers,
             "get_wp_index": tok.get_wp_index,
-            "get_letter_from_ss_enum_idx": tok.get_letter_from_ss_enum_idx,
-            "tensor_to_pyxtal": tok.tensor_to_pyxtal,
+            "EnumeratingTokeniser.get_letter_from_ss_enum_idx": tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True).get_letter_from_ss_enum_idx,
+            "WyckoffProcessor.tensor_to_pyxtal": tok.WyckoffProcessor.tensor_to_pyxtal,
         }
 
         missing = []

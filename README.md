@@ -29,8 +29,7 @@ This will train a model, and save the results in the `runs` folder. The files ar
 - `best_model_params.pt` - the model weights chosen by the validation loss
 - `generated_wp_no_calibration.json.gz` Wyckoff representation of the generated structures
 - `generated_wp_temperature_calibration.json.gz` Wyckoff representation of the generated structures, with the temperature calibration applied
-- `token_engineers.pkl.gz` - preprocessing information, e. g. multiplicity and spherical harmonics
-- `tokenizers.pkl.gz` - tokenizers
+- `wyckoff_processor.json` - tokenizers and preprocessing metadata (token engineers)
 # Training Data Preprocessing
 The available datasets correspond to the folders in `data` and `cdvae/data`. Dataset idetifiers are the folder names, they are used throught the project. Note that some of the folders are symlinks.
 Available datasets (in GitHub): `mp_20`, `mp_20_biternary` (binary and ternary structures from MP-20), `mpts_52`, `carbon_24`, `perov_5`. It is also possible to download and use `matbench_discovery_mp_2022` [notebook](scripts/data_preprocesssing/mp_2022.ipynb) and `matbench_discovery_mp_trj_full` [notebook](scripts/data_preprocesssing/mptrj_extract_all.ipynb).
@@ -46,17 +45,17 @@ The tokenization script serves two purposes: it produces the mapping from the re
 ```bash
 python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --new-tokenizer
 ```
-Tokenizer configs are stored in `yamls/tokenisers`. The tokeniser is saved to `cache/<dataset-names>/tokenisers/**.pkl.gz`, preserving the folder structure of the config.
+Tokenizer configs are stored in `yamls/tokenisers`. The processor is saved to `cache/<dataset-names>/tokenisers/**.json`, preserving the folder structure of the config.
 
 Alternatively, you can use a cached tokeniser. This is important when a model that was trained on one dataset is  applied to a different dataset.
 ```bash
-python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --tokenizer-path cache/<dataset-names>/tokenisers/<tokenizer-name>.pkl.gz
+python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --tokenizer-path cache/<dataset-names>/tokenisers/<tokenizer-name>.json
 ```
 # Training
 ```bash
 python scripts/train.py <path-to-model-yaml> <dataset-name> <device>
 ```
-The model weights are saved to `runs/<run-id>`, and to WanDB, along with the tokenizer. See [here](yamls/models/README.md) for the list of configs. Adding `--pilot` will run the model for a small number of epochs.
+The model weights are saved to `runs/<run-id>`, and to WanDB, along with the processor metadata. See [here](yamls/models/README.md) for the list of configs. Adding `--pilot` will run the model for a small number of epochs.
 
 # Generating structures
 ## Wyckoff representations

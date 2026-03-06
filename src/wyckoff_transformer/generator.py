@@ -6,7 +6,7 @@ from torch import nn, Tensor
 import numpy as np
 
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
-from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer
+from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer, WyckoffProcessor
 from scripts.preprocess_wychoffs import inverse_series
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,13 @@ class WyckoffGenerator():
         # to preserve the sanctity of the test dataset and ex nihilo generation.
         logger.warning("Loading current tensors and tokenisers for %s, not the saved ones", config.dataset)
         tensors, tokenisers, engineers = load_tensors_and_tokenisers(config.dataset, config.tokeniser.name)
+        processor = WyckoffProcessor(
+            config=config.get("tokeniser", {}),
+            tokenisers=tokenisers,
+            token_engineers=engineers,
+        )
+        tokenisers = processor.tokenisers
+        engineers = processor.token_engineers
 
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
         model.load_state_dict(torch.load(Path("runs", wandb_run_id, "best_model_params.pt"), map_location=device))

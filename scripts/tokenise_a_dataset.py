@@ -7,7 +7,7 @@ import pickle
 import gzip
 import logging
 
-from wyckoff_transformer.tokenization import tokenise_dataset
+from wyckoff_transformer.tokenization import WyckoffProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def main():
     parser.add_argument('--pilot', action='store_true', help="Run a pilot experiment")
     parser.add_argument("--n-jobs", type=int, help="Number of jobs to use")
     tokenizer_source = parser.add_mutually_exclusive_group(required=True)
-    tokenizer_source.add_argument("--tokenizer-path", type=Path, help="Load a pickled tokenizer")
+    tokenizer_source.add_argument("--tokenizer-path", type=Path, help="Load a saved WyckoffProcessor (.json)")
     tokenizer_source.add_argument("--new-tokenizer", action="store_true",
         help="Generate a new tokenizer, potentially overwriting files")
     args = parser.parse_args()
@@ -43,8 +43,9 @@ def main():
     if args.pilot:
         datasets_pd = {name: dataset.sample(100) for name, dataset in datasets_pd.items()}
         print("Piloting with 100 samples")
-    tensors, tokenisers, token_engineers = tokenise_dataset(
-        datasets_pd, config, args.tokenizer_path, n_jobs=args.n_jobs)
+    processor = WyckoffProcessor.from_config(config, tokenizer_path=args.tokenizer_path)
+    tensors, tokenisers, token_engineers = processor.tokenise_dataset(
+        datasets_pd, n_jobs=args.n_jobs)
     if args.debug and "multiplicity" in token_engineers:
         index = 0
         multiplicities_from_tokens = token_engineers["multiplicity"].get_feature_from_token_batch(
@@ -55,12 +56,9 @@ def main():
     cache_tensors_path = cache_path / 'tensors' / tokenizer_full_name.with_suffix('.pt')
     cache_tensors_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(tensors, cache_tensors_path)
-    # In the future we might want to save the tokenisers in json, so that they can be distributed
-    cache_tokenisers_path = cache_path / 'tokenisers' / tokenizer_full_name.with_suffix('.pkl.gz')
-    cache_tokenisers_path.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(cache_tokenisers_path, "wb") as f:
-        pickle.dump(tokenisers, f)
-        pickle.dump(token_engineers, f)
+    cache_processor_path = cache_path / 'tokenisers' / tokenizer_full_name.with_suffix('.json')
+    cache_processor_path.parent.mkdir(parents=True, exist_ok=True)
+    processor.save_pretrained(cache_processor_path)
 
 
 if __name__ == '__main__':
