@@ -1,0 +1,30 @@
+{
+  "train": [
+    {
+      "elements": ["H", "O"],
+      "spacegroup_number": 1,
+      "formation_bin": "low",
+      "float_feature": 0.1,
+      "elem_counter": {"H": 1, "O": 1},
+      "elements_augmented": [["H", "O"], ["O", "H"]]
+    },
+    {
+      "elements": ["Li"],
+      "spacegroup_number": 2,
+      "formation_bin": "high",
+      "float_feature": 0.2,
+      "elem_counter": {"Li": 1},
+      "elements_augmented": [["Li"], ["Li"]]
+    }
+  ],
+  "validation": [
+    {
+      "elements": ["Na"],
+      "spacegroup_number": 1,
+      "formation_bin": "mid",
+      "float_feature": 0.3,
+      "elem_counter": {"Na": 1},
+      "elements_augmented": [["Na"]]
+    }
+  ]
+}
