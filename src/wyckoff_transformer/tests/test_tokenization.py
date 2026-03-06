@@ -44,7 +44,7 @@ class TestArgsortMultiple(unittest.TestCase):
             argsort_multiple(tensor1, tensor2, tensor3, dim=1)
 
 class TestSpaceGroupEncoder(unittest.TestCase):
-    def test_space_group_encoder(self):
+    def test_space_group_encoding_uniqueness(self):
         """
         By design, all space groups must have uniqe encodings
         """
