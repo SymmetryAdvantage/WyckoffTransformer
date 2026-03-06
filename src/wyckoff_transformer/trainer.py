@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Optional, List
+from typing import Tuple, Dict, Optional, List, Any
 import importlib
 from random import randint
 import logging
@@ -27,13 +27,14 @@ from wyckoff_transformer.evaluation import (
 
 logger = logging.getLogger(__file__)
 preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parent.parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
+start_token_distribution_file_name = "spacegroup_distribution.json"
 
 class WyckoffTrainer():
     def __init__(
         self,
         model: nn.Module,
-        train_dataset: Dict[str, torch.tensor],
-        val_dataset: Dict[str, torch.tensor],
+        train_dataset: Optional[Dict[str, torch.tensor]],
+        val_dataset: Optional[Dict[str, torch.tensor]],
         tokenisers: dict,
         token_engineers: dict,
         cascade_order: Tuple[str],
@@ -56,6 +57,8 @@ class WyckoffTrainer():
         weights_path: Optional[Path] = None,
         test_dataset: Optional[Dict[str, torch.tensor]] = None,
         compile_model: bool = False,
+        max_sequence_length: Optional[int] = None,
+        start_token_distribution: Optional[Dict[str, Any]] = None,
     ):
         """
         Args:
@@ -119,27 +122,35 @@ class WyckoffTrainer():
         self.stops_dict = {field: tokenisers[field].stop_token for field in cascade_order}
         self.num_classes_dict = {field: len(tokenisers[field]) for field in cascade_order}
         self.start_name = start_name
+        self.max_sequence_length = max_sequence_length
 
-        self.train_dataset = AugmentedCascadeDataset(
-            data=train_dataset,
-            cascade_order=cascade_order,
-            masks=self.masks_dict,
-            pads=self.pad_dict,
-            stops=self.stops_dict,
-            num_classes=self.num_classes_dict,
-            start_field=start_name,
-            augmented_fields=augmented_fields,
-            batch_size=train_batch_size,
-            dtype=self.dtype,
-            start_dtype=start_dtype,
-            device=self.device,
-            augmented_storage_device=augmented_storage_device,
-            target_name=target_name)
+        if train_dataset is not None:
+            self.train_dataset = AugmentedCascadeDataset(
+                data=train_dataset,
+                cascade_order=cascade_order,
+                masks=self.masks_dict,
+                pads=self.pad_dict,
+                stops=self.stops_dict,
+                num_classes=self.num_classes_dict,
+                start_field=start_name,
+                augmented_fields=augmented_fields,
+                batch_size=train_batch_size,
+                dtype=self.dtype,
+                start_dtype=start_dtype,
+                device=self.device,
+                augmented_storage_device=augmented_storage_device,
+                target_name=target_name)
+            self.max_sequence_length = self.train_dataset.max_sequence_length
+        else:
+            self.train_dataset = None
         
         if "lr_per_sqrt_n_samples" in optimisation_config.optimiser:
             if "config" in optimisation_config.optimiser and "lr" in optimisation_config.optimiser.config:
                 raise ValueError("Cannot specify both lr and lr_per_sqrt_n_samples")
-            if train_batch_size is None:
+            if train_dataset is None:
+                # Optimizer is unused in generation-only mode, but we still need a valid config.
+                samples_per_step = 1
+            elif train_batch_size is None:
                 samples_per_step = len(self.train_dataset)
             else:
                 samples_per_step = train_batch_size
@@ -154,22 +165,27 @@ class WyckoffTrainer():
         else:
             self.scheduler = None
 
-        self.val_dataset = AugmentedCascadeDataset(
-            data=val_dataset,
-            cascade_order=cascade_order,
-            masks=self.masks_dict,
-            pads=self.pad_dict,
-            stops=self.stops_dict,
-            num_classes=self.num_classes_dict,
-            start_field=start_name,
-            augmented_fields=augmented_fields,
-            batch_size=val_batch_size,
-            dtype=self.dtype,
-            start_dtype=start_dtype,
-            device=device,
-            augmented_storage_device=augmented_storage_device,
-            target_name=target_name
-            )
+        if val_dataset is not None:
+            self.val_dataset = AugmentedCascadeDataset(
+                data=val_dataset,
+                cascade_order=cascade_order,
+                masks=self.masks_dict,
+                pads=self.pad_dict,
+                stops=self.stops_dict,
+                num_classes=self.num_classes_dict,
+                start_field=start_name,
+                augmented_fields=augmented_fields,
+                batch_size=val_batch_size,
+                dtype=self.dtype,
+                start_dtype=start_dtype,
+                device=device,
+                augmented_storage_device=augmented_storage_device,
+                target_name=target_name
+                )
+            if self.max_sequence_length is None:
+                self.max_sequence_length = self.val_dataset.max_sequence_length
+        else:
+            self.val_dataset = None
 
         if test_dataset is None:
             self.test_dataset = None
@@ -191,7 +207,10 @@ class WyckoffTrainer():
                 target_name=target_name
             )
 
-        assert self.train_dataset.max_sequence_length == self.val_dataset.max_sequence_length
+        if self.train_dataset is not None and self.val_dataset is not None:
+            assert self.train_dataset.max_sequence_length == self.val_dataset.max_sequence_length
+        if self.max_sequence_length is None:
+            raise ValueError("max_sequence_length must be available from datasets or provided explicitly")
     
         self.clip_grad_norm = optimisation_config.clip_grad_norm
         self.cascade_len = len(cascade_order)
@@ -205,22 +224,121 @@ class WyckoffTrainer():
         self.target = target
         self.multiclass_next_token_with_order_permutation = multiclass_next_token_with_order_permutation
         self.evaluation_samples = evaluation_samples
+        self.start_token_distribution = start_token_distribution
+
+
+    @staticmethod
+    def get_start_token_distribution_path(run_path: Path) -> Path:
+        return run_path / start_token_distribution_file_name
+
+
+    @staticmethod
+    def load_start_token_distribution_file(distribution_path: Path) -> Dict[str, Any]:
+        with distribution_path.open("rt", encoding="ascii") as f:
+            return json.load(f)
+
+
+    def _build_start_token_distribution(self) -> Dict[str, Any]:
+        if self.train_dataset is None or self.val_dataset is None:
+            raise ValueError("Cannot build start-token distribution without train and validation datasets")
+        if self.model.start_type == "categorial":
+            max_start = self.model.start_embedding.num_embeddings
+            start_counts = torch.bincount(
+                self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
+                    self.val_dataset.start_tokens, minlength=max_start)
+            return {
+                "start_name": self.start_name,
+                "start_type": self.model.start_type,
+                "max_sequence_length": int(self.max_sequence_length),
+                "counts": start_counts.cpu().tolist(),
+            }
+
+        if self.model.start_type == "one_hot":
+            all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
+            unique_vectors, inverse_indices = torch.unique(all_starts, dim=0, return_inverse=True)
+            counts = torch.bincount(inverse_indices)
+            return {
+                "start_name": self.start_name,
+                "start_type": self.model.start_type,
+                "max_sequence_length": int(self.max_sequence_length),
+                "vectors": unique_vectors.cpu().tolist(),
+                "counts": counts.cpu().tolist(),
+            }
+        raise ValueError(f"Unknown start type: {self.model.start_type}")
+
+
+    def save_start_token_distribution(self) -> Path:
+        if self.run_path is None:
+            raise ValueError("run_path must be set to save start-token distribution")
+        if self.start_token_distribution is None:
+            self.start_token_distribution = self._build_start_token_distribution()
+        distribution_path = self.get_start_token_distribution_path(self.run_path)
+        with distribution_path.open("wt", encoding="ascii") as f:
+            json.dump(self.start_token_distribution, f)
+        artifact = wandb.Artifact(name="spacegroup_distribution", type="dataset_stats")
+        artifact.add_file(distribution_path)
+        wandb.log_artifact(artifact)
+        return distribution_path
+
+
+    def _sample_start_tokens_from_distribution(self, n_structures: int) -> torch.Tensor:
+        if self.start_token_distribution is None:
+            if self.train_dataset is not None and self.val_dataset is not None:
+                self.start_token_distribution = self._build_start_token_distribution()
+            else:
+                raise ValueError(
+                    "No start-token distribution available. Save or provide "
+                    f"{start_token_distribution_file_name} before generation.")
+
+        counts = torch.tensor(self.start_token_distribution["counts"], dtype=torch.float32, device=self.device)
+        if counts.sum() <= 0:
+            raise ValueError("Start-token distribution counts are empty")
+        sample_indices = torch.distributions.Categorical(probs=counts / counts.sum()).sample((n_structures,))
+
+        start_type = self.start_token_distribution["start_type"]
+        if start_type == "categorial":
+            return sample_indices
+        if start_type == "one_hot":
+            vectors = torch.tensor(self.start_token_distribution["vectors"], dtype=torch.float32, device=self.device)
+            return vectors[sample_indices]
+        raise ValueError(f"Unknown start type in distribution: {start_type}")
 
 
     @classmethod
     def from_config(cls, config_dict: dict|DictConfig,
                     device: torch.device,
                     use_cached_tensors: bool = True,
-                    run_path: Optional[Path] = Path("runs")):
+                    run_path: Optional[Path] = Path("runs"),
+                    load_datasets: bool = True):
         config = OmegaConf.create(config_dict)
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
 
             raise ValueError("Multiclass target with order permutation requires learned positional encoding only masked, ",
                             "otherwise the Transformer is not permutation invariant.")
-        tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
-            config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
-            tokenizer_path=run_path / "tokenizers.pkl.gz" if not use_cached_tensors else None)
+        if load_datasets:
+            tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
+                config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
+                tokenizer_path=run_path / "tokenizers.pkl.gz" if not use_cached_tensors else None)
+            train_data = tensors["train"]
+            val_data = tensors["val"]
+            test_data = tensors["test"] if "test" in tensors else None
+            distribution = None
+            max_sequence_length = None
+        else:
+            with gzip.open(run_path / "tokenizers.pkl.gz", "rb") as f:
+                tokenisers = pickle.load(f)
+            with gzip.open(run_path / "token_engineers.pkl.gz", "rb") as f:
+                token_engineers = pickle.load(f)
+            train_data = None
+            val_data = None
+            test_data = None
+            distribution_path = cls.get_start_token_distribution_path(run_path)
+            if not distribution_path.exists():
+                raise FileNotFoundError(
+                    f"Missing {distribution_path}. This file is required for generation without datasets.")
+            distribution = cls.load_start_token_distribution_file(distribution_path)
+            max_sequence_length = int(distribution["max_sequence_length"])
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
         # torch._dynamo.config.cache_size_limit = 128
@@ -233,14 +351,16 @@ class WyckoffTrainer():
         else:
             raise ValueError(f"Unknown start type: {config.model.CascadeTransformer_args.start_type}")
         return cls(
-            model, tensors["train"], tensors["val"], tokenisers, token_engineers, config.model.cascade.order,
+            model, train_data, val_data, tokenisers, token_engineers, config.model.cascade.order,
             config.model.cascade.get("is_target", None),
             config.model.cascade.get("augmented", None),
             config.model.start_token,
             optimisation_config=config.optimisation, device=device,
             run_path=run_path,
             start_dtype=start_dtype,
-            test_dataset=tensors["test"] if "test" in tensors else None,
+            test_dataset=test_data,
+            max_sequence_length=max_sequence_length,
+            start_token_distribution=distribution,
             **config.model.WyckoffTrainer_args)
 
 
@@ -306,6 +426,8 @@ class WyckoffTrainer():
 
 
     def train_epoch(self):
+        if self.train_dataset is None:
+            raise ValueError("train_dataset is not available")
         self.model.train()
         if hasattr(self.optimizer, "train"):
             self.optimizer.train()
@@ -376,10 +498,13 @@ class WyckoffTrainer():
 
 
     def train(self):
+        if self.train_dataset is None or self.val_dataset is None:
+            raise ValueError("train() requires train and validation datasets")
         best_val_loss = float('inf')
         best_val_epoch = 0
         self.run_path.mkdir(exist_ok=True)
         best_model_params_path = self.run_path / "best_model_params.pt"
+        self.save_start_token_distribution()
 
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
@@ -453,21 +578,12 @@ class WyckoffTrainer():
         """
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
-            self.train_dataset.masks, self.train_dataset.max_sequence_length)
+            self.masks_dict, self.max_sequence_length)
         if calibrate:
+            if self.val_dataset is None:
+                raise ValueError("Calibration requires a validation dataset")
             generator.calibrate(self.val_dataset)
-        if self.model.start_type == "categorial":
-            max_start = self.model.start_embedding.num_embeddings
-            start_counts = torch.bincount(
-                self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
-                    self.val_dataset.start_tokens, minlength=max_start)
-            start_tensor = torch.distributions.Categorical(probs=start_counts.float()).sample((n_structures,))
-        elif self.model.start_type == "one_hot":
-            # We are going to sample with replacement from train+val datasets
-            all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
-            start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
-        else:
-            raise ValueError(f"Unknown start type: {self.model.start_type}")
+        start_tensor = self._sample_start_tokens_from_distribution(n_structures)
         if compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
                 start_tensor, compute_validity=True)

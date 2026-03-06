@@ -21,9 +21,8 @@ def main():
         help="The path to the model directory. Should contain a best_model_params.pt, tokenizers.pkl.gz, "
              "token_engineers.pkl.gz, config.yaml")
     parser.add_argument("--use-cached-tensors", action="store_true",
-        help="Generation process requires tensors of the original dataset. Mostly for technical reasons, "
-             "but also for sampling the start tokens. If you are sure that the tokenization "
-             "didn't change between training and generation, you can use this flag to speed up the process.")
+           help="Load cached tensors and datasets as before. By default generation does not require datasets and "
+               "samples start tokens from the saved space-group distribution.")
     parser.add_argument("--initial-n-samples", type=int, help="The number of samples to try"
         " before filtering out the invalid ones.", default=1100)
     parser.add_argument("--firm-n-samples", type=int, help="The number of samples after generation, "
@@ -56,7 +55,11 @@ def main():
 
     generation_start_time = time.time()
     trainer = WyckoffTrainer.from_config(
-        config, device=args.device, use_cached_tensors=args.use_cached_tensors, run_path=run_path)
+        config,
+        device=args.device,
+        use_cached_tensors=args.use_cached_tensors,
+        run_path=run_path,
+        load_datasets=args.use_cached_tensors or args.calibrate)
     trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
     generated_wp = trainer.generate_structures(args.initial_n_samples, args.calibrate)
     generation_end_time = time.time()
