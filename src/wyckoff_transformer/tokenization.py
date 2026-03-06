@@ -36,6 +36,11 @@ class SpaceGroupEncoder(dict):
     get_spg_symmetry_object().to_matrix_representation()
     Removes constants among the present groups.
     """
+    def __init__(self):
+        super().__init__()
+        self.np_dict = dict()
+        self.to_token = TupleDict()
+
     @classmethod
     def from_sg_set(cls, all_space_groups: Set[int]|FrozenSet[int]):
         symbols = ("P", "A", "B", "C", "I", "R", "F")
@@ -76,10 +81,8 @@ class SpaceGroupEncoder(dict):
         all_spgs_sum = sum(all_spgs_raw.values())
         varying_indices = ~((all_spgs_sum == 0) | (all_spgs_sum == len(all_spgs_raw)))
         logger.info("Space group one-hot encoding: %i groups, %i varying elements", len(all_space_groups), varying_indices.sum())
-        instance = cls()
         # Numpy array is unhashable, so we convert it to tuple for compatibility reasons
-        instance.np_dict = dict()
-        instance.to_token = TupleDict()
+        instance = cls()
         for group_number, spg in all_spgs_raw.items():
             instance.np_dict[group_number] = spg[varying_indices]
             instance[group_number] = tuple(spg[varying_indices])
@@ -104,6 +107,15 @@ class SpaceGroupEncoder(dict):
 
 
 class EnumeratingTokeniser(dict):
+    def __init__(self, *args, stop_token=None, pad_token=None, mask_token=None,
+                 include_stop=True, to_token=[], **kwargs):
+        super().__init__(*args, **kwargs)
+        self.stop_token: Optional[int] = stop_token
+        self.pad_token: Optional[int] = pad_token
+        self.mask_token: Optional[int] = mask_token
+        self.include_stop: bool = include_stop
+        self.to_token: List = to_token
+
     @classmethod
     def from_token_set(cls,
         all_tokens: Set|FrozenSet,
@@ -112,19 +124,21 @@ class EnumeratingTokeniser(dict):
         for special_token in ServiceToken:
             if special_token.name in all_tokens:
                 raise ValueError(f"Special token {special_token.name} is in the dataset")
-        instance = cls()
-        instance.update({token: idx for idx, token in enumerate(
-            chain(sorted(all_tokens), map(attrgetter('name'), ServiceToken)))})
-        instance.stop_token = instance[ServiceToken.STOP.name]
-        instance.pad_token = instance[ServiceToken.PAD.name]
-        instance.mask_token = instance[ServiceToken.MASK.name]
-        instance.include_stop = include_stop
+        token_map = {token: idx for idx, token in enumerate(
+            chain(sorted(all_tokens), map(attrgetter('name'), ServiceToken)))}
+        instance = cls(
+            token_map,
+            stop_token=token_map[ServiceToken.STOP.name],
+            pad_token=token_map[ServiceToken.PAD.name],
+            mask_token=token_map[ServiceToken.MASK.name],
+            include_stop=include_stop,
+            to_token=[token for token, idx in sorted(token_map.items(), key=itemgetter(1))],
+        )
         # Theoretically, we can check it in the beginnig, but
         # the performance hit is negligible
         if max_tokens is not None and len(instance) > max_tokens:
             raise ValueError(f"Too many tokens: {len(instance)}. Remember "
             f"that we also added {len(ServiceToken)} service tokens")
-        instance.to_token = [token for token, idx in sorted(instance.items(), key=itemgetter(1))]
         return instance
 
 
@@ -137,7 +151,7 @@ class EnumeratingTokeniser(dict):
         if self.include_stop:
             padding = [self.stop_token] + padding
         return torch.tensor(tokenised_sequence + padding, **tensor_args)
-    
+
 
     def tokenise_single(self, token, **tensor_args) -> torch.Tensor:
         return torch.tensor(self[token], **tensor_args)
@@ -353,6 +367,19 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
                      n_jobs: Optional[int] = None) -> \
                         Tuple[Dict[str, Dict[str, torch.Tensor|List[List[torch.Tensor]]]],
                               Dict[str, EnumeratingTokeniser]]:
+    """
+    Tokenises the dataset according to the config. If tokenizer_path is provided, it loads the tokenisers from the path instead of creating new ones.
+    Args:
+        datasets_pd: A dict with the dataset name as key and the dataset as a pandas DataFrame as value. We must pass the all the data to ensure that
+            every possible token is included in the tokeniser, even if it is not present in a specific split.
+        config: The config for the tokenisation, see the yamls/tokenisers folder for examples.
+        tokenizer_path: The path to the tokenisers. If None, new tokenisers are created.
+        n_jobs: The number of jobs to use for parallel processing. If None, it uses the default number of physical cores.
+    Returns:
+        A tuple with the tokenised tensors and the tokenisers.
+            The tokenised tensors are a dict with the dataset name as key and a dict with the field name as key and the tokenised tensor as value.
+            The tokenisers are a dict with the field name as key and the tokeniser as value.
+    """
     dtype = getattr(torch, config.dtype)
     include_stop = config.get("include_stop", True)
     if n_jobs is not None:
