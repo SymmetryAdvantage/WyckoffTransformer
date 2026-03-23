@@ -1,4 +1,6 @@
 import unittest
+import pytest
+import warnings
 from types import SimpleNamespace
 
 import torch
@@ -168,17 +170,21 @@ class TestTrainedModelIOI8TYCX(unittest.TestCase):
             
         config = OmegaConf.load(self.run_path / "config.yaml")
 
-        self.trainer = WyckoffTrainer.from_config(
-            config,
-            device=torch.device("cpu"),
-            use_cached_tensors=False,
-            run_path=self.run_path,
-            load_datasets=True
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning, message="This process.*is multi-threaded, use of fork\\(\\) may lead to deadlocks in the child.")
+            self.trainer = WyckoffTrainer.from_config(
+                config,
+                device=torch.device("cpu"),
+                use_cached_tensors=False,
+                run_path=self.run_path,
+                load_datasets=True
+            )
         self.trainer.model.load_state_dict(
             torch.load(self.run_path / "best_model_params.pt", map_location="cpu", weights_only=True)
         )
 
+    @pytest.mark.filterwarnings("ignore:No Pauling electronegativity for .*")
+    @pytest.mark.filterwarnings("ignore:This process.*is multi-threaded, use of fork\\(\\) may lead to deadlocks in the child\\.:DeprecationWarning")
     def test_formal_format(self):
         n_structures = 1000
         generated_wp = self.trainer.generate_structures(
