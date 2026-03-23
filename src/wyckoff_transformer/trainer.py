@@ -283,7 +283,7 @@ class WyckoffTrainer():
         distribution_path = self.get_start_token_distribution_path(self.run_path)
         with distribution_path.open("wt", encoding="ascii") as f:
             json.dump(self.start_token_distribution, f)
-        artifact = wandb.Artifact(name="spacegroup_distribution", type="dataset_stats")
+        artifact = wandb.Artifact(name=f"spacegroup_distribution_{wandb.run.id}", type="dataset_stats")
         artifact.add_file(distribution_path)
         wandb.log_artifact(artifact)
         return distribution_path
@@ -580,7 +580,7 @@ class WyckoffTrainer():
                     best_val_epoch = epoch
                     torch.save(self.model.state_dict(), best_model_params_path)
                     best_model_artifact = wandb.Artifact(
-                        name="best_model",
+                        name=f"best_model_{wandb.run.id}",
                         type="model",
                         metadata={"epoch": epoch})
                     best_model_artifact.add_file(best_model_params_path)
@@ -783,7 +783,7 @@ class WyckoffTrainer():
                 title="Enumeration validity")
         })
         file_name = self.run_path / f"generated_wp_{generation_name}.json.gz"
-        saved_wyckoffs = wandb.Artifact(name=f"generated_wp_{generation_name}", type="generated_data")
+        saved_wyckoffs = wandb.Artifact(name=f"generated_wp_{generation_name}_{wandb.run.id}", type="generated_data")
         with gzip.open(file_name, "wt") as f:
             json.dump(generated_wp, f)
         saved_wyckoffs.add_file(file_name)
@@ -866,13 +866,13 @@ def train_from_config(
     this_run_path = run_path / wandb.run.id
     this_run_path.mkdir(parents=True, exist_ok=False)
     trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)
-    tokenizers_engineers = wandb.Artifact(name="processors", type="processors")
+    tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
     processor_json = trainer.processor.save_pretrained(this_run_path)
     tokenizers_engineers.add_file(processor_json)
     wandb.log_artifact(tokenizers_engineers)
     config_save_path = this_run_path / "config.yaml"
     OmegaConf.save(config_dict, config_save_path)
-    run_config_artifact = wandb.Artifact(name="run_config", type="config")
+    run_config_artifact = wandb.Artifact(name=f"run_config_{wandb.run.id}", type="config")
     run_config_artifact.add_file(config_save_path)
     wandb.log_artifact(run_config_artifact)
     trainer.train()

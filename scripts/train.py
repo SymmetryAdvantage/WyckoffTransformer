@@ -63,7 +63,7 @@ def main():
             )
         ):
 
-        configuration_artifact = wandb.Artifact(name=f"config_{config.name}", type="config")
+        configuration_artifact = wandb.Artifact(name=f"config_{config.name}_{wandb.run.id}", type="config")
         configuration_artifact.add_file(args.config, name="model.yaml")
         configuration_artifact.add_file(tokeniser_config_path, name="tokeniser.yaml")
         wandb.log_artifact(configuration_artifact)
