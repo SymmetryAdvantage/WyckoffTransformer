@@ -25,9 +25,8 @@ jobs:
         python-version: "3.12"
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
         curl -LsSf https://astral.sh/uv/install.sh | sh
-        uv sync
+        uv sync --extra cpu
         uv pip install flake8 pytest
     - name: Lint with flake8
       run: |

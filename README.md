@@ -7,8 +7,10 @@ If you just need the generated datasets for benchmarking, they are available at 
 # Installation
 1. Clone the repository
 2. Run `uv venv --python 3.12`
-3. Install your local flavour of pytorch if not using the default ones in `pyproject.toml`, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu128`. Optionally, [pytorch-sparse](https://github.com/rusty1s/pytorch_sparse) and [pytorch-scatter](https://github.com/rusty1s/pytorch_scatter) are needed to run the CDVAE property prediction model, but otherwise can be skipped. Note: the `pyproject.toml` already includes sources for local `torch-2.10.0` wheels if available in `/mnt/hdd/torch_wheels/`.
-4. Run `uv sync`.
+3. Install the dependencies, including torch. There are several options:
+  - Install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
+  - Install CPU version `uv sync --extra cpu`
+  - Install CUDA 12.8 version `uv sync --extra cu128`
 5. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
 6. Preprocess the data on Wychoff positions:
 ```bash
