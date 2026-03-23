@@ -4,8 +4,11 @@ import logging
 from omegaconf import OmegaConf
 import torch
 import wandb
+import torch._dynamo
+torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
 from wyckoff_transformer.trainer import train_from_config
+# from wyckoff_transformer.bigtrainer import train_from_config
 
 
 def main():
@@ -54,7 +57,11 @@ def main():
         project="WyckoffTransformer",
         job_type="train",
         tags=tags,
-        config=wandb_config):
+        config=wandb_config,
+        settings=wandb.Settings(
+                init_timeout=180
+            )
+        ):
 
         configuration_artifact = wandb.Artifact(name=f"config_{config.name}", type="config")
         configuration_artifact.add_file(args.config, name="model.yaml")

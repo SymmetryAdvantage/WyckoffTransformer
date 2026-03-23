@@ -1,0 +1,60 @@
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    embedding_size:
+      elements: 16
+      site_symmetries: 16
+      sites_enumeration: 8
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: log_klat
+    evaluation_samples: 1
+    batch_size: 500
+  CascadeTransformer_args:
+    start_type: one_hot
+    compile_perceptrons: true
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: mean
+    include_start_in_aggregation: true
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      dropout: 0.2
+    TransformerEncoder_args:
+      num_layers: 3
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      # We also don't need them as we ensure that batches all have the same length in WychoffTrainer
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    module: schedulefree
+    name: SGDScheduleFree
+    config:
+      lr: 0.2
+  validation_period: 2000
+  early_stopping_patience_epochs: 100000
+  clip_grad_norm: 2.
+  epochs: 150000
+tokeniser:
+  name: apdb_sg_multiplicity_scalars
+evaluation:
+  n_structures_to_generate: 10000

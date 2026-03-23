@@ -1,4 +1,4 @@
-from typing import Tuple, Dict, Optional, List, Any
+from typing import Tuple, Dict, Optional, List, Any, Union, Set
 import importlib
 from random import randint
 import logging
@@ -60,6 +60,7 @@ class WyckoffTrainer():
         max_sequence_length: Optional[int] = None,
         start_token_distribution: Optional[Dict[str, Any]] = None,
         processor: Optional[WyckoffProcessor] = None,
+        tokeniser_config: Optional[DictConfig] = None,
     ):
         """
         Args:
@@ -88,6 +89,7 @@ class WyckoffTrainer():
             token_engineers=token_engineers,
         )
         self.cascade_is_target = cascade_is_target
+        self.tokeniser_config = tokeniser_config
         # Nothing else will work in foreseeable future
         self.dtype = torch.int64
         if batch_size is not None:
@@ -369,10 +371,11 @@ class WyckoffTrainer():
             optimisation_config=config.optimisation, device=device,
             run_path=run_path,
             start_dtype=start_dtype,
-            test_dataset=test_data,
+            test_dataset=test_data if test_data is not None else (tensors.get("test") if tensors is not None else None),
             max_sequence_length=max_sequence_length,
             start_token_distribution=distribution,
             processor=processor,
+            tokeniser_config=config.tokeniser,
             **config.model.WyckoffTrainer_args)
 
 
@@ -495,15 +498,40 @@ class WyckoffTrainer():
             # Above we check that the batch size is the same for all batches
             return loss / self.evaluation_samples / dataset.batches_per_epoch
 
-        loss = torch.zeros(self.cascade_len, device=self.device)
+        loss = torch.zeros(self.cascade_len, device=self.device)          
+
+        # set to batching mode
+        # for _ in range(self.evaluation_samples):
+        #     for _ in range(dataset.batches_per_epoch):
+        #         for known_seq_len in range(dataset.max_sequence_length):
+
+        #             if self.target == TargetClass.NextToken:
+        #                 for known_cascade_len in range(self.cascade_target_count):
+        #                     loss[known_cascade_len] += self.get_loss(
+        #                         dataset,
+        #                         known_seq_len=known_seq_len,
+        #                         known_cascade_len=known_cascade_len,
+        #                         no_batch=False,      # mini-batch mode
+        #                     )
+        #             else:  # TargetClass.NumUniqueTokens
+        #                 loss += self.get_loss(
+        #                     dataset,
+        #                     known_seq_len=known_seq_len,
+        #                     known_cascade_len=0,
+        #                     no_batch=False,          # mini-batch mode
+        #                 ).sum(dim=0)
+
+        # return loss / self.evaluation_samples / len(dataset)
+
+        # default (w/o batching)
         for _ in range(self.evaluation_samples):
             for known_seq_len in range(dataset.max_sequence_length):
                 if self.target == TargetClass.NextToken:
                     for known_cascade_len in range(self.cascade_target_count):
                         loss[known_cascade_len] += self.get_loss(
-                            dataset, known_seq_len, known_cascade_len, True)
+                            dataset, known_seq_len, known_cascade_len, True) # True if no_batch
                 else: # NumUniqueTokens
-                    loss += self.get_loss(dataset, known_seq_len, 0, True).sum(dim=0)
+                    loss += self.get_loss(dataset, known_seq_len, 0, True).sum(dim=0) # True if no_batch
             # ln(P) = ln p(t_n|t_n-1, ..., t_1) + ... + ln p(t_2|t_1)
             # We are minimising the negative log likelihood of the whole sequences
         return loss / self.evaluation_samples / len(dataset)
@@ -578,7 +606,8 @@ class WyckoffTrainer():
             self,
             n_structures: int,
             calibrate: bool,
-            compute_validity_per_known_sequence_length: bool = False
+            compute_validity_per_known_sequence_length: bool = False,
+            start_tensor: Optional[torch.Tensor] = None,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -595,7 +624,19 @@ class WyckoffTrainer():
             if self.val_dataset is None:
                 raise ValueError("Calibration requires a validation dataset")
             generator.calibrate(self.val_dataset)
-        start_tensor = self._sample_start_tokens_from_distribution(n_structures)
+        if start_tensor is None:
+            start_tensor = self._sample_start_tokens_from_distribution(n_structures)
+        else:
+            if start_tensor.size(0) != n_structures:
+                raise ValueError("Custom start tensor must have the same number of samples as requested structures.")
+            
+            # Use self.model.start_embedding if available, or just device directly.
+            # start_tensor might not refer to train_dataset since we could be in generation mode.
+            if hasattr(self, 'train_dataset') and self.train_dataset is not None:
+                start_tensor = start_tensor.to(self.device).to(self.train_dataset.start_tokens.dtype)
+            else:
+                start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
+
         if compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
                 start_tensor, compute_validity=True)
@@ -624,6 +665,105 @@ class WyckoffTrainer():
         print(f"From which {len(valid_structures)} are valid")
         if compute_validity_per_known_sequence_length:
             return valid_structures, ss_validitity, enum_validity
+        return valid_structures
+
+    def generate_csx_structures(
+        self,
+        n_structures: int,
+        calibrate: bool,
+        required_element_set: Union[str, Set[int]],
+        allowed_element_set: Union[str, Set[int]] = "all",
+        temperature: float = 1.0,
+        start_tensor: Optional[torch.Tensor] = None,
+    ) -> List[dict]:
+        """
+        Generate crystal structures in Chemical System eXploration mode (CSX).
+
+        Parameters
+        ----------
+        n_structures : int
+            The number of structures to generate.
+        calibrate : bool
+            Whether to calibrate the generator on the validation set.
+        required_element_set : Union[str, Set[int]]
+            A set of required element token IDs or a dash-separated string
+            (e.g., "Li-O") of elements that MUST be present.
+        allowed_element_set : Union[str, Set[int]], default "all"
+            Controls the pool of allowed elements. It has three modes:
+            - "all": All elements in the `elements_vocab` are allowed.
+            - "fix": Only elements from `required_element_set` are allowed.
+            - str (e.g., "Li-Co-Mn-Ni-Fe-P-O"): A custom pool of allowed elements defined by
+              a dash-separated string.
+            - Set[int]: A custom pool of allowed elements defined by token IDs.
+        temperature : float, optional
+            The softmax temperature for sampling. By default 1.0.
+
+        Returns
+        -------
+        List[dict]
+            A list of valid generated pyxtal structure objects.
+        """
+
+        generator = WyckoffGenerator(
+            self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
+            self.train_dataset.masks, self.train_dataset.max_sequence_length)
+        if calibrate:
+            generator.calibrate(self.val_dataset)
+        if start_tensor is None:
+            if self.model.start_type == "categorial":
+                max_start = self.model.start_embedding.num_embeddings
+                start_counts = torch.bincount(
+                    self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
+                        self.val_dataset.start_tokens, minlength=max_start)
+                start_tensor = torch.distributions.Categorical(probs=start_counts.float()).sample((n_structures,))
+            elif self.model.start_type == "one_hot":
+                all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
+                start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
+            else:
+                raise ValueError(f"Unknown start type: {self.model.start_type}")
+        else:
+            if start_tensor.size(0) != n_structures:
+                raise ValueError("Custom start tensor must have the same number of samples as requested structures.")
+            start_tensor = start_tensor.to(self.device).to(self.train_dataset.start_tokens.dtype)
+
+        if 'elements' not in self.tokenisers:
+            raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
+
+        generated_tensors = generator.generate_csx_tensors(
+            start=start_tensor,
+            required_element_set=required_element_set,
+            allowed_element_set=allowed_element_set,   
+            temperature=temperature,
+            elements_vocab=self.tokenisers['elements']
+        )
+
+        generated_cascade_order = self.cascade_order
+        if self.cascade_order[-1] == "harmonic_site_symmetries":
+            del generated_tensors[-1]
+            generated_cascade_order = generated_cascade_order[:-1]
+        
+        generated_tensors = torch.stack(generated_tensors, dim=-1)
+
+        if 'sites_enumeration' in self.tokenisers:
+            letter_from_ss_enum_idx = get_letter_from_ss_enum_idx(self.tokenisers['sites_enumeration'])
+        else:
+            letter_from_ss_enum_idx = None
+ 
+        with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
+            ss_from_letter = pickle.load(f)[2]
+            
+        to_pyxtal = partial(tensor_to_pyxtal,
+                            tokenisers=self.tokenisers,
+                            token_engineers=self.token_engineers,
+                            cascade_order=generated_cascade_order,
+                            letter_from_ss_enum_idx=letter_from_ss_enum_idx,
+                            ss_from_letter=ss_from_letter,
+                            wp_index=get_wp_index())
+
+        structures = list(map(to_pyxtal, start_tensor.detach().cpu(), generated_tensors.detach().cpu()))
+        print(f"Generated {len(structures)} Wyckoffs (CSX mode)")
+        valid_structures = [s for s in structures if s is not None]
+        print(f"From which {len(valid_structures)} are valid")
         return valid_structures
     
     def generate_evaluate_and_log_wp(
@@ -654,6 +794,71 @@ class WyckoffTrainer():
         saved_wyckoffs.add_file(file_name)
         wandb.log_artifact(saved_wyckoffs)
         evaluate_and_log(generated_wp, generation_name, n_structures, evaluator)
+
+    @torch.no_grad()
+    def predict_scalars(
+        self,
+        prediction_data: Dict[str, torch.Tensor | List[torch.Tensor]],
+        augmentation_samples: int = 1) -> Tuple[Tensor, Tensor]:
+        """
+        Predict scalar targets for pre-tokenised data.
+
+        Args:
+            prediction_data: Tokenised cascade data in the same format as AugmentedCascadeDataset expects.
+                Must include the start field (``self.start_name``), every field from ``self.cascade_order``,
+                engineered fields, and augmented variants if applicable.
+            augmentation_samples: Number of random augmentation draws to average over. Each draw samples
+                a random augmented variant when available.
+
+        Returns:
+            A tuple (mean_predictions, all_predictions) where:
+                - mean_predictions is a tensor of shape [num_examples] with the average prediction across
+                  augmentation samples.
+                - all_predictions is a tensor of shape [augmentation_samples, num_examples] with raw
+                  predictions per augmentation sample.
+        """
+        if self.target != TargetClass.Scalar:
+            raise ValueError("predict_scalars is only available for Scalar targets.")
+        if augmentation_samples < 1:
+            raise ValueError("augmentation_samples must be at least 1.")
+
+        prediction_data = prediction_data.copy()
+        dummy_target_name = "__scalar_prediction_dummy__"
+        num_examples = prediction_data[self.start_name].shape[0]
+        prediction_data[dummy_target_name] = torch.zeros(num_examples, dtype=torch.float32)
+
+        prediction_dataset = AugmentedCascadeDataset(
+            data=prediction_data,
+            cascade_order=self.cascade_order,
+            masks=self.masks_dict,
+            pads=self.pad_dict,
+            stops=self.stops_dict,
+            num_classes=self.num_classes_dict,
+            start_field=self.start_name,
+            augmented_fields=self.augmented_fields,
+            batch_size=None,
+            dtype=self.dtype,
+            start_dtype=self.train_dataset.start_tokens.dtype,
+            device=self.device,
+            augmented_storage_device=None,
+            target_name=dummy_target_name,
+        )
+
+        was_training = self.model.training
+        self.model.eval()
+        try:
+            sample_predictions = []
+            for _ in range(augmentation_samples):
+                start_tokens, cascade_tokens, _, padding_mask = \
+                    prediction_dataset.get_augmented_data(no_batch=True)
+                preds = self.model(start_tokens, cascade_tokens, padding_mask, None).squeeze()
+                sample_predictions.append(preds)
+            stacked_predictions = torch.stack(sample_predictions, dim=0)
+            mean_predictions = stacked_predictions.mean(dim=0)
+        finally:
+            if was_training:
+                self.model.train()
+        return mean_predictions, stacked_predictions
 
 
 def train_from_config(
