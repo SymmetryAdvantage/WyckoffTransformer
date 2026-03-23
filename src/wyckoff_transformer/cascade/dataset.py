@@ -547,22 +547,24 @@ class AugmentedCascadeLoader():
         fix_batch_size: bool = True,
     ):
         self.dataset = dataset
-        self.batch_size = batch_size
-        self.fix_batch_size = fix_batch_size
         self.num_examples = dataset.num_examples
-        if batch_size is not None:
-            if batch_size > self.num_examples:
-                raise ValueError("Batch size is larger than the dataset")
-            self.this_shuffle_order = torch.randperm(
-                self.num_examples, device=dataset.augmented_storage_device)
-            self.next_batch_index = 0
+        self.batch_size = batch_size if batch_size is not None else self.num_examples
+        self.fix_batch_size = fix_batch_size
+
+        if self.batch_size > self.num_examples:
+            raise ValueError("Batch size is larger than the dataset")
+        
+        self.this_shuffle_order = torch.randperm(
+            self.num_examples, device=dataset.augmented_storage_device)
+        self.next_batch_index = 0
+        
         if batch_size is None:
             self.batches_per_epoch = 1
         else:
             if fix_batch_size:
-                self.batches_per_epoch = self.num_examples // batch_size
+                self.batches_per_epoch = self.num_examples // self.batch_size
             else:
-                self.batches_per_epoch = -(-self.num_examples // batch_size)
+                self.batches_per_epoch = -(-self.num_examples // self.batch_size)
 
     @classmethod
     def from_dataset(cls, dataset: AugmentedCascadeDataset) -> 'AugmentedCascadeLoader':
