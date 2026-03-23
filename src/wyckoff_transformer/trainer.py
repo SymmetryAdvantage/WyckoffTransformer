@@ -726,7 +726,7 @@ class WyckoffTrainer():
         if 'elements' not in self.tokenisers:
             raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
 
-        generated_tensors = generator.generate_csx_tensors(
+        generated_tensors = generator.generate_tensors(
             start=start_tensor,
             required_element_set=required_element_set,
             allowed_element_set=allowed_element_set,   

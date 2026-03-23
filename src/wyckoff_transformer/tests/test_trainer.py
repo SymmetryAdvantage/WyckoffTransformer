@@ -133,7 +133,7 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
     def test_generate_csx_structures(self, mock_get_wp_index, mock_pickle_load, mock_gzip_open, MockWyckoffGenerator):
         # Setup mocks
         mock_generator_instance = MockWyckoffGenerator.return_value
-        mock_generator_instance.generate_csx_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]
+        mock_generator_instance.generate_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]
         mock_pickle_load.return_value = [None, None, "ss_from_letter_mock"]
         
         start_tensor = torch.tensor([0, 1])
@@ -147,8 +147,8 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         )
         
         # Assertions
-        mock_generator_instance.generate_csx_tensors.assert_called_once()
-        call_kwargs = mock_generator_instance.generate_csx_tensors.call_args[1]
+        mock_generator_instance.generate_tensors.assert_called_once()
+        call_kwargs = mock_generator_instance.generate_tensors.call_args[1]
         self.assertEqual(call_kwargs["required_element_set"], "Li-O")
         self.assertEqual(call_kwargs["allowed_element_set"], "all")
         self.assertEqual(len(structures), 2)
