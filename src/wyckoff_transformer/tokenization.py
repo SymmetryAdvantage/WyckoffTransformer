@@ -77,37 +77,11 @@ class SpaceGroupEncoder(dict):
         symbols = ("P", "A", "B", "C", "I", "R", "F")
         symbols_one_hot_matrix = np.eye(len(symbols))
         symbol_to_one_hot = dict(zip(symbols, symbols_one_hot_matrix))
-        
-        def get_transferable_spg_matrix(group: Group) -> np.ndarray:
-            """
-            Build a translation-aware space-group symmetry matrix.
-            
-            Necessary to avoid
-            https://github.com/MaterSim/PyXtal/issues/330
-
-            pyxtal's Group.get_spg_symmetry_object() currently constructs
-            site_symmetry without parse_trans=True, which collapses screw/glide
-            information and causes collisions for distinct space groups.
-            """
-            wp = group.get_wyckoff_position(0)
-            ops = wp.get_euclidean_ops() if 143 <= group.number <= 194 else wp.ops
-            bravais = group.symbol[0]
-            if bravais in ("A", "B", "C", "I"):
-                ops = ops[: int(len(ops) / 2)]
-            elif bravais == "R":
-                ops = ops[: int(len(ops) / 3)]
-            elif bravais == "F":
-                ops = ops[: int(len(ops) / 4)]
-
-            return site_symmetry(
-                ops, group.lattice_type, bravais, group.number, wp_id=0, parse_trans=True
-            ).to_matrix_representation().ravel()
-
         all_spgs_raw = dict()
         for group_number in all_space_groups:
             group = Group(group_number)
             all_spgs_raw[group_number] = np.concatenate(
-                [get_transferable_spg_matrix(group),
+                [group.get_spg_symmetry_object().to_matrix_representation().ravel(),
                  symbol_to_one_hot[group.symbol[0]]])
         all_spgs_sum = sum(all_spgs_raw.values())
         varying_indices = ~((all_spgs_sum == 0) | (all_spgs_sum == len(all_spgs_raw)))
