@@ -26,8 +26,7 @@ jobs:
     - name: Install dependencies
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
-        uv sync --extra cpu
-        uv pip install flake8 pytest
+        uv sync --extra cpu dev
     - name: Test with pytest
       run: |
-        uv run --extra cpu pytest
+        uv run --extra cpu dev pytest
