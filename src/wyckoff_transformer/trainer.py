@@ -670,6 +670,11 @@ def train_from_config(
     processor_json = trainer.processor.save_pretrained(this_run_path)
     tokenizers_engineers.add_file(processor_json)
     wandb.log_artifact(tokenizers_engineers)
+    config_save_path = this_run_path / "config.yaml"
+    OmegaConf.save(config_dict, config_save_path)
+    run_config_artifact = wandb.Artifact(name="run_config", type="config")
+    run_config_artifact.add_file(config_save_path)
+    wandb.log_artifact(run_config_artifact)
     trainer.train()
     config = OmegaConf.create(config_dict)
     if config.model.WyckoffTrainer_args.target == "NextToken" and \
