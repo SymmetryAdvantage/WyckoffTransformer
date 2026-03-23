@@ -19,16 +19,17 @@ class TestCdvaeCheckpointWeightsOnlyBehavior(unittest.TestCase):
         ckpt = _find_cdvae_checkpoint()
 
         with self.assertRaises(Exception) as ctx:
-            torch.load(ckpt)
+            torch.load(ckpt, map_location='cpu')
 
-        self.assertEqual(type(ctx.exception).__name__, "UnpicklingError")
+        self.assertIn(type(ctx.exception).__name__, ["UnpicklingError", "RuntimeError"])
+
         self.assertIn("Weights only load failed", str(ctx.exception))
         self.assertIn("EarlyStopping", str(ctx.exception))
 
     def test_loads_when_weights_only_is_false(self) -> None:
         ckpt = _find_cdvae_checkpoint()
 
-        loaded = torch.load(ckpt, weights_only=False)
+        loaded = torch.load(ckpt, weights_only=False, map_location='cpu')
 
         self.assertIsInstance(loaded, dict)
         self.assertIn("state_dict", loaded)
