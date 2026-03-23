@@ -6,12 +6,11 @@ If you just need the generated datasets for benchmarking, they are available at 
 
 # Installation
 1. Clone the repository
-2. Run `poetry env use python`
-3. Install your local flavour of pytorch, e. g. `poetry run pip install torch --index-url https://download.pytorch.org/whl/cu128`. Optionally, [pytorch-sparse](https://github.com/rusty1s/pytorch_sparse) and [pytorch-scatter](https://github.com/rusty1s/pytorch_scatter) are needed to run the CDVAE property prediction model, but otherwise can be skipped.
-4. Run `poetry install`.
-5. `wandb` library is used extensively and must be installed. Logging can ber disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb and configure your entity. Internally, we used `symmetry-advantage`. It can be configured via poetry:
+2. Run `uv venv --python 3.12`
+3. Install your local flavour of pytorch if not using the default ones in `pyproject.toml`, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu128`. Optionally, [pytorch-sparse](https://github.com/rusty1s/pytorch_sparse) and [pytorch-scatter](https://github.com/rusty1s/pytorch_scatter) are needed to run the CDVAE property prediction model, but otherwise can be skipped. Note: the `pyproject.toml` already includes sources for local `torch-2.10.0` wheels if available in `/mnt/hdd/torch_wheels/`.
+4. Run `uv sync`.
+5. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb and configure your entity. Internally, we used `symmetry-advantage`. It can be configured by creating a `.env` file:
 ```bash
-poetry self add poetry-dotenv-plugin
 echo "WANDB_ENTITY=symmetry-advantage" > .env
 ```
 6. Preprocess the data on Wychoff positions:
@@ -162,11 +161,11 @@ Tar is used to handle the large number of small files, and `pigz` is used to spe
 ## Preprocessing
 In order to be analyzed the data must be preprocessed and cached. To preprocess all generated datasets in `generated/datasets.yaml`:
 ```bash
-poetry run python scripts/cache_generated_datasets.py
+uv run python scripts/cache_generated_datasets.py
 ```
 It supports filtering by dataset and transformations, e. g.:
 ```bash
-poetry run python scripts/cache_generated_datasets.py --dataset mp_20 --transformations DiffCSP++ DFT
+uv run python scripts/cache_generated_datasets.py --dataset mp_20 --transformations DiffCSP++ DFT
 ```
 Completing this step will enable loading the data with `evaluation.generated_dataset.GeneratedDataset.from_cache`
 
