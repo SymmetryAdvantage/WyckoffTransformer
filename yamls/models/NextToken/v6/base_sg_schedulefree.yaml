@@ -50,7 +50,7 @@ optimisation:
   validation_period: 1000
   early_stopping_patience_epochs: 100000
   clip_grad_norm: 2.
-  epochs: 1000000
+  epochs: 1500000
 tokeniser:
   name: mp_20_sg_multiplicity
 evaluation:
