@@ -12,8 +12,9 @@ If you just need the generated datasets for benchmarking, they are available at 
   - Configure `uv.toml` with your desired indices, see `uv.toml.example`
   - Install CPU version `uv sync --extra cpu`
   - Install CUDA 12.8 version `uv sync --extra cu128`
-5. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
-6. Preprocess the data on Wychoff positions:
+  Note that if you go the `--extra` path, you'll need to keep specifying it for commands, e.g. `uv run --extra cpu pytest`.
+4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
+5. Preprocess the data on Wychoff positions:
 ```bash
 python scripts/preprocess_wychoffs.py
 ```
