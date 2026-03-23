@@ -371,7 +371,7 @@ class WyckoffTrainer():
             optimisation_config=config.optimisation, device=device,
             run_path=run_path,
             start_dtype=start_dtype,
-            test_dataset=test_data if test_data is not None else (tensors.get("test") if tensors is not None else None),
+            test_dataset=test_data,
             max_sequence_length=max_sequence_length,
             start_token_distribution=distribution,
             processor=processor,
@@ -706,25 +706,22 @@ class WyckoffTrainer():
 
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
-            self.train_dataset.masks, self.train_dataset.max_sequence_length)
+            self.masks_dict, self.max_sequence_length)
         if calibrate:
+            if self.val_dataset is None:
+                raise ValueError("Calibration requires a validation dataset")
             generator.calibrate(self.val_dataset)
+        
         if start_tensor is None:
-            if self.model.start_type == "categorial":
-                max_start = self.model.start_embedding.num_embeddings
-                start_counts = torch.bincount(
-                    self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
-                        self.val_dataset.start_tokens, minlength=max_start)
-                start_tensor = torch.distributions.Categorical(probs=start_counts.float()).sample((n_structures,))
-            elif self.model.start_type == "one_hot":
-                all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
-                start_tensor = all_starts[torch.randint(len(all_starts), (n_structures,))]
-            else:
-                raise ValueError(f"Unknown start type: {self.model.start_type}")
+            start_tensor = self._sample_start_tokens_from_distribution(n_structures)
         else:
             if start_tensor.size(0) != n_structures:
                 raise ValueError("Custom start tensor must have the same number of samples as requested structures.")
-            start_tensor = start_tensor.to(self.device).to(self.train_dataset.start_tokens.dtype)
+            
+            if hasattr(self, 'train_dataset') and self.train_dataset is not None:
+                start_tensor = start_tensor.to(self.device).to(self.train_dataset.start_tokens.dtype)
+            else:
+                start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
 
         if 'elements' not in self.tokenisers:
             raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
@@ -745,16 +742,14 @@ class WyckoffTrainer():
         generated_tensors = torch.stack(generated_tensors, dim=-1)
 
         if 'sites_enumeration' in self.tokenisers:
-            letter_from_ss_enum_idx = get_letter_from_ss_enum_idx(self.tokenisers['sites_enumeration'])
+            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx()
         else:
             letter_from_ss_enum_idx = None
  
         with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
             ss_from_letter = pickle.load(f)[2]
             
-        to_pyxtal = partial(tensor_to_pyxtal,
-                            tokenisers=self.tokenisers,
-                            token_engineers=self.token_engineers,
+        to_pyxtal = partial(self.processor.tensor_to_pyxtal,
                             cascade_order=generated_cascade_order,
                             letter_from_ss_enum_idx=letter_from_ss_enum_idx,
                             ss_from_letter=ss_from_letter,
