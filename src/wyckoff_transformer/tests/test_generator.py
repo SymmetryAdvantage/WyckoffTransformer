@@ -1,4 +1,5 @@
 import unittest
+import pytest
 import torch
 from pathlib import Path
 from omegaconf import OmegaConf
@@ -33,6 +34,7 @@ class TestGeneratorIOI8TYCX(unittest.TestCase):
             self.trainer.max_sequence_length
         )
 
+    @pytest.mark.filterwarnings("ignore:No Pauling electronegativity for .*")
     def test_generate_tensors(self):
         n_structures = 10
         start_tensor = self.trainer._sample_start_tokens_from_distribution(n_structures)
