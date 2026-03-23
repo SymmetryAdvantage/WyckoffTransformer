@@ -110,6 +110,9 @@ torch-sparse = [
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
+markers = [
+  "needs_cache: mark test as requiring the cache file data.pkl.gz",
+]
 filterwarnings = [
   "ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
   "ignore:`torch_geometric\\.distributed` has been deprecated since 2\\.7\\.0.*:DeprecationWarning:torch_geometric\\.llm\\.utils\\.backend_utils",
