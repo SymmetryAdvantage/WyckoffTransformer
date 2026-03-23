@@ -49,6 +49,9 @@ dependencies = [
 dev = [
     "pytest >=9.0.2",
 ]
+cpu = []
+cu128 = []
+zeus = []
 
 [build-system]
 requires = ["hatchling"]
@@ -64,11 +67,47 @@ include = [
     "src/wyckoff_transformer/cdvae_evals/pl_modules/gemnet/gemnet-dT.json",
 ]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pyg-cpu"
+url = "https://data.pyg.org/whl/torch-2.10.0+cpu.html"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pyg-cu128"
+url = "https://data.pyg.org/whl/torch-2.10.0+cu128.html"
+explicit = true
+
 [tool.uv.sources]
-torch = { path = "/mnt/hdd/torch_wheels/torch-2.10.0-cp312-cp312-linux_x86_64.whl" }
-torch-scatter = { path = "/mnt/hdd/torch_wheels/torch_scatter-2.1.2-cp312-cp312-linux_x86_64.whl" }
-torch-sparse = { path = "/mnt/hdd/torch_wheels/torch_sparse-0.6.18-cp312-cp312-linux_x86_64.whl" }
-pyg-lib = { path = "/mnt/hdd/torch_wheels/pyg_lib-0.5.0-cp312-cp312-linux_x86_64.whl" }
+torch = [
+  { path = "/mnt/hdd/torch_wheels/torch-2.10.0-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
+  { index = "pytorch-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
+  { index = "pytorch-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+]
+torch-scatter = [
+  { path = "/mnt/hdd/torch_wheels/torch_scatter-2.1.2-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
+  { index = "pyg-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
+  { index = "pyg-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+]
+torch-sparse = [
+  { path = "/mnt/hdd/torch_wheels/torch_sparse-0.6.18-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
+  { index = "pyg-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
+  { index = "pyg-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+]
+pyg-lib = [
+  { path = "/mnt/hdd/torch_wheels/pyg_lib-0.5.0-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
+  { index = "pyg-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
+  { index = "pyg-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
