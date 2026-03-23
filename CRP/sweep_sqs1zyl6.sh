@@ -1,5 +1,0 @@
-#!/bin/bash
-export WANDB_DIR=/tmp/wandb
-mkdir -p $WANDB_DIR
-source CRP/env_setup.sh
-uv run python wandb_agent.py --project WyckoffTransformer sqs1zyl6 cuda --count 50 --run-path /output
