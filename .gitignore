@@ -38,4 +38,4 @@ generated.bak
 generated_public
 generated.tar.gz
 generated_public.tar.gz
-uv.lock
+uv.toml

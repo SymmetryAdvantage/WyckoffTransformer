@@ -1,0 +1,4 @@
+[[index]]
+name = "zeus"
+url = "file:///mnt/hdd/torch_wheels/"
+format = "flat"

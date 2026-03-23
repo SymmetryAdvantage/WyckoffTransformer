@@ -8,7 +8,8 @@ If you just need the generated datasets for benchmarking, they are available at 
 1. Clone the repository
 2. Run `uv venv --python 3.12`
 3. Install the dependencies, including torch. There are several options:
-  - Install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
+  - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
+  - Configure `uv.toml` with your desired indices, see `uv.toml.example`
   - Install CPU version `uv sync --extra cpu`
   - Install CUDA 12.8 version `uv sync --extra cu128`
 5. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
