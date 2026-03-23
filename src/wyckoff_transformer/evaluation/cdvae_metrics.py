@@ -135,6 +135,8 @@ def smact_validity_optimised(
         return False
     electronegs = [e.pauling_eneg for e in space.values()]
     ox_combos = [e.oxidation_states for e in space.values()]
+    if any(ox is None for ox in ox_combos):
+        return False
 
     if apply_gcd:
         gcd_count = gcd(*count)
