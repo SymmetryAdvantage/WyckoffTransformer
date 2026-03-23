@@ -90,23 +90,23 @@ explicit = true
 [tool.uv.sources]
 torch = [
   { path = "/mnt/hdd/torch_wheels/torch-2.10.0-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
-  { index = "pytorch-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
-  { index = "pytorch-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+  { index = "pytorch-cu128", marker = "extra == 'cu128'" },
+  { index = "pytorch-cpu", marker = "extra == 'cpu'" },
 ]
 torch-scatter = [
   { path = "/mnt/hdd/torch_wheels/torch_scatter-2.1.2-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
-  { index = "pyg-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
-  { index = "pyg-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+  { index = "pyg-cu128", marker = "extra == 'cu128'" },
+  { index = "pyg-cpu", marker = "extra == 'cpu'" },
 ]
 torch-sparse = [
   { path = "/mnt/hdd/torch_wheels/torch_sparse-0.6.18-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
-  { index = "pyg-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
-  { index = "pyg-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+  { index = "pyg-cu128", marker = "extra == 'cu128'" },
+  { index = "pyg-cpu", marker = "extra == 'cpu'" },
 ]
 pyg-lib = [
   { path = "/mnt/hdd/torch_wheels/pyg_lib-0.5.0-cp312-cp312-linux_x86_64.whl", marker = "extra == 'zeus'" },
-  { index = "pyg-cu128", marker = "extra == 'cu128' and extra != 'zeus'" },
-  { index = "pyg-cpu", marker = "extra != 'zeus' and extra != 'cu128'" },
+  { index = "pyg-cu128", marker = "extra == 'cu128'" },
+  { index = "pyg-cpu", marker = "extra == 'cpu'" },
 ]
 
 [tool.pytest.ini_options]
