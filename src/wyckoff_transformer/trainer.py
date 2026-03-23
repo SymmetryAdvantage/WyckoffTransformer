@@ -16,7 +16,7 @@ from tqdm import trange
 import wandb
 
 
-from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
+from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers,
@@ -61,16 +61,46 @@ class WyckoffTrainer():
         start_token_distribution: Optional[Dict[str, Any]] = None,
         processor: Optional[WyckoffProcessor] = None,
         tokeniser_config: Optional[DictConfig] = None,
+        production_training: bool = False,
     ):
         """
+        Initializes the WyckoffTrainer.
+
         Args:
-            multiclass_next_token_with_order_permutation: Train a permutation-invariant model by permuting the sequences,
-                    If the target is the next token, predict the 0-th cascade field as a multiclass target.
-                    You might also want to ensure that the model is permutation-invariant; pay attention to the positional encoding.
-            target: the target to predict. One of:
-                next_token: predict the next token in the cascade&sequence.
-                num_unique_tokens: predict the number of unique tokens in the cascade&sequence encountered so far.
+            model: The CascadeTransformer model to train.
+            train_dataset: Dictionary containing training tensor data.
+            val_dataset: Dictionary containing validation tensor data.
+            tokenisers: Dictionary of tokenisers for each cascade field.
+            token_engineers: Dictionary of token engineers for specialized fields.
+            cascade_order: Tuple defining the order of fields in the cascade.
+            cascade_is_target: Dictionary indicating if a field is a prediction target.
+            augmented_fields: List of fields that have augmented variants.
+            start_name: Name of the initial field (e.g., 'spacegroup_number').
+            start_dtype: Data type for the start tokens.
+            target: The prediction target type (NextToken, NumUniqueTokens, or Scalar).
+                NumUniqueTokens: predict the number of unique tokens in the cascade&sequence encountered so far.
                     Intended for debugging the ability of the model to count.
+            evaluation_samples: Number of samples to use during evaluation.
+            multiclass_next_token_with_order_permutation: Train a permutation-invariant model by permuting the sequences,
+                If the target is the next token, predict the 0-th cascade field as a multiclass target.
+                You might also want to ensure that the model is permutation-invariant; pay attention to the positional encoding.
+            optimisation_config: Configuration dictionary for optimizer and scheduler.
+            device: Torch device to use for training.
+            augmented_storage_device: Device to store augmented data on (if different from training device).
+            batch_size: Deprecated. Use train_batch_size instead.
+            train_batch_size: Mini-batch size for training.
+            val_batch_size: Mini-batch size for validation.
+            test_batch_size: Mini-batch size for testing.
+            run_path: Path to save run artifacts and checkpoints.
+            target_name: Name of the scalar target field (if target is Scalar).
+            weights_path: Path to pre-trained model weights to load.
+            test_dataset: Dictionary containing test tensor data.
+            compile_model: Whether to use torch.compile on the model.
+            max_sequence_length: Maximum number of rows in the sequence.
+            start_token_distribution: Optional pre-computed distribution of start tokens.
+            processor: Optional WyckoffProcessor instance.
+            tokeniser_config: Configuration for the tokenisers.
+            production_training: If True, merges all dataset splits (train/val/test) for training.
         """
         if isinstance(target, str):
             target = TargetClass[target]
@@ -131,6 +161,7 @@ class WyckoffTrainer():
         self.num_classes_dict = {field: len(tokenisers[field]) for field in cascade_order}
         self.start_name = start_name
         self.max_sequence_length = max_sequence_length
+        self.production_training = production_training
 
         if train_dataset is not None:
             self.train_dataset = AugmentedCascadeDataset(
@@ -148,9 +179,11 @@ class WyckoffTrainer():
                 device=self.device,
                 augmented_storage_device=augmented_storage_device,
                 target_name=target_name)
+            self.train_loader = AugmentedCascadeLoader.from_dataset(self.train_dataset)
             self.max_sequence_length = self.train_dataset.max_sequence_length
         else:
             self.train_dataset = None
+            self.train_loader = None
         
         if "lr_per_sqrt_n_samples" in optimisation_config.optimiser:
             if "config" in optimisation_config.optimiser and "lr" in optimisation_config.optimiser.config:
@@ -190,13 +223,16 @@ class WyckoffTrainer():
                 augmented_storage_device=augmented_storage_device,
                 target_name=target_name
                 )
+            self.val_loader = AugmentedCascadeLoader.from_dataset(self.val_dataset)
             if self.max_sequence_length is None:
                 self.max_sequence_length = self.val_dataset.max_sequence_length
         else:
             self.val_dataset = None
+            self.val_loader = None
 
         if test_dataset is None:
             self.test_dataset = None
+            self.test_loader = None
         else:
             self.test_dataset = AugmentedCascadeDataset(
                 data=test_dataset,
@@ -214,6 +250,7 @@ class WyckoffTrainer():
                 augmented_storage_device=augmented_storage_device,
                 target_name=target_name
             )
+            self.test_loader = AugmentedCascadeLoader.from_dataset(self.test_dataset)
 
         if self.train_dataset is not None and self.val_dataset is not None:
             assert self.train_dataset.max_sequence_length == self.val_dataset.max_sequence_length
@@ -251,9 +288,9 @@ class WyckoffTrainer():
             raise ValueError("Cannot build start-token distribution without train and validation datasets")
         if self.model.start_type == "categorial":
             max_start = self.model.start_embedding.num_embeddings
-            start_counts = torch.bincount(
-                self.train_dataset.start_tokens, minlength=max_start) + torch.bincount(
-                    self.val_dataset.start_tokens, minlength=max_start)
+            start_counts = torch.bincount(self.train_dataset.start_tokens, minlength=max_start)
+            if not self.production_training:
+                start_counts += torch.bincount(self.val_dataset.start_tokens, minlength=max_start)
             return {
                 "start_name": self.start_name,
                 "start_type": self.model.start_type,
@@ -262,7 +299,10 @@ class WyckoffTrainer():
             }
 
         if self.model.start_type == "one_hot":
-            all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
+            if self.production_training:
+                all_starts = self.train_dataset.start_tokens
+            else:
+                all_starts = torch.cat([self.train_dataset.start_tokens, self.val_dataset.start_tokens], dim=0)
             unique_vectors, inverse_indices = torch.unique(all_starts, dim=0, return_inverse=True)
             counts = torch.bincount(inverse_indices)
             return {
@@ -317,7 +357,8 @@ class WyckoffTrainer():
                     device: torch.device,
                     use_cached_tensors: bool = True,
                     run_path: Optional[Path] = Path("runs"),
-                    load_datasets: bool = True):
+                    load_datasets: bool = True,
+                    production_training: bool = False):
         config = OmegaConf.create(config_dict)
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
@@ -336,6 +377,30 @@ class WyckoffTrainer():
             train_data = tensors["train"]
             val_data = tensors["val"]
             test_data = tensors["test"] if "test" in tensors else None
+            
+            if production_training:
+                # Merge all datasets into one for training and validation
+                merged_data = {}
+                relevant_splits = [train_data, val_data]
+                if test_data is not None:
+                    relevant_splits.append(test_data)
+                
+                # We assume all shards have the same keys (fields)
+                for field in train_data.keys():
+                    if isinstance(train_data[field], list):
+                        # Augmented fields (list of lists of tensors)
+                        # We need to flatten and concat
+                        merged_field = []
+                        for split in relevant_splits:
+                            merged_field.extend(split[field])
+                        merged_data[field] = merged_field
+                    else:
+                        merged_data[field] = torch.cat([split[field] for split in relevant_splits], dim=0)
+                
+                train_data = merged_data
+                val_data = merged_data
+                test_data = None
+
             distribution = None
             max_sequence_length = None
         else:
@@ -376,6 +441,7 @@ class WyckoffTrainer():
             start_token_distribution=distribution,
             processor=processor,
             tokeniser_config=config.tokeniser,
+            production_training=production_training,
             **config.model.WyckoffTrainer_args)
 
 
@@ -384,26 +450,32 @@ class WyckoffTrainer():
         dataset: AugmentedCascadeDataset,
         known_seq_len: int,
         known_cascade_len: int|None,
+        loader: Optional[AugmentedCascadeLoader] = None,
         no_batch: bool = False,
         testing: bool = False) -> Tensor:
         """
-        Computes loss on the dataset. Advances the dataset to the next batch.
+        Computes loss on the dataset.
         """
         logging.debug("Known sequence length: %i", known_seq_len)
         logging.debug("Known cascade length: %s", str(known_cascade_len))
         # Step 1: Get the data
         if self.multiclass_next_token_with_order_permutation:
+            if loader is not None and not no_batch:
+                batch_selection = loader.get_next_viable_batch(known_seq_len)
+            else:
+                batch_selection = slice(None)
+
             if self.target == TargetClass.NextToken:
-                # Once we have sampled the first cascade field, the prediction target is no longer mutliclass
+                # Once we have sampled the first cascade field, the prediction target is no longer multiclass
                 # However, we still need to permute the sequence so that the autoregression is
                 # permutation-invariant.
                 start_tokens, masked_data, target = dataset.get_masked_multiclass_cascade_data(
                     known_seq_len, known_cascade_len, multiclass_target=(known_cascade_len == 0),
-                    target_type=self.target, no_batch=no_batch)
+                    target_type=self.target, batch_target_is_viable=batch_selection)
             elif self.target == TargetClass.NumUniqueTokens:
                 start_tokens, masked_data, target = dataset.get_masked_multiclass_cascade_data(
                     known_seq_len, known_cascade_len, multiclass_target=False, target_type=self.target,
-                    no_batch=no_batch)
+                    batch_target_is_viable=batch_selection)
                 logging.debug("Target: %s", target)
                 # Counts are integers, as they should be, but MSE needs a float
                 target = target.float()
@@ -411,9 +483,18 @@ class WyckoffTrainer():
                 raise ValueError(f"Target {self.target} is not supported by "
                                   "multiclass_next_token_with_order_permutation")
         else:
-            if self.target == TargetClass.Scalar:
-                start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(no_batch=no_batch)
+            if loader is not None and not no_batch:
+                batch_selection = loader.get_next_batch()
             else:
+                batch_selection = slice(None)
+
+            if self.target == TargetClass.Scalar:
+                start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(batch_selection=batch_selection)
+            else:
+                # get_masked_cascade_data doesn't support batching in original code and still doesn't
+                # as it expects to use the whole dataset or a specific set of indices.
+                # Actually, the original code had: if self.batch_size is not None: raise NotImplementedError
+                # Let's keep that behavior but allow passing indices if we want to in future.
                 start_tokens, masked_data, target = dataset.get_masked_cascade_data(known_seq_len, known_cascade_len)
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
@@ -446,7 +527,7 @@ class WyckoffTrainer():
         self.model.train()
         if hasattr(self.optimizer, "train"):
             self.optimizer.train()
-        for _ in trange(self.train_dataset.batches_per_epoch, leave=False):
+        for _ in trange(self.train_loader.batches_per_epoch, leave=False):
             self.optimizer.zero_grad(set_to_none=True)
             if self.target == TargetClass.NextToken:
                 known_cascade_len = randint(0, self.cascade_target_count - 1)
@@ -460,7 +541,7 @@ class WyckoffTrainer():
                 known_seq_len = self.train_dataset.max_sequence_length - 1
             else:
                 raise ValueError(f"Unknown target: {self.target}")
-            loss = self.get_loss(self.train_dataset, known_seq_len, known_cascade_len)
+            loss = self.get_loss(self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader)
             if self.target == TargetClass.NumUniqueTokens:
                 # Predictions are [batch_size, cascade_size]
                 # Unreduced MSE is [batch_size, cascade_size]
@@ -476,27 +557,32 @@ class WyckoffTrainer():
 
 
     @torch.no_grad()
-    def evaluate(self, dataset: AugmentedCascadeDataset) -> Tensor:
+    def evaluate(self, dataset: AugmentedCascadeDataset, loader: Optional[AugmentedCascadeLoader] = None) -> Tensor:
         """
         Evaluates the model by calculating the average loss on the dataset.
         Args:
             dataset: The dataset to evaluate on.
+            loader: The loader to use for batching.
         Returns:
             The average loss on the dataset.
         """
         self.model.eval()
         if hasattr(self.optimizer, "eval"):
             self.optimizer.eval()
-        if dataset.batch_size is not None and not dataset.fix_batch_size:
-            raise NotImplementedError("Only fixed batch size is supported")
+        
         if self.target == TargetClass.Scalar:
+            if loader is None:
+                raise ValueError("Evaluation of Scalar target requires a loader")
+            if not loader.fix_batch_size:
+                raise NotImplementedError("Only fixed batch size is supported for Scalar evaluation")
+            
             loss = torch.zeros(1, device=self.device)
             # Augmentation
-            for sample_ids in range(self.evaluation_samples):
-                for batch_idx in range(dataset.batches_per_epoch):
-                    loss += self.get_loss(dataset, None, None, False, True)
+            for _ in range(self.evaluation_samples):
+                for _ in range(loader.batches_per_epoch):
+                    loss += self.get_loss(dataset, self.max_sequence_length - 1, None, loader=loader, testing=True)
             # Above we check that the batch size is the same for all batches
-            return loss / self.evaluation_samples / dataset.batches_per_epoch
+            return loss / self.evaluation_samples / loader.batches_per_epoch
 
         loss = torch.zeros(self.cascade_len, device=self.device)          
 
@@ -529,17 +615,19 @@ class WyckoffTrainer():
                 if self.target == TargetClass.NextToken:
                     for known_cascade_len in range(self.cascade_target_count):
                         loss[known_cascade_len] += self.get_loss(
-                            dataset, known_seq_len, known_cascade_len, True) # True if no_batch
+                            dataset, known_seq_len, known_cascade_len, no_batch=True) # True if no_batch
                 else: # NumUniqueTokens
-                    loss += self.get_loss(dataset, known_seq_len, 0, True).sum(dim=0) # True if no_batch
+                    loss += self.get_loss(dataset, known_seq_len, 0, no_batch=True).sum(dim=0) # True if no_batch
             # ln(P) = ln p(t_n|t_n-1, ..., t_1) + ... + ln p(t_2|t_1)
             # We are minimising the negative log likelihood of the whole sequences
         return loss / self.evaluation_samples / len(dataset)
 
 
     def train(self):
-        if self.train_dataset is None or self.val_dataset is None:
-            raise ValueError("train() requires train and validation datasets")
+        if self.train_dataset is None:
+            raise ValueError("train() requires a train dataset")
+        if not self.production_training and self.val_dataset is None:
+             raise ValueError("train() requires a validation dataset (or production_training=True)")
         best_val_loss = float('inf')
         best_val_epoch = 0
         self.run_path.mkdir(exist_ok=True)
@@ -557,11 +645,11 @@ class WyckoffTrainer():
             self.train_epoch()
             if epoch % self.validation_period == 0 or epoch == self.epochs - 1:
                 raw_losses = {
-                    "train": self.evaluate(self.train_dataset),
-                    "val": self.evaluate(self.val_dataset)
+                    "train": self.evaluate(self.train_dataset, self.train_loader),
+                    "val": self.evaluate(self.val_dataset, self.val_loader)
                 }
                 if self.test_dataset is not None:
-                    raw_losses['test'] = self.evaluate(self.test_dataset)
+                    raw_losses['test'] = self.evaluate(self.test_dataset, self.test_loader)
                 loss_dict = {}
                 if self.target == TargetClass.Scalar:
                     total_val_loss = raw_losses['val']
@@ -845,7 +933,7 @@ class WyckoffTrainer():
             sample_predictions = []
             for _ in range(augmentation_samples):
                 start_tokens, cascade_tokens, _, padding_mask = \
-                    prediction_dataset.get_augmented_data(no_batch=True)
+                    prediction_dataset.get_augmented_data() # Defaults to all examples
                 preds = self.model(start_tokens, cascade_tokens, padding_mask, None).squeeze()
                 sample_predictions.append(preds)
             stacked_predictions = torch.stack(sample_predictions, dim=0)
@@ -859,13 +947,14 @@ class WyckoffTrainer():
 def train_from_config(
     config_dict: dict,
     device: torch.device,
-    run_path: Path = Path(__file__).resolve().parent.parent / "runs"):
+    run_path: Path = Path(__file__).resolve().parent.parent / "runs",
+    production_training: bool = False):
 
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
     this_run_path.mkdir(parents=True, exist_ok=False)
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path)
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training)
     tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
     processor_json = trainer.processor.save_pretrained(this_run_path)
     tokenizers_engineers.add_file(processor_json)

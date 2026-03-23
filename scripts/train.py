@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--run-path", type=Path, default=Path(__file__).parent.parent / "runs",
                         help="Set the path for saving run data")
     parser.add_argument("--torch-num-thread", type=int, help="Number of threads for torch")
+    parser.add_argument("--production", action="store_true", help="Train on the combined train+val+test dataset")
     args = parser.parse_args()
     
     if args.debug:
@@ -50,6 +51,7 @@ def main():
     if len(tokeniser_config.get("augmented_token_fields", [])) > 1:
         raise ValueError("Only one augmented field is supported")
     config['tokeniser'] = tokeniser_config
+    config['production_training'] = args.production
 
     wandb_config = OmegaConf.to_container(config)
     args.run_path.mkdir(parents=True, exist_ok=True)
@@ -71,9 +73,9 @@ def main():
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production)
         else:
-            train_from_config(config, args.device, run_path=args.run_path)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production)
 
 
 if __name__ == '__main__':

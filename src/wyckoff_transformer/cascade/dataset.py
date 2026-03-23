@@ -136,10 +136,13 @@ TargetClass = Enum("TargetClass", ['NextToken', 'NumUniqueTokens', 'Scalar'])
 
 class AugmentedCascadeDataset():
     """
-    A class for contaning augmented cascade datasets.
+    A pure const data store for augmented cascade datasets.
     Cascade means that a dataset is a list of tensors, where each tensor is a different field, with
     each subsequent field depending on the previous one. For use in the Wyckoff transformer. Augmented
     means that some fields can have multiple possible values, and we want to sample from them.
+
+    This class holds the data only and does not contain any batch iteration state.
+    For batched iteration, wrap this dataset with an AugmentedCascadeLoader.
 
     The principle methods for getting the data are:
     - get_augmented_data: returns the full sequences, using a random augmentation for the augmented field.
@@ -242,11 +245,6 @@ class AugmentedCascadeDataset():
         self.pin_memory = (self.augmented_storage_device.type == "cpu" and self.device.type != "cpu")
         self.batch_size = batch_size
         self.num_examples = len(data[cascade_order[0]])
-        if batch_size is not None:
-            if batch_size > self.num_examples:
-                raise ValueError("Batch size is larger than the dataset")
-            self.this_shuffle_order = torch.randperm(self.num_examples, device=self.augmented_storage_device)
-            self.next_batch_index = 0
         self.fix_batch_size = fix_batch_size
         self.cascade_order = cascade_order
         self.cascade_index_from_field = {name: i for i, name in enumerate(cascade_order)}
@@ -306,6 +304,10 @@ class AugmentedCascadeDataset():
             else:
                 # Round up, as the last batch might be smaller, but is still a batch
                 self.batches_per_epoch = -(-self.num_examples // batch_size)
+        # Backward compat: if batch_size was provided, store it so that
+        # AugmentedCascadeLoader can pick it up.
+        self._batch_size = batch_size
+        self._fix_batch_size = fix_batch_size
 
 
     def __len__(self):
@@ -346,8 +348,6 @@ class AugmentedCascadeDataset():
         known_seq_len: int,
         known_cascade_len: int):
     
-        if self.batch_size is not None:
-            raise NotImplementedError("Batch size is not supported for get_masked_cascade_data")
         # assert known_seq_len < data.shape[1]
         # assert known_seq_len >= 0
 
@@ -375,41 +375,14 @@ class AugmentedCascadeDataset():
         return self.start_tokens[target_is_viable], res, target[target_is_viable]
 
 
-    def get_next_batch(self) -> Tensor:
-        """
-        Advances the internal state to the next batch, and returns the indices of the current batch.    
-        If self.fix_batch_size is False, the last batch might be smaller than self.batch_size,
-        if self.fix_batch_size is True, the last smaller batch will be dropped.
-        Shuffles the data if the end of the dataset is reached.
-        Returns:
-            The indices of the current batch.
-        """
-        batch_start = self.next_batch_index * self.batch_size
-        batch_end = batch_start + self.batch_size
-        if batch_end >= self.num_examples:
-            self.this_shuffle_order = torch.randperm(
-                self.num_examples, device=self.augmented_storage_device,
-                pin_memory=self.pin_memory)
-            self.next_batch_index = 0
-            # We have checked during the initialisation that batch_size <= num_examples
-            if self.fix_batch_size:
-                return self.get_next_batch()
-        else:
-            self.next_batch_index += 1
-        batch_selection = self.this_shuffle_order[batch_start:batch_end]
-        logging.debug("The current batch size is %i", len(batch_selection))
-        return batch_selection
-
-
-    def get_augmented_data(self, no_batch: bool) -> Tuple[Tensor, List[Tensor], Tensor, Tensor]:
+    def get_augmented_data(self, batch_selection: 'Tensor | slice' = slice(None)) -> Tuple[Tensor, List[Tensor], Tensor, Tensor]:
         """
         Returns the full sequences, using a random augmentation for the augmented field.
-        """
-        if self.batch_size is not None and not no_batch:
-            batch_selection = self.get_next_batch()
-        else:
-            batch_selection = slice(None)
 
+        Args:
+            batch_selection: Indices or slice selecting which examples to return.
+                Defaults to slice(None) (all examples).
+        """
         augmented_data = self.get_augmentation(batch_selection)
         res = []
         for index, name in enumerate(self.cascade_order):
@@ -427,8 +400,7 @@ class AugmentedCascadeDataset():
         known_cascade_len: int,
         target_type: TargetClass,
         multiclass_target: bool,
-        no_batch: bool = False,
-        # augmented_data: Optional[Tensor] = None,
+        batch_target_is_viable: 'Tensor | slice' = slice(None),
         full_permutation: Optional[Tensor] = None,
         apply_permutation: bool = True,
         truncate_invalid_targets: bool = True,
@@ -440,7 +412,8 @@ class AugmentedCascadeDataset():
             target_type (TargetClass): The type of the target. Can be either NextToken or NumUniqueTokens.
                 For everything else it doesn't make sense to use masked data.
             multiclass_target (bool): If True, return multiclass target for the first cascade element.
-            no_batch (bool): If True, don't use batching.
+            batch_target_is_viable: Pre-computed indices/mask of viable examples, or slice(None)
+                for all examples. When using AugmentedCascadeLoader, this is computed by the loader.
             full_permutation (Optional[Tensor], optional): The full permutation to use. If None, a new one is generated.
             apply_permutation (bool): If True, apply a permutation to the data, either a random one or the one
                 provided in full_permutation. If False, the data are not permuted.
@@ -463,31 +436,9 @@ class AugmentedCascadeDataset():
         logger.debug("Known cascade length %i", known_cascade_len)
         augmented_data = self.get_augmentation()
 
-        if self.batch_size is not None and not no_batch:
-            if not truncate_invalid_targets:
-                raise NotImplementedError("Not truncating invalid targets is not supported for batched data")
-            # Duck typing...
-            batch_target_is_viable = ()
-            # A good research question would be optimising this by removing the invalid targets first,
-            # and batching later, but then we'll need to do something to avoid bias
-            # towards longer sequences
-            while len(batch_target_is_viable) == 0:
-                batch_start = self.next_batch_index * self.batch_size
-                batch_end = batch_start + self.batch_size
-                batch_selection = self.this_shuffle_order[batch_start:batch_end]
-                logging.debug("The current batch size is %i", len(batch_selection))
-                # STOP is not included in the pure length, but is a viable target
-                target_is_viable = self.pure_sequences_lengths[batch_selection] >= known_seq_len
-                batch_target_is_viable = batch_selection[target_is_viable]
-                if batch_end >= self.num_examples:
-                    self.this_shuffle_order = torch.randperm(self.num_examples, device=self.device)
-                    self.next_batch_index = 0
-                else:
-                    self.next_batch_index += 1
-        elif truncate_invalid_targets:
+        # If slice(None) and truncation is requested, apply it here
+        if isinstance(batch_target_is_viable, slice) and truncate_invalid_targets:
             batch_target_is_viable = self.pure_sequences_lengths >= known_seq_len
-        else:
-            batch_target_is_viable = slice(None)
 
         chosen_pure_sequences_lengths = self.pure_sequences_lengths[batch_target_is_viable]
         # STOP is still not included in the pure length
@@ -580,3 +531,92 @@ class AugmentedCascadeDataset():
             return self.start_tokens[batch_target_is_viable], cascade_result, target, batch_target_is_viable
         else:
             return self.start_tokens[batch_target_is_viable], cascade_result, target
+
+
+class AugmentedCascadeLoader():
+    """
+    Stateful batch iterator wrapping an AugmentedCascadeDataset.
+
+    Manages shuffling, batch index tracking, and epoch iteration while
+    keeping the underlying dataset as a pure const data store.
+    """
+    def __init__(
+        self,
+        dataset: AugmentedCascadeDataset,
+        batch_size: Optional[int] = None,
+        fix_batch_size: bool = True,
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.fix_batch_size = fix_batch_size
+        self.num_examples = dataset.num_examples
+        if batch_size is not None:
+            if batch_size > self.num_examples:
+                raise ValueError("Batch size is larger than the dataset")
+            self.this_shuffle_order = torch.randperm(
+                self.num_examples, device=dataset.augmented_storage_device)
+            self.next_batch_index = 0
+        if batch_size is None:
+            self.batches_per_epoch = 1
+        else:
+            if fix_batch_size:
+                self.batches_per_epoch = self.num_examples // batch_size
+            else:
+                self.batches_per_epoch = -(-self.num_examples // batch_size)
+
+    @classmethod
+    def from_dataset(cls, dataset: AugmentedCascadeDataset) -> 'AugmentedCascadeLoader':
+        """Create a loader using the batch_size and fix_batch_size stored on the dataset."""
+        return cls(dataset, batch_size=dataset._batch_size, fix_batch_size=dataset._fix_batch_size)
+
+    def get_next_batch(self) -> Tensor:
+        """
+        Advances the internal state to the next batch, and returns the indices of the current batch.
+        If self.fix_batch_size is False, the last batch might be smaller than self.batch_size,
+        if self.fix_batch_size is True, the last smaller batch will be dropped.
+        Shuffles the data if the end of the dataset is reached.
+        Returns:
+            The indices of the current batch.
+        """
+        batch_start = self.next_batch_index * self.batch_size
+        batch_end = batch_start + self.batch_size
+        if batch_end >= self.num_examples:
+            self.this_shuffle_order = torch.randperm(
+                self.num_examples, device=self.dataset.augmented_storage_device,
+                pin_memory=self.dataset.pin_memory)
+            self.next_batch_index = 0
+            if self.fix_batch_size:
+                return self.get_next_batch()
+        else:
+            self.next_batch_index += 1
+        batch_selection = self.this_shuffle_order[batch_start:batch_end]
+        logging.debug("The current batch size is %i", len(batch_selection))
+        return batch_selection
+
+    def get_next_viable_batch(self, known_seq_len: int) -> Tensor:
+        """
+        Get the next batch, filtering to only examples with viable targets
+        for the given known sequence length. Keeps advancing until a non-empty
+        viable batch is found.
+
+        Args:
+            known_seq_len: The known sequence length to filter by.
+        Returns:
+            Indices of viable examples in the batch.
+        """
+        batch_target_is_viable = ()
+        while len(batch_target_is_viable) == 0:
+            batch_start = self.next_batch_index * self.batch_size
+            batch_end = batch_start + self.batch_size
+            batch_selection = self.this_shuffle_order[batch_start:batch_end]
+            logging.debug("The current batch size is %i", len(batch_selection))
+            # STOP is not included in the pure length, but is a viable target
+            target_is_viable = self.dataset.pure_sequences_lengths[batch_selection] >= known_seq_len
+            batch_target_is_viable = batch_selection[target_is_viable]
+            if batch_end >= self.num_examples:
+                self.this_shuffle_order = torch.randperm(
+                    self.num_examples, device=self.dataset.device)
+                self.next_batch_index = 0
+            else:
+                self.next_batch_index += 1
+        return batch_target_is_viable

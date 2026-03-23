@@ -25,6 +25,7 @@ class TestBuildStartTokenDistribution(unittest.TestCase):
         )
         trainer.start_name = "spacegroup_number"
         trainer.max_sequence_length = 13
+        trainer.production_training = False
 
         distribution = trainer._build_start_token_distribution()
 
@@ -57,6 +58,7 @@ class TestBuildStartTokenDistribution(unittest.TestCase):
         trainer.model = SimpleNamespace(start_type="one_hot")
         trainer.start_name = "spacegroup_number"
         trainer.max_sequence_length = 7
+        trainer.production_training = False
 
         distribution = trainer._build_start_token_distribution()
 
@@ -96,6 +98,7 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         self.trainer.max_sequence_length = 10
         self.trainer.device = torch.device("cpu")
         self.trainer.processor = MagicMock()
+        self.trainer.production_training = False
         
         # Setup processor to return a mock pyxtal-like string/object
         self.trainer.processor.tensor_to_pyxtal.return_value = "pyxtal_mock"
