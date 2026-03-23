@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 from wyckoff_transformer.trainer import WyckoffTrainer
 from wyckoff_transformer.generator import WyckoffGenerator
 
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded, use of fork().*:DeprecationWarning")
 class TestGeneratorIOI8TYCX(unittest.TestCase):
     def setUp(self):
         self.run_path = Path(__file__).resolve().parent / "fixtures" / "ioi8tycx"
