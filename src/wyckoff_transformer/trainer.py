@@ -787,9 +787,9 @@ class WyckoffTrainer():
                             ss_from_letter=ss_from_letter,
                             wp_index=get_wp_index())
         structures = list(map(to_pyxtal, start_tensor.detach().cpu(), generated_tensors.detach().cpu()))
-        print(f"Generated {len(structures)} Wyckoffs")
+        logger.info("Generated %d Wyckoffs", len(structures))
         valid_structures = [s for s in structures if s is not None]
-        print(f"From which {len(valid_structures)} are valid")
+        logger.info("From which %d are valid", len(valid_structures))
         if compute_validity_per_known_sequence_length:
             return valid_structures, ss_validitity, enum_validity
         return valid_structures

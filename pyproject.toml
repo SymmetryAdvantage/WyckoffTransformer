@@ -1,5 +1,5 @@
 [project]
-name = "wyckofftransformer"
+name = "wyckoff-transformer"
 version = "1.0.0"
 description = "Wyckoff Transformer: Generation of Symmetric Crystals; ICML 2025"
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
@@ -36,6 +36,7 @@ dependencies = [
   "monty >=2025.3.3",
   "pyxtal >=1.1.3",
   "pydantic >=2.12.5",
+  "huggingface-hub>=1.7.2",
 ]
 
 [project.optional-dependencies]
