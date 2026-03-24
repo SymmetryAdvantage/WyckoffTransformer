@@ -183,7 +183,9 @@ class WyckoffGenerator():
             if allowed_element_set == "all":
                 if elements_vocab is None:
                     raise ValueError("elements_vocab must be provided when allowed_element_set is 'all'.")
-                allowed_id_set = {v for k, v in elements_vocab.items() if isinstance(k, Element)}
+                allowed_id_set = {v for k, v in elements_vocab.items()
+                                  if isinstance(k, Element) or
+                                  (isinstance(k, str) and k not in ('STOP', 'PAD', 'MASK'))}
             elif allowed_element_set == "fix":
                 allowed_id_set = set(required_id_set)
             elif isinstance(allowed_element_set, str):
