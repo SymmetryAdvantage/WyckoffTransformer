@@ -10,7 +10,7 @@ If you just need the generated datasets for benchmarking, they are available at 
 2. Run `uv venv --python 3.12`
 3. Install the dependencies, including torch. There are several options:
   - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
-  - Configure `uv.toml` with your desired indices, see `uv.toml.example` and `uv.toml.cpu`
+  - Configure `uv.toml` with your desired indices, see `uv.toml.local` and `uv.toml.cpu`
 4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
 5. Preprocess the data on Wychoff positions:
 ```bash

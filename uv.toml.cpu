@@ -1,10 +1,15 @@
-[[tool.uv.index]]
-name = "pytorch-cpu"
+# Interestingly, the pytorch index contains unrelated
+# packages, which spoils the dependency resolution.
+# Potentially, we can pin torch to an index in pyproject.toml, but
+# then it's challenging to make it portable
+
+index-strategy = "unsafe-first-match"
+
+[[index]]
+name = "pytorch"
 url = "https://download.pytorch.org/whl/cpu"
 
-[[tool.uv.index]]
-name = "pyg-cpu"
+[[index]]
+name = "pyg"
 url = "https://data.pyg.org/whl/torch-2.10.0+cpu.html"
 format = "flat"
-
-
