@@ -71,6 +71,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
+cdvae-property-models = { path = "cdvae_property_models" }
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu128", extra = "cu128" },
