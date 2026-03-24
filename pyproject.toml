@@ -1,66 +1,119 @@
-[tool.poetry]
+[project]
 name = "wyckofftransformer"
 version = "1.0.0"
 description = "Wyckoff Transformer: Generation of Symmetric Crystals; ICML 2025"
-authors = ["Nikita Kazeev <kazeevn@gmail.com>"]
+authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
-package-mode = true
-packages = [
-	{ include = "wyckoff_transformer", from = "src" },
-	{ include = "scripts", from = "." },
+requires-python = ">=3.12, <3.13"
+dependencies = [
+  "ipykernel >=6.25.2",
+  "pandas >=2.1.1",
+  "numpy >=1.26.0, <2",
+  "ase >=3.22.1",
+  "nglview >=3.0.8",
+  "wandb >=0.16.0",
+  "py3dmol >=2.0.4",
+  "scikit-learn >=1.5.0",
+  "filelock >=3.14.0",
+  "omegaconf >=2.3.0",
+  "smact >=2.5.5",
+  "wrapt-timeout-decorator >=1.5.1",
+  "ipywidgets >=8.1.3",
+  "jupyter >=1.0.0",
+  "hydra-core >=1.3.2",
+  "matminer >=0.10.0",
+  "p-tqdm >=1.4.2",
+  "python-dotenv >=1.0.1",
+  "lightning >=2.4.0",
+  "cython <3.0.0",
+  "pytorch-lightning >=2.4.0",
+  "torch ==2.10.0",
+  "matbench-discovery >=1.3.1",
+  "pandarallel >=1.6.5",
+  "schedulefree >=1.4.1",
+  "torch-scatter ==2.1.2",
+  "torch-sparse ==0.6.18",
+  "ipympl >=0.9.7",
+  "pymatgen ==2025.10.7",
+  "monty >=2025.3.3",
+  "torch-geometric >=2.7.0",
+  "pyxtal >=1.1.3",
+  "pydantic >=2.12.5",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest >=9.0.2"]
+cpu = ["torch", "torch-scatter", "torch-sparse"]
+cu128 = ["torch", "torch-scatter", "torch-sparse"]
+
+[tool.uv.extra-build-dependencies]
+torch-scatter = ["torch"]
+torch-sparse = ["torch"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wyckoff_transformer", "scripts"]
+
+[tool.hatch.build]
 include = [
-	{ path = "yamls/**/*", format = ["sdist", "wheel"] },
-	{ path = "src/wyckoff_transformer/cdvae_evals/prop_models/**/*", format = ["sdist", "wheel"] },
-	{ path = "src/wyckoff_transformer/cdvae_evals/pl_modules/gemnet/gemnet-dT.json", format = ["sdist", "wheel"] },
+  "yamls/**/*",
+  "src/wyckoff_transformer/cdvae_evals/prop_models/**/*",
+  "src/wyckoff_transformer/cdvae_evals/pl_modules/gemnet/gemnet-dT.json",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.11,<3.13"
-ipykernel = ">=6.25.2"
-pandas = ">=2.1.1"
-numpy = ">=1.26.0,<2"
-ase = ">=3.22.1"
-nglview = ">=3.0.8"
-wandb = ">=0.16.0"
-py3dmol = ">=2.0.4"
-scikit-learn = "^1.5.0"
-filelock = "^3.14.0"
-omegaconf = "^2.3.0"
-smact = "^2.5.5"
-wrapt-timeout-decorator = "^1.5.1"
-ipywidgets = "^8.1.3"
-jupyter = {extras = ["nbextension"], version = "^1.0.0"}
-hydra-core = "^1.3.2"
-matminer = ">=0.10.0"
-p-tqdm = ">=1.4.2"
-python-dotenv = ">=1.0.1"
-lightning = "^2.4.0"
-cython = "<3.0.0"
-pytorch-lightning = "^2.4.0"
-torch = "==2.10.0"
-matbench-discovery = "^1.3.1"
-pandarallel = ">=1.6.5"
-schedulefree = ">=1.4.1"
-torch-scatter = "^2.1.2"
-torch-sparse = "^0.6.18"
-ipympl = "^0.9.7"
-pymatgen = "==2025.10.7"
-monty = ">=2025.3.3"
-torch-geometric = "^2.7.0"
-pyxtal = "^1.1.3"
-pydantic = ">=2.12.5"
+[tool.uv]
+environments = ["sys_platform == 'linux'"]
+conflicts = [[{ extra = "cu128" }, { extra = "cpu" }]]
 
-[tool.poetry.group.dev.dependencies]
-pytest = "^9.0.2"
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+
+[[tool.uv.index]]
+name = "pyg-cpu"
+url = "https://data.pyg.org/whl/torch-2.10.0+cpu.html"
+explicit = true
+format = "flat"
+
+
+[[tool.uv.index]]
+name = "pyg-cu128"
+url = "https://data.pyg.org/whl/torch-2.10.0+cu128.html"
+explicit = true
+format = "flat"
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "cpu" },
+  { index = "pytorch-cu128", extra = "cu128" },
+]
+
+torch-scatter = [
+  { index = "pyg-cpu", extra = "cpu" },
+  { index = "pyg-cu128", extra = "cu128" },
+]
+
+torch-sparse = [
+  { index = "pyg-cu128", extra = "cu128" },
+  { index = "pyg-cpu", extra = "cpu" },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
-filterwarnings = [
-	"ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
-	"ignore:`torch_geometric\\.distributed` has been deprecated since 2\\.7\\.0.*:DeprecationWarning:torch_geometric\\.llm\\.utils\\.backend_utils",
+markers = [
+  "needs_cache: mark test as requiring the cache file data.pkl.gz",
 ]
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+filterwarnings = [
+  "ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
+  "ignore:`torch_geometric\\.distributed` has been deprecated since 2\\.7\\.0.*:DeprecationWarning:torch_geometric\\.llm\\.utils\\.backend_utils",
+]

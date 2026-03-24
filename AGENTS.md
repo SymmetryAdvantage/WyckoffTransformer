@@ -1,2 +1,2 @@
 ## Dev environment tips
- - Use `poetry` / native IDE tools for managing the python environment.
+ - Use `uv` / native IDE tools for managing the python environment.

@@ -1,3 +1,4 @@
+[![Pytest](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml/badge.svg)](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml)
 # Wyckoff Transformer: Generation of Symmetric Crystals [ICML 2025]
 Crystal symmetry plays a fundamental role in determining its physical, chemical, and electronic properties such as electrical and thermal conductivity, optical and polarization behavior, and mechanical strength. Almost all known crystalline materials have internal symmetry. However, this is often inadequately addressed by existing generative models, making the consistent generation of stable and symmetrically valid crystal structures a significant challenge. We introduce WyFormer, a generative model that directly tackles this by formally conditioning on space group symmetry. It achieves this by using Wyckoff positions as the basis for an elegant, compressed, and discrete structure representation. To model the distribution, we develop a permutation-invariant autoregressive model based on the Transformer encoder and an absence of positional encoding. Extensive experimentation demonstrates WyFormer's compelling combination of attributes: it achieves best-in-class symmetry-conditioned generation, incorporates a physics-motivated inductive bias, produces structures with competitive stability, predicts material properties with competitive accuracy even without atomic coordinates, and exhibits unparalleled inference speed.
 
@@ -6,15 +7,15 @@ If you just need the generated datasets for benchmarking, they are available at 
 
 # Installation
 1. Clone the repository
-2. Run `poetry env use python`
-3. Install your local flavour of pytorch, e. g. `poetry run pip install torch --index-url https://download.pytorch.org/whl/cu128`. Optionally, [pytorch-sparse](https://github.com/rusty1s/pytorch_sparse) and [pytorch-scatter](https://github.com/rusty1s/pytorch_scatter) are needed to run the CDVAE property prediction model, but otherwise can be skipped.
-4. Run `poetry install`.
-5. `wandb` library is used extensively and must be installed. Logging can ber disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb and configure your entity. Internally, we used `symmetry-advantage`. It can be configured via poetry:
-```bash
-poetry self add poetry-dotenv-plugin
-echo "WANDB_ENTITY=symmetry-advantage" > .env
-```
-6. Preprocess the data on Wychoff positions:
+2. Run `uv venv --python 3.12`
+3. Install the dependencies, including torch. There are several options:
+  - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
+  - Configure `uv.toml` with your desired indices, see `uv.toml.example`
+  - Install CPU version `uv sync --extra cpu`
+  - Install CUDA 12.8 version `uv sync --extra cu128`
+  Note that if you go the `--extra` path, you'll need to keep specifying it for commands, e.g. `uv run --extra cpu pytest`.
+4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
+5. Preprocess the data on Wychoff positions:
 ```bash
 python scripts/preprocess_wychoffs.py
 ```
@@ -162,11 +163,11 @@ Tar is used to handle the large number of small files, and `pigz` is used to spe
 ## Preprocessing
 In order to be analyzed the data must be preprocessed and cached. To preprocess all generated datasets in `generated/datasets.yaml`:
 ```bash
-poetry run python scripts/cache_generated_datasets.py
+uv run python scripts/cache_generated_datasets.py
 ```
 It supports filtering by dataset and transformations, e. g.:
 ```bash
-poetry run python scripts/cache_generated_datasets.py --dataset mp_20 --transformations DiffCSP++ DFT
+uv run python scripts/cache_generated_datasets.py --dataset mp_20 --transformations DiffCSP++ DFT
 ```
 Completing this step will enable loading the data with `evaluation.generated_dataset.GeneratedDataset.from_cache`
 

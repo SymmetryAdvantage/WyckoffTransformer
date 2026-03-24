@@ -21,7 +21,6 @@ generated/WyCryst_mp20
 generated/mp20_test_CHGNnet_fixed_symmetry
 DiffCSP++_mp20_two_step_symmetry
 data/2023-02-07-mp-computed-structure-entries.json.gz
-poetry.lock
 generated/jd66k0gx.csv.gz
 generated/jd66k0gx.pt
 generated/CIF-FMT-10000_miad-s333-mp20.csv
@@ -39,3 +38,4 @@ generated.bak
 generated_public
 generated.tar.gz
 generated_public.tar.gz
+uv.toml
