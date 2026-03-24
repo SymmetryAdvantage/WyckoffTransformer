@@ -42,24 +42,34 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2"]
 cdvae = ["cdvae-property-models"]
+cdvae-cpu = ["cdvae-property-models[cpu]"]
+cdvae-cu128 = ["cdvae-property-models[cu128]"]
 cpu = ["torch"]
 cu128 = ["torch"]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wyckoff_transformer", "scripts"]
 
+[tool.hatch.build.hooks.custom]
+
 [tool.hatch.build]
 include = [
   "yamls/**/*",
+  "src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json",
 ]
 
 [tool.uv]
 environments = ["sys_platform == 'linux'"]
-conflicts = [[{ extra = "cu128" }, { extra = "cpu" }]]
+conflicts = [
+  [{ extra = "cu128" }, { extra = "cpu" }],
+  [{ extra = "cdvae-cu128" }, { extra = "cdvae-cpu" }],
+  [{ extra = "cdvae-cu128" }, { extra = "cpu" }],
+  [{ extra = "cdvae-cpu" }, { extra = "cu128" }],
+]
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
