@@ -58,15 +58,8 @@ include = [
   "src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json",
 ]
 
-# By default, we are going to take torch from PyPi
-# If you want to use a different index, override via `uv.toml`
-#[[tool.uv.index]]
-#name = "pytorch"
-#url = "https://download.pytorch.org/whl/cpu"
-
 [tool.uv.sources]
 cdvae-property-models = { path = "cdvae_property_models" }
-#torch = { index = "pytorch" }
 
 # In the ideal world, we would forget about these packages
 # However, if cdvaae-property-models are requested, they drag
