@@ -102,11 +102,17 @@ class WyckoffGenerator():
                     else:
                         tail_predictions.append(model_output)
                         tail_targets.append(target)
-                tail_predictions = torch.concatenate(tail_predictions, axis=0)
-                tail_targets = torch.concatenate(tail_targets, axis=0)
-                if tail_predictions.size(0) < calibration_element_count_threshold:
-                    logger.warning("Tail too small, %i when requested %i", tail_predictions.size(0), calibration_element_count_threshold)
-                self.tail_calibrators.append(TemperatureScaling().to(tail_targets.device).fit(tail_predictions, tail_targets))
+                if tail_predictions:
+                    tail_predictions = torch.concatenate(tail_predictions, axis=0)
+                    tail_targets = torch.concatenate(tail_targets, axis=0)
+                    if tail_predictions.size(0) < calibration_element_count_threshold:
+                        logger.warning("Tail too small, %i when requested %i", tail_predictions.size(0), calibration_element_count_threshold)
+                    self.tail_calibrators.append(TemperatureScaling().to(tail_targets.device).fit(tail_predictions, tail_targets))
+                else:
+                    logger.info("Tail empty for cascade field %s, adding identity calibrator", cascade_name)
+                    # Use model's device as a fallback
+                    model_device = next(self.model.parameters()).device
+                    self.tail_calibrators.append(TemperatureScaling().to(model_device))
 
 
     @torch.no_grad()
