@@ -1,5 +1,6 @@
 from typing import Tuple, Dict, Optional, List, Any, Union, Set
 import importlib
+import shutil
 from random import randint
 import logging
 from functools import partial
@@ -17,17 +18,18 @@ import wandb
 from huggingface_hub import snapshot_download
 
 
+import wyckoff_transformer
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers,
+    load_wyckoff_mappings, WYCKOFF_MAPPINGS_FILENAME,
     get_wp_index, WyckoffProcessor)
 from wyckoff_transformer.generator import WyckoffGenerator
 from wyckoff_transformer.evaluation import (
     evaluate_and_log, StatisticalEvaluator, smac_validity_from_counter)
 
 logger = logging.getLogger(__file__)
-preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parent.parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
 start_token_distribution_file_name = "spacegroup_distribution.json"
 
 class WyckoffTrainer():
@@ -776,11 +778,10 @@ class WyckoffTrainer():
         generated_tensors = torch.stack(generated_tensors, dim=-1)
 
         if 'sites_enumeration' in self.tokenisers:
-            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx()
+            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx(self.run_path)
         else:
             letter_from_ss_enum_idx = None
-        with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
-            ss_from_letter = pickle.load(f)[2]
+        ss_from_letter = load_wyckoff_mappings(self.run_path).ss_from_letter
         to_pyxtal = partial(self.processor.tensor_to_pyxtal,
                             cascade_order=generated_cascade_order,
                             letter_from_ss_enum_idx=letter_from_ss_enum_idx,
@@ -869,13 +870,12 @@ class WyckoffTrainer():
         generated_tensors = torch.stack(generated_tensors, dim=-1)
 
         if 'sites_enumeration' in self.tokenisers:
-            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx()
+            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx(self.run_path)
         else:
             letter_from_ss_enum_idx = None
- 
-        with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
-            ss_from_letter = pickle.load(f)[2]
-            
+
+        ss_from_letter = load_wyckoff_mappings(self.run_path).ss_from_letter
+
         to_pyxtal = partial(self.processor.tensor_to_pyxtal,
                             cascade_order=generated_cascade_order,
                             letter_from_ss_enum_idx=letter_from_ss_enum_idx,
@@ -994,9 +994,14 @@ def train_from_config(
     this_run_path = run_path / wandb.run.id
     this_run_path.mkdir(parents=True, exist_ok=False)
     trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training)
+    shutil.copy(
+        Path(wyckoff_transformer.__file__).parent / WYCKOFF_MAPPINGS_FILENAME,
+        this_run_path / WYCKOFF_MAPPINGS_FILENAME,
+    )
     tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
     processor_json = trainer.processor.save_pretrained(this_run_path)
     tokenizers_engineers.add_file(processor_json)
+    tokenizers_engineers.add_file(this_run_path / WYCKOFF_MAPPINGS_FILENAME)
     wandb.log_artifact(tokenizers_engineers)
     config_save_path = this_run_path / "config.yaml"
     OmegaConf.save(config_dict, config_save_path)

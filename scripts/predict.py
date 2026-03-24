@@ -1,8 +1,6 @@
 import argparse
-import gzip
 import json
 import logging
-import pickle
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -21,6 +19,7 @@ from scripts.data import (
     get_composition_from_symmetry_sites,
 )
 from scripts.preprocess_wychoffs import get_augmentation_dict
+from wyckoff_transformer.tokenization import load_wyckoff_mappings
 from wyckoff_transformer.trainer import WyckoffTrainer
 
 
@@ -149,9 +148,9 @@ def read_pyxtal_dataframe(path: Path) -> pd.DataFrame:
     if "group" not in df.columns or "sites" not in df.columns or "species" not in df.columns:
         raise ValueError("PyXtal input must contain 'group', 'sites', and 'species' keys.")
 
-    wyckoff_cache = Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
-    with gzip.open(wyckoff_cache, "rb") as fh:
-        wychoffs_enumerated_by_ss, _, ss_from_letter = pickle.load(fh)
+    _m = load_wyckoff_mappings()
+    wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
+    ss_from_letter = _m.ss_from_letter
     augmentation_dict = get_augmentation_dict()
     converter = lambda row: pyxtal_notation_to_sites(
         row,

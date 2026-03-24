@@ -6,8 +6,6 @@ from functools import partial
 from collections import Counter
 from pathlib import Path
 from multiprocessing import Pool
-import gzip
-import pickle
 import warnings
 import logging
 import numpy as np
@@ -17,6 +15,7 @@ from pymatgen.core import Structure, Element
 from pyxtal import pyxtal
 
 from scripts.preprocess_wychoffs import get_augmentation_dict
+from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +261,6 @@ def get_composition(structure: Structure) -> dict[Element, float]:
 
 def compute_symmetry_sites(
     datasets_pd: dict[str, pd.DataFrame],
-    wychoffs_enumerated_by_ss_file: Path = Path(__file__).parent.parent.resolve() / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
     n_jobs: Optional[int] = None,
     # The default values are the ones used in Materials Project
     # https://pymatgen.org/pymatgen.symmetry.html#pymatgen.symmetry.analyzer.SpacegroupAnalyzer
@@ -270,8 +268,7 @@ def compute_symmetry_sites(
     symmetry_a_tol: float = 5.,
     max_wp: Optional[int] = None) -> dict[str, pd.DataFrame]:
 
-    with gzip.open(wychoffs_enumerated_by_ss_file, "rb") as f:
-        wychoffs_enumerated_by_ss = pickle.load(f)[0]
+    wychoffs_enumerated_by_ss = load_wyckoff_mappings().enum_from_ss_letter
 
     structure_to_sites_with_args = partial(
                 structure_to_sites,
@@ -300,8 +297,6 @@ def compute_symmetry_sites(
 
 def read_all_MP_csv(
     mp_path: Path = Path(__file__).parent.parent / "data" / "mp_20",
-    wychoffs_enumerated_by_ss_file: Path = \
-        Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
     n_jobs: Optional[int] = None,
     symmetry_precision: float = 0.1,
     symmetry_a_tol: float = 5.,
@@ -330,6 +325,6 @@ def read_all_MP_csv(
             logger.warning("Dataset %s not found.", dataset_name)
     print("Computing symmetry sites...")
     symmetry_datasets = compute_symmetry_sites(
-        datasets_pd, wychoffs_enumerated_by_ss_file, n_jobs=n_jobs,
+        datasets_pd, n_jobs=n_jobs,
         symmetry_precision=symmetry_precision, symmetry_a_tol=symmetry_a_tol, max_wp=max_wp)
     return symmetry_datasets

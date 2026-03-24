@@ -19,10 +19,6 @@ dependencies = [
   "p-tqdm >=1.4.2",
 ]
 
-[project.optional-dependencies]
-cpu = ["torch", "torch-scatter", "torch-sparse"]
-cu128 = ["torch", "torch-scatter", "torch-sparse"]
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -39,45 +35,3 @@ include = [
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["torch"]
 torch-sparse = ["torch"]
-
-[tool.uv]
-environments = ["sys_platform == 'linux'"]
-conflicts = [[{ extra = "cu128" }, { extra = "cpu" }]]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "pyg-cpu"
-url = "https://data.pyg.org/whl/torch-2.10.0+cpu.html"
-explicit = true
-format = "flat"
-
-[[tool.uv.index]]
-name = "pyg-cu128"
-url = "https://data.pyg.org/whl/torch-2.10.0+cu128.html"
-explicit = true
-format = "flat"
-
-[tool.uv.sources]
-torch = [
-  { index = "pytorch-cpu", extra = "cpu" },
-  { index = "pytorch-cu128", extra = "cu128" },
-]
-
-torch-scatter = [
-  { index = "pyg-cpu", extra = "cpu" },
-  { index = "pyg-cu128", extra = "cu128" },
-]
-
-torch-sparse = [
-  { index = "pyg-cpu", extra = "cpu" },
-  { index = "pyg-cu128", extra = "cu128" },
-]

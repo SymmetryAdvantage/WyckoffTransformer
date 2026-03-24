@@ -1,4 +1,5 @@
 from collections import defaultdict, Counter
+import json
 import string
 from pathlib import Path
 import pickle
@@ -10,9 +11,50 @@ from sklearn.cluster import KMeans
 from scipy.special import sph_harm_y
 
 
-from wyckoff_transformer.tokenization import FeatureEngineer
-
 N_3D_SPACEGROUPS = 230
+WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
+_PACKAGE_MAPPINGS_PATH = Path(__file__).parent.parent / "src" / "wyckoff_transformer" / WYCKOFF_MAPPINGS_FILENAME
+
+
+def generate_wyckoff_mappings(
+    output_file: Path = _PACKAGE_MAPPINGS_PATH) -> None:
+    """Generate Wyckoff position mappings and save as JSON.
+
+    Produces three mappings for all 230 3-D space groups:
+      - enum_from_ss_letter[sg][letter]       -> enumeration index
+      - letter_from_ss_enum[sg][site_symm][i] -> Wyckoff letter
+      - ss_from_letter[sg][letter]            -> site symmetry string
+
+    No dependency on FeatureEngineer, safe to call during package build.
+    """
+    enum_from_ss_letter = defaultdict(dict)
+    ss_from_letter = defaultdict(dict)
+    letter_from_ss_enum = defaultdict(lambda: defaultdict(dict))
+
+    for spacegroup_number in range(1, N_3D_SPACEGROUPS + 1):
+        group = Group(spacegroup_number)
+        ss_counts = Counter()
+        for wp in group.Wyckoff_positions[::-1]:
+            wp.get_site_symmetry()
+            site_symm = wp.site_symm
+            ss_from_letter[spacegroup_number][wp.letter] = site_symm
+            enum_from_ss_letter[spacegroup_number][wp.letter] = ss_counts[site_symm]
+            letter_from_ss_enum[spacegroup_number][site_symm][ss_counts[site_symm]] = wp.letter
+            ss_counts[site_symm] += 1
+
+    output_file = Path(output_file)
+    output_file.parent.mkdir(exist_ok=True, parents=True)
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump({
+            "enum_from_ss_letter": {
+                str(sg): v for sg, v in enum_from_ss_letter.items()},
+            "letter_from_ss_enum": {
+                str(sg): {ss: {str(e): l for e, l in ed.items()}
+                          for ss, ed in sd.items()}
+                for sg, sd in letter_from_ss_enum.items()},
+            "ss_from_letter": {
+                str(sg): v for sg, v in ss_from_letter.items()},
+        }, f)
 
 
 def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
@@ -41,7 +83,7 @@ def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     return res.mean(axis=-1)
 
 def enumerate_wychoffs_by_ss(
-    output_file: Path = Path(__file__).parent.parent / "cache" / "wychoffs_enumerated_by_ss.pkl.gz", # Adjusted path
+    output_file: Path = _PACKAGE_MAPPINGS_PATH,
     spherical_harmonics_degree: int = 2):
     """
     Enumerates all Wyckoff positions by site symmetry.
@@ -96,14 +138,8 @@ def enumerate_wychoffs_by_ss(
                 signature_by_sg_ss_enum[(spacegroup_number, ss, enum)] = \
                     np.concatenate([signatures[:, enum, :].real.ravel(), signatures[:, enum, :].imag.ravel()])
 
-    if output_file.suffix == ".gz":
-        opener = gzip.open
-    else:
-        opener = open
-    output_file.parent.mkdir(exist_ok=True)
-    with opener(output_file, "wb") as f:
-        pickle.dump((dict(enum_from_ss_letter), dict(letter_from_ss_enum),
-            dict(ss_from_letter)), f)
+    generate_wyckoff_mappings(output_file)
+    from wyckoff_transformer.tokenization import FeatureEngineer
     engineered_path = Path(__file__).parent.parent / "cache" / "engineers" # Adjusted path
     engineered_path.mkdir(exist_ok=True)
     multiplicity_engineer = FeatureEngineer(
@@ -178,7 +214,7 @@ def inverse_series(input_series: pd.Series) -> pd.Series:
 
 
 def clasterize_harmonics(
-    harmonic_engineer: FeatureEngineer,
+    harmonic_engineer,  # FeatureEngineer
     random_state: int = 42):
     """
     Harmonic fetures are nice and float, but when we predict the next token, we need
@@ -223,6 +259,8 @@ def get_augmentation_dict():
 
 
 def main():
+    generate_wyckoff_mappings()
+    print("Done generating Wyckoff mappings JSON.")
     enumerate_wychoffs_by_ss()
     print("Done enumerating Wyckoff positions inside site symmetry.")
     get_augmentation_dict()

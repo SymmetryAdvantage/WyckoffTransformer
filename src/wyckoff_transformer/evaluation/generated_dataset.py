@@ -23,7 +23,7 @@ from .novelty import record_to_augmented_fingerprint
 from scripts.data import read_cif, compute_symmetry_sites, read_MP, pyxtal_notation_to_sites
 from scripts.preprocess_wychoffs import get_augmentation_dict
 from .core import wycryst_to_pyxtal_dict
-from wyckoff_transformer.tokenization import get_wp_index
+from wyckoff_transformer.tokenization import get_wp_index, load_wyckoff_mappings
 
 from .DiffCSP_to_sites import load_diffcsp_dataset, record_to_pyxtal
 from .cdvae_metrics import (
@@ -294,15 +294,15 @@ def save_as_json_csv(path: Path, data: pd.DataFrame) -> None:
     data.map(to_json).to_csv(path, index_label="material_id")
 
 class LetterDictToSitesConverter:
-    def __init__(self, 
-        wyckoffs_db_file = Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
+    def __init__(self,
         multiplicity_engineer_file = Path(__file__).resolve().parents[3] / "cache" / "engineers" / "multiplicity.pkl.gz"):
-            with gzip.open(wyckoffs_db_file, "rb") as f:
-                self.wychoffs_enumerated_by_ss, _, self.ss_from_letter = pickle.load(f)
-            with gzip.open(multiplicity_engineer_file, "rb") as f:
-                self.multiplicity_engineer = pickle.load(f)
-            self.augmentation_dict = get_augmentation_dict()
-            self.wp_index = get_wp_index()
+        _m = load_wyckoff_mappings()
+        self.wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
+        self.ss_from_letter = _m.ss_from_letter
+        with gzip.open(multiplicity_engineer_file, "rb") as f:
+            self.multiplicity_engineer = pickle.load(f)
+        self.augmentation_dict = get_augmentation_dict()
+        self.wp_index = get_wp_index()
 
     def __call__(self, letter_dict: dict) -> dict:
         """
@@ -373,13 +373,12 @@ class LetterDictToSitesConverter:
 
 
 class SiteSymmetryToRecordConverter:
-    def __init__(self, 
-        wyckoffs_db_file = Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz",
+    def __init__(self,
         multiplicity_engineer_file = Path(__file__).resolve().parents[3] / "cache" / "engineers" / "multiplicity.pkl.gz"):
-            with gzip.open(wyckoffs_db_file, "rb") as f:
-                self.wychoffs_enumerated_by_ss, self.letter_from_ss_enum, _ = pickle.load(f)
-            self.letter_to_record_converter = LetterDictToSitesConverter(
-                wyckoffs_db_file, multiplicity_engineer_file)
+        _m = load_wyckoff_mappings()
+        self.wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
+        self.letter_from_ss_enum = _m.letter_from_ss_enum
+        self.letter_to_record_converter = LetterDictToSitesConverter(multiplicity_engineer_file)
 
 
     def __call__(self, ss_dict: dict) -> dict:
@@ -636,9 +635,9 @@ class GeneratedDataset():
             self.data.loc[:, wcykoffs.columns] = wcykoffs
         if "site_symmetries" not in self.data.columns:
             # We have read the pyXtal format
-            wyckoffs_db_file = Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
-            with gzip.open(wyckoffs_db_file, "rb") as f:
-                wychoffs_enumerated_by_ss, _, ss_from_letter = pickle.load(f)
+            _m = load_wyckoff_mappings()
+            wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
+            ss_from_letter = _m.ss_from_letter
             augmentation_dict = get_augmentation_dict()
             wyckoff_converted = partial(
                 pyxtal_notation_to_sites,

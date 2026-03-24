@@ -5,7 +5,6 @@ import json
 import pickle
 import sys
 import trace
-import gzip
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -569,11 +568,13 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
                 }
             }
         }
-        payload = pickle.dumps((None, letter_from_ss_enum))
+        mock_mappings = tok.WyckoffMappings(
+            enum_from_ss_letter={},
+            letter_from_ss_enum=letter_from_ss_enum,
+            ss_from_letter={},
+        )
 
-        with patch.object(tok.gzip, "open") as mock_open:
-            stream = io.BytesIO(payload)
-            mock_open.return_value.__enter__.return_value = stream
+        with patch.object(tok, "load_wyckoff_mappings", return_value=mock_mappings):
             enum_tokeniser = tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True)
             result = enum_tokeniser.get_letter_from_ss_enum_idx()
 

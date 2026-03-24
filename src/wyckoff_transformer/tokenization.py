@@ -1,21 +1,62 @@
-from typing import Dict, Iterable, Set, FrozenSet, Optional, List, Tuple
+from typing import Dict, Iterable, NamedTuple, Set, FrozenSet, Optional, List, Tuple
 from copy import deepcopy
+import json
+import gzip
 import logging
+import pickle
 from itertools import chain
 from operator import attrgetter, itemgetter
 from functools import partial
 from collections import defaultdict, UserDict
 from enum import Enum
 from pathlib import Path
-import gzip
-import pickle
 import numpy as np
 from pandas import DataFrame, Series, MultiIndex
 import torch
 from pandarallel import pandarallel
-from pyxtal.symmetry import Group, site_symmetry
+from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 from pydantic import BaseModel
+
+
+WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
+_PACKAGE_MAPPINGS_PATH = Path(__file__).parent / WYCKOFF_MAPPINGS_FILENAME
+
+
+class WyckoffMappings(NamedTuple):
+    """Wyckoff position mappings for all 230 3-D space groups.
+
+    Attributes:
+        enum_from_ss_letter: sg -> letter -> enumeration index within the site symmetry.
+        letter_from_ss_enum: sg -> site_symmetry -> enumeration index -> Wyckoff letter.
+        ss_from_letter:      sg -> letter -> site symmetry string.
+    """
+    enum_from_ss_letter: dict
+    letter_from_ss_enum: dict
+    ss_from_letter: dict
+
+
+def load_wyckoff_mappings(path: Optional[Path] = None) -> WyckoffMappings:
+    """Load Wyckoff position mappings from a model directory or package data.
+
+    Args:
+        path: Directory containing wyckoffs_enumerated_by_ss.json.
+              If None, loads from the installed package data.
+    Returns:
+        WyckoffMappings named tuple with fields
+        enum_from_ss_letter, letter_from_ss_enum, ss_from_letter.
+    """
+    json_file = (Path(path) / WYCKOFF_MAPPINGS_FILENAME) if path is not None else _PACKAGE_MAPPINGS_PATH
+    with open(json_file, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    return WyckoffMappings(
+        enum_from_ss_letter={int(sg): v for sg, v in raw["enum_from_ss_letter"].items()},
+        letter_from_ss_enum={
+            int(sg): {ss: {int(e): l for e, l in ed.items()} for ss, ed in sd.items()}
+            for sg, sd in raw["letter_from_ss_enum"].items()
+        },
+        ss_from_letter={int(sg): v for sg, v in raw["ss_from_letter"].items()},
+    )
 
 
 # Order is important here, as we can use it to sort the tokens
@@ -159,15 +200,17 @@ class EnumeratingTokeniser(dict):
     def tokenise_single(self, token, **tensor_args) -> torch.Tensor:
         return torch.tensor(self[token], **tensor_args)
 
-    def get_letter_from_ss_enum_idx(self) -> dict:
+    def get_letter_from_ss_enum_idx(self, path: Optional[Path] = None) -> dict:
         """
         Processes the real-space index of Wyckhoff letters by space group, site symmetry,
         and enumeration into a dict indexed by space group, site symmetry, and
         enumeration TOKEN to make generation a little faster.
+
+        Args:
+            path: Directory containing wyckoffs_enumerated_by_ss.json.
+                  If None, loads from the installed package data.
         """
-        preprocessed_wyckhoffs_cache_path = Path(__file__).resolve().parents[2] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz"
-        with gzip.open(preprocessed_wyckhoffs_cache_path, "rb") as f:
-            letter_from_ss_enum = pickle.load(f)[1]
+        letter_from_ss_enum = load_wyckoff_mappings(path).letter_from_ss_enum
         letter_from_ss_enum_idx = defaultdict(dict)
         for space_group, ss_enum_dict in letter_from_ss_enum.items():
             for ss, enum_dict in ss_enum_dict.items():

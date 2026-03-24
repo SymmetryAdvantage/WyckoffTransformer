@@ -13,12 +13,12 @@ from multiprocessing import Pool
 import torch
 import json
 import gzip
-import pickle
 import numpy as np
 import logging
 
 from pymatgen.core.structure import Structure, Lattice
 from scripts.data import structure_to_sites
+from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +56,7 @@ def get_crystals_list(
 
 class StructureToSites():
     def __init__(self, tol=0.1):
-        with open(Path(__file__).resolve().parents[3].joinpath("cache", "wychoffs_enumerated_by_ss.pkl.gz"), "rb") as f:
-            self.wychoffs_enumerated_by_ss = pickle.load(f)[0]
+        self.wychoffs_enumerated_by_ss = load_wyckoff_mappings().enum_from_ss_letter
         self.tol = tol
     
     def structure_to_sites(self, structure):

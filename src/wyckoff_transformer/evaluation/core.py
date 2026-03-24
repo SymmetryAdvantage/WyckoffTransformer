@@ -14,7 +14,8 @@ import smact.screening
 import wandb
 import logging
 from pathlib import Path
-import pickle
+
+from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
 
@@ -203,8 +204,9 @@ class StatisticalEvaluator():
         self.dof_counter = None
         if train_dataset is not None:
             self.train_fingerprints = frozenset(chain.from_iterable(train_dataset.apply(record_to_augmented_fingerprints, axis=1)))
-            with open(Path(__file__).resolve().parents[3] / "cache" / "wychoffs_enumerated_by_ss.pkl.gz", "rb") as f:
-                self.letter_to_enum, _ , self.letter_to_ss = pickle.load(f)[:3]
+            _m = load_wyckoff_mappings()
+            self.letter_to_enum = _m.enum_from_ss_letter
+            self.letter_to_ss = _m.ss_from_letter
             self.generated_to_fingerprint = partial(
                 generated_to_fingerprint, letter_to_ss=self.letter_to_ss, letter_to_enum=self.letter_to_enum)
         self.test_novelty = None

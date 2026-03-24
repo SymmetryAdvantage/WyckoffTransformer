@@ -42,10 +42,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2"]
 cdvae = ["cdvae-property-models"]
-cdvae-cpu = ["cdvae-property-models[cpu]"]
-cdvae-cu128 = ["cdvae-property-models[cu128]"]
-cpu = ["torch"]
-cu128 = ["torch"]
 
 [build-system]
 requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0"]
@@ -62,34 +58,11 @@ include = [
   "src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json",
 ]
 
-[tool.uv]
-environments = ["sys_platform == 'linux'"]
-conflicts = [
-  [{ extra = "cu128" }, { extra = "cpu" }],
-  [{ extra = "cdvae-cu128" }, { extra = "cdvae-cpu" }],
-  [{ extra = "cdvae-cu128" }, { extra = "cpu" }],
-  [{ extra = "cdvae-cpu" }, { extra = "cu128" }],
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
 [tool.uv.sources]
 cdvae-property-models = { path = "cdvae_property_models" }
-torch = [
-  { index = "pytorch-cpu", extra = "cpu" },
-  { index = "pytorch-cu128", extra = "cu128" },
-]
 
 # In the ideal world, we would forget about these packages
-# However, if cdvaae-property-models are installed, they try drag
+# However, if cdvaae-property-models are requested, they drag
 # torch-scatter and torch-sparse with them, and uv fails because it can't build them here
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["torch"]

@@ -104,22 +104,22 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         
         # Setup processor to return a mock pyxtal-like string/object
         self.trainer.processor.tensor_to_pyxtal.return_value = "pyxtal_mock"
+        self.trainer.run_path = None
 
     @patch("wyckoff_transformer.trainer.WyckoffGenerator")
-    @patch("wyckoff_transformer.trainer.gzip.open")
-    @patch("wyckoff_transformer.trainer.pickle.load")
+    @patch("wyckoff_transformer.trainer.load_wyckoff_mappings")
     @patch("wyckoff_transformer.trainer.get_wp_index")
-    def test_generate_structures(self, mock_get_wp_index, mock_pickle_load, mock_gzip_open, MockWyckoffGenerator):
+    def test_generate_structures(self, mock_get_wp_index, mock_load_wyckoff_mappings, MockWyckoffGenerator):
         # Setup mocks
         mock_generator_instance = MockWyckoffGenerator.return_value
         # generated tensors: mock what generator.generate_tensors returns
         mock_generator_instance.generate_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]
-        mock_pickle_load.return_value = [None, None, "ss_from_letter_mock"]
-        
+        mock_load_wyckoff_mappings.return_value.ss_from_letter = "ss_from_letter_mock"
+
         # Test basic generation
         structures = self.trainer.generate_structures(
-            n_structures=2, 
-            calibrate=False, 
+            n_structures=2,
+            calibrate=False,
             compute_validity_per_known_sequence_length=False
         )
         
@@ -132,14 +132,13 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         self.assertTrue(self.trainer.processor.tensor_to_pyxtal.called)
 
     @patch("wyckoff_transformer.trainer.WyckoffGenerator")
-    @patch("wyckoff_transformer.trainer.gzip.open")
-    @patch("wyckoff_transformer.trainer.pickle.load")
+    @patch("wyckoff_transformer.trainer.load_wyckoff_mappings")
     @patch("wyckoff_transformer.trainer.get_wp_index")
-    def test_generate_csx_structures(self, mock_get_wp_index, mock_pickle_load, mock_gzip_open, MockWyckoffGenerator):
+    def test_generate_csx_structures(self, mock_get_wp_index, mock_load_wyckoff_mappings, MockWyckoffGenerator):
         # Setup mocks
         mock_generator_instance = MockWyckoffGenerator.return_value
         mock_generator_instance.generate_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]
-        mock_pickle_load.return_value = [None, None, "ss_from_letter_mock"]
+        mock_load_wyckoff_mappings.return_value.ss_from_letter = "ss_from_letter_mock"
         
         start_tensor = torch.tensor([0, 1])
 

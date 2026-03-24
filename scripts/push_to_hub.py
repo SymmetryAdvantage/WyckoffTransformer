@@ -16,6 +16,7 @@ REQUIRED_FILES = [
     "wyckoff_processor.json",
     "config.yaml",
     "spacegroup_distribution.json",
+    "wyckoffs_enumerated_by_ss.json",
 ]
 
 

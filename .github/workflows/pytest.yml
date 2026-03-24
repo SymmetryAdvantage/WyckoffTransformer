@@ -26,7 +26,8 @@ jobs:
     - name: Install dependencies
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
-        uv sync --extra cpu --extra dev --extra cdvae
+        cp uv.toml.cpu uv.toml
+        uv sync --extra dev --extra cdvae
     - name: Test with pytest
       run: |
-        uv run --extra cpu --extra dev --extra cdvae pytest
+        uv run --extra dev --extra cdvae pytest
