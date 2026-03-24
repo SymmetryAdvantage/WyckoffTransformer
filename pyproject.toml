@@ -78,6 +78,9 @@ torch = [
   { index = "pytorch-cu128", extra = "cu128" },
 ]
 
+# In the ideal world, we would forget about these packages
+# However, if cdvaae-property-models are installed, they try drag
+# torch-scatter and torch-sparse with them, and uv fails because it can't build them here
 [tool.uv.extra-build-dependencies]
 torch-scatter = ["torch"]
 torch-sparse = ["torch"]
