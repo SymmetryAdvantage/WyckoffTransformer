@@ -1,13 +1,15 @@
 from pathlib import Path
 import unittest
 
-from ..evaluation.cdvae_metrics import load_model
+import pytest
+
+cdvae_property_models = pytest.importorskip("cdvae_property_models")
+load_model = cdvae_property_models.load_model
 
 
 def _bundled_prop_model_dirs() -> list[Path]:
-    prop_models_root = (
-        Path(__file__).resolve().parents[1] / "cdvae_evals" / "prop_models"
-    )
+    import cdvae_property_models as pkg
+    prop_models_root = Path(pkg.__file__).resolve().parent / "prop_models"
     if not prop_models_root.exists():
         raise FileNotFoundError(f"Bundled prop_models directory not found: {prop_models_root}")
 

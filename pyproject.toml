@@ -31,24 +31,18 @@ dependencies = [
   "matbench-discovery >=1.3.1",
   "pandarallel >=1.6.5",
   "schedulefree >=1.4.1",
-  "torch-scatter ==2.1.2",
-  "torch-sparse ==0.6.18",
   "ipympl >=0.9.7",
   "pymatgen ==2025.10.7",
   "monty >=2025.3.3",
-  "torch-geometric >=2.7.0",
   "pyxtal >=1.1.3",
   "pydantic >=2.12.5",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2"]
-cpu = ["torch", "torch-scatter", "torch-sparse"]
-cu128 = ["torch", "torch-scatter", "torch-sparse"]
-
-[tool.uv.extra-build-dependencies]
-torch-scatter = ["torch"]
-torch-sparse = ["torch"]
+cdvae = ["cdvae-property-models"]
+cpu = ["torch"]
+cu128 = ["torch"]
 
 [build-system]
 requires = ["hatchling"]
@@ -60,8 +54,6 @@ packages = ["src/wyckoff_transformer", "scripts"]
 [tool.hatch.build]
 include = [
   "yamls/**/*",
-  "src/wyckoff_transformer/cdvae_evals/prop_models/**/*",
-  "src/wyckoff_transformer/cdvae_evals/pl_modules/gemnet/gemnet-dT.json",
 ]
 
 [tool.uv]
@@ -78,34 +70,10 @@ name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
-
-[[tool.uv.index]]
-name = "pyg-cpu"
-url = "https://data.pyg.org/whl/torch-2.10.0+cpu.html"
-explicit = true
-format = "flat"
-
-
-[[tool.uv.index]]
-name = "pyg-cu128"
-url = "https://data.pyg.org/whl/torch-2.10.0+cu128.html"
-explicit = true
-format = "flat"
-
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
   { index = "pytorch-cu128", extra = "cu128" },
-]
-
-torch-scatter = [
-  { index = "pyg-cpu", extra = "cpu" },
-  { index = "pyg-cu128", extra = "cu128" },
-]
-
-torch-sparse = [
-  { index = "pyg-cu128", extra = "cu128" },
-  { index = "pyg-cpu", extra = "cpu" },
 ]
 
 [tool.pytest.ini_options]
@@ -115,5 +83,4 @@ markers = [
 ]
 filterwarnings = [
   "ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
-  "ignore:`torch_geometric\\.distributed` has been deprecated since 2\\.7\\.0.*:DeprecationWarning:torch_geometric\\.llm\\.utils\\.backend_utils",
 ]

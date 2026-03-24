@@ -1,3 +1,0 @@
-Cherry-picked files from [CDVAE](https://github.com/txie-93/cdvae). Incluudes two main parts:
-- datasets
-- code for metrics computation. The code has been modified to work with the 2024 versions of the libraries. This modification also prevents us from using git submodules.

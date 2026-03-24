@@ -1,6 +1,6 @@
 data:
-  root_path: ${oc.env:PROJECT_ROOT}/data/mp_20
-  prop: formation_energy_per_atom
+  root_path: ${oc.env:PROJECT_ROOT}/data/perov_5
+  prop: heat_ref
   num_targets: 1
   niggli: true
   primitive: false
@@ -10,15 +10,15 @@ data:
   readout: mean
   max_atoms: 20
   otf_graph: false
-  eval_model_name: mp20
-  train_max_epochs: 1000
+  eval_model_name: perovskite
+  train_max_epochs: 3000
   early_stopping_patience: 100000
-  teacher_forcing_max_epoch: 500
+  teacher_forcing_max_epoch: 1500
   datamodule:
-    _target_: wyckoff_transformer.cdvae_evals.pl_data.datamodule.CrystDataModule
+    _target_: cdvae_property_models.pl_data.datamodule.CrystDataModule
     datasets:
       train:
-        _target_: wyckoff_transformer.cdvae_evals.pl_data.dataset.CrystDataset
+        _target_: cdvae_property_models.pl_data.dataset.CrystDataset
         name: Formation energy train
         path: ${data.root_path}/train.csv
         prop: ${data.prop}
@@ -28,7 +28,7 @@ data:
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
       val:
-      - _target_: wyckoff_transformer.cdvae_evals.pl_data.dataset.CrystDataset
+      - _target_: cdvae_property_models.pl_data.dataset.CrystDataset
         name: Formation energy val
         path: ${data.root_path}/val.csv
         prop: ${data.prop}
@@ -38,7 +38,7 @@ data:
         lattice_scale_method: ${data.lattice_scale_method}
         preprocess_workers: ${data.preprocess_workers}
       test:
-      - _target_: wyckoff_transformer.cdvae_evals.pl_data.dataset.CrystDataset
+      - _target_: cdvae_property_models.pl_data.dataset.CrystDataset
         name: Formation energy test
         path: ${data.root_path}/test.csv
         prop: ${data.prop}
@@ -52,7 +52,7 @@ data:
       val: 0
       test: 0
     batch_size:
-      train: 256
+      train: 512
       val: 256
       test: 256
 logging:
@@ -73,7 +73,7 @@ logging:
     log_momentum: false
 model:
   encoder:
-    _target_: wyckoff_transformer.cdvae_evals.pl_modules.gnn.DimeNetPlusPlusWrap
+    _target_: cdvae_property_models.pl_modules.gnn.DimeNetPlusPlusWrap
     num_targets: ${data.num_targets}
     hidden_channels: 128
     num_blocks: 4
@@ -90,7 +90,7 @@ model:
     num_after_skip: 2
     num_output_layers: 3
     readout: ${data.readout}
-  _target_: wyckoff_transformer.cdvae_evals.pl_modules.model.CrystGNN_Supervise
+  _target_: cdvae_property_models.pl_modules.model.CrystGNN_Supervise
   use_orientation: false
   hidden_dim: 128
   fc_num_layers: 4
@@ -131,7 +131,7 @@ train:
   model_checkpoints:
     save_top_k: 1
     verbose: false
-expname: mp_20_supervise
+expname: perov_supervise
 core:
   version: 0.0.1
   tags:

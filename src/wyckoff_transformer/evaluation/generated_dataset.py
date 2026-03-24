@@ -27,7 +27,7 @@ from wyckoff_transformer.tokenization import get_wp_index
 
 from .DiffCSP_to_sites import load_diffcsp_dataset, record_to_pyxtal
 from .cdvae_metrics import (
-    Crystal, structure_validity, timed_smact_validity_from_record, prop_model_eval)
+    Crystal, structure_validity, timed_smact_validity_from_record)
 
 
 StructureStorage = Enum("StructureStorage", [
@@ -692,6 +692,14 @@ class GeneratedDataset():
     def compute_cdvae_e(self,
         sample_size: Optional[int] = None,
         device: torch.device = torch.device("cpu")):
+
+        try:
+            from cdvae_property_models import prop_model_eval
+        except ImportError:
+            raise ImportError(
+                "cdvae-property-models is required for CDVAE energy evaluation. "
+                "Install it with: pip install cdvae-property-models"
+            ) from None
 
         sample_rows = self.data.index[:sample_size]
         sample = self.data.loc[sample_rows, "cdvae_crystal"].map(attrgetter("dict"))

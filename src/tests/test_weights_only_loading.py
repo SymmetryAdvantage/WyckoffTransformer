@@ -1,12 +1,13 @@
 from pathlib import Path
 import unittest
 
+import pytest
 import torch
 
 
 def _find_cdvae_checkpoint() -> Path:
-    repo_root = Path(__file__).resolve().parents[1]
-    prop_models = repo_root / "wyckoff_transformer" / "cdvae_evals" / "prop_models"
+    cdvae_property_models = pytest.importorskip("cdvae_property_models")
+    prop_models = Path(cdvae_property_models.__file__).resolve().parent / "prop_models"
     for dataset in ("mp20", "carbon", "perovskite"):
         matches = sorted((prop_models / dataset).glob("*.ckpt"))
         if matches:
