@@ -8,3 +8,6 @@ Notebooks used for ICML 2025 submission, and then some more. Not intended to be 
 7. Table 8 & 9: [`MP_20_biternary.ipynb`](MP_20_biternary.ipynb)
 8. Tables 11 & 12: [`LLM_vs_WT.ipynb`](MP_20_paper_eval.ipynb), [`DFT_eval.ipynb`](DFT_eval.ipynb)
 9. Figures 11, 12 & 13: `tokenization_discussion*.ipynb`
+
+## WanDB runs
+1. [MPTS-52 generation](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/9sqoiuvh)

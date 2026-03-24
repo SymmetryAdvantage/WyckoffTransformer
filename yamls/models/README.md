@@ -3,7 +3,7 @@
 1. Structure generation `NextToken/v6/base_sg.yaml`
 2. MP-20 band gap `yamls/models/mp_20/band_gap/icml_2025.yaml`
 3. MP-20 energy `yamls/models/mp_20/formation_energy_per_site/icml_2025.yaml`
-4. AFLOW TODO (Ignat)
+4. MPTS-52 generation `yamls/models/NextToken/v6/base_sg_no_compile.yaml`
 ## Ablation
 1. Spheric harmonic inputs, predicting harmonic clusters: `yamls/models/mp_20/NextToken/augmented/cluster_harmonic_schedule_free.yaml`
 2. Wyckoff positions encoded with letters: `NextToken/v6/sg_letters.yaml`
