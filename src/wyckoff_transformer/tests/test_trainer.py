@@ -158,6 +158,28 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         self.assertEqual(len(structures), 2)
         self.assertEqual(structures[0], "pyxtal_mock")
 
+    @patch("wyckoff_transformer.trainer.WyckoffGenerator")
+    @patch("wyckoff_transformer.trainer.load_wyckoff_mappings")
+    @patch("wyckoff_transformer.trainer.get_wp_index")
+    def test_generate_allowed_elements_only(self, mock_get_wp_index, mock_load_wyckoff_mappings, MockWyckoffGenerator):
+        """--allowed-elements without --required-elements: required_element_set=set(), allowed_element_set forwarded."""
+        mock_generator_instance = MockWyckoffGenerator.return_value
+        mock_generator_instance.generate_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]
+        mock_load_wyckoff_mappings.return_value.ss_from_letter = "ss_from_letter_mock"
+
+        structures = self.trainer.generate_structures(
+            n_structures=2,
+            calibrate=False,
+            required_element_set=set(),
+            allowed_element_set="Li-O-P",
+            start_tensor=torch.tensor([0, 1]),
+        )
+
+        mock_generator_instance.generate_tensors.assert_called_once()
+        call_kwargs = mock_generator_instance.generate_tensors.call_args[1]
+        self.assertEqual(call_kwargs["required_element_set"], set())
+        self.assertEqual(call_kwargs["allowed_element_set"], "Li-O-P")
+        self.assertEqual(len(structures), 2)
 
 
 if __name__ == "__main__":
