@@ -139,10 +139,10 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         mock_generator_instance = MockWyckoffGenerator.return_value
         mock_generator_instance.generate_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]
         mock_load_wyckoff_mappings.return_value.ss_from_letter = "ss_from_letter_mock"
-        
+
         start_tensor = torch.tensor([0, 1])
 
-        structures = self.trainer.generate_csx_structures(
+        structures = self.trainer.generate_structures(
             n_structures=2,
             calibrate=False,
             required_element_set="Li-O",

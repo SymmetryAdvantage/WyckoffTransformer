@@ -225,20 +225,15 @@ def main():
 
     if args.csx:
         print("--- Running in Chemical System eXploration (CSX) mode ---")
-        generated_wp = trainer.generate_csx_structures(
-            n_structures=args.initial_n_samples,
-            calibrate=args.calibrate,
-            required_element_set=args.required_elements,
-            allowed_element_set=args.allowed_elements,
-            start_tensor=start_tensor_override,
-        )
     else:
         print("--- Running in Default Generation mode ---")
-        generated_wp = trainer.generate_structures(
-            args.initial_n_samples,
-            args.calibrate,
-            start_tensor=start_tensor_override,
-        )
+    generated_wp = trainer.generate_structures(
+        n_structures=args.initial_n_samples,
+        calibrate=args.calibrate,
+        start_tensor=start_tensor_override,
+        required_element_set=args.required_elements if args.csx else None,
+        allowed_element_set=args.allowed_elements if args.csx else "all",
+    )
 
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")

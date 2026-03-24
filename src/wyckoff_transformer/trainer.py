@@ -737,14 +737,25 @@ class WyckoffTrainer():
             calibrate: bool,
             compute_validity_per_known_sequence_length: bool = False,
             start_tensor: Optional[torch.Tensor] = None,
+            required_element_set: Optional[Union[str, Set[int]]] = None,
+            allowed_element_set: Union[str, Set[int]] = "all",
+            temperature: float = 1.0,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
+
         Args:
             n_structures: The number of structures to generate.
             calibrate: Whether to calibrate the generation probabilities on the validation dataset.
             compute_validity_per_known_sequence_length: Whether to compute the formal validity of
                 the generated tensors separately for each known sequence length.
+            start_tensor: Optional tensor of start tokens. If None, sampled from the training distribution.
+            required_element_set: If set, activates Chemical System eXploration (CSX) mode. A set of
+                required element token IDs or a dash-separated string (e.g. "Li-O") that MUST appear.
+            allowed_element_set: Controls the pool of allowed elements in CSX mode. "all" allows every
+                element in the vocab; "fix" restricts to required_element_set; a dash-separated string
+                or Set[int] defines a custom pool. Ignored when required_element_set is None.
+            temperature: Softmax temperature for sampling in CSX mode. Ignored otherwise.
         """
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
@@ -758,19 +769,27 @@ class WyckoffTrainer():
         else:
             if start_tensor.size(0) != n_structures:
                 raise ValueError("Custom start tensor must have the same number of samples as requested structures.")
-            
-            # Use self.model.start_embedding if available, or just device directly.
-            # start_tensor might not refer to train_dataset since we could be in generation mode.
             if hasattr(self, 'train_dataset') and self.train_dataset is not None:
                 start_tensor = start_tensor.to(self.device).to(self.train_dataset.start_tokens.dtype)
             else:
                 start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
 
-        if compute_validity_per_known_sequence_length:
+        if required_element_set is not None:
+            if 'elements' not in self.tokenisers:
+                raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
+            generated_tensors = generator.generate_tensors(
+                start=start_tensor,
+                required_element_set=required_element_set,
+                allowed_element_set=allowed_element_set,
+                temperature=temperature,
+                elements_vocab=self.tokenisers['elements']
+            )
+        elif compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
                 start_tensor, compute_validity=True)
         else:
             generated_tensors = generator.generate_tensors(start_tensor, compute_validity=False)
+
         generated_cascade_order = self.cascade_order
         if self.cascade_order[-1] == "harmonic_site_symmetries":
             del generated_tensors[-1]
@@ -795,99 +814,6 @@ class WyckoffTrainer():
             return valid_structures, ss_validitity, enum_validity
         return valid_structures
 
-    def generate_csx_structures(
-        self,
-        n_structures: int,
-        calibrate: bool,
-        required_element_set: Union[str, Set[int]],
-        allowed_element_set: Union[str, Set[int]] = "all",
-        temperature: float = 1.0,
-        start_tensor: Optional[torch.Tensor] = None,
-    ) -> List[dict]:
-        """
-        Generate crystal structures in Chemical System eXploration mode (CSX).
-
-        Parameters
-        ----------
-        n_structures : int
-            The number of structures to generate.
-        calibrate : bool
-            Whether to calibrate the generator on the validation set.
-        required_element_set : Union[str, Set[int]]
-            A set of required element token IDs or a dash-separated string
-            (e.g., "Li-O") of elements that MUST be present.
-        allowed_element_set : Union[str, Set[int]], default "all"
-            Controls the pool of allowed elements. It has three modes:
-            - "all": All elements in the `elements_vocab` are allowed.
-            - "fix": Only elements from `required_element_set` are allowed.
-            - str (e.g., "Li-Co-Mn-Ni-Fe-P-O"): A custom pool of allowed elements defined by
-              a dash-separated string.
-            - Set[int]: A custom pool of allowed elements defined by token IDs.
-        temperature : float, optional
-            The softmax temperature for sampling. By default 1.0.
-
-        Returns
-        -------
-        List[dict]
-            A list of valid generated pyxtal structure objects.
-        """
-
-        generator = WyckoffGenerator(
-            self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
-            self.masks_dict, self.max_sequence_length)
-        if calibrate:
-            if self.val_dataset is None:
-                raise ValueError("Calibration requires a validation dataset")
-            generator.calibrate(self.val_dataset)
-        
-        if start_tensor is None:
-            start_tensor = self._sample_start_tokens_from_distribution(n_structures)
-        else:
-            if start_tensor.size(0) != n_structures:
-                raise ValueError("Custom start tensor must have the same number of samples as requested structures.")
-            
-            if hasattr(self, 'train_dataset') and self.train_dataset is not None:
-                start_tensor = start_tensor.to(self.device).to(self.train_dataset.start_tokens.dtype)
-            else:
-                start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
-
-        if 'elements' not in self.tokenisers:
-            raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
-
-        generated_tensors = generator.generate_tensors(
-            start=start_tensor,
-            required_element_set=required_element_set,
-            allowed_element_set=allowed_element_set,   
-            temperature=temperature,
-            elements_vocab=self.tokenisers['elements']
-        )
-
-        generated_cascade_order = self.cascade_order
-        if self.cascade_order[-1] == "harmonic_site_symmetries":
-            del generated_tensors[-1]
-            generated_cascade_order = generated_cascade_order[:-1]
-        
-        generated_tensors = torch.stack(generated_tensors, dim=-1)
-
-        if 'sites_enumeration' in self.tokenisers:
-            letter_from_ss_enum_idx = self.tokenisers['sites_enumeration'].get_letter_from_ss_enum_idx(self.run_path)
-        else:
-            letter_from_ss_enum_idx = None
-
-        ss_from_letter = load_wyckoff_mappings(self.run_path).ss_from_letter
-
-        to_pyxtal = partial(self.processor.tensor_to_pyxtal,
-                            cascade_order=generated_cascade_order,
-                            letter_from_ss_enum_idx=letter_from_ss_enum_idx,
-                            ss_from_letter=ss_from_letter,
-                            wp_index=get_wp_index())
-
-        structures = list(map(to_pyxtal, start_tensor.detach().cpu(), generated_tensors.detach().cpu()))
-        print(f"Generated {len(structures)} Wyckoffs (CSX mode)")
-        valid_structures = [s for s in structures if s is not None]
-        print(f"From which {len(valid_structures)} are valid")
-        return valid_structures
-    
     def generate_evaluate_and_log_wp(
         self,
         generation_name: str,
