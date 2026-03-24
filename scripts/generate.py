@@ -159,6 +159,8 @@ def main():
     model_source.add_argument("--model-path", type=Path,
            help="The path to the model directory. Should contain best_model_params.pt, "
                "wyckoff_processor.json, config.yaml")
+    model_source.add_argument("--hf-model", type=str,
+           help="HuggingFace repo ID to load the model from, e.g. 'username/model-name'.")
     parser.add_argument("--use-cached-tensors", action="store_true",
            help="Load cached tensors and datasets as before. By default generation does not require datasets and "
                "samples start tokens from the saved space-group distribution.")
@@ -186,6 +188,8 @@ def main():
         raise ValueError("Output file must be a .json.gz file.")
     if args.csx and not args.required_elements:
         parser.error("--required-elements is required when --csx is enabled.")
+    if args.update_wandb and not args.wandb_run:
+        parser.error("--update-wandb requires --wandb-run.")
     if args.wandb_run:
         if args.update_wandb:
             wandb_run = wandb.init(project="WyckoffTransformer", id=args.wandb_run, resume=True)
@@ -194,21 +198,23 @@ def main():
         config = OmegaConf.create(dict(wandb_run.config))
         run_path = Path(__file__).parent.parent / "runs" / args.wandb_run
     elif args.model_path:
-        if args.update_wandb:
-            raise ValueError("Cannot update W&B run when using a local model path.")
         run_path = args.model_path
         config = OmegaConf.load(run_path / "config.yaml")
-    else:
-        raise ValueError("Either --wandb-run or --model-path must be provided.")
 
     generation_start_time = time.time()
-    trainer = WyckoffTrainer.from_config(
-        config,
-        device=args.device,
-        use_cached_tensors=args.use_cached_tensors,
-        run_path=run_path,
-        load_datasets=args.use_cached_tensors or args.calibrate)
-    trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
+    if args.hf_model:
+        trainer = WyckoffTrainer.from_huggingface(
+            args.hf_model,
+            device=args.device,
+        )
+    else:
+        trainer = WyckoffTrainer.from_config(
+            config,
+            device=args.device,
+            use_cached_tensors=args.use_cached_tensors,
+            run_path=run_path,
+            load_datasets=args.use_cached_tensors or args.calibrate)
+        trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
     start_tensor_override = None
     if args.sg_dist is not None:
         start_tensor_override = prepare_start_tensor_from_cache(

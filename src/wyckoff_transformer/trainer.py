@@ -14,6 +14,7 @@ from torch import Tensor
 from omegaconf import OmegaConf, DictConfig
 from tqdm import trange
 import wandb
+from huggingface_hub import snapshot_download
 
 
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
@@ -443,6 +444,44 @@ class WyckoffTrainer():
             tokeniser_config=config.tokeniser,
             production_training=production_training,
             **config.model.WyckoffTrainer_args)
+
+
+    @classmethod
+    def from_huggingface(
+        cls,
+        repo_id: str,
+        device: torch.device,
+        revision: Optional[str] = None,
+        cache_dir: Optional[Path] = None,
+        load_datasets: bool = False,
+    ) -> "WyckoffTrainer":
+        """Load a WyckoffTrainer from a HuggingFace Hub repository.
+
+        Args:
+            repo_id: HuggingFace repo ID, e.g. 'username/model-name'.
+            device: Torch device to use.
+            revision: Optional git revision (branch, tag, or commit SHA).
+            cache_dir: Optional local directory to cache downloaded files.
+            load_datasets: Whether to load datasets (requires dataset config).
+        """
+        local_dir = snapshot_download(
+            repo_id=repo_id,
+            revision=revision,
+            cache_dir=str(cache_dir) if cache_dir is not None else None,
+        )
+        model_path = Path(local_dir)
+        config = OmegaConf.load(model_path / "config.yaml")
+        trainer = cls.from_config(
+            config,
+            device=device,
+            use_cached_tensors=False,
+            run_path=model_path,
+            load_datasets=load_datasets,
+        )
+        trainer.model.load_state_dict(
+            torch.load(model_path / "best_model_params.pt", weights_only=True, map_location=device)
+        )
+        return trainer
 
 
     def get_loss(
