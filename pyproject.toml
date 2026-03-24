@@ -78,6 +78,10 @@ torch = [
   { index = "pytorch-cu128", extra = "cu128" },
 ]
 
+[tool.uv.extra-build-dependencies]
+torch-scatter = ["torch"]
+torch-sparse = ["torch"]
+
 [tool.pytest.ini_options]
 testpaths = ["src"]
 markers = [
