@@ -134,8 +134,9 @@ class WyckoffGenerator():
             start: The start token. It should be a tensor of shape [batch_size].
             temperature: The temperature to use for the generation
             compute_validity: Whether to compute the validity of the generated sequences
-            required_element_set : A set of required element token IDs or a dash-separated string (for CSX)
-            allowed_element_set : Controls the pool of allowed elements. (for CSX)
+            required_element_set : A set of required element token IDs or a dash-separated string.
+                If provided (including an empty set), activates element-constrained generation.
+            allowed_element_set : Controls the pool of allowed elements.
             max_length : Maximum number of sequence sites to generate. Defaults to self.max_sequence_len.
             elements_vocab : Vocabulary dict mapping element keys to token IDs.
             delimiter : Delimiter for parsing the string form, default "-".
@@ -145,13 +146,13 @@ class WyckoffGenerator():
             If compute_validity is True, also returns the formal validity of the generated sequences
                 for the site symmetries and the enumeration (if applicable) for each known sequence length.
         """
-        is_csx = required_element_set is not None
+        element_constrained = required_element_set is not None
         device = start.device
         batch_size = start.size(0)
         if max_length is None:
             max_length = self.max_sequence_len
 
-        if is_csx:
+        if element_constrained:
             if elements_vocab is not None and 'STOP' in elements_vocab:
                 stop_id = elements_vocab['STOP']
             else:
@@ -251,7 +252,7 @@ class WyckoffGenerator():
                         else:
                             logits = self.tail_calibrators[known_cascade_len](logits)
                             
-                    if is_csx and cascade_name == "elements":
+                    if element_constrained and cascade_name == "elements":
                         logits_masked = torch.full_like(logits, float("-inf"))
                         allowed_idx_tensor = torch.tensor(
                             sorted(list(allowed_id_set)), dtype=torch.long, device=device
@@ -262,7 +263,7 @@ class WyckoffGenerator():
                     logits = logits / temperature
                     calibrated_probas = torch.nn.functional.softmax(logits, dim=1)
                     
-                    if is_csx and cascade_name == "elements":
+                    if element_constrained and cascade_name == "elements":
                         next_tokens = torch.empty(batch_size, dtype=torch.long, device=device)
                         for b in range(batch_size):
                             if elements_stop_generated[b]:

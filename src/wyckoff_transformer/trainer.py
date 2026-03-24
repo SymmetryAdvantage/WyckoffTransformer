@@ -750,12 +750,13 @@ class WyckoffTrainer():
             compute_validity_per_known_sequence_length: Whether to compute the formal validity of
                 the generated tensors separately for each known sequence length.
             start_tensor: Optional tensor of start tokens. If None, sampled from the training distribution.
-            required_element_set: If set, activates Chemical System eXploration (CSX) mode. A set of
-                required element token IDs or a dash-separated string (e.g. "Li-O") that MUST appear.
-            allowed_element_set: Controls the pool of allowed elements in CSX mode. "all" allows every
-                element in the vocab; "fix" restricts to required_element_set; a dash-separated string
-                or Set[int] defines a custom pool. Ignored when required_element_set is None.
-            temperature: Softmax temperature for sampling in CSX mode. Ignored otherwise.
+            required_element_set: If set (including an empty set), activates element-constrained
+                generation. A set of required element token IDs or a dash-separated string (e.g. "Li-O")
+                that MUST appear in every generated structure.
+            allowed_element_set: Controls the pool of allowed elements. "all" allows every element in
+                the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
+                defines a custom pool. Only used when element-constrained generation is active.
+            temperature: Softmax temperature for sampling.
         """
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,

@@ -134,7 +134,7 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
     @patch("wyckoff_transformer.trainer.WyckoffGenerator")
     @patch("wyckoff_transformer.trainer.load_wyckoff_mappings")
     @patch("wyckoff_transformer.trainer.get_wp_index")
-    def test_generate_csx_structures(self, mock_get_wp_index, mock_load_wyckoff_mappings, MockWyckoffGenerator):
+    def test_generate_element_constrained_structures(self, mock_get_wp_index, mock_load_wyckoff_mappings, MockWyckoffGenerator):
         # Setup mocks
         mock_generator_instance = MockWyckoffGenerator.return_value
         mock_generator_instance.generate_tensors.return_value = [torch.zeros((2, 5)), torch.ones((2, 5))]

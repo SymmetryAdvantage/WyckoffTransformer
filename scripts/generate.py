@@ -173,12 +173,12 @@ def main():
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"), help="The device to use.")
     parser.add_argument("--calibrate", action="store_true", help="Calibrate the generator.")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode.")
-    parser.add_argument("--csx", action="store_true",
-                        help="Enable Chemical System eXploration (CSX).")
     parser.add_argument("--required-elements", "--r", type=str,
-                        help="Required elements for CSX mode (e.g., 'Li-S'). Must be provided if --csx is used.")
-    parser.add_argument("--allowed-elements", "--a", type=str, default="all",
-                        help="Allowed elements for CSX mode: 'all', 'fix', or a custom set (e.g., 'Li-S-P-O').")
+                        help="Required elements for constrained generation (e.g., 'Li-S'). "
+                             "All listed elements will appear in every generated structure.")
+    parser.add_argument("--allowed-elements", "--a", type=str, default=None,
+                        help="Allowed elements for constrained generation: 'fix' (restrict to --required-elements), "
+                             "or a custom set (e.g., 'Li-S-P-O'). Defaults to all elements when omitted.")
     parser.add_argument("--sg-dist", type=str, default=None,
                         help="Override the initial space group distribution using tensors cached under cache/<dataset>.")
     args = parser.parse_args()
@@ -186,8 +186,6 @@ def main():
         logging.basicConfig(level=logging.DEBUG)
     if args.output.suffixes != [".json", ".gz"]:
         raise ValueError("Output file must be a .json.gz file.")
-    if args.csx and not args.required_elements:
-        parser.error("--required-elements is required when --csx is enabled.")
     if args.update_wandb and not args.wandb_run:
         parser.error("--update-wandb requires --wandb-run.")
     if args.wandb_run:
@@ -223,16 +221,17 @@ def main():
             n_samples=args.initial_n_samples,
         )
 
-    if args.csx:
-        print("--- Running in Chemical System eXploration (CSX) mode ---")
+    use_element_constraints = args.required_elements is not None or args.allowed_elements is not None
+    if use_element_constraints:
+        print("--- Running in constrained element generation mode ---")
     else:
-        print("--- Running in Default Generation mode ---")
+        print("--- Running in default generation mode ---")
     generated_wp = trainer.generate_structures(
         n_structures=args.initial_n_samples,
         calibrate=args.calibrate,
         start_tensor=start_tensor_override,
-        required_element_set=args.required_elements if args.csx else None,
-        allowed_element_set=args.allowed_elements if args.csx else "all",
+        required_element_set=args.required_elements if args.required_elements is not None else (set() if use_element_constraints else None),
+        allowed_element_set=args.allowed_elements if args.allowed_elements is not None else "all",
     )
 
     generation_end_time = time.time()
