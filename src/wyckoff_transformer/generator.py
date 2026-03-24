@@ -160,13 +160,14 @@ class WyckoffGenerator():
             def _symbol_to_id(sym: str) -> int:
                 if elements_vocab is None:
                     raise RuntimeError("elements_vocab must be provided for string-based element sets.")
-                try:
-                    key = Element(sym)
-                    if key in elements_vocab: return elements_vocab[key]
-                except Exception: pass
+                key = Element(sym)
+                if key in elements_vocab:
+                    return elements_vocab[key]
                 k2 = f"Element {sym}"
-                if k2 in elements_vocab: return elements_vocab[k2]
-                if sym in elements_vocab: return elements_vocab[sym]
+                if k2 in elements_vocab:
+                    return elements_vocab[k2]
+                if sym in elements_vocab:
+                    return elements_vocab[sym]
                 raise KeyError(f"Element symbol '{sym}' not found in provided elements_vocab.")
 
             def _parse_string_to_ids(s: str) -> set:
@@ -347,4 +348,3 @@ class WyckoffGenerator():
         if compute_validity:
             return generated, global_ss_validitity, global_enum_validity
         return generated
-    
