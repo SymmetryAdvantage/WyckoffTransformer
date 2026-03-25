@@ -53,6 +53,6 @@ optimisation:
   clip_grad_norm: 2.
   epochs: 1000000 
 tokeniser:
-  name: lemat_mp20cfg_sg_multiplicity
+  name: alex_mp_20_sg_multiplicity
 evaluation:
   n_structures_to_generate: 11000
