@@ -1,0 +1,3 @@
+Alex-MP-20 is a training dataset consisting of around 600k structures from MP-20 and Alexandria (Schmidt et al. 2022) with at most 20 atoms inside the unit cell and below 0.1 eV/atom of the convex hull. Note that val.csv.gz and test.csv.gz contain identical entries.
+
+https://github.com/microsoft/mattergen/tree/main/data-release/alex-mp
