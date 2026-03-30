@@ -16,12 +16,10 @@ column names, and the number of processing workers via command-line arguments.
 
 import argparse
 import pandas as pd
-import re
 import sys
 from typing import Set, Tuple, Optional
 
 try:
-    from pymatgen.core.composition import Composition
     from pymatgen.analysis.phase_diagram import PDEntry, PhaseDiagram
     from pandarallel import pandarallel
 except ImportError as e:

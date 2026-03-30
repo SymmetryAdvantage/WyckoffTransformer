@@ -262,7 +262,8 @@ def load_ehull_csv_cif(path: Path):
 
 
 def load_old_atomated_csv(path: Path) -> pd.DataFrame:
-    structure_from_dict_str = lambda x: Structure.from_dict(literal_eval(x))
+    def structure_from_dict_str(x):
+        return Structure.from_dict(literal_eval(x))
     return pd.read_csv(path, index_col="material_id", converters={"structure": structure_from_dict_str})
 
 def load_atomated_csv(path: Path) -> pd.DataFrame:

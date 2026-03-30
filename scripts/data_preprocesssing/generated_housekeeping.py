@@ -3,7 +3,7 @@ import shutil
 from omegaconf import OmegaConf
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
-from wyckoff_transformer.evaluation.generated_dataset import DATA_KEYS
+from wyckoff_transformer.evaluation.generated_dataset import DATA_KEYS  # noqa: E402
 
 def process_dataset(
     original_path, new_path,

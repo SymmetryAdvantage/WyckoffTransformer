@@ -27,7 +27,6 @@ from typing import Optional, Dict
 import pandas as pd
 from pandarallel import pandarallel
 from pymatgen.core import Structure, Element
-from pyxtal import pyxtal
 
 # Assume these functions are in a local 'data.py' file as per the original script.
 # If they are located elsewhere, please adjust the import path.
@@ -236,7 +235,7 @@ def main():
     logging.info("=" * 50)
     logging.info("          Processing Summary")
     logging.info("=" * 50)
-    logging.info(f"All files have been processed.")
+    logging.info("All files have been processed.")
     logging.info(f"Total CIF parsing errors across all files: {total_cif_errors}")
     logging.info(f"Total symmetry analysis errors across all files: {total_symmetry_errors}")
     logging.info("Processing complete.")

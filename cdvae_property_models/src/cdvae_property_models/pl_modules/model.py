@@ -2,7 +2,6 @@ from typing import Any, Dict
 
 import hydra
 import numpy as np
-import omegaconf
 import torch
 import pytorch_lightning as pl
 import torch.nn as nn
@@ -11,7 +10,7 @@ from torch_scatter import scatter
 from tqdm import tqdm
 
 from ..common.data_utils import (
-    EPSILON, cart_to_frac_coords, mard, lengths_angles_to_volume,
+    cart_to_frac_coords, mard, lengths_angles_to_volume,
     frac_to_cart_coords, min_distance_sqr_pbc)
 from ..pl_modules.embeddings import MAX_ATOMIC_NUM
 from ..pl_modules.embeddings import KHOT_EMBEDDINGS

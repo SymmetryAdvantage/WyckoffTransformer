@@ -1,5 +1,4 @@
 from typing import Tuple, List, Dict, Optional, Set, Union
-from pathlib import Path
 import logging
 import torch
 from torch import nn, Tensor
@@ -7,7 +6,7 @@ import numpy as np
 from pymatgen.core.periodic_table import Element
 
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
-from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer, WyckoffProcessor
+from wyckoff_transformer.tokenization import FeatureEngineer
 from wyckoff_transformer.preprocess_wychoffs import inverse_series
 
 logger = logging.getLogger(__name__)
@@ -173,7 +172,8 @@ class WyckoffGenerator():
 
             def _parse_string_to_ids(s: str) -> set:
                 syms = [x.strip() for x in s.split(delimiter) if x.strip()]
-                if not syms: raise ValueError("Empty element string provided.")
+                if not syms:
+                    raise ValueError("Empty element string provided.")
                 return { _symbol_to_id(x) for x in syms }
 
             if isinstance(required_element_set, str):

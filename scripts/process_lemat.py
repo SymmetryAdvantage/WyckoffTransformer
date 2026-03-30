@@ -270,7 +270,7 @@ def main():
     
     final_df.to_csv(output_path, index=False, compression='gzip')
     
-    logger.info(f"Processing complete!")
+    logger.info("Processing complete!")
     logger.info(f"Final dataset: {len(final_df)} rows saved to {output_path}")
     logger.info(f"File size: {output_path.stat().st_size / (1024*1024):.2f} MB")
     

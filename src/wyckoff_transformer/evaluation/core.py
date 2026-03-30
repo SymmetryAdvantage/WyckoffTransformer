@@ -13,7 +13,6 @@ import smact
 import smact.screening
 import wandb
 import logging
-from pathlib import Path
 
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
@@ -410,7 +409,8 @@ def evaluate_and_log(
 
 
 def main():
-    import gzip, json
+    import gzip
+    import json
     for run in ("je9sllnx", "aik4ie80", "uoz22ycs", "d9b2y4ke"):
         with gzip.open(f"runs/{run}/gnerated_wp_no_calibration.json.gz", "rb") as f:
             generated_structures = json.load(f)

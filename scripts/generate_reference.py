@@ -3,7 +3,6 @@ import torch
 from pathlib import Path
 from omegaconf import OmegaConf
 from wyckoff_transformer.trainer import WyckoffTrainer
-from wyckoff_transformer.evaluation.cdvae_metrics import Crystal, GenEval
 
 def main():
     run_path = Path("/home/kna/WyckoffTransformer/runs/ioi8tycx")

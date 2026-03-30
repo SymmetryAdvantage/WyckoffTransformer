@@ -2,7 +2,7 @@ import torch
 import unittest
 from unittest.mock import MagicMock
 from wyckoff_transformer.generator import WyckoffGenerator
-from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
+from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset
 
 class TestCalibrateEmptyTail(unittest.TestCase):
     def test_calibrate_empty_tail(self):

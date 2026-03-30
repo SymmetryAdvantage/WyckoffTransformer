@@ -1,6 +1,4 @@
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .embeddings import MAX_ATOMIC_NUM
 from .gemnet.gemnet import GemNetT

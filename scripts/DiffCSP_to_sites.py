@@ -7,15 +7,12 @@ if __name__ == "__main__":
 from typing import Dict, List
 from collections import defaultdict, Counter
 import argparse
-from functools import partial
 from pathlib import Path
 import torch
 import json
 import gzip
 import pickle
-import pandas as pd
 import logging
-from pathlib import Path
 from multiprocessing import Pool
 from pymatgen.core.structure import Structure, Lattice
 from data import structure_to_sites

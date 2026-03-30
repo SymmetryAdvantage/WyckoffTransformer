@@ -49,7 +49,7 @@ def generate_wyckoff_mappings(
             "enum_from_ss_letter": {
                 str(sg): v for sg, v in enum_from_ss_letter.items()},
             "letter_from_ss_enum": {
-                str(sg): {ss: {str(e): l for e, l in ed.items()}
+                str(sg): {ss: {str(e): letter for e, letter in ed.items()}
                           for ss, ed in sd.items()}
                 for sg, sd in letter_from_ss_enum.items()},
             "ss_from_letter": {

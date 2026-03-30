@@ -18,7 +18,6 @@ from ase.optimize import FIRE
 from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.optimize.optimize import Optimizer
-from ase.optimize import FIRE
 from ase.io import write
 from ase.spacegroup import get_spacegroup
 
@@ -45,7 +44,7 @@ def now():
 FIX_SYMMETRY = True  # Warning: apply the symmetry constraint
 # Main codes
 # --------------------------------------------------------------------------- #
-import os
+import os  # noqa: E402
 
 
 def run_ase_relaxer(
@@ -86,7 +85,7 @@ def run_ase_relaxer(
         f"[{now()}] CrySPR Info: Relax cell? {'Yes' if cell_filter is not None else 'No'}",
         f"[{now()}] CrySPR Info: Relax atomic postions? {'Yes' if not fix_fractional else 'No'}",
         f"#{'-' * 60}#",
-        f"\n",
+        "\n",
     ])
     if logfile == "-":
         print(logcontent1)
@@ -122,7 +121,7 @@ def run_ase_relaxer(
         f"Optimized Cell: {atoms.cell.cellpar()}",
         f"Cell diff (%): {cell_diff}",
         # f"Scaled positions:\n{atoms.get_scaled_positions()}", # comment out to minimize the file size
-        f"\n",
+        "\n",
     ]
     )
     if logfile == "-":
@@ -230,7 +229,7 @@ def single_run(
             f"[{now()}] CrySPR Info: Use ML-IAP = {relax_calculator.__class__.__name__}",
             f"[{now()}] CrySPR Info: Use local optimization algorithm = {optimizer.__name__}",
             f"[{now()}] CrySPR Info: Use fmax = {fmax}",
-            f"\n",
+            "\n",
         ]
     )
     if verbose:
@@ -256,7 +255,7 @@ def single_run(
         [
             f"[{now()}] CrySPR Info: Done structure relaxation.",
             f"#{'-' * 60}#",
-            f"\n",
+            "\n",
         ]
     )
     if verbose:
@@ -277,7 +276,7 @@ def get_spg_num_pymatgen(structure: Structure, symprec: float = 0.1, comment="id
     try:
         spga: SpacegroupAnalyzer = SpacegroupAnalyzer(structure, symprec=symprec)
         spg_num = spga.get_space_group_number()
-    except:
+    except:  # noqa: E722
         print(f"Warning: symprec = {symprec} not work, roll back to the default (0.01)")
         try:
             spga: SpacegroupAnalyzer = SpacegroupAnalyzer(structure)
@@ -298,11 +297,10 @@ def write_cif(structure: Structure, idx: int):
 # for consistency, ExpCellFilter is used
 # from ase.filters import ExpCellFilter as CellFilter
 
-import sys
-import json
-import pandas as pd
-import os
-import warnings
+import sys  # noqa: E402
+import json  # noqa: E402
+import pandas as pd  # noqa: E402
+import warnings  # noqa: E402
 
 rootdir = os.getcwd()
 
@@ -380,7 +378,7 @@ def func_run(
             f.write(
                 f"[{now()}] CrySPR Info: Done {model}-{idx}\n"
             )
-    except:
+    except:  # noqa: E722
         with open(f"{rootdir}/cryspr.log", mode='a+') as f:
             f.write(
                 f"[{now()}] CrySPR Error: Failed for {model}-{idx}"
@@ -410,7 +408,7 @@ def main():
         )
     try:
         nb_workers = int(os.environ["NP"])
-    except:
+    except:  # noqa: E722
         print("Warning: NP variable unspecified, set as all CPU cores available.")
         nb_workers = os.cpu_count()
 

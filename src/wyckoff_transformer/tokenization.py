@@ -1,17 +1,15 @@
 from typing import Dict, Iterable, NamedTuple, Set, FrozenSet, Optional, List, Tuple
-from copy import deepcopy
 import json
 import gzip
 import logging
 import pickle
 from itertools import chain
 from operator import attrgetter, itemgetter
-from functools import partial
 from collections import defaultdict, UserDict
 from enum import Enum
 from pathlib import Path
 import numpy as np
-from pandas import DataFrame, Series, MultiIndex
+from pandas import DataFrame
 import torch
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
@@ -19,13 +17,6 @@ from omegaconf import OmegaConf, DictConfig
 from wyckoff_transformer.wyckoff_processor import (
     FeatureEngineer,
     WyckoffProcessor,
-    _SerialisedTokeniser,
-    _SerialisedFeatureEngineer,
-    _WyckoffProcessorState,
-    generation_modes,
-    JsonPrimitive,
-    JsonContainer,
-    argsort_multiple,
 )
 
 WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
@@ -61,7 +52,7 @@ def load_wyckoff_mappings(path: Optional[Path] = None) -> WyckoffMappings:
     return WyckoffMappings(
         enum_from_ss_letter={int(sg): v for sg, v in raw["enum_from_ss_letter"].items()},
         letter_from_ss_enum={
-            int(sg): {ss: {int(e): l for e, l in ed.items()} for ss, ed in sd.items()}
+            int(sg): {ss: {int(e): letter for e, letter in ed.items()} for ss, ed in sd.items()}
             for sg, sd in raw["letter_from_ss_enum"].items()
         },
         ss_from_letter={int(sg): v for sg, v in raw["ss_from_letter"].items()},

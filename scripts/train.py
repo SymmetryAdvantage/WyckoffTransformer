@@ -7,7 +7,7 @@ import wandb
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
-from wyckoff_transformer.trainer import train_from_config
+from wyckoff_transformer.trainer import train_from_config  # noqa: E402
 # from wyckoff_transformer.bigtrainer import train_from_config
 
 

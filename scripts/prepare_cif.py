@@ -15,11 +15,9 @@ to a specified output directory with the same filename.
 Updated to use pandarallel for parallel processing.
 """
 
-import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from tqdm import tqdm
 from pandarallel import pandarallel
 
 # Prerequisites: Ensure you have these libraries installed

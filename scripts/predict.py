@@ -1,4 +1,5 @@
 import argparse
+import gzip
 import json
 import logging
 from pathlib import Path
@@ -152,11 +153,12 @@ def read_pyxtal_dataframe(path: Path) -> pd.DataFrame:
     wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
     ss_from_letter = _m.ss_from_letter
     augmentation_dict = get_augmentation_dict()
-    converter = lambda row: pyxtal_notation_to_sites(
-        row,
-        wychoffs_enumerated_by_ss=wychoffs_enumerated_by_ss,
-        ss_from_letter=ss_from_letter,
-        wychoffs_augmentation=augmentation_dict)
+    def converter(row):
+        return pyxtal_notation_to_sites(
+            row,
+            wychoffs_enumerated_by_ss=wychoffs_enumerated_by_ss,
+            ss_from_letter=ss_from_letter,
+            wychoffs_augmentation=augmentation_dict)
     logger.info("Converting %d pyxtal structures to symmetry sites.", len(df))
     converted = df.apply(converter, axis=1, result_type="expand")
     converted.index = df.index

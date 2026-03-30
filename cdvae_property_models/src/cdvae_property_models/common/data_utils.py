@@ -1,34 +1,26 @@
 # https://github.com/jiaor17/DiffCSP/blob/main/diffcsp/common/data_utils.py
 import numpy as np
 import pandas as pd
-import networkx as nx
 import torch
 import copy
-import itertools
 
 from pymatgen.core.structure import Structure
 from pymatgen.core.lattice import Lattice
 from pymatgen.analysis.graphs import StructureGraph
 from pymatgen.analysis import local_env
 
-from networkx.algorithms.components import is_connected
 
 from sklearn.metrics import accuracy_score, recall_score, precision_score
 
-from torch_scatter import scatter
 from torch_scatter import segment_coo, segment_csr
 
 from p_tqdm import p_umap
 
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
-from pyxtal.symmetry import Group
 from pyxtal import pyxtal
 
-from pathos.pools import ProcessPool as Pool
 # from multiprocessing import Pool
-from tqdm import tqdm 
-from functools import partial 
 
 import faulthandler
 faulthandler.enable()
@@ -139,7 +131,7 @@ def get_symmetry_info(crystal, tol=0.01):
     c = pyxtal()
     try:
         c.from_seed(crystal, tol=0.01)
-    except:
+    except Exception:
         c.from_seed(crystal, tol=0.0001)
     space_group = c.group.number
     species = []
@@ -175,7 +167,7 @@ def build_crystal_graph(crystal, graph_method='crystalnn'):
     if graph_method == 'crystalnn':
         try:
             crystal_graph = StructureGraph.from_local_env_strategy(crystal, CrystalNN)
-        except:
+        except Exception:
             try:
                 crystalNN_tmp = local_env.CrystalNN(
                     distance_cutoffs=None, x_diff_weight=-1, porous_adjustment=False, search_cutoff=10)
@@ -647,9 +639,6 @@ def radius_graph_pbc(pos, lengths, angles, natoms, radius, max_num_neighbors_thr
     min_dist = torch.cat([min_dist_a1, min_dist_a2, min_dist_a3], dim=-1) # N_graphs * 3
 #     reps = torch.cat([rep_a1.reshape(-1,1), rep_a2.reshape(-1,1), rep_a3.reshape(-1,1)], dim=1) # N_graphs * 3
     
-    unit_cell_all = []
-    num_cells_all = []
-
     # Tensor of unit cells
     cells_per_dim = [
         torch.arange(-rep, rep + 1, device=device, dtype=torch.float)
@@ -1060,9 +1049,6 @@ def min_distance_sqr_pbc(cart_coords1, cart_coords2, lengths, angles,
 
     unit_cell = torch.tensor(OFFSET_LIST, device=device).float()
     num_cells = len(unit_cell)
-    unit_cell_per_atom = unit_cell.view(1, num_cells, 3).repeat(
-        len(cart_coords2), 1, 1
-    )
     unit_cell = torch.transpose(unit_cell, 0, 1)
     unit_cell_batch = unit_cell.view(1, 3, num_cells).expand(
         batch_size, -1, -1

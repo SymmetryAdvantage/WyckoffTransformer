@@ -7,7 +7,6 @@ LICENSE file in the root directory of this source tree.
 
 from typing import Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch_scatter import scatter
