@@ -21,7 +21,7 @@ import torch
 import pandas as pd
 from .novelty import record_to_augmented_fingerprint
 from scripts.data import read_cif, compute_symmetry_sites, read_MP, pyxtal_notation_to_sites
-from scripts.preprocess_wychoffs import get_augmentation_dict
+from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from .core import wycryst_to_pyxtal_dict
 from wyckoff_transformer.tokenization import get_wp_index, load_wyckoff_mappings
 
@@ -295,12 +295,14 @@ def save_as_json_csv(path: Path, data: pd.DataFrame) -> None:
 
 class LetterDictToSitesConverter:
     def __init__(self,
-        multiplicity_engineer_file = Path(__file__).resolve().parents[3] / "cache" / "engineers" / "multiplicity.pkl.gz"):
+        multiplicity_engineer_file = Path(__file__).parent.parent / "engineers" / "multiplicity.json"):
         _m = load_wyckoff_mappings()
         self.wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
         self.ss_from_letter = _m.ss_from_letter
-        with gzip.open(multiplicity_engineer_file, "rb") as f:
-            self.multiplicity_engineer = pickle.load(f)
+        from wyckoff_transformer.tokenization import WyckoffProcessor, _SerialisedFeatureEngineer
+        self.multiplicity_engineer = WyckoffProcessor._deserialise_feature_engineer(
+            _SerialisedFeatureEngineer.model_validate_json(
+                Path(multiplicity_engineer_file).read_text(encoding="utf-8")))
         self.augmentation_dict = get_augmentation_dict()
         self.wp_index = get_wp_index()
 
@@ -374,7 +376,7 @@ class LetterDictToSitesConverter:
 
 class SiteSymmetryToRecordConverter:
     def __init__(self,
-        multiplicity_engineer_file = Path(__file__).resolve().parents[3] / "cache" / "engineers" / "multiplicity.pkl.gz"):
+        multiplicity_engineer_file = Path(__file__).parent.parent / "engineers" / "multiplicity.json"):
         _m = load_wyckoff_mappings()
         self.wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
         self.letter_from_ss_enum = _m.letter_from_ss_enum

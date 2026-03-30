@@ -14,11 +14,9 @@ class CustomBuildHook(BuildHookInterface):
     PLUGIN_NAME = "custom"
 
     def initialize(self, version, build_data):
-        # scripts/ is not yet installed, so add it to sys.path manually.
-        # generate_wyckoff_mappings() intentionally has no wyckoff_transformer
-        # dependency, so it is safe to call here.
         root = Path(__file__).parent
-        sys.path.insert(0, str(root / "scripts"))
-        from preprocess_wychoffs import generate_wyckoff_mappings  # noqa: PLC0415
-        output = root / "src" / "wyckoff_transformer" / "wyckoffs_enumerated_by_ss.json"
-        generate_wyckoff_mappings(output_file=output)
+        sys.path.insert(0, str(root / "src"))
+        from wyckoff_transformer.preprocess_wychoffs import (  # noqa: PLC0415
+            generate_wyckoff_mappings, enumerate_wychoffs_by_ss)
+        generate_wyckoff_mappings()
+        enumerate_wychoffs_by_ss()

@@ -44,7 +44,7 @@ dev = ["pytest >=9.0.2"]
 cdvae = ["cdvae-property-models"]
 
 [build-system]
-requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0"]
+requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0", "pydantic", "pandas"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
@@ -56,6 +56,7 @@ packages = ["src/wyckoff_transformer", "scripts"]
 include = [
   "yamls/**/*",
   "src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json",
+  "src/wyckoff_transformer/engineers/*.json",
 ]
 
 [tool.uv.sources]

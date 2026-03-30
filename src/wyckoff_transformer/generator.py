@@ -8,7 +8,7 @@ from pymatgen.core.periodic_table import Element
 
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
 from wyckoff_transformer.tokenization import load_tensors_and_tokenisers, FeatureEngineer, WyckoffProcessor
-from scripts.preprocess_wychoffs import inverse_series
+from wyckoff_transformer.preprocess_wychoffs import inverse_series
 
 logger = logging.getLogger(__name__)
 

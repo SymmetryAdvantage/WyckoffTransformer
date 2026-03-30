@@ -2,18 +2,18 @@ from collections import defaultdict, Counter
 import json
 import string
 from pathlib import Path
-import pickle
-import gzip
 import numpy as np
 import pandas as pd
 from pyxtal import Group
 from sklearn.cluster import KMeans
 from scipy.special import sph_harm_y
 
+from wyckoff_transformer.wyckoff_processor import FeatureEngineer, WyckoffProcessor
+
 
 N_3D_SPACEGROUPS = 230
 WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
-_PACKAGE_MAPPINGS_PATH = Path(__file__).parent.parent / "src" / "wyckoff_transformer" / WYCKOFF_MAPPINGS_FILENAME
+_PACKAGE_MAPPINGS_PATH = Path(__file__).parent / WYCKOFF_MAPPINGS_FILENAME
 
 
 def generate_wyckoff_mappings(
@@ -60,13 +60,13 @@ def generate_wyckoff_mappings(
 def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
     """
     Convolves a batch of 3D vectors with spherical harmonics without explicit loops.
-    
+
     Parameters:
     vectors_batch : ndarray
         A 3D array of shape (num_batches, num_objects, 3) representing the vectors
     degree : int
         The degree of the spherical harmonics
-    
+
     Returns:
     ndarray
         A 1D array of shape (num_batches,) with the convolved values for each batch.
@@ -84,15 +84,20 @@ def convolve_vectors_with_spherical_harmonics(vectors_batch, degree):
 
 def enumerate_wychoffs_by_ss(
     output_file: Path = _PACKAGE_MAPPINGS_PATH,
+    engineers_dir: Path = Path(__file__).parent / "engineers",
     spherical_harmonics_degree: int = 2):
     """
     Enumerates all Wyckoff positions by site symmetry.
 
     Args:
-        output_file (Path, optional): The output file.
+        output_file (Path, optional): The output file for Wyckoff mappings JSON.
+        engineers_dir (Path, optional): Directory to write FeatureEngineer JSON files.
         spherical_harmonics_degree (int, optional): The degree of the spherical harmonics
             used to disabiguate the Wyckoff positions with the same site symmetry.
     """
+    engineers_dir = Path(engineers_dir)
+    engineers_dir.mkdir(exist_ok=True, parents=True)
+
     enum_from_ss_letter = defaultdict(dict)
     ss_from_letter = defaultdict(dict)
     letter_from_ss_enum = defaultdict(lambda: defaultdict(dict))
@@ -139,15 +144,18 @@ def enumerate_wychoffs_by_ss(
                     np.concatenate([signatures[:, enum, :].real.ravel(), signatures[:, enum, :].imag.ravel()])
 
     generate_wyckoff_mappings(output_file)
-    from wyckoff_transformer.tokenization import FeatureEngineer
-    engineered_path = Path(__file__).parent.parent / "cache" / "engineers" # Adjusted path
-    engineered_path.mkdir(exist_ok=True)
+
+    def _save_engineer(engineer: FeatureEngineer, name: str) -> None:
+        serialised = WyckoffProcessor._serialise_feature_engineer(engineer)
+        (engineers_dir / f"{name}.json").write_text(
+            serialised.model_dump_json(indent=2), encoding="utf-8")
+
     multiplicity_engineer = FeatureEngineer(
         multiplicity_from_ss_enum, ("spacegroup_number", "site_symmetries", "sites_enumeration"),
         name="multiplicity",
         stop_token=max_multiplicity + 1, mask_token=max_multiplicity + 2, pad_token=0, default_value=0)
-    with gzip.open(engineered_path / "multiplicity.pkl.gz", "wb") as f:
-        pickle.dump(multiplicity_engineer, f)
+    _save_engineer(multiplicity_engineer, "multiplicity")
+
     harmonic_size = 2 * (spherical_harmonics_degree + 1) * len(reference_vectors)
     harmonic_engineer = FeatureEngineer(
         signature_by_sg_ss_enum, ("spacegroup_number", "site_symmetries", "sites_enumeration"),
@@ -161,8 +169,8 @@ def enumerate_wychoffs_by_ss(
         # In case of making an invalid request, we need to have a default value
         # CONSIDER using nan
         default_value=np.zeros(harmonic_size))
-    with gzip.open(engineered_path / "harmonic_site_symmetries.pkl.gz", "wb") as f:
-        pickle.dump(harmonic_engineer, f)
+    _save_engineer(harmonic_engineer, "harmonic_site_symmetries")
+
     enum_to_cluster, cluster_to_enum = clasterize_harmonics(harmonic_engineer)
     # Here we actually know the tokens - as this is their birthplace
     max_cluster_id = enum_to_cluster.max()
@@ -171,14 +179,13 @@ def enumerate_wychoffs_by_ss(
         mask_token=max_cluster_id + 1,
         stop_token=max_cluster_id + 2,
         pad_token=max_cluster_id + 3)
-    with gzip.open(engineered_path / "harmonic_cluster.pkl.gz", "wb") as f:
-        pickle.dump(enum_to_cluster_engineer, f)
+    _save_engineer(enum_to_cluster_engineer, "harmonic_cluster")
+
     # We don't know yet the tokenization of enums, so we'll need to fill in the tokens later
     cluster_to_enum_engineer = FeatureEngineer(
         cluster_to_enum, mask_token=None, stop_token=None, pad_token=None,
         default_value=np.zeros_like(cluster_to_enum.iloc[0]))
-    with gzip.open(engineered_path / "sites_enumeration.pkl.gz", "wb") as f:
-        pickle.dump(cluster_to_enum_engineer, f)
+    _save_engineer(cluster_to_enum_engineer, "sites_enumeration")
 
 
 def assign_to_clusters(
