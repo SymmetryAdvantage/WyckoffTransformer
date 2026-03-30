@@ -22,6 +22,7 @@ def main():
                         help="Set the path for saving run data")
     parser.add_argument("--torch-num-thread", type=int, help="Number of threads for torch")
     parser.add_argument("--production", action="store_true", help="Train on the combined train+val+test dataset")
+    parser.add_argument("--no-test", action="store_true", help="Skip loading and evaluating the test dataset")
     args = parser.parse_args()
     
     if args.debug:
@@ -73,9 +74,9 @@ def main():
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test)
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test)
 
 
 if __name__ == '__main__':

@@ -361,7 +361,8 @@ class WyckoffTrainer():
                     use_cached_tensors: bool = True,
                     run_path: Optional[Path] = Path("runs"),
                     load_datasets: bool = True,
-                    production_training: bool = False):
+                    production_training: bool = False,
+                    no_test: bool = False):
         config = OmegaConf.create(config_dict)
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
@@ -379,7 +380,7 @@ class WyckoffTrainer():
             )
             train_data = tensors["train"]
             val_data = tensors["val"]
-            test_data = tensors["test"] if "test" in tensors else None
+            test_data = tensors["test"] if ("test" in tensors and not no_test) else None
             
             if production_training:
                 # Merge all datasets into one for training and validation
@@ -914,13 +915,14 @@ def train_from_config(
     config_dict: dict,
     device: torch.device,
     run_path: Path = Path(__file__).resolve().parent.parent / "runs",
-    production_training: bool = False):
+    production_training: bool = False,
+    no_test: bool = False):
 
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
     this_run_path.mkdir(parents=True, exist_ok=False)
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training)
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test)
     shutil.copy(
         Path(wyckoff_transformer.__file__).parent / WYCKOFF_MAPPINGS_FILENAME,
         this_run_path / WYCKOFF_MAPPINGS_FILENAME,
@@ -937,7 +939,7 @@ def train_from_config(
     wandb.log_artifact(run_config_artifact)
     trainer.train()
     config = OmegaConf.create(config_dict)
-    if config.model.WyckoffTrainer_args.target == "NextToken" and \
+    if not no_test and config.model.WyckoffTrainer_args.target == "NextToken" and \
         config.evaluation.get("n_structures_to_generate", 0) > 0:
 
         print("Training complete, loading the best model")
