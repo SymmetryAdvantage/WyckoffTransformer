@@ -686,9 +686,10 @@ class WyckoffTrainer():
         for epoch in (train_tqdm := trange(self.epochs)):
             self.train_epoch()
             if epoch % self.validation_period == 0 or epoch == self.epochs - 1:
+                train_loss = self.evaluate(self.train_dataset, self.train_loader)
                 raw_losses = {
-                    "train": self.evaluate(self.train_dataset, self.train_loader),
-                    "val": self.evaluate(self.val_dataset, self.val_loader)
+                    "train": train_loss,
+                    "val": train_loss if self.production_training else self.evaluate(self.val_dataset, self.val_loader),
                 }
                 if self.test_dataset is not None:
                     raw_losses['test'] = self.evaluate(self.test_dataset, self.test_loader)
