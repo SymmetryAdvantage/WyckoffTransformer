@@ -4,6 +4,8 @@ import unittest
 import pytest
 
 cdvae_property_models = pytest.importorskip("cdvae_property_models")
+if not hasattr(cdvae_property_models, "load_model"):
+    pytest.skip("cdvae_property_models not properly installed (missing load_model)", allow_module_level=True)
 load_model = cdvae_property_models.load_model
 
 

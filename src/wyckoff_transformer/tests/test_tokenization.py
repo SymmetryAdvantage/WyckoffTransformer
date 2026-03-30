@@ -901,11 +901,6 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
         tracer.runfunc(self._exercise_entrypoints)
         counts = tracer.results().counts
 
-        tokenization_path = Path(tok.__file__).resolve()
-        executed_lines = {
-            line for (filename, line), _count in counts.items() if Path(filename).resolve() == tokenization_path
-        }
-
         targets = {
             "TupleDict.__getitem__": tok.TupleDict.__getitem__,
             "SpaceGroupEncoder.from_sg_set": tok.SpaceGroupEncoder.from_sg_set,
@@ -932,11 +927,17 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
             "WyckoffProcessor.tensor_to_pyxtal": tok.WyckoffProcessor.tensor_to_pyxtal,
         }
 
+        executed_lines_by_file = {}
+        for (filename, line), _count in counts.items():
+            executed_lines_by_file.setdefault(Path(filename).resolve(), set()).add(line)
+
         missing = []
         for name, obj in targets.items():
             source_lines, start_line = inspect.getsourcelines(obj)
+            obj_file = Path(inspect.getfile(obj)).resolve()
+            obj_executed = executed_lines_by_file.get(obj_file, set())
             line_window = range(start_line, start_line + len(source_lines) + 1)
-            if not any(line in executed_lines for line in line_window):
+            if not any(line in obj_executed for line in line_window):
                 missing.append(name)
 
         self.assertEqual(missing, [], f"Untouched tokenization entrypoints: {missing}")
