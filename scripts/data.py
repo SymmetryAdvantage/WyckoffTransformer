@@ -14,7 +14,7 @@ from pymatgen.io.cif import CifParser
 from pymatgen.core import Structure, Element
 from pyxtal import pyxtal
 
-from scripts.preprocess_wychoffs import get_augmentation_dict
+from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
