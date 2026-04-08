@@ -1,4 +1,5 @@
-# https://github.com/jiaor17/DiffCSP/blob/main/diffcsp/common/data_utils.py
+# Original: https://github.com/jiaor17/DiffCSP/blob/main/diffcsp/common/data_utils.py
+# Modifications copyright 2026, Nikita Kazeev. Licensed under the Apache License, Version 2.0.
 import numpy as np
 import pandas as pd
 import torch

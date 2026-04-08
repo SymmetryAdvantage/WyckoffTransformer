@@ -1,3 +1,5 @@
+# Original: https://github.com/txie-93/cdvae/tree/main
+# Modifications copyright 2026, Nikita Kazeev. Licensed under the Apache License, Version 2.0.
 import torch
 import warnings
 import pandas as pd

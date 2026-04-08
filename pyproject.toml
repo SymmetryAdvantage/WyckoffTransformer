@@ -5,7 +5,8 @@ description = "Wyckoff Transformer is a machine learning model for generating cr
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
-license = {text = "Apache License (2.0)"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
   "ipykernel >=6.25.2",
   "pandas >=2.1.1",
@@ -47,7 +48,6 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Topic :: Scientific/Engineering :: Physics"
 ]
-license-files = ["LICENSE"]
 
 [project.urls]
 Homepage = "https://github.com/SymmetryAdvantage/WyckoffTransformer"
@@ -56,7 +56,7 @@ Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 cdvae = ["cdvae-property-models"]
-publish = ["build", "twine"]
+publish = ["build", "twine", "packaging>25"]
 
 [build-system]
 requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0", "pydantic", "pandas"]
@@ -68,7 +68,10 @@ packages = ["src/wyckoff_transformer", "scripts"]
 [tool.hatch.build.hooks.custom]
 
 [tool.hatch.build]
+ignore-vcs = true
 include = [
+  "src/wyckoff_transformer/**/*.py",
+  "scripts/**/*.py",
   "yamls/**/*",
   "src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json",
   "src/wyckoff_transformer/engineers/*.json",
