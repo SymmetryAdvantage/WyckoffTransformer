@@ -11,16 +11,16 @@ from pathlib import Path
 from typing import Tuple
 
 import torch
-# torch.set_float32_matmul_precision('high')
 import wandb
 from omegaconf import OmegaConf
 
 from wyckoff_transformer.trainer import WyckoffTrainer
 
 
-def _resolve_sg_cache_path(dataset_name: str) -> Path:
+def _resolve_sg_cache_path(dataset_name: str, cache_root: Path | None = None) -> Path:
     """Resolve dataset path inside cache directory."""
-    cache_root = Path(__file__).parent.parent.resolve() / "cache"
+    if cache_root is None:
+        cache_root = Path.cwd() / "cache"
     candidates = [dataset_name]
     if "-" in dataset_name:
         candidates.append(dataset_name.replace("-", "_"))
@@ -77,9 +77,10 @@ def prepare_start_tensor_from_cache(
     trainer: WyckoffTrainer,
     dataset_name: str,
     n_samples: int,
+    cache_root: Path | None = None,
 ) -> torch.Tensor:
     """Prepare start tensor sampled from cached dataset distribution."""
-    cache_path = _resolve_sg_cache_path(dataset_name)
+    cache_path = _resolve_sg_cache_path(dataset_name, cache_root=cache_root)
     tensor_path, tokeniser_path = _select_tensor_and_tokeniser(cache_path)
 
     try:
@@ -188,16 +189,6 @@ def main():
         raise ValueError("Output file must be a .json.gz file.")
     if args.update_wandb and not args.wandb_run:
         parser.error("--update-wandb requires --wandb-run.")
-    if args.wandb_run:
-        if args.update_wandb:
-            wandb_run = wandb.init(project="WyckoffTransformer", id=args.wandb_run, resume=True)
-        else:
-            wandb_run = wandb.Api().run(f"WyckoffTransformer/{args.wandb_run}")
-        config = OmegaConf.create(dict(wandb_run.config))
-        run_path = Path(__file__).parent.parent / "runs" / args.wandb_run
-    elif args.model_path:
-        run_path = args.model_path
-        config = OmegaConf.load(run_path / "config.yaml")
 
     generation_start_time = time.time()
     if args.hf_model:
@@ -206,6 +197,18 @@ def main():
             device=args.device,
         )
     else:
+        if args.wandb_run:
+            if args.update_wandb:
+                wandb_run = wandb.init(project="WyckoffTransformer", id=args.wandb_run, resume=True)
+            else:
+                wandb_run = wandb.Api().run(f"WyckoffTransformer/{args.wandb_run}")
+            config = OmegaConf.create(dict(wandb_run.config))
+            run_path = Path.cwd() / "runs" / args.wandb_run
+        elif args.model_path:
+            run_path = args.model_path
+            config = OmegaConf.load(run_path / "config.yaml")
+        else:
+            raise ValueError("Model source not specified.")
         trainer = WyckoffTrainer.from_config(
             config,
             device=args.device,
@@ -236,10 +239,6 @@ def main():
 
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")
-    # print(f"Tensor generation took {tensor_generated_time - generation_start_time} seconds")
-    # print(f"Detokenizing took {generation_end_time - tensor_generated_time} seconds")
-    # wp_formal_validity = len(generated_wp) / generation_size
-    # print(f"Wyckchoffs formal validity: {wp_formal_validity}")
     if args.firm_n_samples is not None:
         if len(generated_wp) >= args.firm_n_samples:
             generated_wp = generated_wp[:args.firm_n_samples]

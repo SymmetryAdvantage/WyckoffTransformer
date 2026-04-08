@@ -39,6 +39,9 @@ classifiers = [
 Homepage = "https://github.com/SymmetryAdvantage/WyckoffTransformer"
 Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 
+[project.scripts]
+wyformer-generate = "wyckoff_transformer.cli.generate:main"
+
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 cdvae = ["cdvae-property-models"]
