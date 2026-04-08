@@ -56,7 +56,7 @@ Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 cdvae = ["cdvae-property-models"]
-publish = ["build", "twine", "packaging>25"]
+publish = ["build", "twine", "packaging >=25"]
 
 [build-system]
 requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0", "pydantic", "pandas"]

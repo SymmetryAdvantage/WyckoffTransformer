@@ -1843,11 +1843,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/ea/70/d4539ed4e2b5e17f1
 
 [[package]]
 name = "packaging"
-version = "24.1"
+version = "26.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/51/65/50db4dda066951078f0a96cf12f4b9ada6e4b811516bf0262c0f4f7064d4/packaging-24.1.tar.gz", hash = "sha256:026ed72c8ed3fcce5bf8950572258698927fd1dbda10a5e981cdf0ac37f4f002", size = 148788, upload-time = "2024-06-09T23:19:24.956Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/65/ee/299d360cdc32edc7d2cf530f3accf79c4fca01e96ffc950d8a52213bd8e4/packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4", size = 143416, upload-time = "2026-01-21T20:50:39.064Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/08/aa/cc0199a5f0ad350994d660967a8efb233fe0416e4639146c089643407ce6/packaging-24.1-py3-none-any.whl", hash = "sha256:5b8f2217dbdbd2f7f384c41c628544e6d52f2d0f53c6d0c3ea61aa5d1d7ff124", size = 53985, upload-time = "2024-06-09T23:19:21.909Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/b9/c538f279a4e237a006a2c98387d081e9eb060d203d8ed34467cc0f0b9b53/packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529", size = 74366, upload-time = "2026-01-21T20:50:37.788Z" },
 ]
 
 [[package]]
@@ -3361,6 +3361,7 @@ dev = [
 ]
 publish = [
     { name = "build" },
+    { name = "packaging" },
     { name = "twine" },
 ]
 
@@ -3385,6 +3386,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26.0,<2" },
     { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "p-tqdm", specifier = ">=1.4.2" },
+    { name = "packaging", marker = "extra == 'publish'", specifier = ">=25" },
     { name = "pandarallel", specifier = ">=1.6.5" },
     { name = "pandas", specifier = ">=2.1.1" },
     { name = "py3dmol", specifier = ">=2.0.4" },
