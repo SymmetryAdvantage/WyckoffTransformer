@@ -23,7 +23,8 @@ dependencies = [
   "monty >=2025.3.3",
   "pyxtal ~=1.1",
   "pydantic >=2.12.5",
-  "huggingface-hub>=1.7.2"
+  "huggingface-hub>=1.7.2",
+  "matminer"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -42,7 +43,7 @@ Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 cdvae = ["cdvae-property-models"]
 publish = ["build", "twine", "packaging >=25"]
-research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "ipympl", "matminer"]
+research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "ipympl"]
 
 [build-system]
 requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0", "pydantic", "pandas"]
