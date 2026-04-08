@@ -8,7 +8,14 @@ pip install wyckoff-transformer
 ```
 
 ## Inference
-The pre-trained models are published on [HuggingFace](https://huggingface.co/collections/SymmetryAdvantage/wyformer).
+The pre-trained models are published on [HuggingFace](https://huggingface.co/collections/SymmetryAdvantage/wyformer). To use a HuggingFace model run:
+```bash
+wyformer-generate <output-file> --hf-model <model-name>
+```
+Using a local model directory (must contain `best_model_params.pt`, `config.yaml`, and `wyckoff_processor.json`):
+```bash
+wyformer-generate <output-file> --model-path runs/<run-id>
+```
 
 See this [repository](https://github.com/SymmetryAdvantage/WyFormer-inference-demo) for a demo of standalone inference using the PyPI package as a library.
 
