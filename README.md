@@ -1,4 +1,5 @@
-[![Pytest](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml/badge.svg)](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml)![PyPI - Version](https://img.shields.io/pypi/v/wyckoff-transformer)
+[![Pytest](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml/badge.svg)](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml)
+[![PyPI - Version](https://img.shields.io/pypi/v/wyckoff-transformer)](https://pypi.org/project/wyckoff-transformer/)
 
 # Wyckoff Transformer: Generation of Symmetric Crystals [ICML 2025]
 ## Installation (PyPI)
