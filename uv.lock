@@ -3273,11 +3273,12 @@ wheels = [
 
 [[package]]
 name = "wyckoff-transformer"
-version = "1.0.1"
+version = "1.0.2"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
     { name = "ipympl" },
+    { name = "matminer" },
     { name = "monty" },
     { name = "numpy" },
     { name = "omegaconf" },
@@ -3314,7 +3315,6 @@ research = [
     { name = "ipywidgets" },
     { name = "jupyter" },
     { name = "matbench-discovery" },
-    { name = "matminer" },
 ]
 
 [package.metadata]
@@ -3329,7 +3329,7 @@ requires-dist = [
     { name = "ipywidgets", marker = "extra == 'research'" },
     { name = "jupyter", marker = "extra == 'research'" },
     { name = "matbench-discovery", marker = "extra == 'research'" },
-    { name = "matminer", marker = "extra == 'research'" },
+    { name = "matminer" },
     { name = "monty", specifier = ">=2025.3.3" },
     { name = "numpy", specifier = ">=1.26.0,<2" },
     { name = "omegaconf", specifier = ">=2.3.0" },
