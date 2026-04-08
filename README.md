@@ -1,18 +1,29 @@
-[![Pytest](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml/badge.svg)](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml)
-# Wyckoff Transformer: Generation of Symmetric Crystals [ICML 2025]
-Crystal symmetry plays a fundamental role in determining its physical, chemical, and electronic properties such as electrical and thermal conductivity, optical and polarization behavior, and mechanical strength. Almost all known crystalline materials have internal symmetry. However, this is often inadequately addressed by existing generative models, making the consistent generation of stable and symmetrically valid crystal structures a significant challenge. We introduce WyFormer, a generative model that directly tackles this by formally conditioning on space group symmetry. It achieves this by using Wyckoff positions as the basis for an elegant, compressed, and discrete structure representation. To model the distribution, we develop a permutation-invariant autoregressive model based on the Transformer encoder and an absence of positional encoding. Extensive experimentation demonstrates WyFormer's compelling combination of attributes: it achieves best-in-class symmetry-conditioned generation, incorporates a physics-motivated inductive bias, produces structures with competitive stability, predicts material properties with competitive accuracy even without atomic coordinates, and exhibits unparalleled inference speed.
+[![Pytest](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml/badge.svg)](https://github.com/SymmetryAdvantage/WyckoffTransformer/actions/workflows/pytest.yml)![PyPI - Version](https://img.shields.io/pypi/v/wyckoff-transformer)
 
-# WyFormer Generated Datasets
+# Wyckoff Transformer: Generation of Symmetric Crystals [ICML 2025]
+## Installation (PyPI)
+WyFormer is published on PyPI. Be mindful of your PyTorch situation, and install:
+```bash
+pip install wyckoff-transformer
+```
+
+See this [repository](https://github.com/SymmetryAdvantage/WyFormer-inference-demo) for a demo of standalone inference with the PyPI package. The pre-trained models are published on [HuggingFace](https://huggingface.co/collections/SymmetryAdvantage/wyformer).
+
+## WyFormer Generated Datasets
 If you just need the generated datasets for benchmarking, they are available at Figshare, including both original and DFT: [WyFormer](https://figshare.com/articles/dataset/WyFormer_generated_structures/29094701); [WyFormer, DiffCSP(++), SymmCD, MiAD, WyCryst, CrystalFormer](https://figshare.com/articles/dataset/Generated_crystals_for_WyFormer_DiffCSP_DiffCSP_WyCryst_SymmCD_CrystalFormer_MiAD/29145101).
 
-# Installation
+## Abstract
+Crystal symmetry plays a fundamental role in determining its physical, chemical, and electronic properties such as electrical and thermal conductivity, optical and polarization behavior, and mechanical strength. Almost all known crystalline materials have internal symmetry. However, this is often inadequately addressed by existing generative models, making the consistent generation of stable and symmetrically valid crystal structures a significant challenge. We introduce WyFormer, a generative model that directly tackles this by formally conditioning on space group symmetry. It achieves this by using Wyckoff positions as the basis for an elegant, compressed, and discrete structure representation. To model the distribution, we develop a permutation-invariant autoregressive model based on the Transformer encoder and an absence of positional encoding. Extensive experimentation demonstrates WyFormer's compelling combination of attributes: it achieves best-in-class symmetry-conditioned generation, incorporates a physics-motivated inductive bias, produces structures with competitive stability, predicts material properties with competitive accuracy even without atomic coordinates, and exhibits unparalleled inference speed.
+
+# Local development & training
+## Installation
 1. Clone the repository
 2. Run `uv venv --python 3.12`
 3. Install the dependencies, including torch. There are several options:
   - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
   - Configure `uv.toml` with your desired indices, see `uv.toml.local` and `uv.toml.cpu`
 4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
-# Running a pilot model
+## Running a pilot model
 To verify that the installation is working, run a pilot model. Next token prediction:
 ```bash
 python scripts/cache_a_dataset.py mp_20
@@ -25,17 +36,17 @@ This will train a model, and save the results in the `runs` folder. The files ar
 - `wyckoff_processor.json` - tokenizers and preprocessing metadata (token engineers)
 - `generated_wp_no_calibration.json.gz` - Wyckoff representation of the generated structures (if configured to evaluate generation)
 - `generated_wp_temperature_calibration.json.gz` - Wyckoff representation of the generated structures, with the temperature calibration applied (if configured to evaluate generation)
-# Training Data Preprocessing
+## Training Data Preprocessing
 The available datasets correspond to the folders in `data` and `cdvae/data`. Dataset idetifiers are the folder names, they are used throught the project. Note that some of the folders are symlinks.
 Available datasets (in GitHub): `alex_mp_20`, `mp_20`, `mp_20_biternary` (binary and ternary structures from MP-20), `mpts_52`, `carbon_24`, `perov_5`. It is also possible to download and use `matbench_discovery_mp_2022` [notebook](scripts/data_preprocesssing/mp_2022.ipynb) and `matbench_discovery_mp_trj_full` [notebook](scripts/data_preprocesssing/mptrj_extract_all.ipynb).
 
 For any data to be used for training, we need to do two preprocessing steps.
-## Compute and cache symmetry information
+### Compute and cache symmetry information
 ```bash
 python scripts/cache_a_dataset.py <dataset-name>
 ```
 This will create a pickled representaiton of the dataset in `cache/<dataset-name>/data.pkl.gz`. The script supports setting symmetry tolerance and _this is not done automatically_, the datasets which include tolerance in their name were obtained by manually using the command-line option.
-## Tokenization
+### Tokenization
 The tokenization script serves two purposes: it produces the mapping from the real data to token ids, and saves the resulting tensors. To produce a new tokenizer:
 ```bash
 python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --new-tokenizer
@@ -46,12 +57,12 @@ Alternatively, you can use a cached tokeniser. This is important when a model th
 ```bash
 python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --tokenizer-path cache/<dataset-names>/tokenisers/<tokenizer-name>.json
 ```
-# Training
+## Training
 ```bash
 python scripts/train.py <path-to-model-yaml> <dataset-name> <device>
 ```
 The model weights are saved to `runs/<run-id>`, and to WanDB, along with the processor metadata. See [here](yamls/models/README.md) for the list of configs. Adding `--pilot` will run the model for a small number of epochs.
-# Preparing Representative Checkpoints
+## Preparing Representative Checkpoints
 To train and prepare representative checkpoints for datasets like `alex_mp_20` or `mp_20`, you can follow this end-to-end pipeline. Please replace `<dataset-name>` with your target dataset (e.g., `alex_mp_20` or `mp_20`).
 
 First, cache and tokenize the dataset:
@@ -71,8 +82,8 @@ Then, initiate the training run:
 ```bash
 python scripts/train.py yamls/models/NextToken/v6/base_sg_schedule_free.yaml <dataset-name> <device>
 ```
-# Generating structures
-## Wyckoff representations
+## Generating structures
+### Wyckoff representations
 Wyckoff representations are produced and stored in WanDB during model training. They can be generated by:
 ```bash
 python scripts/generate.py <output-file> --wandb-run <wandb-id> --use-cached-tensors
@@ -83,11 +94,11 @@ python scripts/generate.py <output-file> --model-path runs/<run-id>
 ```
 Note that the code does not automatically download Wandb artifacts, you need to do it manually, and place them in the `runs` folder when restoring via run ID.
 
-## 3D Structures
+### 3D Structures
 There are two ways to generate 3D structures from Wyckoff representations: DiffCSP++ and CHGNet. They later can be relaxed with CHGNet and/or DFT.
-### DiffCSP++
+#### DiffCSP++
 Wyckoffs can be relaxed with modified [DiffCSP++ code](https://github.com/kazeevn/DiffCSPNew/tree/master)
-### CrySPR + CHGNet
+#### CrySPR + CHGNet
 [CrySPR](https://chemrxiv.org/engage/chemrxiv/article-details/66b308a501103d79c5fd9b91) scheme that combines [`pyxtal`](https://pyxtal.readthedocs.io/en/latest/index.html) with CHGNet (or any other machine-learning interatomic potentials)
 ```bash
 $ cp scripts/cryspr_pyxtal_chgnet.py mp_20/WyckoffTransformer/WyckoffTransformer_mp_20.json.gz /your/working/dir/
@@ -155,11 +166,11 @@ wylm-dcpp,8,Na4Lu4F16,-149.18192
 - `${reduced_formula}_${full_formula}_cell+pos.cif` is the CHGNet relaxed structure.
 ### DFT relaxation
 We followed the [Materials Project protocol](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details), [`atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker`](https://materialsproject.github.io/atomate2/reference/atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker.html). There isn't much to add, as the rest of the details of running DFT, unfortunately, depend on the HPC setup, and VASP is not open source. [Here](https://github.com/kazeevn/NSCC-VASP-computer) is the code to run at ASPIRE2.
-# Generated Data Analysis
-## Storage
-### Public Figshare
+## Generated Data Analysis
+### Storage
+#### Public Figshare
 Most analyzed datasets in a uniform format are available at [Figshare](https://figshare.com/articles/dataset/Generated_crystals_for_WyFormer_DiffCSP_DiffCSP_WyCryst_SymmCD_CrystalFormer_MiAD/29145101).
-### Private Dropbox
+#### Private Dropbox
 The raw files are stored in a private Dropbox. To pull:
 ```bash
 rclone copy "NUS_Dropbox:/Nikita Kazeev/Wyckoff Transformer data/generated.tar.gz" . --progress
@@ -172,7 +183,7 @@ rclone copy generated.tar.gz "NUS_Dropbox:/Nikita Kazeev/Wyckoff Transformer dat
 ```
 Tar is used to handle the large number of small files, and `pigz` is used to speed up the compression. The Dropbox folder is private, if you are a collaborator, please contact for access.
 
-## Preprocessing
+### Preprocessing
 In order to be analyzed the data must be preprocessed and cached. To preprocess all generated datasets in `generated/datasets.yaml`:
 ```bash
 uv run python scripts/cache_generated_datasets.py
@@ -183,7 +194,7 @@ uv run python scripts/cache_generated_datasets.py --dataset mp_20 --transformati
 ```
 Completing this step will enable loading the data with `evaluation.generated_dataset.GeneratedDataset.from_cache`
 
-## Metric computation
+### Metric computation
 The ICML 2025 results were computed by the notebooks in [ICML_eval](ICML_eval). They include, but not limited to the following metrics:
 1. S.U.N. - the fraction of stable, unique, and novel structures.
 2. S.S.U.N. - the fraction of symmetric, stable, unique, and novel structures.
