@@ -23,47 +23,39 @@ REQUIRED_FILES = [
 def download_wandb_artifacts(run_path: str, target_dir: Path) -> None:
     """Download model artifacts from a W&B run into target_dir.
 
-    Searches all logged artifacts for the required files by filename,
-    taking the latest version of any artifact that contains each file.
-    For the model weights, the latest artifact version is used (it is
-    the checkpoint with the best validation loss).
+    Fetches each artifact directly by name, avoiding a full scan of all
+    logged artifacts. The latest version of the model artifact is used
+    (it is the checkpoint with the best validation loss).
     """
     api = wandb.Api()
-    run = api.run(run_path)
+    run_id = run_path.split("/")[-1]
+    entity_project = "/".join(run_path.split("/")[:2])
 
-    # Build a map: filename -> latest artifact that contains it
-    file_to_artifact: dict[str, object] = {}
-    for artifact in run.logged_artifacts():
-        artifact_files = {f.name for f in artifact.files()}
-        for required in REQUIRED_FILES:
-            if required in artifact_files:
-                # Overwrite to keep the latest version (artifacts are
-                # yielded in log order, so the last assignment wins)
-                file_to_artifact[required] = artifact
-
-    missing = set(REQUIRED_FILES) - set(file_to_artifact)
-    if missing:
-        raise FileNotFoundError(
-            f"Could not find all required files in W&B run '{run_path}'. "
-            f"Missing: {missing}"
-        )
+    # Each tuple: (artifact_name, artifact_type, [files to extract])
+    artifact_specs = [
+        (f"best_model_{run_id}", "model", ["best_model_params.pt"]),
+        (f"processors_{run_id}", "processors", ["wyckoff_processor.json", "wyckoffs_enumerated_by_ss.json"]),
+        (f"run_config_{run_id}", "config", ["config.yaml"]),
+        (f"spacegroup_distribution_{run_id}", "dataset_stats", ["spacegroup_distribution.json"]),
+    ]
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    for filename, artifact in file_to_artifact.items():
+    for artifact_name, artifact_type, filenames in artifact_specs:
+        artifact = api.artifact(f"{entity_project}/{artifact_name}:latest", type=artifact_type)
         artifact_dir = Path(artifact.download(
-            root=str(target_dir / f"_artifact_{artifact.name.replace(':', '_')}")
+            root=str(target_dir / f"_artifact_{artifact_name}")
         ))
-        src = artifact_dir / filename
-        if not src.exists():
-            # Some artifacts store files in a flat layout without subdirs
-            matches = list(artifact_dir.glob(f"**/{filename}"))
-            if not matches:
-                raise FileNotFoundError(
-                    f"File '{filename}' not found inside downloaded artifact '{artifact.name}'."
-                )
-            src = matches[0]
-        (target_dir / filename).write_bytes(src.read_bytes())
-        print(f"  Downloaded {filename} from {artifact.name}")
+        for filename in filenames:
+            src = artifact_dir / filename
+            if not src.exists():
+                matches = list(artifact_dir.glob(f"**/{filename}"))
+                if not matches:
+                    raise FileNotFoundError(
+                        f"File '{filename}' not found inside downloaded artifact '{artifact_name}'."
+                    )
+                src = matches[0]
+            (target_dir / filename).write_bytes(src.read_bytes())
+            print(f"  Downloaded {filename} from {artifact_name}")
 
 
 def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
