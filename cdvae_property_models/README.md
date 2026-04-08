@@ -1,0 +1,1 @@
+[CDVAE](https://github.com/txie-93/cdvae/tree/main) intoroduced, and several subsequent works used, a set of property prediction ML models to evaluate the generated structures. Here they are packaged as a separate module. Mostly for the benefit of [WyFormer](https://github.com/SymmetryAdvantage/WyckoffTransformer).
