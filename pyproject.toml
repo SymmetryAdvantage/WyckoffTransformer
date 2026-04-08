@@ -1,10 +1,11 @@
 [project]
 name = "wyckoff-transformer"
 version = "1.0.0"
-description = "Wyckoff Transformer: Generation of Symmetric Crystals; ICML 2025"
+description = "Wyckoff Transformer is a machine learning model for generating crystal structures which are symmetric by design."
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
+license = {text = "Apache License (2.0)"}
 dependencies = [
   "ipykernel >=6.25.2",
   "pandas >=2.1.1",
@@ -36,12 +37,26 @@ dependencies = [
   "monty >=2025.3.3",
   "pyxtal >=1.1.3",
   "pydantic >=2.12.5",
-  "huggingface-hub>=1.7.2",
+  "huggingface-hub>=1.7.2"
 ]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: GPU :: NVIDIA CUDA",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Topic :: Scientific/Engineering :: Physics"
+]
+license-files = ["LICENSE"]
+
+[project.urls]
+Homepage = "https://github.com/SymmetryAdvantage/WyckoffTransformer"
+Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 cdvae = ["cdvae-property-models"]
+publish = ["build", "twine"]
 
 [build-system]
 requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0", "pydantic", "pandas"]
