@@ -1,6 +1,6 @@
 [project]
 name = "cdvae-property-models"
-version = "1.0.1"
+version = "1.0.2"
 description = "CDVAE property model evaluation for crystal structures"
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 license = {text = "Apache License (2.0)"}
