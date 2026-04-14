@@ -7,7 +7,7 @@ license = {text = "Apache License (2.0)"}
 readme = "README.md"
 requires-python = ">=3.12, <3.13"
 dependencies = [
-  "numpy >=1.26.0, <2",
+  "numpy >=1.26.0",
   "torch ==2.10.0",
   "torch-scatter ==2.1.2",
   "torch-sparse ==0.6.18",
