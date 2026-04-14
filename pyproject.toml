@@ -1,6 +1,6 @@
 [project]
 name = "wyckoff-transformer"
-version = "1.0.3"
+version = "1.0.4"
 description = "Wyckoff Transformer is a machine learning model for generating crystal structures which are symmetric by design."
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
@@ -9,7 +9,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
   "pandas >=2.1.1",
-  "numpy >=1.26.0",
+  "numpy >=2",
   "wandb >=0.25.0",
   "scikit-learn >=1.5.0",
   "omegaconf >=2.3.0",
