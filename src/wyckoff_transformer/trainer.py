@@ -422,6 +422,7 @@ class WyckoffTrainer():
             distribution = cls.load_start_token_distribution_file(distribution_path)
             max_sequence_length = int(distribution["max_sequence_length"])
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
+        # model.to(torch.float32)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
         # torch._dynamo.config.cache_size_limit = 128
         # model = torch.compile(model, dynamic=True)
