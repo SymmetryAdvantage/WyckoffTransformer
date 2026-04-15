@@ -65,6 +65,15 @@ def _download_and_cache(url: str, cache_dir: Optional[Path] = None) -> Path:
     return dest
 
 
+def _cueq_available() -> bool:
+    """Return True if cuequivariance_torch can be imported (cuEQ is usable)."""
+    try:
+        import cuequivariance_torch  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def build_mace_calculator(
     model: Union[str, Path],
     device: str = "auto",
@@ -86,20 +95,20 @@ def build_mace_calculator(
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     model_path = resolve_model_path(model)
-    try:
-        calc = MACECalculator(
-            model_paths=model_path,
-            device=device,
-            enable_cueq=True,
-            default_dtype=dtype,
-        )
-        logger.info("MACE calculator loaded with cuEQ support on %s.", device)
-    except Exception:
-        calc = MACECalculator(
-            model_paths=model_path,
-            device=device,
-            enable_cueq=False,
-            default_dtype=dtype,
-        )
-        logger.info("MACE calculator loaded without cuEQ support on %s.", device)
+
+    # Probe availability before constructing the calculator so that we never
+    # partially initialise MACECalculator (which can allocate GPU memory and
+    # spawn helper processes) only to tear it down and build a second instance.
+    enable_cueq = _cueq_available()
+    calc = MACECalculator(
+        model_paths=model_path,
+        device=device,
+        enable_cueq=enable_cueq,
+        default_dtype=dtype,
+    )
+    logger.info(
+        "MACE calculator loaded %s cuEQ support on %s.",
+        "with" if enable_cueq else "without",
+        device,
+    )
     return calc
