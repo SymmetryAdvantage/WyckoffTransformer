@@ -122,6 +122,53 @@ wyformer-generate <output-file> --hf-model SymmetryAdvantage/<model-name> --sg-d
 There are two ways to generate 3D structures from Wyckoff representations: DiffCSP++ and CHGNet. They later can be relaxed with CHGNet and/or DFT.
 #### DiffCSP++
 Wyckoffs can be relaxed with modified [DiffCSP++ code](https://github.com/kazeevn/DiffCSPNew/tree/master)
+#### CrySPR + MACE
+[CrySPR](https://chemrxiv.org/engage/chemrxiv/article-details/66b308a501103d79c5fd9b91) scheme using [`pyxtal`](https://pyxtal.readthedocs.io/en/latest/index.html) and a [MACE](https://github.com/ACEsuit/mace) ML force field is integrated directly into the package. Install the optional extra first:
+```bash
+pip install "wyckoff-transformer[relax]"
+```
+Then run from the command line:
+```bash
+wyformer-cryspr WyckoffTransformer_mp_20.json \
+    --model https://github.com/ACEsuit/mace-foundations/releases/download/mace_mp_0/2023-12-10-mace-128-L0_energy_epoch-249.model \
+    --output-dir results/ --start 0 --end 1000
+# model_name defaults to the model file stem
+head results/2023-12-10-mace-128-L0_energy_epoch-249_results.csv
+model,id,formula,energy,energy_per_atom
+...
+2023-12-10-mace-128-L0_energy_epoch-249,35,H6O8Si2,-97.98,...
+```
+URL-based models are downloaded once and cached in `~/.cache/wyckoff_transformer/mace_models/`. A local path is accepted too: `--model /path/to/model.model`.
+
+Output layout is identical to the CHGNet variant below. Key options:
+- `--n-trials N` — number of random PyXtal trials per structure (default 6)
+- `--fmax F` — force convergence criterion in eV/Å (default 0.01)
+- `--model-name NAME` — label for the results CSV (default: model file stem)
+- `--device auto|cpu|cuda` — PyTorch device selection (default: auto)
+
+To use as a library:
+```python
+from wyckoff_transformer.cryspr.calculator import build_mace_calculator
+from wyckoff_transformer.cryspr.generator import single_pyxtal, func_run
+import json
+
+calculator = build_mace_calculator(
+    "https://github.com/ACEsuit/mace-foundations/releases/download/"
+    "mace_mp_0/2023-12-10-mace-128-L0_energy_epoch-249.model"
+)
+
+with open("WyckoffTransformer_mp_20.json") as f:
+    data = json.load(f)
+
+atoms, formula, energy, energy_per_atom = func_run(
+    id_gene=99,
+    wyckoffgene=data[99],
+    calculator=calculator,
+    output_dir="results/",
+    n_trials=6,
+)
+```
+
 #### CrySPR + CHGNet
 [CrySPR](https://chemrxiv.org/engage/chemrxiv/article-details/66b308a501103d79c5fd9b91) scheme that combines [`pyxtal`](https://pyxtal.readthedocs.io/en/latest/index.html) with CHGNet (or any other machine-learning interatomic potentials)
 ```bash

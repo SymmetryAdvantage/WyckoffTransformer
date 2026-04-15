@@ -41,3 +41,6 @@ generated_public.tar.gz
 uv.toml
 src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json
 dist/
+relax/
+mp_20_test.json.gz
+*.log

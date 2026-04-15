@@ -73,7 +73,7 @@ def func_run(
         fix_symmetry: bool = True,
         fmax: float = 0.01,
         optimizer: type[Optimizer] = BFGS,
-) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float]]:
+) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float], Optional[str]]:
     """Generate and relax crystal structures for one Wyckoff gene.
 
     Runs *n_trials* independent PyXtal generation + MACE relaxation cycles.
@@ -92,9 +92,10 @@ def func_run(
         optimizer: ASE local optimisation algorithm class.
 
     Returns:
-        Tuple ``(atoms, formula, energy, energy_per_atom)`` for the
-        lowest-energy successful trial, or ``(None, None, None, None)``
-        when all trials fail.
+        Tuple ``(atoms, formula, energy, energy_per_atom, cif)`` for the
+        lowest-energy successful trial, where *cif* is the text of the
+        symmetrized ``*_2_cell+pos_symmetrized.cif`` file.
+        Returns ``(None, None, None, None, None)`` when all trials fail.
     """
     output_dir = Path(output_dir)
     gene_dir = output_dir / str(id_gene)
@@ -141,7 +142,7 @@ def func_run(
             "[%s-%s] All %d trials failed or produced no structure.",
             model_name, id_gene, n_trials,
         )
-        return None, None, None, None
+        return None, None, None, None, None
 
     lowest_key = min(energy_by_trial, key=energy_by_trial.__getitem__)
 
@@ -162,4 +163,11 @@ def func_run(
     energy = energy_by_trial[lowest_key]
     energy_per_atom = energy / len(atoms)
 
-    return atoms, formula, energy, energy_per_atom
+    # Read the symmetrized final CIF; fall back to the raw cell+pos CIF if absent.
+    lowest_dir = gene_dir / lowest_key
+    cif_candidates = sorted(lowest_dir.glob("*_2_cell+pos_symmetrized.cif"))
+    if not cif_candidates:
+        cif_candidates = sorted(lowest_dir.glob("*_cell+pos.cif"))
+    cif_content: Optional[str] = cif_candidates[0].read_text() if cif_candidates else None
+
+    return atoms, formula, energy, energy_per_atom, cif_content

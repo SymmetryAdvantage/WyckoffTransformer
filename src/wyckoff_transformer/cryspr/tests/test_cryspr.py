@@ -155,7 +155,7 @@ class TestFuncRunAllFailed(unittest.TestCase):
                     output_dir=Path(tmp),
                     n_trials=2,
                 )
-        self.assertEqual(result, (None, None, None, None))
+        self.assertEqual(result, (None, None, None, None, None))
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ class TestFuncRunIntegration(unittest.TestCase):
     def test_nacl_relaxation_produces_negative_energy(self):
         from wyckoff_transformer.cryspr.generator import func_run
         with tempfile.TemporaryDirectory() as tmp:
-            atoms, formula, energy, energy_per_atom = func_run(
+            atoms, formula, energy, energy_per_atom, cif = func_run(
                 id_gene=0,
                 wyckoffgene=NACL_GENE,
                 calculator=self.calculator,
@@ -185,3 +185,5 @@ class TestFuncRunIntegration(unittest.TestCase):
         self.assertIsNotNone(formula)
         self.assertLess(energy, 0.0, "Relaxed NaCl energy should be negative")
         self.assertLess(energy_per_atom, 0.0)
+        self.assertIsNotNone(cif, "CIF content should be returned for a successful relaxation")
+        self.assertIn("_cell_length_a", cif)

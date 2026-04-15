@@ -1,6 +1,7 @@
 """CLI entry point for CrySPR: crystal structure prediction via PyXtal + MACE."""
 import argparse
 import json
+import gzip
 import logging
 from pathlib import Path
 
@@ -93,7 +94,11 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    with open(args.input) as f:
+    if args.input.suffix == ".gz":
+        opener = gzip.open
+    else:
+        opener = open
+    with opener(args.input, mode="rt", encoding="utf-8") as f:
         data = json.load(f)
 
     end = args.end if args.end is not None else len(data)
@@ -108,7 +113,7 @@ def main() -> None:
 
     results = []
     for i, wyckoffgene in enumerate(selected, start=args.start):
-        atoms, formula, energy, energy_per_atom = func_run(
+        atoms, formula, energy, energy_per_atom, cif = func_run(
             id_gene=i,
             wyckoffgene=wyckoffgene,
             calculator=calculator,
@@ -123,6 +128,7 @@ def main() -> None:
             "formula": formula,
             "energy": energy,
             "energy_per_atom": energy_per_atom,
+            "cif": cif,
         })
 
     results_csv = args.output_dir / f"{model_name}_results.csv"

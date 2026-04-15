@@ -37,7 +37,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
     @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_basic_run_writes_csv(self, mock_func_run, mock_build_calc):
-        mock_func_run.return_value = (MagicMock(), "NaCl", -10.0, -1.25)
+        mock_func_run.return_value = (MagicMock(), "NaCl", -10.0, -1.25, "data_\nCIF content")
         mock_build_calc.return_value = MagicMock()
 
         out_dir = self.tmp_path / "output"
@@ -54,12 +54,13 @@ class TestCLIArgumentParsing(unittest.TestCase):
         self.assertEqual(len(csv_files), 1)
         df = pd.read_csv(csv_files[0])
         self.assertIn("energy", df.columns)
+        self.assertIn("cif", df.columns)
         self.assertEqual(len(df), 1)
 
     @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_model_name_used_as_csv_stem(self, mock_func_run, mock_build_calc):
-        mock_func_run.return_value = (None, None, None, None)
+        mock_func_run.return_value = (None, None, None, None, None)
         mock_build_calc.return_value = MagicMock()
 
         out_dir = self.tmp_path / "out2"
@@ -80,7 +81,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
         # Write a 3-element input file
         input3 = self.tmp_path / "genes3.json"
         input3.write_text(json.dumps([_NACL_GENE] * 3))
-        mock_func_run.return_value = (None, None, None, None)
+        mock_func_run.return_value = (None, None, None, None, None)
         mock_build_calc.return_value = MagicMock()
 
         out_dir = self.tmp_path / "out3"
@@ -102,7 +103,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
     @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_url_model_name_derived_from_stem(self, mock_func_run, mock_build_calc):
-        mock_func_run.return_value = (None, None, None, None)
+        mock_func_run.return_value = (None, None, None, None, None)
         mock_build_calc.return_value = MagicMock()
 
         out_dir = self.tmp_path / "out4"

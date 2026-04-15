@@ -1,7 +1,10 @@
 """ASE-based structure relaxation with optional symmetry and cell constraints."""
 import logging
+import os
 from pathlib import Path
 from typing import Optional
+
+os.environ.setdefault("SPGLIB_OLD_ERROR_HANDLING", "0")
 
 from ase import Atoms
 from ase.calculators.calculator import Calculator
@@ -10,10 +13,32 @@ from ase.filters import FrechetCellFilter as CellFilter
 from ase.io import write
 from ase.optimize import BFGS
 from ase.optimize.optimize import Optimizer
-from ase.spacegroup import get_spacegroup
-from pymatgen.io.ase import AseAtomsAdaptor
+import spglib
 
 logger = logging.getLogger(__name__)
+
+
+def _get_spacegroup_info(atoms: Atoms, symprec: float) -> tuple[str, int]:
+    """Return the international symbol and number from spglib."""
+    try:
+        dataset = spglib.get_symmetry_dataset(
+            (atoms.cell.array, atoms.get_scaled_positions(), atoms.numbers),
+            symprec=symprec,
+        )
+    except spglib.SpglibError as exc:
+        logger.warning("Failed to determine symmetry via spglib: %s", exc)
+        return "unknown", 0
+
+    if dataset is None:
+        return "unknown", 0
+
+    symbol = getattr(dataset, "international", None)
+    number = getattr(dataset, "number", None)
+    if symbol is None:
+        symbol = dataset["international"]
+    if number is None:
+        number = dataset["number"]
+    return str(symbol), int(number)
 
 
 def run_ase_relaxer(
@@ -41,8 +66,8 @@ def run_ase_relaxer(
         fix_symmetry: Apply a :class:`~ase.constraints.FixSymmetry` constraint.
         fix_fractional: Fix all atomic positions (ions immobile).
         hydrostatic_strain: Restrict cell filter to isotropic strain only.
-        symprec: Symmetry tolerance in Å used by :func:`~ase.spacegroup.get_spacegroup`
-            and :class:`~ase.constraints.FixSymmetry`.
+        symprec: Symmetry tolerance in Å used by :mod:`spglib` and
+            :class:`~ase.constraints.FixSymmetry`.
         fmax: Force convergence criterion in eV/Å.
         steps_limit: Maximum number of optimisation steps.
         wdir: Directory for the output CIF file.
@@ -58,7 +83,7 @@ def run_ase_relaxer(
 
     if fix_fractional:
         atoms.set_constraint([FixAtoms(indices=list(range(len(atoms))))])
-    spg0 = get_spacegroup(atoms, symprec=symprec)
+    spg0_symbol, spg0_number = _get_spacegroup_info(atoms, symprec=symprec)
     if fix_symmetry:
         atoms.set_constraint([FixSymmetry(atoms, symprec=symprec)])
     target = cell_filter(atoms, hydrostatic_strain=hydrostatic_strain) if cell_filter is not None else atoms
@@ -66,7 +91,7 @@ def run_ase_relaxer(
     E0 = atoms.get_potential_energy()
     logger.info(
         "Start relaxation: E₀ = %.5f eV, symmetry = %s (%d), fix_sym = %s, relax_cell = %s",
-        E0, spg0.symbol, spg0.no, fix_symmetry, cell_filter is not None,
+        E0, spg0_symbol, spg0_number, fix_symmetry, cell_filter is not None,
     )
 
     log_arg = str(logfile) if logfile is not None else "-"
@@ -81,11 +106,11 @@ def run_ase_relaxer(
     write(filename=str(cif_path), images=atoms, format="cif")
 
     E1 = atoms.get_potential_energy()
-    spg1 = get_spacegroup(atoms, symprec=symprec)
+    spg1_symbol, spg1_number = _get_spacegroup_info(atoms, symprec=symprec)
     cell_diff = (atoms.cell.cellpar() / atoms_in.cell.cellpar() - 1.0) * 100
     logger.info(
         "End relaxation: E₁ = %.5f eV, symmetry = %s (%d), max|F| = %.4f eV/Å",
-        E1, spg1.symbol, spg1.no, abs(atoms.get_forces()).max(),
+        E1, spg1_symbol, spg1_number, abs(atoms.get_forces()).max(),
     )
     logger.debug("Cell diff (%%): %s", cell_diff)
 
@@ -130,10 +155,10 @@ def stepwise_relax(
     full_formula = atoms.get_chemical_formula(mode="metal")
     reduced_formula = atoms.get_chemical_formula(mode="metal", empirical=True)
 
-    structure0 = AseAtomsAdaptor.get_structure(atoms)
-    structure0.to(
+    write(
         filename=str(wdir / f"{reduced_formula}_{full_formula}_0_initial_symmetrized.cif"),
-        symprec=symprec,
+        images=atoms,
+        format="cif",
     )
 
     # Stage 1: fix cell, relax atomic positions
@@ -152,10 +177,10 @@ def stepwise_relax(
         wdir=wdir,
         logfile=logfile1,
     )
-    structure1 = AseAtomsAdaptor.get_structure(atoms1)
-    structure1.to(
+    write(
         filename=str(wdir / f"{reduced_formula}_{full_formula}_1_fix-cell_symmetrized.cif"),
-        symprec=symprec,
+        images=atoms1,
+        format="cif",
     )
 
     # Stage 2: relax both cell and atomic positions
@@ -174,10 +199,10 @@ def stepwise_relax(
         wdir=wdir,
         logfile=logfile2,
     )
-    structure2 = AseAtomsAdaptor.get_structure(atoms2)
-    structure2.to(
+    write(
         filename=str(wdir / f"{reduced_formula}_{full_formula}_2_cell+pos_symmetrized.cif"),
-        symprec=symprec,
+        images=atoms2,
+        format="cif",
     )
 
     return atoms2
