@@ -27,10 +27,12 @@ jobs:
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
         cp uv.toml.cpu uv.toml
-        uv sync --extra dev --extra cdvae --extra research
+        uv sync --extra dev --extra cdvae --extra research  --extra relax
     - name: Test wyckoff-transformer with pytest
       run: |
-        uv run --extra dev --extra dev --extra cdvae --extra research pytest
+        uv run pytest --run-relax
     - name: Test cdvae-property-models with pytest
       run: |
-        uv run --extra dev --extra cdvae pytest cdvae_property_models/tests
+        cp uv.toml.cpu cdvae_property_models/uv.toml
+        cd cdvae_property_models
+        uv run pytest

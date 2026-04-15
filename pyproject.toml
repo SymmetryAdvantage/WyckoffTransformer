@@ -1,6 +1,6 @@
 [project]
 name = "wyckoff-transformer"
-version = "1.0.5"
+version = "1.0.6"
 description = "Wyckoff Transformer is a machine learning model for generating crystal structures which are symmetric by design."
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
