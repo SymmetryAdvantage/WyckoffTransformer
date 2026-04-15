@@ -140,13 +140,22 @@ model,id,formula,energy,energy_per_atom
 ...
 2023-12-10-mace-128-L0_energy_epoch-249,35,H6O8Si2,-97.98,...
 ```
+To process multiple Wyckoff genes in parallel, increase the worker count:
+```bash
+wyformer-cryspr WyckoffTransformer_mp_20.json \
+  --model https://github.com/ACEsuit/mace-foundations/releases/download/mace_mp_0/2023-12-10-mace-128-L0_energy_epoch-249.model \
+  --output-dir results_parallel/ --start 0 --end 1000 --workers 8
+```
 URL-based models are downloaded once and cached in `~/.cache/wyckoff_transformer/mace_models/`. A local path is accepted too: `--model /path/to/model.model`.
+
+With `--workers > 1`, the CLI uses spawned worker processes. Each worker constructs its own MACE calculator, and the process environment is forced to single-threaded BLAS/OpenMP settings (`OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`) to avoid CPU oversubscription. This is usually the right mode for CPU-bound batch relaxation. On GPU, start conservatively and scale `--workers` only if the device has enough memory for multiple concurrent calculators.
 
 Output layout is identical to the CHGNet variant below. Key options:
 - `--n-trials N` — number of random PyXtal trials per structure (default 6)
 - `--fmax F` — force convergence criterion in eV/Å (default 0.01)
 - `--model-name NAME` — label for the results CSV (default: model file stem)
 - `--device auto|cpu|cuda` — PyTorch device selection (default: auto)
+- `--workers W` — number of parallel worker processes; each worker builds its own calculator (default 1)
 
 ### CHGNet relaxation
 The structures from all models can be optionally relaxed with CHGNet.
