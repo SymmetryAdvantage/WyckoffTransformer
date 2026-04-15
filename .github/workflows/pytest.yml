@@ -35,4 +35,4 @@ jobs:
       run: |
         cp uv.toml.cpu cdvae_property_models/uv.toml
         cd cdvae_property_models
-        uv run pytest
+        uv run --extra dev pytest

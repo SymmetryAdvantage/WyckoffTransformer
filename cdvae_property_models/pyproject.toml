@@ -30,6 +30,7 @@ classifiers = [
 ]
 [project.optional-dependencies]
 publish = ["build", "twine"]
+dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 
 [build-system]
 requires = ["hatchling"]
