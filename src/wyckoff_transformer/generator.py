@@ -63,13 +63,16 @@ class WyckoffGenerator():
         self.token_engineers = token_engineers
 
 
-    def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100):
+    def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100, condition_feature: Optional[str] = None):
         """
         The calibraiton is going to be per cascade field.
         We will generate p_predicted and p_true for each cascade field for each
         known sequence length.
         """
         assert dataset.cascade_order == self.cascade_order
+
+        full_cond = dataset.data[condition_feature] if condition_feature is not None else None
+
         with torch.no_grad():
             self.model.eval()
             self.calibrators = []
@@ -84,14 +87,17 @@ class WyckoffGenerator():
                 logging.info("Calibrating cascade field %s", cascade_name)
                 for known_seq_len in range(dataset.max_sequence_length):
                     if known_cascade_len == 0:
-                        start_tokens, masked_data, target = dataset.get_masked_multiclass_cascade_data(
+                        start_tokens, masked_data, target, chosen_indices = dataset.get_masked_multiclass_cascade_data(
                             known_seq_len, known_cascade_len,
-                            target_type=TargetClass.NextToken, multiclass_target=True)
+                            target_type=TargetClass.NextToken, multiclass_target=True,
+                            return_chosen_indices=True)
                     else:
-                        start_tokens, masked_data, target = dataset.get_masked_multiclass_cascade_data(
+                        start_tokens, masked_data, target, chosen_indices = dataset.get_masked_multiclass_cascade_data(
                             known_seq_len, known_cascade_len,
-                            target_type=TargetClass.NextToken, multiclass_target=False)
-                    model_output = self.model(start_tokens, masked_data, None, known_cascade_len)
+                            target_type=TargetClass.NextToken, multiclass_target=False,
+                            return_chosen_indices=True)
+                    iter_cond = full_cond[chosen_indices] if full_cond is not None else None
+                    model_output = self.model(start_tokens, masked_data, None, known_cascade_len, cond=iter_cond)
                     # Enought data for separate calibration
                     if target.size(0) >= calibration_element_count_threshold:
                         # If model_output and target are on different devices, not our problem
@@ -125,6 +131,7 @@ class WyckoffGenerator():
         max_length: Optional[int] = None,
         elements_vocab: Optional[Dict] = None,
         delimiter: str = "-",
+        cond: Optional[Tensor] = None
     ) -> List[Tensor] | Tuple[List[Tensor], List[float], List[float]]:
         """
         Generates a sequence of tokens.
@@ -245,7 +252,7 @@ class WyckoffGenerator():
                 if self.cascade_is_target.get(cascade_name, False):
                     # +1 for MASK
                     this_generation_input = [generated_cascade[:, :known_seq_len + 1] for generated_cascade in generated]
-                    logits = self.model(start, this_generation_input, None, known_cascade_len)
+                    logits = self.model(start, this_generation_input, None, known_cascade_len, cond=cond)
                     if self.calibrators is not None:
                         if known_seq_len < len(self.calibrators[known_cascade_len]):
                             logits = self.calibrators[known_cascade_len][known_seq_len](logits)

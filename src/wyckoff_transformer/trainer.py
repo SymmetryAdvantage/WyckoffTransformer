@@ -65,6 +65,7 @@ class WyckoffTrainer():
         processor: Optional[WyckoffProcessor] = None,
         tokeniser_config: Optional[DictConfig] = None,
         production_training: bool = False,
+        condition_feature: Optional[str] = None,
     ):
         """
         Initializes the WyckoffTrainer.
@@ -133,6 +134,8 @@ class WyckoffTrainer():
                 raise ValueError("batch_size and train_batch_size differ")
 
         self.run_path = run_path
+        self.condition_feature = condition_feature
+        extra_fields = [condition_feature] if condition_feature is not None else None
 
         if target == TargetClass.NextToken:
             # Sequences have difference lengths, so we need to make sure that
@@ -181,7 +184,8 @@ class WyckoffTrainer():
                 start_dtype=start_dtype,
                 device=self.device,
                 augmented_storage_device=augmented_storage_device,
-                target_name=target_name)
+                target_name=target_name,
+                extra_fields=extra_fields)
             self.train_loader = AugmentedCascadeLoader.from_dataset(self.train_dataset)
             self.max_sequence_length = self.train_dataset.max_sequence_length
         else:
@@ -224,7 +228,8 @@ class WyckoffTrainer():
                 start_dtype=start_dtype,
                 device=device,
                 augmented_storage_device=augmented_storage_device,
-                target_name=target_name
+                target_name=target_name,
+                extra_fields=extra_fields,
                 )
             self.val_loader = AugmentedCascadeLoader.from_dataset(self.val_dataset)
             if self.max_sequence_length is None:
@@ -251,7 +256,8 @@ class WyckoffTrainer():
                 start_dtype=start_dtype,
                 device=device,
                 augmented_storage_device=augmented_storage_device,
-                target_name=target_name
+                target_name=target_name,
+                extra_fields=extra_fields,
             )
             self.test_loader = AugmentedCascadeLoader.from_dataset(self.test_dataset)
 
@@ -259,6 +265,17 @@ class WyckoffTrainer():
             assert self.train_dataset.max_sequence_length == self.val_dataset.max_sequence_length
         if self.max_sequence_length is None:
             raise ValueError("max_sequence_length must be available from datasets or provided explicitly")
+
+        # Pre-cast conditioning feature to (num_examples, condition_dim) float32 on self.device,
+        # so the loss path can index without a per-step .to(device).to(float32).
+        if self.condition_feature is not None:
+            for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
+                if ds is None:
+                    continue
+                cond_tensor = ds.data[self.condition_feature].to(self.device, dtype=torch.float32)
+                if cond_tensor.dim() == 1:
+                    cond_tensor = cond_tensor.unsqueeze(1)
+                ds.data[self.condition_feature] = cond_tensor
     
         self.clip_grad_norm = optimisation_config.clip_grad_norm
         self.cascade_len = len(cascade_order)
@@ -380,8 +397,14 @@ class WyckoffTrainer():
             )
             train_data = tensors["train"]
             val_data = tensors["val"]
-            test_data = tensors["test"] if ("test" in tensors and not no_test) else None
-            
+            if not no_test:
+                if "test" in tensors:
+                    test_data = tensors["test"]
+                else:
+                    logger.warning("Test dataset not found in tensors. Setting test_data to None and no_test to True.")
+                    test_data = None
+                    no_test = True
+
             if production_training:
                 # Merge all datasets into one for training and validation
                 merged_data = {}
@@ -512,13 +535,13 @@ class WyckoffTrainer():
                 # Once we have sampled the first cascade field, the prediction target is no longer multiclass
                 # However, we still need to permute the sequence so that the autoregression is
                 # permutation-invariant.
-                start_tokens, masked_data, target = dataset.get_masked_multiclass_cascade_data(
+                start_tokens, masked_data, target, batch_selection = dataset.get_masked_multiclass_cascade_data(
                     known_seq_len, known_cascade_len, multiclass_target=(known_cascade_len == 0),
-                    target_type=self.target, batch_target_is_viable=batch_selection)
+                    target_type=self.target, batch_target_is_viable=batch_selection, return_chosen_indices=True)
             elif self.target == TargetClass.NumUniqueTokens:
-                start_tokens, masked_data, target = dataset.get_masked_multiclass_cascade_data(
+                start_tokens, masked_data, target, batch_selection = dataset.get_masked_multiclass_cascade_data(
                     known_seq_len, known_cascade_len, multiclass_target=False, target_type=self.target,
-                    batch_target_is_viable=batch_selection)
+                    batch_target_is_viable=batch_selection, return_chosen_indices=True)
                 logging.debug("Target: %s", target)
                 # Counts are integers, as they should be, but MSE needs a float
                 target = target.float()
@@ -538,20 +561,26 @@ class WyckoffTrainer():
                 # as it expects to use the whole dataset or a specific set of indices.
                 # Actually, the original code had: if self.batch_size is not None: raise NotImplementedError
                 # Let's keep that behavior but allow passing indices if we want to in future.
-                start_tokens, masked_data, target = dataset.get_masked_cascade_data(known_seq_len, known_cascade_len)
+                start_tokens, masked_data, target, batch_selection = dataset.get_masked_cascade_data(
+                    known_seq_len, known_cascade_len, return_chosen_indices=True)
+
+        cond = None
+        if self.condition_feature is not None:
+            cond = dataset.data[self.condition_feature][batch_selection]
+
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
             # No padding, as we have already discarded the padding
-            prediction = self.model(start_tokens, masked_data, None, known_cascade_len)
+            prediction = self.model(start_tokens, masked_data, None, known_cascade_len, cond=cond)
         elif self.target == TargetClass.NumUniqueTokens:
             # No padding, as we have already discarded the padding
-            prediction = self.model(start_tokens, masked_data, None, None)
+            prediction = self.model(start_tokens, masked_data, None, None, cond=cond)
         elif self.target == TargetClass.Scalar:
             logger.debug("Start tokens size: %s", start_tokens.size())
             #logger.debug("Start tokens isnan: %s", start_tokens.isnan().any())
             #logger.debug("Masked data isnan: %s", any((a.isnan().any() for a in masked_data)))
             #logger.debug("Padding mask isnan: %s", padding_mask.isnan().any())
-            prediction = self.model(start_tokens, masked_data, padding_mask, None).squeeze()
+            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond).squeeze()
             #logger.debug("Prediction isnan: %s", prediction.isnan().any())
         else:
             raise ValueError(f"Unknown target: {self.target}")
@@ -743,6 +772,7 @@ class WyckoffTrainer():
             required_element_set: Optional[Union[str, Set[int]]] = None,
             allowed_element_set: Union[str, Set[int]] = "all",
             temperature: float = 1.0,
+            cond: Optional[torch.Tensor] = None,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -760,14 +790,18 @@ class WyckoffTrainer():
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
                 defines a custom pool. Only used when element-constrained generation is active.
             temperature: Softmax temperature for sampling.
+            cond: Optional tensor of shape [n_structures, condition_dim] for AdaLN conditioning.
         """
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
             self.masks_dict, self.max_sequence_length)
+            
+        condition_feature = self.condition_feature
+
         if calibrate:
             if self.val_dataset is None:
                 raise ValueError("Calibration requires a validation dataset")
-            generator.calibrate(self.val_dataset)
+            generator.calibrate(self.val_dataset, condition_feature=condition_feature)
         if start_tensor is None:
             start_tensor = self._sample_start_tokens_from_distribution(n_structures)
         else:
@@ -778,6 +812,17 @@ class WyckoffTrainer():
             else:
                 start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
 
+        if condition_feature is not None and cond is None:
+            if hasattr(self, 'train_dataset') and self.train_dataset is not None:
+                random_indices = torch.randint(
+                    0, self.train_dataset.num_examples, (n_structures,), device=self.device)
+                cond = self.train_dataset.data[condition_feature][random_indices]
+            else:
+                raise ValueError(
+                    f"condition_feature={condition_feature!r} is set but no `cond` was provided "
+                    "and no train_dataset is available to sample from."
+                )
+
         if required_element_set is not None:
             if 'elements' not in self.tokenisers:
                 raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
@@ -786,13 +831,14 @@ class WyckoffTrainer():
                 required_element_set=required_element_set,
                 allowed_element_set=allowed_element_set,
                 temperature=temperature,
-                elements_vocab=self.tokenisers['elements']
+                elements_vocab=self.tokenisers['elements'],
+                cond=cond
             )
         elif compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
-                start_tensor, compute_validity=True)
+                start_tensor, compute_validity=True, cond=cond)
         else:
-            generated_tensors = generator.generate_tensors(start_tensor, compute_validity=False)
+            generated_tensors = generator.generate_tensors(start_tensor, compute_validity=False, cond=cond)
 
         generated_cascade_order = self.cascade_order
         if self.cascade_order[-1] == "harmonic_site_symmetries":
@@ -823,8 +869,8 @@ class WyckoffTrainer():
         generation_name: str,
         calibrate: bool,
         n_structures: int,
-        evaluator: StatisticalEvaluator):
-    
+        evaluator: Optional[StatisticalEvaluator]):
+
         generated_wp, ss_validitity, enum_validity = self.generate_structures(
             n_structures, calibrate, compute_validity_per_known_sequence_length=True)
         validity_data = [[known_seq_len, ss_validitity, enum_validity] for
@@ -845,7 +891,8 @@ class WyckoffTrainer():
             json.dump(generated_wp, f)
         saved_wyckoffs.add_file(file_name)
         wandb.log_artifact(saved_wyckoffs)
-        evaluate_and_log(generated_wp, generation_name, n_structures, evaluator)
+        if evaluator is not None:
+            evaluate_and_log(generated_wp, generation_name, n_structures, evaluator)
 
     @torch.no_grad()
     def predict_scalars(
@@ -941,28 +988,36 @@ def train_from_config(
     wandb.log_artifact(run_config_artifact)
     trainer.train()
     config = OmegaConf.create(config_dict)
-    if not no_test and config.model.WyckoffTrainer_args.target == "NextToken" and \
+    if config.model.WyckoffTrainer_args.target == "NextToken" and \
         config.evaluation.get("n_structures_to_generate", 0) > 0:
 
         print("Training complete, loading the best model")
         trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
-        data_cache_path = Path(__file__).resolve().parents[2] / "cache" / config.dataset / "data.pkl.gz"
-        with gzip.open(data_cache_path, "rb") as f:
-            datasets_pd = pickle.load(f)
-        del datasets_pd["train"]
-        del datasets_pd["val"]
 
-        test_no_sites = datasets_pd['test']['site_symmetries'].map(len).values
-        num_sites_bins = np.arange(0, 21)
-        test_no_sites_hist = np.histogram(test_no_sites, bins=num_sites_bins)
-        wandb.run.summary["num_sites"] = {"test": {"hist": wandb.Histogram(np_histogram=test_no_sites_hist)}}
+        evaluator: Optional[StatisticalEvaluator] = None
+        if not no_test:
+            data_cache_path = Path(__file__).resolve().parents[2] / "cache" / config.dataset / "data.pkl.gz"
+            with gzip.open(data_cache_path, "rb") as f:
+                datasets_pd = pickle.load(f)
+            datasets_pd.pop("train", None)
+            datasets_pd.pop("val", None)
+            if "test" not in datasets_pd:
+                logger.warning(
+                    "Test split not found in data cache at %s; skipping test-set evaluation but still generating structures.",
+                    data_cache_path,
+                )
+            else:
+                test_no_sites = datasets_pd['test']['site_symmetries'].map(len).values
+                num_sites_bins = np.arange(0, 21)
+                test_no_sites_hist = np.histogram(test_no_sites, bins=num_sites_bins)
+                wandb.run.summary["num_sites"] = {"test": {"hist": wandb.Histogram(np_histogram=test_no_sites_hist)}}
 
-        print(f"Test dataset size: {len(datasets_pd['test']['site_symmetries'])}")
-        wandb.run.summary["test_dataset_size"] = len(datasets_pd["test"]["site_symmetries"])
-        evaluator = StatisticalEvaluator(datasets_pd["test"])
-        test_smact_validity = datasets_pd["test"]["composition"].map(smac_validity_from_counter).mean()
-        print(f"SMAC-T validity on the test dataset: {test_smact_validity}")
-        wandb.run.summary["smact_validity"] = {"test": test_smact_validity}
+                print(f"Test dataset size: {len(datasets_pd['test']['site_symmetries'])}")
+                wandb.run.summary["test_dataset_size"] = len(datasets_pd["test"]["site_symmetries"])
+                evaluator = StatisticalEvaluator(datasets_pd["test"])
+                test_smact_validity = datasets_pd["test"]["composition"].map(smac_validity_from_counter).mean()
+                print(f"SMAC-T validity on the test dataset: {test_smact_validity}")
+                wandb.run.summary["smact_validity"] = {"test": test_smact_validity}
         wandb.run.summary["formal_validity"] = {}
         wandb.run.summary["wp"] = {}
         print("No calibration:")

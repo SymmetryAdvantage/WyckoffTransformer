@@ -11,6 +11,53 @@ from wyckoff_transformer.cascade.dataset import batched_bincount
 
 logger = logging.getLogger(__name__)
 
+
+class AdaLNTransformerEncoderLayer(TransformerEncoderLayer):
+    def __init__(self, d_model, nhead, condition_dim=1, layer_norm_eps=1e-5, **kwargs):
+        super().__init__(d_model, nhead, layer_norm_eps=layer_norm_eps, **kwargs)
+        # AdaLN provides the affine; strip it from the parent's LayerNorms.
+        self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
+        self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, elementwise_affine=False)
+        # DiT-style (1 + gamma) modulation; zero-init weights/biases => identity at init.
+        self.adaLN_modulation1 = nn.Linear(condition_dim, 2 * d_model)
+        self.adaLN_modulation2 = nn.Linear(condition_dim, 2 * d_model)
+        for m in (self.adaLN_modulation1, self.adaLN_modulation2):
+            nn.init.zeros_(m.weight)
+            nn.init.zeros_(m.bias)
+
+    def forward(self, src, cond, src_mask=None, src_key_padding_mask=None, is_causal=False):
+        gamma1, beta1 = self.adaLN_modulation1(cond).chunk(2, dim=-1)
+        gamma2, beta2 = self.adaLN_modulation2(cond).chunk(2, dim=-1)
+
+        x = src
+        if self.norm_first:
+            x_norm = self.norm1(x) * (1 + gamma1.unsqueeze(1)) + beta1.unsqueeze(1)
+            x = x + self.dropout1(self.self_attn(x_norm, x_norm, x_norm, attn_mask=src_mask,
+                                  key_padding_mask=src_key_padding_mask, need_weights=False, is_causal=is_causal)[0])
+            x_norm2 = self.norm2(x) * (1 + gamma2.unsqueeze(1)) + beta2.unsqueeze(1)
+            x = x + self.dropout2(self.linear2(self.dropout(self.activation(self.linear1(x_norm2)))))
+        else:
+            x2 = self.self_attn(x, x, x, attn_mask=src_mask,
+                                key_padding_mask=src_key_padding_mask, need_weights=False, is_causal=is_causal)[0]
+            x = x + self.dropout1(x2)
+            x = self.norm1(x) * (1 + gamma1.unsqueeze(1)) + beta1.unsqueeze(1)
+            
+            x2 = self.linear2(self.dropout(self.activation(self.linear1(x))))
+            x = x + self.dropout2(x2)
+            x = self.norm2(x) * (1 + gamma2.unsqueeze(1)) + beta2.unsqueeze(1)
+        return x
+
+class AdaLNTransformerEncoder(TransformerEncoder):
+    """`nn.TransformerEncoder` that threads a conditioning tensor to each AdaLN layer."""
+    def forward(self, src, cond, mask=None, src_key_padding_mask=None, is_causal=False):
+        output = src
+        for mod in self.layers:
+            output = mod(output, cond=cond, src_mask=mask,
+                         src_key_padding_mask=src_key_padding_mask, is_causal=is_causal)
+        if self.norm is not None:
+            output = self.norm(output)
+        return output
+
 class SpecialEmbedding(torch.nn.Module):
     ScalarPassThrough = 0
     VectorPassThrough = 1
@@ -199,7 +246,8 @@ class CascadeTransformer(nn.Module):
                  aggregation_weight: Optional[int] = None,
                  emebdding_dropout: Optional[float] = None,
                  prediction_perceptron_dropout: Optional[float] = None,
-                 concat_start_to_prediction_input_embedding_dim: Optional[int] = None):
+                 concat_start_to_prediction_input_embedding_dim: Optional[int] = None,
+                 condition_dim: Optional[int] = None):
         """
         Expects tokens in the following format:
         START_k -> [] -> STOP -> PAD
@@ -250,8 +298,16 @@ class CascadeTransformer(nn.Module):
         if "nhead" in TransformerEncoderLayer_args and self.d_model % TransformerEncoderLayer_args["nhead"]:
             logger.warning("d_model is not divisible by nhead, padding to the next multiple")
             self.d_model += TransformerEncoderLayer_args["nhead"] - self.d_model % TransformerEncoderLayer_args["nhead"]
-        self.encoder_layers = TransformerEncoderLayer(self.d_model, batch_first=True, **TransformerEncoderLayer_args)
-        self.transformer_encoder = TransformerEncoder(self.encoder_layers, **TransformerEncoder_args)
+        
+        self.condition_dim = condition_dim
+        if condition_dim is not None:
+            self.encoder_layers = AdaLNTransformerEncoderLayer(
+                self.d_model, batch_first=True, condition_dim=condition_dim, **TransformerEncoderLayer_args)
+            self.transformer_encoder = AdaLNTransformerEncoder(self.encoder_layers, **TransformerEncoder_args)
+        else:
+            self.encoder_layers = TransformerEncoderLayer(self.d_model, batch_first=True, **TransformerEncoderLayer_args)
+            self.transformer_encoder = TransformerEncoder(self.encoder_layers, **TransformerEncoder_args)
+            
         self.start_type = start_type
         if start_type == "categorial":
             self.start_embedding = nn.Embedding(n_start, self.d_model)
@@ -347,7 +403,8 @@ class CascadeTransformer(nn.Module):
                 start: Tensor,
                 cascade: List[Tensor],
                 padding_mask: Tensor|None,
-                prediction_head: int|None) -> Tensor:
+                prediction_head: int|None,
+                cond: Tensor|None = None) -> Tensor:
         """
         Arguments:
             start: Tensor of shape ``[batch_size]`` with the start token.
@@ -356,6 +413,7 @@ class CascadeTransformer(nn.Module):
             prediction_head: Index of the prediction head to use. If None, use the only one. The
                 model works in two stages. Firstly, a vector is prepared wih Encoder and
                 various tweaks. Then, the vector is passed to a perceptron aka prediction head.
+            cond: Tensor of shape ``[batch_size, condition_dim]`` with the conditioning vector for AdaLN.
         Returns:
             Tensor of shape ``[batch_size, seq_len, output_dim]`` with the predictions.
         """
@@ -377,7 +435,12 @@ class CascadeTransformer(nn.Module):
         data = torch.cat([self.start_embedding(start).unsqueeze(1), cascade_embedding], dim=1)
         logger.debug("Data size: %s", data.size())
         logger.debug("Padding mask size: %s", padding_mask.size() if padding_mask is not None else "None")
-        transformer_output = self.transformer_encoder(data, src_key_padding_mask=padding_mask)
+        if getattr(self, "condition_dim", None) is not None:
+            if cond is None:
+                raise ValueError("condition_dim is set but cond is not provided")
+            transformer_output = self.transformer_encoder(data, src_key_padding_mask=padding_mask, cond=cond)
+        else:
+            transformer_output = self.transformer_encoder(data, src_key_padding_mask=padding_mask)
 
         logging.debug("Transformer output size: %s", transformer_output.size())
         if self.aggregate_after_encoder:

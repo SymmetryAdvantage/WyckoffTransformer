@@ -170,7 +170,8 @@ class AugmentedCascadeDataset():
         start_dtype: torch.dtype = torch.int64,
         device: str = "cpu",
         augmented_storage_device: Optional[str] = None,
-        target_name = None):
+        target_name = None,
+        extra_fields: Optional[List[str]] = None):
         """
         Args:
             data (dict[str, Tensor | List[Tensor]]):
@@ -234,6 +235,9 @@ class AugmentedCascadeDataset():
             target_name (Optional[str], optional):
             The key in `data` for the target variable, if any. The corresponding
             value `data[target_name]` should be a `torch.Tensor`. Defaults to None.
+            extra_fields (Optional[List[str]], optional):
+            Optional list of additional keys in `data` to copy into `self.data`
+            (e.g. condition features used for AdaLN). Defaults to None.
         """
         if augmented_fields is None:
             augmented_fields = []
@@ -250,7 +254,11 @@ class AugmentedCascadeDataset():
         self.cascade_index_from_field = {name: i for i, name in enumerate(cascade_order)}
         self.augmented_fields = augmented_fields
         self.data = {name: data[name].type(dtype).to(device) for name in cascade_order if name not in augmented_fields}
-        self.max_sequence_length = next(iter(self.data.values())).size(1)
+        if extra_fields:
+            for k in extra_fields:
+                v = data[k]
+                self.data[k] = v.to(device) if hasattr(v, "to") else v
+        self.max_sequence_length = data[cascade_order[0]].size(1)
         self.masks = {name: torch.tensor(masks[name], dtype=dtype, device=device) for name in cascade_order}
         self.pads = {name: torch.tensor(pads[name], dtype=dtype, device=device) for name in cascade_order}
         self.stops = {name: torch.tensor(stops[name], dtype=dtype, device=device) for name in cascade_order}
@@ -346,7 +354,8 @@ class AugmentedCascadeDataset():
     def get_masked_cascade_data(
         self,
         known_seq_len: int,
-        known_cascade_len: int):
+        known_cascade_len: int,
+        return_chosen_indices: bool = False):
     
         # assert known_seq_len < data.shape[1]
         # assert known_seq_len >= 0
@@ -372,6 +381,9 @@ class AugmentedCascadeDataset():
                 res.append(torch.cat([
                     cascade_vector[:, :known_seq_len],
                     self.masks[name].expand(cascade_vector.size(0), 1)], dim=1))
+        
+        if return_chosen_indices:
+            return self.start_tokens[target_is_viable], res, target[target_is_viable], target_is_viable
         return self.start_tokens[target_is_viable], res, target[target_is_viable]
 
 

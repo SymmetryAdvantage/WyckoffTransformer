@@ -285,6 +285,8 @@ def compute_symmetry_sites(
         symmetry_dataset["composition"] = symmetry_dataset.apply(get_composition_from_symmetry_sites, axis=1)
         if "formation_energy_per_atom" in dataset.columns:
             symmetry_dataset['formation_energy_per_atom'] = dataset['formation_energy_per_atom']
+        if "energy_above_hull" in dataset.columns:
+            symmetry_dataset['energy_above_hull'] = dataset['energy_above_hull']
         if "band_gap" in dataset.columns:
             symmetry_dataset['band_gap'] = dataset['band_gap']
         if "log_klat" in dataset.columns:
