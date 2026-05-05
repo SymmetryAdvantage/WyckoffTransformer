@@ -16,7 +16,7 @@ model:
   WyckoffTrainer_args:
     multiclass_next_token_with_order_permutation: true
     target: NextToken
-    evaluation_samples: 100
+    evaluation_samples: 1
     condition_feature: energy_above_hull
   CascadeTransformer_args:
     start_type: one_hot
