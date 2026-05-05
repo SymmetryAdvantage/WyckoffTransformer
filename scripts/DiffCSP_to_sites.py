@@ -15,7 +15,7 @@ import pickle
 import logging
 from multiprocessing import Pool
 from pymatgen.core.structure import Structure, Lattice
-from data import structure_to_sites
+from wyckoff_transformer.data import structure_to_sites
 
 logger = logging.getLogger(__name__)
 

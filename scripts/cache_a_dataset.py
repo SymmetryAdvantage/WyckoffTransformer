@@ -11,7 +11,7 @@ import gzip
 import pickle
 from pathlib import Path
 
-from data import read_all_MP_csv
+from wyckoff_transformer.data import read_all_MP_csv
 
 
 cache_folder = Path(__file__).parent.parent / "cache"  # Adjusted path

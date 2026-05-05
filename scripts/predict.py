@@ -13,13 +13,13 @@ from omegaconf import OmegaConf
 import sys
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
 
-from scripts.data import (
+from wyckoff_transformer.data import (
     read_cif,
     compute_symmetry_sites,
     pyxtal_notation_to_sites,
     get_composition_from_symmetry_sites,
 )
-from scripts.preprocess_wychoffs import get_augmentation_dict
+from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 from wyckoff_transformer.trainer import WyckoffTrainer
 

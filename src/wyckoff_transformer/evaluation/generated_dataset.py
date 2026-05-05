@@ -20,7 +20,12 @@ import numpy as np
 import torch
 import pandas as pd
 from .novelty import record_to_augmented_fingerprint
-from scripts.data import read_cif, compute_symmetry_sites, read_MP, pyxtal_notation_to_sites
+from wyckoff_transformer.data import (
+    compute_symmetry_sites,
+    pyxtal_notation_to_sites,
+    read_MP,
+    read_cif,
+)
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from .core import wycryst_to_pyxtal_dict
 from wyckoff_transformer.tokenization import get_wp_index, load_wyckoff_mappings

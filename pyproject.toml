@@ -57,7 +57,7 @@ requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-l
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/wyckoff_transformer", "scripts"]
+packages = ["src/wyckoff_transformer"]
 
 [tool.hatch.build.hooks.custom]
 

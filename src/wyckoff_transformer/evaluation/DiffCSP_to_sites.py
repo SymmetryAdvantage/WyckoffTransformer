@@ -17,7 +17,7 @@ import numpy as np
 import logging
 
 from pymatgen.core.structure import Structure, Lattice
-from scripts.data import structure_to_sites
+from wyckoff_transformer.data import structure_to_sites
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
