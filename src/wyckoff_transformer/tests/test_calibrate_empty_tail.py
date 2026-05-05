@@ -12,23 +12,22 @@ class TestCalibrateEmptyTail(unittest.TestCase):
         model.parameters.side_effect = lambda: iter([param])
         # Mock model return value: a logit tensor [batch_size, num_classes]
         # For NextToken, batch_size depends on the dataset split
-        model.side_effect = lambda start, data, padding, cascade_idx: torch.randn(start.size(0), 10)
-        
+        model.side_effect = lambda start, data, padding, cascade_idx, cond=None: torch.randn(start.size(0), 10)
+
         # Mock dataset
         dataset = MagicMock(spec=AugmentedCascadeDataset)
         dataset.cascade_order = ("field1",)
         dataset.max_sequence_length = 2
-        
+
         # Mock get_masked_multiclass_cascade_data to return enough samples to ALWAYS be >= threshold
-        # start_tokens: [batch_size]
-        # masked_data: list of [batch_size, seq_len]
-        # target: [batch_size]
         batch_size = 110
         start_tokens = torch.zeros(batch_size, dtype=torch.long)
         masked_data = [torch.zeros(batch_size, 1, dtype=torch.long)]
         target = torch.zeros(batch_size, dtype=torch.long)
-        
-        dataset.get_masked_multiclass_cascade_data.return_value = (start_tokens, masked_data, target)
+        chosen_indices = torch.ones(batch_size, dtype=torch.bool)
+
+        dataset.get_masked_multiclass_cascade_data.return_value = (
+            start_tokens, masked_data, target, chosen_indices)
         
         generator = WyckoffGenerator(
             model=model,

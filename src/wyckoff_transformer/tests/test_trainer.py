@@ -99,6 +99,7 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         self.trainer.device = torch.device("cpu")
         self.trainer.processor = MagicMock()
         self.trainer.production_training = False
+        self.trainer.condition_feature = None
         
         # Setup processor to return a mock pyxtal-like string/object
         self.trainer.processor.tensor_to_pyxtal.return_value = "pyxtal_mock"

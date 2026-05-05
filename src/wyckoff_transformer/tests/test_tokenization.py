@@ -477,7 +477,7 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
                     "augmented": [torch.tensor([3]), torch.tensor([4, 5])],
                 },
                 "val": {
-                    "nested": [[torch.tensor([6])]],
+                    "nested": [[torch.tensor([6]), torch.tensor([7, 8])], [torch.tensor([9])]],
                 },
             }
 
@@ -488,6 +488,8 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
             self.assertTrue(torch.equal(loaded["train"]["augmented"][0], payload["train"]["augmented"][0]))
             self.assertTrue(torch.equal(loaded["train"]["augmented"][1], payload["train"]["augmented"][1]))
             self.assertTrue(torch.equal(loaded["val"]["nested"][0][0], payload["val"]["nested"][0][0]))
+            self.assertTrue(torch.equal(loaded["val"]["nested"][0][1], payload["val"]["nested"][0][1]))
+            self.assertTrue(torch.equal(loaded["val"]["nested"][1][0], payload["val"]["nested"][1][0]))
 
     def test_load_tensors_and_tokenisers_from_cache_safetensors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
