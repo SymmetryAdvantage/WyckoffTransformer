@@ -1,0 +1,64 @@
+model:
+  start_token: spacegroup_number
+  cascade:
+    # site_symmetry_ops sits last (non-target) — its vector is filled
+    # deterministically from (sg, ss) after each cascade step. The categorical
+    # site_symmetries field stays in the cascade for the prediction head, but
+    # has embedding_size: 0 so the binary ops vector is the sole input
+    # representation of the site symmetry.
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - site_symmetry_ops
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+      site_symmetry_ops: false
+    embedding_size:
+      elements: 16
+      site_symmetries: 0
+      sites_enumeration: 8
+      site_symmetry_ops:
+        pass_through_vector: 46
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 100
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      dropout: 0.2
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    module: schedulefree
+    name: SGDScheduleFree
+    config:
+      lr: 0.2
+  validation_period: 1000
+  early_stopping_patience_epochs: 100000
+  clip_grad_norm: 2.
+  epochs: 1500000
+dataset: mp_20
+tokeniser:
+  name: mp_20_sg_multiplicity_ssops
+evaluation:
+  n_structures_to_generate: 10000

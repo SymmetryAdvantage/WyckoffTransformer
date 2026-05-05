@@ -79,6 +79,57 @@ class TestSpaceGroupEncoder(unittest.TestCase):
         self.assertEqual(encoded.dtype, torch.float32)
 
 
+class TestSiteSymmetryOpsEngineer(unittest.TestCase):
+    """The site_symmetry_ops engineer encodes each site symmetry as a binary
+    operations vector, mirroring SpaceGroupEncoder. The model receives the
+    space group via the start token, so uniqueness is required *within* each
+    SG (different SS strings in the same SG must map to different vectors).
+    """
+
+    def test_builder_produces_per_sg_unique_vectors(self):
+        from ..preprocess_wychoffs import build_site_symmetry_ops_engineer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            engineer = build_site_symmetry_ops_engineer(engineers_dir=Path(tmp))
+
+        self.assertEqual(tuple(engineer.db.index.names),
+                         ("spacegroup_number", "site_symmetries"))
+        d = engineer.feature_shape[0]
+        self.assertEqual(engineer.mask_token.shape, (d,))
+        self.assertEqual(engineer.pad_token.shape, (d,))
+        self.assertEqual(engineer.stop_token.shape, (d,))
+        # Mask must be distinguishable from pad/stop and from any encoded value.
+        self.assertTrue(np.all(engineer.mask_token == 1.0))
+        self.assertTrue(np.all(engineer.pad_token == 0.0))
+
+        # Per-SG uniqueness across SS strings.
+        for sg, sub in engineer.db.groupby(level="spacegroup_number"):
+            seen = {}
+            for (sg_, ss), vec in sub.items():
+                key = vec.tobytes()
+                self.assertNotIn(
+                    key, seen,
+                    f"SG {sg}: {ss!r} and {seen.get(key)!r} share an encoding")
+                seen[key] = ss
+
+    def test_builder_serialised_json_roundtrips(self):
+        from ..preprocess_wychoffs import build_site_symmetry_ops_engineer
+        from ..wyckoff_processor import _SerialisedFeatureEngineer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            built = build_site_symmetry_ops_engineer(engineers_dir=Path(tmp))
+            path = Path(tmp) / "site_symmetry_ops.json"
+            self.assertTrue(path.exists())
+            loaded = tok.WyckoffProcessor._deserialise_feature_engineer(
+                _SerialisedFeatureEngineer.model_validate_json(
+                    path.read_text(encoding="utf-8")))
+
+        self.assertEqual(len(built.db), len(loaded.db))
+        # Spot-check a handful of entries.
+        for key in list(built.db.index)[:10]:
+            self.assertTrue(np.allclose(built.db.loc[key], loaded.db.loc[key]))
+
+
 class TestTupleAndTokenisers(unittest.TestCase):
     def test_tuple_dict_accepts_non_tuple_keys(self):
         d = tok.TupleDict({("a", "b"): 7})

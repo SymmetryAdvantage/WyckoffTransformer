@@ -23,6 +23,10 @@ def main():
     parser.add_argument("--torch-num-thread", type=int, help="Number of threads for torch")
     parser.add_argument("--production", action="store_true", help="Train on the combined train+val+test dataset")
     parser.add_argument("--no-test", action="store_true", help="Skip loading and evaluating the test dataset")
+    parser.add_argument("--compile", dest="compile_model", action="store_true", default=None,
+                        help="Force WyckoffTrainer_args.compile_model=true")
+    parser.add_argument("--no-compile", dest="compile_model", action="store_false", default=None,
+                        help="Force WyckoffTrainer_args.compile_model=false")
     args = parser.parse_args()
     
     if args.debug:
@@ -46,6 +50,8 @@ def main():
         tags = []
     config['name'] = args.config.stem
     config['dataset'] = args.dataset
+    if args.compile_model is not None:
+        config['model']['WyckoffTrainer_args']['compile_model'] = args.compile_model
 
     tokeniser_config_path = Path(__file__).parent.parent.resolve() / "yamls" / "tokenisers" / f"{config.tokeniser.name}.yaml"
     tokeniser_config = OmegaConf.load(tokeniser_config_path)

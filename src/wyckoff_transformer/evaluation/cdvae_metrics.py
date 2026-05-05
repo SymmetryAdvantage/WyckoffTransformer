@@ -6,9 +6,7 @@ Code from:
 https://github.com/txie-93/cdvae
 https://github.com/jiaor17/DiffCSP/
 """
-from itertools import product
 from collections import Counter
-from math import gcd
 from typing import Dict, Optional
 import logging
 
@@ -16,12 +14,12 @@ import numpy as np
 from scipy.spatial.distance import cdist
 from scipy.stats import wasserstein_distance
 from wrapt_timeout_decorator import timeout
-import smact.screening
-from pandas import Series
 import torch
 from pymatgen.core import Composition, Structure
 from matminer.featurizers.site.fingerprint import CrystalNNFingerprint
 from matminer.featurizers.composition.composite import ElementProperty
+
+from .core import smact_validity_optimised, timed_smact_validity_from_record
 
 
 # ---------------------------------------------------------------------------
@@ -224,46 +222,6 @@ class Crystal(object):
 
 
 
-def smact_validity_optimised(
-                   elem_symbols, count,
-                   use_pauling_test=True,
-                   include_alloys=True,
-                   apply_gcd=False):
-    element_set = frozenset(elem_symbols)
-    if len(element_set) == 1:
-        return True
-    if include_alloys and element_set.issubset(smact.metals):
-        return True
-
-    try:
-        space = smact.element_dictionary(elem_symbols)
-    except NameError:
-        # NameError: Elemental data for Hs not found.
-        return False
-    electronegs = [e.pauling_eneg for e in space.values()]
-    ox_combos = [e.oxidation_states for e in space.values()]
-    if any(ox is None for ox in ox_combos):
-        return False
-
-    if apply_gcd:
-        gcd_count = gcd(*count)
-        count = tuple(c // gcd_count for c in count)
-    threshold = max(count)
-    stoichs = [(c,) for c in count]
-    for ox_states in product(*ox_combos):
-        cn_r = smact.neutral_ratios_iter(ox_states, stoichs=stoichs, threshold=threshold)
-        if any(True for _ in cn_r):
-            if not use_pauling_test:
-                return True
-            try:
-                if smact.screening.pauling_test(ox_states, electronegs, symbols=elem_symbols):
-                    return True
-            except TypeError:
-                # if no electronegativity data, assume it is okay
-                return True
-    return False
-
-
 # Pandas tries to treat the decorated function as iterable, which causes a TypeError.
 @timeout(15)
 def timed_smact_validity_optimised(*args, **kwargs) -> bool:
@@ -288,14 +246,6 @@ def timed_smact_validity_from_composition(composition: Composition, apply_gcd: b
         elem_symbols=list(get_el_amt_dict.keys()),
         count=list(map(int, get_el_amt_dict.values())),
         apply_gcd=apply_gcd)
-
-
-def timed_smact_validity_from_record(record: Dict|Series, apply_gcd: bool=True) -> bool:
-    """
-    Computes the SMACT validity of a record in pyxtal.from_random arguments format.
-    If the computation takes longer than 15 seconds, returns False.
-    """
-    return timed_smact_validity_optimised(record["species"], record["numIons"], apply_gcd=apply_gcd)
 
 
 def structure_validity(crystal, cutoff=0.5):

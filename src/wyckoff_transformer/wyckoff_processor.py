@@ -120,10 +120,15 @@ class FeatureEngineer():
         logger.debug("Indexed record")
         logger.debug(indexed_record)
         # WARNING(kazeevn): only one structure is supported:
-        # the first input is sequence-level, the next two are token-level
+        # the first input is sequence-level, the rest are token-level
         this_db = self.db.loc[indexed_record.iloc[0]]
-        # Beautiful, but slow
-        res = this_db.loc[map(tuple, zip(*indexed_record.iloc[1:]))].to_list()
+        token_level_inputs = list(indexed_record.iloc[1:])
+        if len(token_level_inputs) == 1:
+            # Single token-level field — sub-Series has a flat Index, look up by value.
+            keys = list(token_level_inputs[0])
+        else:
+            keys = list(map(tuple, zip(*token_level_inputs)))
+        res = this_db.loc[keys].to_list()
         # Since in our infinite wisdom we decided to compute multiplicity
         # two times, we might as well just check
         if self.db.name in record.index:
@@ -326,10 +331,10 @@ class WyckoffProcessor:
             return SpaceGroupEncoder({group_number: tuple(spg) for group_number, spg in payload["mapping"]})
         if serialised.kind == "pass_through":
             return PassThroughTokeniser(
-                values_count=payload["values_count"],
-                stop_token=payload["stop_token"],
-                pad_token=payload["pad_token"],
-                mask_token=payload["mask_token"],
+                values_count=WyckoffProcessor._from_jsonable(payload["values_count"]),
+                stop_token=WyckoffProcessor._from_jsonable(payload["stop_token"]),
+                pad_token=WyckoffProcessor._from_jsonable(payload["pad_token"]),
+                mask_token=WyckoffProcessor._from_jsonable(payload["mask_token"]),
             )
         raise ValueError(f"Unknown tokeniser kind: {serialised.kind}")
 
@@ -458,8 +463,10 @@ class WyckoffProcessor:
             for engineered_field_name, engineered_field_definiton in config.token_fields.engineered.items():
                 if engineered_field_definiton.type != "map":
                     raise ValueError("Only map engineered_field fields are supported")
-                if len(engineered_field_definiton.inputs) != 3:
-                    raise NotImplementedError("Only 3 inputs are supported")
+                if len(engineered_field_definiton.inputs) < 2:
+                    raise NotImplementedError(
+                        "At least 2 inputs are required (one sequence-level field "
+                        "followed by per-token cascade fields)")
                 engineer_json = Path(__file__).parent / "engineers" / f"{engineered_field_name}.json"
                 raw_engineer = WyckoffProcessor._deserialise_feature_engineer(
                     _SerialisedFeatureEngineer.model_validate_json(

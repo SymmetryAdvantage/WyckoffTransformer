@@ -188,6 +188,66 @@ def enumerate_wychoffs_by_ss(
     _save_engineer(cluster_to_enum_engineer, "sites_enumeration")
 
 
+def build_site_symmetry_ops_engineer(
+    engineers_dir: Path = Path(__file__).parent / "engineers") -> "FeatureEngineer":
+    """Build and save the ``site_symmetry_ops`` engineered field.
+
+    For every (sg, site_symm) pair across the 230 3-D space groups, looks up
+    the canonical (first-encountered) Wyckoff position and stores
+    ``wp.get_site_symmetry_object().to_matrix_representation().ravel()`` with
+    constant columns dropped across the full enumeration. Mirrors the
+    constant-removal logic in ``SpaceGroupEncoder.from_sg_set``. Per-SG
+    uniqueness is asserted because the model receives the SG via the start
+    token, and that is the relevant disambiguation scope.
+    """
+    engineers_dir = Path(engineers_dir)
+    engineers_dir.mkdir(exist_ok=True, parents=True)
+
+    raw = {}
+    for spacegroup_number in range(1, N_3D_SPACEGROUPS + 1):
+        group = Group(spacegroup_number)
+        seen_ss = set()
+        for wp in group.Wyckoff_positions:
+            wp.get_site_symmetry()
+            site_symm = wp.site_symm
+            if site_symm in seen_ss:
+                continue
+            seen_ss.add(site_symm)
+            sso = wp.get_site_symmetry_object()
+            raw[(spacegroup_number, site_symm)] = sso.to_matrix_representation().ravel().astype(np.float32)
+
+    matrix = np.stack(list(raw.values()))
+    col_sum = matrix.sum(axis=0)
+    varying = (col_sum > 0) & (col_sum < matrix.shape[0])
+    n_varying = int(varying.sum())
+
+    reduced = {key: vec[varying] for key, vec in raw.items()}
+
+    # Sanity: within each SG the resulting vectors must be pairwise distinct
+    by_sg = defaultdict(dict)
+    for (sg, ss), vec in reduced.items():
+        key = vec.tobytes()
+        if key in by_sg[sg] and by_sg[sg][key] != ss:
+            raise ValueError(
+                f"Site symmetry encoding is not unique within SG {sg}: "
+                f"{by_sg[sg][key]!r} and {ss!r} share a vector")
+        by_sg[sg][key] = ss
+
+    engineer = FeatureEngineer(
+        reduced,
+        ("spacegroup_number", "site_symmetries"),
+        name="site_symmetry_ops",
+        pad_token=np.zeros(n_varying, dtype=np.float32),
+        stop_token=np.zeros(n_varying, dtype=np.float32),
+        mask_token=np.ones(n_varying, dtype=np.float32),
+        default_value=np.zeros(n_varying, dtype=np.float32))
+
+    serialised = WyckoffProcessor._serialise_feature_engineer(engineer)
+    (engineers_dir / "site_symmetry_ops.json").write_text(
+        serialised.model_dump_json(indent=2), encoding="utf-8")
+    return engineer
+
+
 def assign_to_clusters(
     distances: pd.DataFrame):
 
@@ -270,6 +330,8 @@ def main():
     print("Done generating Wyckoff mappings JSON.")
     enumerate_wychoffs_by_ss()
     print("Done enumerating Wyckoff positions inside site symmetry.")
+    build_site_symmetry_ops_engineer()
+    print("Done building site_symmetry_ops engineer.")
     get_augmentation_dict()
     print("Done test-running Wyckoff positions augmentation.")
 

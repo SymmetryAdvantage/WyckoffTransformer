@@ -48,16 +48,25 @@ def smact_validity(comp, count,
                    use_pauling_test=True,
                    include_alloys=True):
     elem_symbols = tuple(comp)
-    space = smact.element_dictionary(elem_symbols)
-    smact_elems = [e[1] for e in space.items()]
-    electronegs = [e.pauling_eneg for e in smact_elems]
-    ox_combos = [e.oxidation_states for e in smact_elems]
     if len(set(elem_symbols)) == 1:
         return True
     if include_alloys:
         is_metal_list = [elem_s in smact.metals for elem_s in elem_symbols]
         if all(is_metal_list):
             return True
+    try:
+        space = smact.element_dictionary(elem_symbols)
+    except NameError as e:
+        logger.warning("SMACT has no elemental data for %s: %s", elem_symbols, e)
+        return False
+    smact_elems = [e[1] for e in space.items()]
+    electronegs = [e.pauling_eneg for e in smact_elems]
+    ox_combos = [e.oxidation_states for e in smact_elems]
+    missing_ox = [sym for sym, ox in zip(space.keys(), ox_combos) if ox is None]
+    if missing_ox:
+        logger.warning("SMACT has no oxidation states for %s (composition %s); marking invalid",
+                       missing_ox, dict(zip(elem_symbols, count)))
+        return False
 
     threshold = np.max(count)
     compositions = []
@@ -98,10 +107,20 @@ def smact_validity_optimised(
         return True
     if include_alloys and element_set.issubset(smact.metals):
         return True
-    
-    space = smact.element_dictionary(elem_symbols)
+
+    try:
+        space = smact.element_dictionary(elem_symbols)
+    except NameError as e:
+        # SMACT raises NameError on elements it has no data for (e.g. Hs).
+        logger.warning("SMACT has no elemental data for %s: %s", elem_symbols, e)
+        return False
     electronegs = [e.pauling_eneg for e in space.values()]
     ox_combos = [e.oxidation_states for e in space.values()]
+    missing_ox = [sym for sym, ox in zip(space.keys(), ox_combos) if ox is None]
+    if missing_ox:
+        logger.warning("SMACT has no oxidation states for %s (composition %s); marking invalid",
+                       missing_ox, dict(zip(elem_symbols, count)))
+        return False
 
     if apply_gcd:
         gcd_count = gcd(*count)

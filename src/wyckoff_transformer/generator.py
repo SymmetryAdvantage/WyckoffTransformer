@@ -216,19 +216,23 @@ class WyckoffGenerator():
         # Since we are doing in-place operations, we can just pre-assign everything to be a mask
         generated = []
         for field in self.cascade_order:
-            if np.issubdtype(type(self.masks[field]), np.integer) or self.masks[field].ndim == 0:
-                dtype = torch.int64 if np.issubdtype(type(self.masks[field]), np.integer) else self.masks[field].dtype
-                generated.append(torch.full((batch_size, max_length), self.masks[field],
-                                             dtype=dtype, device=device))
+            mask = self.masks[field]
+            if np.issubdtype(type(mask), np.integer):
+                generated.append(torch.full((batch_size, max_length), mask,
+                                             dtype=torch.int64, device=device))
+                continue
+            mask_tensor = torch.as_tensor(mask, device=device)
+            if mask_tensor.dim() == 0:
+                generated.append(torch.full((batch_size, max_length), mask_tensor.item(),
+                                             dtype=mask_tensor.dtype, device=device))
+            elif mask_tensor.dim() == 1:
+                # Vector cascade fields go through pass-through embedding + nn.Linear.
+                # The model's parameters are float32, so keep the vector tensor at
+                # float32 to avoid an implicit float64 promotion in torch.cat.
+                mask_tensor = mask_tensor.to(torch.float32)
+                generated.append(mask_tensor.view(1, 1, -1).expand(batch_size, max_length, -1).clone())
             else:
-                unsqueezed_mask = self.masks[field].unsqueeze(0)
-                if self.masks[field].dim() == 0:
-                    generated.append(torch.tile(unsqueezed_mask, (batch_size, max_length)))
-                elif self.masks[field].dim() == 1:
-                    unsqueezed_mask = unsqueezed_mask.unsqueeze(0)
-                    generated.append(torch.tile(unsqueezed_mask, (batch_size, max_length, 1)))
-                else:
-                    raise NotImplementedError("Mask should be a scalar or a vector")
+                raise NotImplementedError("Mask should be a scalar or a vector")
                     
         # We have a problem. Engeineers by default can only work with data, not output of other engineers.
         if 'harmonic_site_symmetries' in self.cascade_order and 'sites_enumeration' not in self.cascade_order:
