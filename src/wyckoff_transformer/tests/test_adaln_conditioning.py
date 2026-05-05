@@ -152,9 +152,7 @@ class TestCascadeTransformerWithConditionDim(unittest.TestCase):
         model = self._build_model(condition_dim=1)
         start = torch.tensor([0, 1, 2], dtype=torch.int64)
         cascade = [torch.tensor([[0, 1], [1, 0], [2, 0]], dtype=torch.int64)]
-        # Match the model's parameter dtype: torch.set_default_dtype may have been
-        # changed by another test (e.g. MACE calculator init flips it to float64).
-        cond = torch.tensor([[0.5], [-0.5], [1.5]], dtype=next(model.parameters()).dtype)
+        cond = torch.tensor([[0.5], [-0.5], [1.5]], dtype=torch.float32)
         out = model(start, cascade, padding_mask=None, prediction_head=0, cond=cond)
         # Output is the prediction head applied to the last token; shape [batch_size, num_classes]
         self.assertEqual(out.shape, (3, 3))

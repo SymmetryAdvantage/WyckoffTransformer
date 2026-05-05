@@ -2,11 +2,30 @@
 import hashlib
 import logging
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Union
 
 import torch
 from ase.calculators.calculator import Calculator
+
+_DTYPE_BY_NAME = {"float32": torch.float32, "float64": torch.float64}
+
+
+@contextmanager
+def _scoped_default_dtype(dtype: torch.dtype):
+    """Set ``torch``'s default dtype for the duration of the block.
+
+    MACE's calculator both flips ``torch.set_default_dtype`` during
+    construction and relies on it inside ``calculate`` (via dtype-less
+    ``torch.zeros``), so we set the dtype on entry and restore it on exit.
+    """
+    saved = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        yield
+    finally:
+        torch.set_default_dtype(saved)
 
 logger = logging.getLogger(__name__)
 
@@ -100,12 +119,30 @@ def build_mace_calculator(
     # partially initialise MACECalculator (which can allocate GPU memory and
     # spawn helper processes) only to tear it down and build a second instance.
     enable_cueq = _cueq_available()
-    calc = MACECalculator(
-        model_paths=model_path,
-        device=device,
-        enable_cueq=enable_cueq,
-        default_dtype=dtype,
-    )
+
+    torch_dtype = _DTYPE_BY_NAME[dtype]
+
+    class _IsolatedMACECalculator(MACECalculator):
+        """MACECalculator that confines its ``torch.set_default_dtype`` change.
+
+        MACE flips the global default dtype on construction and depends on
+        it during ``calculate`` (a dtype-less ``torch.zeros``). Wrapping
+        both with :func:`_scoped_default_dtype` keeps the side effect from
+        leaking to other code in the same process (e.g. our model, whose
+        ``nn.Linear`` weights would otherwise be created as float64).
+        """
+
+        def calculate(self, *args, **kwargs):
+            with _scoped_default_dtype(torch_dtype):
+                return super().calculate(*args, **kwargs)
+
+    with _scoped_default_dtype(torch_dtype):
+        calc = _IsolatedMACECalculator(
+            model_paths=model_path,
+            device=device,
+            enable_cueq=enable_cueq,
+            default_dtype=dtype,
+        )
     logger.info(
         "MACE calculator loaded %s cuEQ support on %s.",
         "with" if enable_cueq else "without",
