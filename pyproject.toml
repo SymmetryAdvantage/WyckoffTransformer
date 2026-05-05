@@ -24,7 +24,8 @@ dependencies = [
   "pyxtal ~=1.1",
   "pydantic >=2.12.5",
   "huggingface-hub>=1.7.2",
-  "matminer"
+  "matminer",
+  "safetensors>=0.7.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
