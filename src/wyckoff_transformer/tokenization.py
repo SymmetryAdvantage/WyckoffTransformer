@@ -13,12 +13,14 @@ from pandas import DataFrame
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file as save_safetensors_file
+from pandarallel import pandarallel
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 
 from wyckoff_transformer.wyckoff_processor import (
     FeatureEngineer,
-    WyckoffProcessor
+    WyckoffProcessor,
+    argsort_multiple,
 )
 
 WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
@@ -225,15 +227,52 @@ class PassThroughTokeniser():
 TokeniserType = EnumeratingTokeniser | SpaceGroupEncoder | PassThroughTokeniser
 TENSOR_CACHE_SUFFIX = ".safetensors"
 _TENSOR_CACHE_FORMAT_KEY = "wyckoff_transformer_tensor_cache_format"
-_TENSOR_CACHE_FORMAT_VERSION = "1"
+_TENSOR_CACHE_FORMAT_VERSION = "2"
 _TENSOR_CACHE_STRUCTURE_KEY = "wyckoff_transformer_tensor_cache_structure"
+
+
+def _store_cache_tensor(flat_tensors: dict[str, torch.Tensor], tensor: torch.Tensor) -> str:
+    tensor_key = f"tensor_{len(flat_tensors)}"
+    flat_tensors[tensor_key] = tensor.detach().cpu().contiguous()
+    return tensor_key
+
+
+def _serialise_tensor_list(node: list[torch.Tensor], flat_tensors: dict[str, torch.Tensor]) -> dict[str, Any]:
+    if not node:
+        return {"type": "tensor_list", "storage": "empty"}
+
+    tensors = [tensor.detach().cpu().contiguous() for tensor in node]
+    dims = {tensor.dim() for tensor in tensors}
+    if len(dims) != 1:
+        raise TypeError("Tensor cache lists must contain tensors with the same rank")
+
+    ndim = dims.pop()
+    shapes = [tuple(tensor.shape) for tensor in tensors]
+    if len(set(shapes)) == 1:
+        data_key = _store_cache_tensor(flat_tensors, torch.stack(tensors, dim=0))
+        return {"type": "tensor_list", "storage": "stack", "data": data_key}
+
+    if ndim == 0:
+        raise TypeError("Tensor cache cannot serialise mixed scalar tensor shapes")
+
+    tail_shapes = {tuple(tensor.shape[1:]) for tensor in tensors}
+    if len(tail_shapes) != 1:
+        raise TypeError("Tensor cache lists must contain tensors with matching trailing dimensions")
+
+    lengths = torch.tensor([tensor.shape[0] for tensor in tensors], dtype=torch.int64)
+    data_key = _store_cache_tensor(flat_tensors, torch.cat(tensors, dim=0))
+    lengths_key = _store_cache_tensor(flat_tensors, lengths)
+    return {
+        "type": "tensor_list",
+        "storage": "concat",
+        "data": data_key,
+        "lengths": lengths_key,
+    }
 
 
 def _serialise_tensor_tree(node: Any, flat_tensors: dict[str, torch.Tensor]) -> dict[str, Any]:
     if isinstance(node, torch.Tensor):
-        tensor_key = f"tensor_{len(flat_tensors)}"
-        flat_tensors[tensor_key] = node.detach().cpu().contiguous()
-        return {"type": "tensor", "key": tensor_key}
+        return {"type": "tensor", "key": _store_cache_tensor(flat_tensors, node)}
 
     if isinstance(node, dict):
         if not all(isinstance(key, str) for key in node):
@@ -247,8 +286,28 @@ def _serialise_tensor_tree(node: Any, flat_tensors: dict[str, torch.Tensor]) -> 
         }
 
     if isinstance(node, list):
+        if not node:
+            return {"type": "list", "storage": "empty"}
+
+        if all(isinstance(item, torch.Tensor) for item in node):
+            return _serialise_tensor_list(node, flat_tensors)
+
+        if all(isinstance(item, list) for item in node):
+            lengths_key = _store_cache_tensor(
+                flat_tensors,
+                torch.tensor([len(item) for item in node], dtype=torch.int64),
+            )
+            flattened_items = list(chain.from_iterable(node))
+            return {
+                "type": "list",
+                "storage": "nested",
+                "lengths": lengths_key,
+                "items": _serialise_tensor_tree(flattened_items, flat_tensors),
+            }
+
         return {
             "type": "list",
+            "storage": "items",
             "items": [_serialise_tensor_tree(item, flat_tensors) for item in node],
         }
 
@@ -267,11 +326,43 @@ def _deserialise_tensor_tree(structure: dict[str, Any], flat_tensors: dict[str, 
             for key, value in structure["items"].items()
         }
 
+    if node_type == "tensor_list":
+        storage = structure["storage"]
+        if storage == "empty":
+            return []
+
+        data = flat_tensors[structure["data"]]
+        if storage == "stack":
+            return list(data.unbind(dim=0))
+
+        if storage == "concat":
+            lengths = flat_tensors[structure["lengths"]].tolist()
+            return list(torch.split(data, lengths, dim=0))
+
+        raise ValueError(f"Unsupported tensor cache tensor-list storage type: {storage}")
+
     if node_type == "list":
-        return [
-            _deserialise_tensor_tree(item, flat_tensors)
-            for item in structure["items"]
-        ]
+        storage = structure["storage"]
+        if storage == "empty":
+            return []
+
+        if storage == "nested":
+            lengths = flat_tensors[structure["lengths"]].tolist()
+            flat_items = _deserialise_tensor_tree(structure["items"], flat_tensors)
+            output = []
+            offset = 0
+            for length in lengths:
+                output.append(flat_items[offset:offset + length])
+                offset += length
+            return output
+
+        if storage == "items":
+            return [
+                _deserialise_tensor_tree(item, flat_tensors)
+                for item in structure["items"]
+            ]
+
+        raise ValueError(f"Unsupported tensor cache list storage type: {storage}")
 
     raise ValueError(f"Unsupported tensor cache node type: {node_type}")
 
