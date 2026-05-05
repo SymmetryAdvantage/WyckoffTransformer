@@ -27,7 +27,7 @@ jobs:
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
         cp uv.toml.cpu uv.toml
-        uv sync --extra dev --extra cdvae --extra research  --extra relax
+        uv sync --extra dev --extra cdvae --extra research --extra relax
     - name: Test wyckoff-transformer with pytest
       run: |
         uv run pytest --run-relax
