@@ -468,7 +468,28 @@ class TestWyckoffProcessor(unittest.TestCase):
 
 
 class TestLoadTensorsAndHelpers(unittest.TestCase):
-    def test_load_tensors_and_tokenisers_from_cache_pt(self):
+    def test_tensor_cache_roundtrip_preserves_nested_structure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_path = Path(tmpdir) / f"nested{tok.TENSOR_CACHE_SUFFIX}"
+            payload = {
+                "train": {
+                    "x": torch.tensor([1, 2]),
+                    "augmented": [torch.tensor([3]), torch.tensor([4, 5])],
+                },
+                "val": {
+                    "nested": [[torch.tensor([6])]],
+                },
+            }
+
+            tok.save_tensor_cache(payload, cache_path)
+            loaded = tok.load_tensor_cache(cache_path)
+
+            self.assertTrue(torch.equal(loaded["train"]["x"], payload["train"]["x"]))
+            self.assertTrue(torch.equal(loaded["train"]["augmented"][0], payload["train"]["augmented"][0]))
+            self.assertTrue(torch.equal(loaded["train"]["augmented"][1], payload["train"]["augmented"][1]))
+            self.assertTrue(torch.equal(loaded["val"]["nested"][0][0], payload["val"]["nested"][0][0]))
+
+    def test_load_tensors_and_tokenisers_from_cache_safetensors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             ds_dir = base / "toy"
@@ -484,7 +505,7 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
                 tokenisers=tokenisers,
                 token_engineers=token_engineers,
             ).save_pretrained(ds_dir / "tokenisers" / "cfg.json")
-            torch.save({"train": {"x": torch.tensor([1])}}, ds_dir / "tensors" / "cfg.pt")
+            tok.save_tensor_cache({"train": {"x": torch.tensor([1])}}, ds_dir / "tensors" / f"cfg{tok.TENSOR_CACHE_SUFFIX}")
 
             tensors, loaded_tokenisers, loaded_token_engineers = tok.load_tensors_and_tokenisers(
                 dataset="toy",
@@ -497,7 +518,7 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
             self.assertEqual(set(loaded_tokenisers.keys()), set(tokenisers.keys()))
             self.assertEqual(loaded_token_engineers, token_engineers)
 
-    def test_load_tensors_and_tokenisers_missing_pt_raises(self):
+    def test_load_tensors_and_tokenisers_missing_cache_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             ds_dir = base / "toy"
@@ -826,7 +847,7 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
             tok.WyckoffProcessor(config={}, tokenisers={}, token_engineers={}).save_pretrained(
                 ds_dir / "tokenisers" / "cfg.json"
             )
-            torch.save({"train": {"x": torch.tensor([1])}}, ds_dir / "tensors" / "cfg.pt")
+            tok.save_tensor_cache({"train": {"x": torch.tensor([1])}}, ds_dir / "tensors" / f"cfg{tok.TENSOR_CACHE_SUFFIX}")
             _ = tok.load_tensors_and_tokenisers(
                 dataset="toy",
                 config_name="cfg",

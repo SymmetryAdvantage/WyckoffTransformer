@@ -1,6 +1,5 @@
 import gzip
 import json
-import pickle
 import sys
 import unittest
 from pathlib import Path
@@ -8,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import torch
+from omegaconf import OmegaConf
 
 from wyckoff_transformer.cli.generate import (
     _decode_space_groups,
@@ -16,6 +16,7 @@ from wyckoff_transformer.cli.generate import (
     main,
     prepare_start_tensor_from_cache,
 )
+from wyckoff_transformer import tokenization as tok
 
 
 # ---------------------------------------------------------------------------
@@ -73,20 +74,20 @@ class TestSelectTensorAndTokeniser(unittest.TestCase):
         self._tmp.cleanup()
 
     def _write_pair(self, stem):
-        (self.cache_path / "tensors" / f"{stem}.pt").write_bytes(b"")
-        (self.cache_path / "tokenisers" / f"{stem}.pkl.gz").write_bytes(b"")
+        (self.cache_path / "tensors" / f"{stem}{tok.TENSOR_CACHE_SUFFIX}").write_bytes(b"")
+        (self.cache_path / "tokenisers" / f"{stem}.json").write_text("{}", encoding="ascii")
 
     def test_finds_matching_pair(self):
         self._write_pair("v1")
         tensor_path, tokeniser_path = _select_tensor_and_tokeniser(self.cache_path)
-        self.assertEqual(tensor_path.name, "v1.pt")
-        self.assertEqual(tokeniser_path.name, "v1.pkl.gz")
+        self.assertEqual(tensor_path.name, f"v1{tok.TENSOR_CACHE_SUFFIX}")
+        self.assertEqual(tokeniser_path.name, "v1.json")
 
     def test_skips_tensor_without_tokeniser(self):
-        (self.cache_path / "tensors" / "orphan.pt").write_bytes(b"")
+        (self.cache_path / "tensors" / f"orphan{tok.TENSOR_CACHE_SUFFIX}").write_bytes(b"")
         self._write_pair("v2")
         _, tokeniser_path = _select_tensor_and_tokeniser(self.cache_path)
-        self.assertEqual(tokeniser_path.name, "v2.pkl.gz")
+        self.assertEqual(tokeniser_path.name, "v2.json")
 
     def test_missing_tensors_dir_raises(self):
         import shutil
@@ -106,13 +107,13 @@ class TestSelectTensorAndTokeniser(unittest.TestCase):
 class TestDecodeSpaceGroups(unittest.TestCase):
     def _make_enum_tokeniser(self, mapping):
         """Simulate EnumeratingTokeniser with a to_token dict."""
-        tok = SimpleNamespace(to_token=mapping)
-        return tok
+        tokeniser = SimpleNamespace(to_token=mapping)
+        return tokeniser
 
     def test_1d_tensor_counts(self):
-        tok = self._make_enum_tokeniser({0: 1, 1: 225, 2: 225})
+        tokeniser = self._make_enum_tokeniser({0: 1, 1: 225, 2: 225})
         tensor = torch.tensor([0, 1, 2, 1])
-        counts = _decode_space_groups(tensor, tok)
+        counts = _decode_space_groups(tensor, tokeniser)
         self.assertEqual(counts[1], 1)
         self.assertEqual(counts[225], 3)
 
@@ -120,13 +121,13 @@ class TestDecodeSpaceGroups(unittest.TestCase):
         sg_numbers = [1, 2, 225]
         encoded = torch.eye(3, dtype=torch.float32)
 
-        tok = MagicMock()
-        tok.keys.return_value = sg_numbers
-        tok.encode_spacegroups.return_value = encoded
+        tokeniser = MagicMock()
+        tokeniser.keys.return_value = sg_numbers
+        tokeniser.encode_spacegroups.return_value = encoded
 
         # Two rows of sg=1, one of sg=225
         start_tensor = torch.stack([encoded[0], encoded[0], encoded[2]])
-        counts = _decode_space_groups(start_tensor, tok)
+        counts = _decode_space_groups(start_tensor, tokeniser)
         self.assertEqual(counts[1], 2)
         self.assertEqual(counts[225], 1)
         self.assertNotIn(2, counts)
@@ -135,19 +136,19 @@ class TestDecodeSpaceGroups(unittest.TestCase):
         sg_numbers = [1]
         encoded = torch.eye(1, dtype=torch.float32)
 
-        tok = MagicMock()
-        tok.keys.return_value = sg_numbers
-        tok.encode_spacegroups.return_value = encoded
+        tokeniser = MagicMock()
+        tokeniser.keys.return_value = sg_numbers
+        tokeniser.encode_spacegroups.return_value = encoded
 
         bad_tensor = torch.tensor([[0.5, 0.5]])
         with self.assertRaises(ValueError, msg="unknown space group encoding"):
-            _decode_space_groups(bad_tensor, tok)
+            _decode_space_groups(bad_tensor, tokeniser)
 
     def test_2d_no_encode_spacegroups_raises(self):
-        tok = SimpleNamespace()  # no encode_spacegroups
+        tokeniser = SimpleNamespace()  # no encode_spacegroups
         tensor = torch.zeros((2, 3))
         with self.assertRaises(ValueError):
-            _decode_space_groups(tensor, tok)
+            _decode_space_groups(tensor, tokeniser)
 
 
 # ---------------------------------------------------------------------------
@@ -170,13 +171,18 @@ class TestPrepareStartTensorFromCache(unittest.TestCase):
         cached_tensors = {
             "train": {"spacegroup_number": torch.tensor([0, 0, 1])},
         }
-        torch.save(cached_tensors, dataset_dir / "tensors" / "v1.pt")
+        tok.save_tensor_cache(cached_tensors, dataset_dir / "tensors" / f"v1{tok.TENSOR_CACHE_SUFFIX}")
 
-        # Source tokeniser: EnumeratingTokeniser-style with to_token
-        source_tok = SimpleNamespace(to_token={0: 225, 1: 1})
-        with gzip.open(dataset_dir / "tokenisers" / "v1.pkl.gz", "wb") as f:
-            pickle.dump({"spacegroup_number": source_tok}, f)
-            pickle.dump({}, f)  # token engineers placeholder
+        source_tok = tok.EnumeratingTokeniser.from_token_set({1, 225}, include_stop=False)
+        tok.WyckoffProcessor(
+            config=OmegaConf.create({
+                "dtype": "int64",
+                "token_fields": {"pure_categorical": ["elements"]},
+                "sequence_fields": {"pure_categorical": ["spacegroup_number"]},
+            }),
+            tokenisers={"spacegroup_number": source_tok},
+            token_engineers={},
+        ).save_pretrained(dataset_dir / "tokenisers" / "v1.json")
 
     def tearDown(self):
         self._tmp.cleanup()

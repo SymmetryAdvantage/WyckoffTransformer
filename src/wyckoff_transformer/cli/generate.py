@@ -1,8 +1,6 @@
 import argparse
-import collections
 import gzip
 import json
-import pickle
 import logging
 import numbers
 import time
@@ -14,7 +12,9 @@ import torch
 import wandb
 from omegaconf import OmegaConf
 
+from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, load_tensor_cache
 from wyckoff_transformer.trainer import WyckoffTrainer
+from wyckoff_transformer.wyckoff_processor import WyckoffProcessor
 
 
 def _resolve_sg_cache_path(dataset_name: str, cache_root: Path | None = None) -> Path:
@@ -37,8 +37,8 @@ def _select_tensor_and_tokeniser(cache_path: Path) -> Tuple[Path, Path]:
     tokeniser_dir = cache_path / "tokenisers"
     if not tensor_dir.exists() or not tokeniser_dir.exists():
         raise FileNotFoundError(f"Cache path {cache_path} lacks 'tensors' or 'tokenisers' directories.")
-    for tensor_path in sorted(tensor_dir.glob("*.pt")):
-        tokeniser_path = tokeniser_dir / f"{tensor_path.stem}.pkl.gz"
+    for tensor_path in sorted(tensor_dir.glob(f"*{TENSOR_CACHE_SUFFIX}")):
+        tokeniser_path = tokeniser_dir / f"{tensor_path.stem}.json"
         if tokeniser_path.exists():
             return tensor_path, tokeniser_path
     raise FileNotFoundError(f"No matching tensor/tokeniser pair found in {cache_path}.")
@@ -83,19 +83,8 @@ def prepare_start_tensor_from_cache(
     cache_path = _resolve_sg_cache_path(dataset_name, cache_root=cache_root)
     tensor_path, tokeniser_path = _select_tensor_and_tokeniser(cache_path)
 
-    try:
-        cached_tensors = torch.load(tensor_path, map_location="cpu")
-    except pickle.UnpicklingError as exc:
-        if "collections.defaultdict" not in str(exc):
-            raise
-        try:
-            torch.serialization.add_safe_globals([collections.defaultdict])  # type: ignore[attr-defined]
-        except AttributeError:
-            pass
-        cached_tensors = torch.load(tensor_path, map_location="cpu", weights_only=False)
-    with gzip.open(tokeniser_path, "rb") as f:
-        cached_tokenisers = pickle.load(f)
-        _ = pickle.load(f)  # token engineers, unused here
+    cached_tensors = load_tensor_cache(tensor_path, map_location="cpu")
+    cached_tokenisers = WyckoffProcessor.from_pretrained(tokeniser_path).tokenisers
 
     start_field = trainer.start_name
     if start_field not in cached_tokenisers:

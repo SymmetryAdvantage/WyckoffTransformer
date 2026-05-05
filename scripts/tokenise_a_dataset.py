@@ -1,13 +1,12 @@
 import argparse
 import omegaconf
-import torch
 from pathlib import Path
 from operator import itemgetter
 import pickle
 import gzip
 import logging
 
-from wyckoff_transformer.tokenization import WyckoffProcessor
+from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, WyckoffProcessor, save_tensor_cache
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ def main():
         datasets_pd = {name: dataset.sample(100) for name, dataset in datasets_pd.items()}
         print("Piloting with 100 samples")
     processor = WyckoffProcessor.from_config(config, tokenizer_path=args.tokenizer_path)
-    tensors, tokenisers, token_engineers = processor.tokenise_dataset(
+    tensors, _, token_engineers = processor.tokenise_dataset(
         datasets_pd, n_jobs=args.n_jobs)
     if args.debug and "multiplicity" in token_engineers:
         index = 0
@@ -53,9 +52,8 @@ def main():
             [tensors["val"]["site_symmetries"][:, index].tolist(), tensors["val"]["sites_enumeration"][:, index].tolist()])
         assert (multiplicities_from_tokens == datasets_pd["val"]["multiplicity"].map(itemgetter(index))).all()
         logger.debug("Multiplicities from tokens match the original dataset")
-    cache_tensors_path = cache_path / 'tensors' / tokenizer_full_name.with_suffix('.pt')
-    cache_tensors_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(tensors, cache_tensors_path)
+    cache_tensors_path = cache_path / 'tensors' / tokenizer_full_name.with_suffix(TENSOR_CACHE_SUFFIX)
+    save_tensor_cache(tensors, cache_tensors_path)
     cache_processor_path = cache_path / 'tokenisers' / tokenizer_full_name.with_suffix('.json')
     cache_processor_path.parent.mkdir(parents=True, exist_ok=True)
     processor.save_pretrained(cache_processor_path)

@@ -1,4 +1,4 @@
-from typing import Dict, Iterable, NamedTuple, Set, FrozenSet, Optional, List, Tuple
+from typing import Any, Dict, Iterable, NamedTuple, Set, FrozenSet, Optional, List, Tuple
 import json
 import gzip
 import logging
@@ -11,14 +11,14 @@ from pathlib import Path
 import numpy as np
 from pandas import DataFrame
 import torch
-from pandarallel import pandarallel
+from safetensors import safe_open
+from safetensors.torch import save_file as save_safetensors_file
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 
 from wyckoff_transformer.wyckoff_processor import (
     FeatureEngineer,
-    WyckoffProcessor,
-    argsort_multiple,
+    WyckoffProcessor
 )
 
 WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
@@ -223,6 +223,95 @@ class PassThroughTokeniser():
 
 
 TokeniserType = EnumeratingTokeniser | SpaceGroupEncoder | PassThroughTokeniser
+TENSOR_CACHE_SUFFIX = ".safetensors"
+_TENSOR_CACHE_FORMAT_KEY = "wyckoff_transformer_tensor_cache_format"
+_TENSOR_CACHE_FORMAT_VERSION = "1"
+_TENSOR_CACHE_STRUCTURE_KEY = "wyckoff_transformer_tensor_cache_structure"
+
+
+def _serialise_tensor_tree(node: Any, flat_tensors: dict[str, torch.Tensor]) -> dict[str, Any]:
+    if isinstance(node, torch.Tensor):
+        tensor_key = f"tensor_{len(flat_tensors)}"
+        flat_tensors[tensor_key] = node.detach().cpu().contiguous()
+        return {"type": "tensor", "key": tensor_key}
+
+    if isinstance(node, dict):
+        if not all(isinstance(key, str) for key in node):
+            raise TypeError("Tensor cache dictionaries must use string keys")
+        return {
+            "type": "dict",
+            "items": {
+                key: _serialise_tensor_tree(value, flat_tensors)
+                for key, value in node.items()
+            },
+        }
+
+    if isinstance(node, list):
+        return {
+            "type": "list",
+            "items": [_serialise_tensor_tree(item, flat_tensors) for item in node],
+        }
+
+    raise TypeError(f"Unsupported tensor cache value type: {type(node)!r}")
+
+
+def _deserialise_tensor_tree(structure: dict[str, Any], flat_tensors: dict[str, torch.Tensor]) -> Any:
+    node_type = structure["type"]
+
+    if node_type == "tensor":
+        return flat_tensors[structure["key"]]
+
+    if node_type == "dict":
+        return {
+            key: _deserialise_tensor_tree(value, flat_tensors)
+            for key, value in structure["items"].items()
+        }
+
+    if node_type == "list":
+        return [
+            _deserialise_tensor_tree(item, flat_tensors)
+            for item in structure["items"]
+        ]
+
+    raise ValueError(f"Unsupported tensor cache node type: {node_type}")
+
+
+def save_tensor_cache(tensors: dict[str, Any], path: Path | str) -> Path:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    flat_tensors: dict[str, torch.Tensor] = {}
+    structure = _serialise_tensor_tree(tensors, flat_tensors)
+    save_safetensors_file(
+        flat_tensors,
+        str(destination),
+        metadata={
+            _TENSOR_CACHE_FORMAT_KEY: _TENSOR_CACHE_FORMAT_VERSION,
+            _TENSOR_CACHE_STRUCTURE_KEY: json.dumps(structure, separators=(",", ":")),
+        },
+    )
+    return destination
+
+
+def load_tensor_cache(path: Path | str, map_location: str | torch.device = "cpu") -> dict[str, Any]:
+    source = Path(path)
+    if source.suffix != TENSOR_CACHE_SUFFIX:
+        raise ValueError(f"Unsupported tensor cache extension: {source.suffix}")
+
+    device = str(map_location)
+    with safe_open(str(source), framework="pt", device=device) as handle:
+        metadata = handle.metadata()
+        if metadata is None:
+            raise ValueError(f"Tensor cache {source} is missing metadata")
+        if metadata.get(_TENSOR_CACHE_FORMAT_KEY) != _TENSOR_CACHE_FORMAT_VERSION:
+            raise ValueError(f"Tensor cache {source} has unsupported metadata format")
+        try:
+            structure = json.loads(metadata[_TENSOR_CACHE_STRUCTURE_KEY])
+        except KeyError as exc:
+            raise ValueError(f"Tensor cache {source} is missing structure metadata") from exc
+        flat_tensors = {key: handle.get_tensor(key) for key in handle.keys()}
+
+    return _deserialise_tensor_tree(structure, flat_tensors)
 
 
 def tokenise_engineer(
@@ -287,10 +376,11 @@ def load_tensors_and_tokenisers(
         processor = WyckoffProcessor.from_pretrained(this_cache_path / "tokenisers" / f"{config_name}.json")
         tokenisers = processor.tokenisers
         token_engineers = processor.token_engineers
+        safetensors_path = this_cache_path / 'tensors' / f'{config_name}{TENSOR_CACHE_SUFFIX}'
         try:
-            tensors = torch.load(this_cache_path / 'tensors' / f'{config_name}.pt', weights_only=False)
+            tensors = load_tensor_cache(safetensors_path)
         except FileNotFoundError:
-            logger.warning("Tensors not found at %s", this_cache_path / 'tensors' / f'{config_name}.pt')
+            logger.warning("Tensors not found at %s", safetensors_path)
             raise
         return tensors, tokenisers, token_engineers
     else:
