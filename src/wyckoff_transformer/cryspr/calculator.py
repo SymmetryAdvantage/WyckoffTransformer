@@ -110,6 +110,13 @@ def build_mace_calculator(
         An ASE :class:`~ase.calculators.calculator.Calculator` backed by MACE.
     """
     from mace.calculators import MACECalculator  # optional dependency
+    from .mace_urls import MODEL_URLS
+
+    if model in MODEL_URLS.keys():
+        logger.info(f"'{model}' found in MACE tags")
+        model = MODEL_URLS[model]
+    else:
+        logger.info(f"Interpreting {model} as path/url.")
 
     if device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
