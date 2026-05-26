@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from itertools import repeat
 import warnings
 import gzip
+import zipfile
+from io import BytesIO
 from multiprocessing import Pool
 import pickle
 from copy import deepcopy
@@ -51,7 +53,8 @@ StructureStorage = Enum("StructureStorage", [
     "atomated_csv",
     "invalid_cifs",
     "Pickle",
-    "csv_cif_with_missing_values"
+    "csv_cif_with_missing_values",
+    "nian"
     ])
 
 WyckoffStorage = Enum("WyckoffStorage", [
@@ -473,6 +476,44 @@ def load_SymmCD_csv(path: Path):
     data["structure"] = data.cif.apply(read_cif)
     return data
 
+def load_nian(path: Path) -> pd.DataFrame:
+    """Load datasets in the format used by Nian Liu et al. (Composable Crystals, Crys-JEPA).
+
+    The archive contains one or more ``*.csv.gz`` files, each with ``material_id``
+    and ``cif`` columns. ``material_id`` is unique only within a single inner CSV,
+    so the combined index is prefixed with the CSV stem (e.g. ``"0-42"``).
+    """
+    dfs = []
+    with zipfile.ZipFile(path, "r") as zf:
+        csv_names = sorted(n for n in zf.namelist() if n.endswith(".csv.gz"))
+        if not csv_names:
+            raise ValueError(f"No *.csv.gz entries found in {path}")
+        for name in csv_names:
+            file_stem = Path(name).name.removesuffix(".csv.gz")
+            with zf.open(name) as f:
+                payload = f.read()
+            part = pd.read_csv(BytesIO(payload), compression="gzip")
+            part["material_id"] = file_stem + "-" + part["material_id"].astype(str)
+            dfs.append(part)
+    data = pd.concat(dfs, ignore_index=True)
+    data.set_index("material_id", inplace=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=(
+                r"Issues encountered while parsing CIF: \d+"
+                " fractional coordinates rounded to ideal"
+                " values to avoid issues with finite precision."
+            ),
+            category=UserWarning,
+            module="pymatgen.io.cif",
+        )
+        with Pool() as pool:
+            data["structure"] = pool.map(read_cif, data["cif"])
+    data.drop(columns=["cif"], inplace=True)
+    return data
+
+
 def load_pickle(path: Path):
     if path.suffix == ".pkl":
         opener = open
@@ -584,6 +625,8 @@ class GeneratedDataset():
             self.data = load_atomated_csv(path)
         elif storage_type == StructureStorage.Pickle:
             self.data = load_pickle(path)
+        elif storage_type == StructureStorage.nian:
+            self.data = load_nian(path)
         else:
             raise ValueError("Unknown storage type")
         if self.data.index.duplicated().any():

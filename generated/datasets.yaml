@@ -364,6 +364,7 @@ mp_20:
       structures:
         path: mp_20/Compositional/DFT/compositionality_mp_20_unrelax-MP GGA static.csv.gz
         storage_type: atomated_csv
+        comment: Most structures went into DFT as-is; for the 91 structures where DFT on the raw structure failed, the structure was relaxed with MatterSim and DFT was repeated. The as-is-only subset is preserved in the sibling Raw-DFT/ directory.
   Crys-JEPA:
     structures:
       path: mp_20/Crys-JEPA/jepa_mp_20.zip
@@ -374,6 +375,7 @@ mp_20:
       structures:
         path: mp_20/Crys-JEPA/DFT/jepa_mp_20_unrelax-MP GGA static.csv.gz
         storage_type: atomated_csv
+        comment: Most structures went into DFT as-is; for the 10 structures where DFT on the raw structure failed, the structure was relaxed with MatterSim and DFT was repeated. The as-is-only subset is preserved in the sibling Raw-DFT/ directory.
 alex_mp_20:
   Compositional:
     structures:
@@ -385,6 +387,7 @@ alex_mp_20:
       structures:
         path: alex_mp_20/Compositional/DFT/compositionality_alex_mp_unrelax-MP GGA static.csv.gz
         storage_type: atomated_csv
+        comment: Most structures went into DFT as-is; for the 91 structures where DFT on the raw structure failed, the structure was relaxed with MatterSim and DFT was repeated. The as-is-only subset is preserved in the sibling Raw-DFT/ directory.
   Crys-JEPA:
     structures:
       path: alex_mp_20/Crys-JEPA/jepa_alex_mp_20.zip
@@ -395,6 +398,7 @@ alex_mp_20:
       structures:
         path: alex_mp_20/Crys-JEPA/DFT/jepa_alex_mp_unrelax-MP GGA static.csv.gz
         storage_type: atomated_csv
+        comment: Most structures went into DFT as-is; for the 63 structures where DFT on the raw structure failed, the structure was relaxed with MatterSim and DFT was repeated. The as-is-only subset is preserved in the sibling Raw-DFT/ directory.
   MatterGen:
     structures:
       path: alex_mp_20/MatterGen/mattergen_alex_mp_unrelax.csv.gz
