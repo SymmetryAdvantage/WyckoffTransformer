@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 from pymatgen.core import Element, Structure
 from pymatgen.io.cif import CifParser
+from pymatgen.symmetry.analyzer import SymmetryUndeterminedError
 from pyxtal import pyxtal
 
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
@@ -89,7 +90,7 @@ def kick_pyxtal_until_it_works(
             pyxtal_structure = pyxtal()
             pyxtal_structure.from_seed(structure, tol=tol * tolerance, a_tol=a_tol)
             return pyxtal_structure
-        except AttributeError:
+        except (AttributeError, SymmetryUndeterminedError):
             logger.exception(
                 "Attempt %i failed to convert structure %s to symmetry sites with tolerance %f.",
                 attempt,

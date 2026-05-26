@@ -230,8 +230,8 @@ mp_20:
           storage_type: Raymond
       1k-sample:
         structures:
-          path: mp_20/split/test/1k-sample/mp_20_test_1k_sample.pkl.gz
-          storage_type: Pickle
+          path: mp_20/split/test/1k-sample/mp_20_test_1k_sample_structures.json.gz
+          storage_type: PymatgenJson
         WyckoffReduction:
           wyckoffs:
             path: mp_20/split/test/1k-sample/WyckoffReduction/mp_20_test_1k_sample.json.gz

@@ -71,6 +71,7 @@ DATASET_TO_CDVAE = {
     "mp_20": "mp20",
     "mp_2022": "mp20",
     "mp_20_h": "mp20",
+    "alex_mp_20": "mp20",
     "perov_5": "perovskite",
     "carbon_24": "carbon"}
 
@@ -308,7 +309,7 @@ class LetterDictToSitesConverter:
         _m = load_wyckoff_mappings()
         self.wychoffs_enumerated_by_ss = _m.enum_from_ss_letter
         self.ss_from_letter = _m.ss_from_letter
-        from wyckoff_transformer.tokenization import WyckoffProcessor, _SerialisedFeatureEngineer
+        from wyckoff_transformer.wyckoff_processor import WyckoffProcessor, _SerialisedFeatureEngineer
         self.multiplicity_engineer = WyckoffProcessor._deserialise_feature_engineer(
             _SerialisedFeatureEngineer.model_validate_json(
                 Path(multiplicity_engineer_file).read_text(encoding="utf-8")))

@@ -6,6 +6,7 @@ if __name__ == "__main__":
     os.environ["OMP_THREAD_LIMIT"] = "1"
 
 from typing import List, Optional
+import traceback
 import warnings
 from argparse import ArgumentParser
 from pathlib import Path
@@ -71,7 +72,8 @@ def dive_and_cache(
                 transformations, dataset=dataset_name)
             compute_fields_and_cache(data)
         except Exception as e:
-            print(f"Failed to process dataset {dataset_name} with transformations {transformations}: {e}")
+            print(f"Failed to process dataset {dataset_name} with transformations {transformations}: {e!r}")
+            traceback.print_exc()
             failed_transformations.append((dataset_name, transformations, e))
 
     for new_transformation, new_config in this_config.items():
@@ -112,7 +114,7 @@ def main():
         if failed_transformations:
             print("Some transformations failed:")
             for dataset_name, transformations, error in failed_transformations:
-                print(f"Dataset: {dataset_name}, Transformations: {transformations}, Error: {error}")
+                print(f"Dataset: {dataset_name}, Transformations: {transformations}, Error: {error!r}")
 
 
 if __name__ == "__main__":

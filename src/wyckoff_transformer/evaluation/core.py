@@ -110,8 +110,8 @@ def smact_validity_optimised(
 
     try:
         space = smact.element_dictionary(elem_symbols)
-    except NameError as e:
-        # SMACT raises NameError on elements it has no data for (e.g. Hs).
+    except (NameError, KeyError) as e:
+        # SMACT raises NameError/KeyError on elements it has no data for (e.g. Hs).
         logger.warning("SMACT has no elemental data for %s: %s", elem_symbols, e)
         return False
     electronegs = [e.pauling_eneg for e in space.values()]
