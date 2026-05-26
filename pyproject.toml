@@ -26,6 +26,9 @@ dependencies = [
   "huggingface-hub>=1.7.2",
   "matminer",
   "safetensors>=0.7.0",
+  "datasets>=4.8.5",
+  "pyarrow>=24.0.0",
+  "fsspec>=2026.2.0",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",

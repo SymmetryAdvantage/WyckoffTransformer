@@ -33,11 +33,11 @@ from pymatgen.core import Structure, Element
 try:
     # These functions are assumed to be defined externally and handle
     # the core logic of reading CIFs and running pyxtal.
-    from data import read_cif, kick_pyxtal_until_it_works
+    from wyckoff_transformer.data import read_cif, kick_pyxtal_until_it_works
 except ImportError:
     sys.exit(
         "Error: Could not import 'read_cif' and 'kick_pyxtal_until_it_works'. "
-        "Please ensure 'data.py' is in the correct path."
+        "Please ensure the wyckoff_transformer package is importable."
     )
 
 # --- Configuration ---

@@ -12,9 +12,10 @@ If CIF generation fails for a row, the error message is stored instead,
 ensuring the process does not halt. The updated DataFrame is then saved
 to a specified output directory with the same filename.
 
-Updated to use pandarallel for parallel processing.
+Updated to use pandarallel for parallel processing and argparse for paths.
 """
 
+import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -28,40 +29,6 @@ try:
 except ImportError:
     print("Pymatgen not found. Please install it using: pip install pymatgen")
     exit()
-
-
-# --- Configuration ---
-# PLEASE UPDATE THESE PATHS ACCORDING TO YOUR SYSTEM
-INPUT_DIR = Path("/mnt/data/shares/database/LeMat/LeMat-Bulk-v2-Test/compatible_pbe/")
-OUTPUT_DIR = Path("/home/users/shuya001/WyckoffTransformer/data/lemat_unique_v2test_cpbe/")
-
-# List of files to be processed
-# FILENAMES = [
-#     'lemat_v2test.parquet'
-# ]
-
-FILENAMES = [
- 'train-00000-of-00018.parquet',
- 'train-00001-of-00018.parquet',
- 'train-00002-of-00018.parquet',
- 'train-00003-of-00018.parquet',
- 'train-00004-of-00018.parquet',
- 'train-00005-of-00018.parquet',
- 'train-00006-of-00018.parquet',
- 'train-00007-of-00018.parquet',
- 'train-00008-of-00018.parquet',
- 'train-00009-of-00018.parquet',
- 'train-00010-of-00018.parquet',
- 'train-00011-of-00018.parquet',
- 'train-00012-of-00018.parquet',
- 'train-00013-of-00018.parquet',
- 'train-00014-of-00018.parquet',
- 'train-00015-of-00018.parquet',
- 'train-00016-of-00018.parquet',
- 'train-00017-of-00018.parquet'
-]
-# --------------------
-
 
 def parse_species(species_at_sites):
     """
@@ -129,20 +96,29 @@ def main():
     """
     Main function to run the batch processing.
     """
+    parser = argparse.ArgumentParser(description="Generate CIF data for LeMat Parquet files.")
+    parser.add_argument("--input-dir", type=str, required=True, help="Directory containing input Parquet files")
+    parser.add_argument("--output-dir", type=str, required=True, help="Directory to save output Parquet files")
+    args = parser.parse_args()
+
+    input_dir = Path(args.input_dir)
+    output_dir = Path(args.output_dir)
+
     # Initialize pandarallel
-    pandarallel.initialize(progress_bar=True, verbose=1)
+    pandarallel.initialize(progress_bar=False, verbose=0)
     
     # Create the output directory if it doesn't exist
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Output will be saved to: {OUTPUT_DIR.resolve()}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output will be saved to: {output_dir.resolve()}")
 
-    for filename in FILENAMES:
-        input_path = INPUT_DIR / filename
-        output_path = OUTPUT_DIR / filename
+    filenames = [f.name for f in input_dir.glob("*.parquet")]
+    if not filenames:
+        print(f"No parquet files found in {input_dir}")
+        return
 
-        if not input_path.exists():
-            print(f"Warning: Input file not found, skipping: {input_path}")
-            continue
+    for filename in filenames:
+        input_path = input_dir / filename
+        output_path = output_dir / filename
 
         print(f"\nProcessing file: {filename}...")
 

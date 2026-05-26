@@ -5,6 +5,7 @@ Processes parquet files to extract structure information and creates a consolida
 Compatible with PBS job scheduler environment. 
 """
 
+import argparse
 import pandas as pd
 from pathlib import Path
 from pymatgen.core import Structure
@@ -23,56 +24,6 @@ warnings.filterwarnings('ignore')
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-# Log environment information
-logger.info(f"Python version: {sys.version}")
-logger.info(f"Working directory: {os.getcwd()}")
-logger.info(f"PBS_NCPUS: {os.environ.get('PBS_NCPUS', 'Not set')}")
-logger.info(f"NP: {os.environ.get('NP', 'Not set')}")
-logger.info(f"OMP_NUM_THREADS: {os.environ.get('OMP_NUM_THREADS', 'Not set')}")
-
-# --- Configuration ---
-INPUT_DIR = Path("/home/users/shuya001/WyckoffTransformer/data/lemat_unique_v2test_cpbe/")
-OUTPUT_DIR = Path("/home/users/shuya001/WyckoffTransformer/data/lemat_unique_v2test_cpbe/")
-
-# List of files to be processed
-FILENAMES = [
-    'train-00000-of-00018.parquet',
-    'train-00001-of-00018.parquet',
-    'train-00002-of-00018.parquet',
-    'train-00003-of-00018.parquet',
-    'train-00004-of-00018.parquet',
-    'train-00005-of-00018.parquet',
-    'train-00006-of-00018.parquet',
-    'train-00007-of-00018.parquet',
-    'train-00008-of-00018.parquet',
-    'train-00009-of-00018.parquet',
-    'train-00010-of-00018.parquet',
-    'train-00011-of-00018.parquet',
-    'train-00012-of-00018.parquet',
-    'train-00013-of-00018.parquet',
-    'train-00014-of-00018.parquet',
-    'train-00015-of-00018.parquet',
-    'train-00016-of-00018.parquet',
-    'train-00017-of-00018.parquet'
-]
-
-# INPUT_DIR = Path("/home/users/shuya001/WyckoffTransformer/data/lemat_unique_pbe/")
-# OUTPUT_DIR = Path("/home/users/shuya001/WyckoffTransformer/data/lemat_unique_pbe/")
-
-# # List of files to be processed
-# FILENAMES = [
-#     'train-00000-of-00016.parquet', 'train-00001-of-00016.parquet',
-#     'train-00002-of-00016.parquet', 'train-00003-of-00016.parquet',
-#     'train-00004-of-00016.parquet', 'train-00005-of-00016.parquet',
-#     'train-00006-of-00016.parquet', 'train-00007-of-00016.parquet',
-#     'train-00008-of-00016.parquet', 'train-00009-of-00016.parquet',
-#     'train-00010-of-00016.parquet', 'train-00011-of-00016.parquet',
-#     'train-00012-of-00016.parquet', 'train-00013-of-00016.parquet',
-#     'train-00014-of-00016.parquet', 'train-00015-of-00016.parquet'
-# ]
-
-OUTPUT_FILENAME = "lemat_v2test_compatible_pbe_id_formula_chemsys_energy_corrected.csv.gz"
 
 # --- Helper Functions ---
 
@@ -96,6 +47,17 @@ def parse_cif_safe(row):
     except Exception as e:
         logger.warning(f"Failed to parse CIF for immutable_id {immutable_id}: {str(e)[:100]}...")
         return np.nan, np.nan
+
+def get_max_force(forces_array):
+    try:
+        if forces_array is None or len(forces_array) == 0:
+            return np.nan
+        f = np.stack(forces_array)
+        if f.size == 0:
+            return np.nan
+        return float(np.max(np.abs(f)))
+    except Exception:
+        return np.nan
 
 def process_cif_batch(df_batch, use_parallel=True):
     """
@@ -125,34 +87,46 @@ def process_cif_batch(df_batch, use_parallel=True):
         'chemsys': chemical_systems
     })
 
-def process_single_file(filename, use_parallel=True):
+def process_single_file(file_path, use_parallel=True):
     """
     Process a single parquet file and return extracted data.
     """
-    file_path = INPUT_DIR / filename
-    
-    if not file_path.exists():
-        logger.error(f"File not found: {file_path}")
-        return None
-    
-    logger.info(f"Processing {filename}...")
+    logger.info(f"Processing {file_path.name}...")
     
     try:
         # Read parquet file
         df = pd.read_parquet(file_path)
-        logger.info(f"Loaded {len(df)} rows from {filename}")
+        logger.info(f"Loaded {len(df)} rows from {file_path.name}")
         
         # Check required columns
-        required_cols = ['immutable_id', 'cif', 'energy_corrected']
+        required_cols = ['immutable_id', 'cif', 'energy']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
-            logger.error(f"Missing columns in {filename}: {missing_cols}")
-            return None
+            # Maybe it is energy_corrected, lemat original just has energy
+            if 'energy_corrected' in df.columns and 'energy' in missing_cols:
+                 required_cols[required_cols.index('energy')] = 'energy_corrected'
+            else:
+                 logger.error(f"Missing columns in {file_path.name}: {missing_cols}")
+                 return None
         
+        energy_col = 'energy_corrected' if 'energy_corrected' in df.columns else 'energy'
+        extract_cols = ['immutable_id', 'cif', energy_col]
+        if 'forces' in df.columns:
+            extract_cols.append('forces')
+
         # Extract only required columns first to reduce memory usage
-        df_subset = df[required_cols].copy()
+        df_subset = df[extract_cols].copy()
         del df  # Free memory
         gc.collect()
+        
+        # Calculate max_force if forces available
+        if 'forces' in df_subset.columns:
+            if use_parallel:
+                max_forces = df_subset['forces'].parallel_apply(get_max_force)
+            else:
+                max_forces = df_subset['forces'].apply(get_max_force)
+        else:
+            max_forces = np.full(len(df_subset), np.nan)
         
         # Process CIF strings to get formulas and chemical systems
         cif_results = process_cif_batch(df_subset[['immutable_id', 'cif']], use_parallel=use_parallel)
@@ -162,35 +136,43 @@ def process_single_file(filename, use_parallel=True):
             'immutable_id': df_subset['immutable_id'],
             'full_formula': cif_results['full_formula'],
             'chemsys': cif_results['chemsys'],
-            'energy_corrected': df_subset['energy_corrected']
+            'energy_corrected': df_subset[energy_col],
+            'max_force': max_forces,
+            'cif': df_subset['cif']
         })
         
         # Remove rows where parsing failed
         initial_count = len(result_df)
-        # result_df = result_df.dropna(subset=['full_formula', 'chemsys'])
         final_count = len(result_df)
         
         if initial_count != final_count:
-            logger.warning(f"Dropped {initial_count - final_count} rows due to CIF parsing failures in {filename}")
+            logger.warning(f"Dropped {initial_count - final_count} rows due to CIF parsing failures in {file_path.name}")
         
-        logger.info(f"Successfully processed {filename}: {final_count} valid rows")
+        logger.info(f"Successfully processed {file_path.name}: {final_count} valid rows")
         return result_df
         
     except Exception as e:
-        logger.error(f"Error processing {filename}: {str(e)}")
+        logger.error(f"Error processing {file_path.name}: {str(e)}")
         return None
 
 def main():
     """
     Main processing function.
     """
+    parser = argparse.ArgumentParser(description="Process LeMat dataset CIF strings to extract features.")
+    parser.add_argument("--input-dir", type=str, required=True, help="Input directory containing Parquet files.")
+    parser.add_argument("--output-file", type=str, required=True, help="Output compressed CSV file path (.csv.gz).")
+    args = parser.parse_args()
+
+    input_dir = Path(args.input_dir)
+    output_file = Path(args.output_file)
+
     logger.info("Starting LeMat dataset processing...")
     
     # Try to initialize pandarallel
     use_parallel = True
     try:
         import multiprocessing
-        import os
         
         # Check for PBS environment variables first
         pbs_ncpus = os.environ.get('PBS_NCPUS')
@@ -212,9 +194,9 @@ def main():
         
         # Initialize pandarallel with explicit core count
         pandarallel.initialize(
-            progress_bar=True, 
+            progress_bar=False, 
             nb_workers=workers,
-            verbose=1
+            verbose=0
         )
         logger.info("Pandarallel initialized successfully")
     except Exception as e:
@@ -223,20 +205,25 @@ def main():
         use_parallel = False
     
     # Create output directory if it doesn't exist
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     
     # Process all files
     all_dataframes = []
     failed_files = []
     
-    for filename in tqdm(FILENAMES, desc="Processing files"):
-        result_df = process_single_file(filename, use_parallel=use_parallel)
+    filenames = list(input_dir.glob("*.parquet"))
+    if not filenames:
+        logger.error(f"No parquet files found in {input_dir}")
+        return
+
+    for file_path in tqdm(filenames, desc="Processing files"):
+        result_df = process_single_file(file_path, use_parallel=use_parallel)
         
         if result_df is not None:
             all_dataframes.append(result_df)
-            logger.info(f"Added {len(result_df)} rows from {filename}")
+            logger.info(f"Added {len(result_df)} rows from {file_path.name}")
         else:
-            failed_files.append(filename)
+            failed_files.append(file_path.name)
         
         # Force garbage collection after each file
         gc.collect()
@@ -265,27 +252,16 @@ def main():
         logger.info(f"Removed {initial_count - final_count} duplicate entries")
     
     # Save to compressed CSV
-    output_path = OUTPUT_DIR / OUTPUT_FILENAME
-    logger.info(f"Saving results to {output_path}...")
+    logger.info(f"Saving results to {output_file}...")
     
-    final_df.to_csv(output_path, index=False, compression='gzip')
+    final_df.to_csv(output_file, index=False, compression='gzip')
     
     logger.info("Processing complete!")
-    logger.info(f"Final dataset: {len(final_df)} rows saved to {output_path}")
-    logger.info(f"File size: {output_path.stat().st_size / (1024*1024):.2f} MB")
+    logger.info(f"Final dataset: {len(final_df)} rows saved to {output_file}")
+    logger.info(f"File size: {output_file.stat().st_size / (1024*1024):.2f} MB")
     
     if failed_files:
         logger.warning(f"Failed to process {len(failed_files)} files: {failed_files}")
-    
-    # Display sample of results
-    logger.info("Sample of processed data:")
-    logger.info(f"\n{final_df.head()}")
-    
-    # Display statistics
-    logger.info("\nDataset statistics:")
-    logger.info(f"Unique chemical systems: {final_df['chemsys'].nunique()}")
-    logger.info(f"Energy range: {final_df['energy_corrected'].min():.4f} to {final_df['energy_corrected'].max():.4f}")
-    logger.info(f"Missing values:\n{final_df.isnull().sum()}")
 
 if __name__ == "__main__":
     main()
