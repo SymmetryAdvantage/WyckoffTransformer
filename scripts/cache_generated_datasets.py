@@ -96,8 +96,11 @@ def main():
                         help="Only process the datasets with these transformations as the first ones")
     args = parser.parse_args()
     if args.transformations:
+        from_transformations_kwargs = {"config_path": args.config_file}
+        if args.dataset is not None:
+            from_transformations_kwargs["dataset"] = args.dataset
         data = GeneratedDataset.from_transformations(
-            args.transformations, config_path=args.config_file, dataset=args.dataset)
+            args.transformations, **from_transformations_kwargs)
         if len(data.data) == 0:
             raise ValueError("The dataset has zero length")
         compute_fields_and_cache(data)
