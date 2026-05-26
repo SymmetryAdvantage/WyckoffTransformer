@@ -353,7 +353,57 @@ mp_20:
           structures: 
             path: mp_20/MatterGen/MatterGen_10k/CHGNet_fix/DFT/df_105_chgnet_dft.csv
             storage_type: csv_cif_with_missing_values
-            generated_by: "Huang Yuyao"  
+            generated_by: "Huang Yuyao"
+  Compositional:
+    structures:
+      path: mp_20/Compositional/compo_gen.zip
+      storage_type: nian
+      generated_by: 'Liu, Nian, et al. "Composable Crystals: Controllable Materials Discovery via Concept Learning."'
+    DFT:
+      index_preserved: false
+      structures:
+        path: mp_20/Compositional/DFT/compositionality_mp_20_unrelax-MP GGA static.csv.gz
+        storage_type: atomated_csv
+  Crys-JEPA:
+    structures:
+      path: mp_20/Crys-JEPA/jepa_mp_20.zip
+      storage_type: nian
+      generated_by: 'Liu, Nian, et al. "Crys-JEPA: Accelerating Crystal Discovery via Embedding Screening and Generative Refinement."'
+    DFT:
+      index_preserved: false
+      structures:
+        path: mp_20/Crys-JEPA/DFT/jepa_mp_20_unrelax-MP GGA static.csv.gz
+        storage_type: atomated_csv
+alex_mp_20:
+  Compositional:
+    structures:
+      path: alex_mp_20/Compositional/compo_gen_alex.zip
+      storage_type: nian
+      generated_by: 'Liu, Nian, et al. "Composable Crystals: Controllable Materials Discovery via Concept Learning."'
+    DFT:
+      index_preserved: false
+      structures:
+        path: alex_mp_20/Compositional/DFT/compositionality_alex_mp_unrelax-MP GGA static.csv.gz
+        storage_type: atomated_csv
+  Crys-JEPA:
+    structures:
+      path: alex_mp_20/Crys-JEPA/jepa_alex_mp_20.zip
+      storage_type: nian
+      generated_by: 'Liu, Nian, et al. "Crys-JEPA: Accelerating Crystal Discovery via Embedding Screening and Generative Refinement."'
+    DFT:
+      index_preserved: false
+      structures:
+        path: alex_mp_20/Crys-JEPA/DFT/jepa_alex_mp_unrelax-MP GGA static.csv.gz
+        storage_type: atomated_csv
+  MatterGen:
+    structures:
+      path: alex_mp_20/MatterGen/mattergen_alex_mp_unrelax.csv.gz
+      storage_type: CDVAE_csv_cif
+      generated_by: "Nian Liu"
+    DFT:
+      structures:
+        path: alex_mp_20/MatterGen/DFT/mattergen_alex_mp_unrelax-MP GGA static.csv.gz
+        storage_type: atomated_csv
 mp_20_biternary:
   WyckoffTransformer:
     wyckoffs:
