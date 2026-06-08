@@ -1,6 +1,6 @@
 [project]
 name = "wyckoff-transformer"
-version = "1.0.6"
+version = "1.0.7"
 description = "Wyckoff Transformer is a machine learning model for generating crystal structures which are symmetric by design."
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
@@ -15,7 +15,7 @@ dependencies = [
   "omegaconf >=2.3.0",
   "smact >=2.5.5",
   "wrapt-timeout-decorator >=1.5.1",
-  "torch ==2.11.0",
+  "torch >=2.10.0",
   "pandarallel >=1.6.5",
   "schedulefree >=1.4.1",
   "ipympl >=0.9.7",
