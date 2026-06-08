@@ -17,18 +17,30 @@ from wyckoff_transformer.cryspr.relaxer import stepwise_relax
 
 logger = logging.getLogger(__name__)
 
+# Tolerance used to *generate* structures with PyXtal.
 _DEFAULT_IADM = Tol_matrix(prototype="atomic", factor=1.3)
 
+# Slightly more permissive tolerance used to *reject* collapsed structures after
+# relaxation.  Set below the generation factor (1.3) so that the few real
+# materials whose short metallic contacts graze the generation floor are not
+# discarded, while still catching the energy-lowering MACE collapse artifacts
+# (verified to sit comfortably below this floor).
+_CLASH_IADM = Tol_matrix(prototype="atomic", factor=1.1)
 
-def has_atomic_clash(atoms: Atoms, iadm: Tol_matrix = _DEFAULT_IADM) -> bool:
-    """Return ``True`` if any pair of atoms is closer than the PyXtal tolerance.
+
+def has_atomic_clash(atoms: Atoms, iadm: Tol_matrix = _CLASH_IADM) -> bool:
+    """Return ``True`` if any pair of atoms is closer than the tolerance.
 
     Each interatomic distance (including periodic images) is compared against
-    the species-pair minimum from *iadm* — the same :class:`~pyxtal.tolerance.Tol_matrix`
-    that governs PyXtal generation.  A relaxed structure that has collapsed into
-    overlapping atoms (a known artifact of MACE-MP-0's spurious short-range
-    energy basins, which produce unphysically low energies) is thus rejected by
-    the very criterion that would have prevented it from being generated.
+    the species-pair minimum from *iadm*.  A relaxed structure that has
+    collapsed into overlapping atoms (a known artifact of MACE-MP-0's spurious
+    short-range energy basins, which produce unphysically low energies) is thus
+    rejected on a purely physical, geometry-based criterion.
+
+    The default *iadm* (:data:`_CLASH_IADM`, factor 1.1) is marginally more
+    permissive than the generation tolerance (:data:`_DEFAULT_IADM`, factor 1.3)
+    so that real structures whose contacts graze the generation floor are not
+    falsely discarded.
 
     Args:
         atoms: Structure to check.
