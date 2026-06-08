@@ -4,8 +4,10 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator
+from ase.neighborlist import neighbor_list
 from ase.optimize import BFGS
 from ase.optimize.optimize import Optimizer
 from pyxtal import pyxtal
@@ -16,6 +18,36 @@ from wyckoff_transformer.cryspr.relaxer import stepwise_relax
 logger = logging.getLogger(__name__)
 
 _DEFAULT_IADM = Tol_matrix(prototype="atomic", factor=1.3)
+
+
+def has_atomic_clash(atoms: Atoms, iadm: Tol_matrix = _DEFAULT_IADM) -> bool:
+    """Return ``True`` if any pair of atoms is closer than the PyXtal tolerance.
+
+    Each interatomic distance (including periodic images) is compared against
+    the species-pair minimum from *iadm* — the same :class:`~pyxtal.tolerance.Tol_matrix`
+    that governs PyXtal generation.  A relaxed structure that has collapsed into
+    overlapping atoms (a known artifact of MACE-MP-0's spurious short-range
+    energy basins, which produce unphysically low energies) is thus rejected by
+    the very criterion that would have prevented it from being generated.
+
+    Args:
+        atoms: Structure to check.
+        iadm: PyXtal tolerance matrix defining per-species-pair minimum distances.
+
+    Returns:
+        ``True`` if at least one interatomic distance is below tolerance.
+    """
+    numbers = atoms.numbers
+    if len(numbers) == 0:
+        return False
+    unique = sorted({int(n) for n in numbers})
+    cutoff = max(iadm.get_tol(a, b) for a in unique for b in unique)
+    if cutoff <= 0:
+        return False
+    i_idx, j_idx, dists = neighbor_list("ijd", atoms, cutoff)
+    tols = np.array([iadm.get_tol(int(numbers[i]), int(numbers[j]))
+                     for i, j in zip(i_idx, j_idx)])
+    return bool(np.any(dists < tols))
 
 
 def single_pyxtal(
@@ -128,8 +160,16 @@ def func_run(
                 logfile_prefix=formula,
                 logfile_postfix="relax",
             )
+            energy = atoms_relaxed.get_potential_energy()
+            if has_atomic_clash(atoms_relaxed):
+                logger.warning(
+                    "[%s-%s %s] Relaxed structure has atomic clashes "
+                    "(E = %.5f eV); discarding as unphysical.",
+                    model_name, id_gene, trial_key, energy,
+                )
+                continue
             atoms_by_trial[trial_key] = atoms_relaxed
-            energy_by_trial[trial_key] = atoms_relaxed.get_potential_energy()
+            energy_by_trial[trial_key] = energy
             logger.info(
                 "[%s-%s %s] Done, E = %.5f eV",
                 model_name, id_gene, trial_key, energy_by_trial[trial_key],
