@@ -118,7 +118,9 @@ optimisation:
       decay_fraction: 0.1
       final_lr_fraction: 0.0
       # Hägele et al. 2024 (arXiv:2405.18392) found 1-sqrt to beat linear and cosine at equal
-      # budget: it holds the rate high through most of the decay, then drops steeply.
+      # budget. It lies below linear for the whole decay: steepest right at the start, then
+      # flattening towards zero, so most of the decay phase is spent at a small rate rather
+      # than easing down gradually. That is the intended behaviour, not a misconfiguration.
       decay_shape: 1-sqrt
   validation_period: 1000
   # Above `epochs`, so it can never fire. With WSD that is deliberate: the loss is expected to

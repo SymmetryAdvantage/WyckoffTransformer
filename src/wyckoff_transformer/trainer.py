@@ -65,6 +65,10 @@ class WyckoffTrainer():
     #: still have a sane default rather than an AttributeError in the training loop.
     scheduler_steps_per_batch = False
 
+    #: Optimiser steps the step-indexed schedule was sized for, or None when the schedule
+    #: does not depend on a horizon. train() checks this against the run it is about to do.
+    scheduler_total_steps = None
+
     def __init__(
         self,
         model: nn.Module,
@@ -268,6 +272,7 @@ class WyckoffTrainer():
                     scheduler_config.setdefault(
                         "total_steps",
                         optimisation_config.epochs * self.train_loader.batches_per_epoch)
+                    self.scheduler_total_steps = scheduler_config["total_steps"]
                 self.scheduler = scheduler_factory(self.optimizer, **scheduler_config)
                 self.scheduler_steps_per_batch = True
         else:
@@ -927,6 +932,26 @@ class WyckoffTrainer():
             raise ValueError("train() requires a train dataset")
         if not self.production_training and self.val_dataset is None:
              raise ValueError("train() requires a validation dataset (or production_training=True)")
+        if self.scheduler_total_steps is not None:
+            # The schedule places its warmup and decay as fractions of a fixed horizon, so a
+            # run that does not consume exactly that many steps gets a schedule meant for a
+            # different run: too few and the decay -- where most of the gain is -- never
+            # happens, too many and the tail is spent at the floor. The horizon is derived
+            # from `epochs` at construction, so this only fires if one of them was changed
+            # afterwards.
+            planned = self.epochs * self.train_loader.batches_per_epoch
+            if planned != self.scheduler_total_steps:
+                raise ValueError(
+                    f"The learning rate schedule was built for {self.scheduler_total_steps} "
+                    f"optimiser steps, but this run is {self.epochs} epochs x "
+                    f"{self.train_loader.batches_per_epoch} batches = {planned} steps. "
+                    f"Change `epochs` in the config rather than on the trainer.")
+            if self.early_stopping_patience_epochs < self.epochs:
+                logging.warning(
+                    "early_stopping_patience_epochs (%d) is below epochs (%d): a step-indexed "
+                    "schedule that stops early never completes its decay, which is where most "
+                    "of the improvement appears.",
+                    self.early_stopping_patience_epochs, self.epochs)
         best_val_loss = float('inf')
         best_val_epoch = 0
         self.run_path.mkdir(exist_ok=True)

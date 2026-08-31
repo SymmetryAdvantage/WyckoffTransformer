@@ -16,8 +16,9 @@ def _decay_factor(progress: float, shape: str) -> float:
         return 1.0 - progress
     if shape == "1-sqrt":
         # Hägele et al. 2024 (arXiv:2405.18392) found this to beat linear and cosine-shaped
-        # decays at equal budget: it holds the rate high for most of the decay and drops
-        # steeply at the very end.
+        # decays at equal budget. It lies below linear everywhere: the drop is steepest at the
+        # very start of the decay (one step in, at 1/1000 of the way, it is already at 0.97)
+        # and flattens out towards zero, so the rate spends most of the decay phase small.
         return 1.0 - math.sqrt(progress)
     if shape == "cosine":
         return 0.5 * (1.0 + math.cos(math.pi * progress))
