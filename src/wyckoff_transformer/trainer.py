@@ -59,6 +59,12 @@ class WyckoffTrainer():
     # batches and successive checkpoints are comparable to each other.
     LAG_EVAL_SEED = 20260831
 
+    #: Whether `scheduler` is step-indexed (WSD and friends, stepped after every optimiser
+    #: step) rather than metric-driven (ReduceLROnPlateau, stepped on the validation loss).
+    #: A class attribute so that trainers built by tests via __new__, which skip __init__,
+    #: still have a sane default rather than an AttributeError in the training loop.
+    scheduler_steps_per_batch = False
+
     def __init__(
         self,
         model: nn.Module,
@@ -241,10 +247,32 @@ class WyckoffTrainer():
         self.optimizer = getattr(optimizer_module_obj, optimisation_config.optimiser.name)(
             model.parameters(), **optimisation_config.optimiser.config)
         if "scheduler" in optimisation_config:
-            self.scheduler = getattr(torch.optim.lr_scheduler, optimisation_config.scheduler.name)(
-                self.optimizer, 'min', **optimisation_config.scheduler.config)
+            scheduler_config = dict(optimisation_config.scheduler.get("config", {}))
+            scheduler_module = importlib.import_module(
+                optimisation_config.scheduler.get("module", "torch.optim.lr_scheduler"))
+            scheduler_name = optimisation_config.scheduler.name
+            scheduler_factory = getattr(scheduler_module, scheduler_name)
+            if scheduler_name == "ReduceLROnPlateau":
+                # Metric-driven: it takes the mode positionally and is stepped with the
+                # validation loss, once every validation_period epochs.
+                self.scheduler = scheduler_factory(self.optimizer, 'min', **scheduler_config)
+                self.scheduler_steps_per_batch = False
+            else:
+                # Step-indexed: it is stepped after every optimiser step and takes no metric.
+                if scheduler_name in getattr(scheduler_module, "NEEDS_TOTAL_STEPS", ()):
+                    if self.train_loader is None:
+                        raise ValueError(
+                            f"{scheduler_name} needs a training set to size its schedule")
+                    # The horizon is in optimiser steps, which is what the schedule indexes on;
+                    # `epochs` counts passes, each of them batches_per_epoch steps.
+                    scheduler_config.setdefault(
+                        "total_steps",
+                        optimisation_config.epochs * self.train_loader.batches_per_epoch)
+                self.scheduler = scheduler_factory(self.optimizer, **scheduler_config)
+                self.scheduler_steps_per_batch = True
         else:
             self.scheduler = None
+            self.scheduler_steps_per_batch = False
 
         if val_dataset is not None:
             self.val_dataset = AugmentedCascadeDataset(
@@ -734,6 +762,8 @@ class WyckoffTrainer():
                 self.model.parameters(),
                 math.inf if self.clip_grad_norm is None else self.clip_grad_norm)
             self.optimizer.step()
+            if self.scheduler_steps_per_batch:
+                self.scheduler.step()
             wandb.log({"loss.batch.train": loss,
                        "grad_norm": grad_norm,
                        "known_seq_len": known_seq_len,
@@ -957,7 +987,8 @@ class WyckoffTrainer():
                     break
                 # Don't step the scheduler on the tail epoch to presereve
                 # patience behaviour
-                if self.scheduler and epoch % self.validation_period == 0:
+                if (self.scheduler and not self.scheduler_steps_per_batch
+                        and epoch % self.validation_period == 0):
                     self.scheduler.step(total_val_loss)
 
         # Make sure we log the last evaluation results

@@ -1,0 +1,141 @@
+# LeMat-Bulk e_hull-conditioned WyFormer: AdamW under a warmup-stable-decay schedule,
+# sized for a 72-hour budget. Differs from ehull_schedule_free.yaml in four places, each
+# with its own reason; everything else is held fixed so the comparison means something.
+#
+#   1. dropout 0.2 -> 0. This model does not overfit and never has: at its best epoch
+#      t1c9ehzp had train 18.3016 against val 18.2770 -- the gap is *negative*, val is the
+#      easier split. 144k parameters against 4.0M structures is 28 examples per parameter.
+#      A controlled dropout=0 branch reached 17.667 where the control reached 18.148, so
+#      the regularisation was costing ~0.5 nats to suppress an overfitting that is not
+#      happening.
+#   2. SGDScheduleFree -> AdamW. Every generative run in this project has used SGD; the 49
+#      Adam configs here are all for the scalar property-prediction heads. Curvature differs
+#      by orders of magnitude between the embeddings, the attention projections and the
+#      LayerNorms, and a single global step size serves them badly.
+#   3. batch 25000 -> 50000. Halves the step count for the same examples seen, and halves
+#      the gradient noise driving the iterate drift diagnosed below.
+#   4. Schedule-free averaging -> WSD. schedule_free's default r=0 with a constant lr gives
+#      ckp1 = 1/(k+1): a *uniform* mean over every iterate since step 1, which assumes the
+#      iterate settles. Mini-batch gradients never vanish, so it does not, and the reported
+#      average falls behind by ~v*k/(r+2) -- unbounded in k. That is what made lu4xqw0w and
+#      t1c9ehzp both lose ~0.4 nats over their second halves while training correctly. WSD
+#      keeps schedule-free's useful property (a long constant-rate phase, so the horizon
+#      need not be right early on) but reports the *final* iterate, so nothing depends on an
+#      average keeping up.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    embedding_size:
+      elements: 16
+      site_symmetries: 16
+      sites_enumeration: 8
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature: energy_above_hull
+    # e_hull spans 0-37 eV/atom while the median is 0.235 and p99 is 2.73, so a handful of
+    # outliers would otherwise set the scale of the AdaLN modulation input. log1p is near-linear
+    # over the 0-0.1 band we actually sample from and compressive in the tail (37 -> 3.65).
+    # The data stays in eV/atom; the transform is applied on the way into the model.
+    condition_transform: log1p
+    # Measured on an RTX 6000 Ada: 18.60 ms per step at 25000 (t1c9ehzp, 80000 epochs in
+    # 238108 s over 12.8M steps, validation included), i.e. 1.34M examples/s. Per-step cost
+    # is dominated by kernel launches rather than arithmetic for this 144k-parameter model,
+    # so throughput is flat from 25k to 50k and only falls off by 100k: at 50000 an epoch
+    # costs the same wall-clock as at 25000 but takes half as many, larger, quieter steps.
+    # Peak memory at 25000 was 10.4 GiB, nearly all of it the resident dataset, so doubling
+    # the batch adds little to it.
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 1
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      # Zero, not merely reduced: see note 1 at the top.
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      # We also don't need them as we ensure that batches all have the same length in WychoffTrainer
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      # Peak rate, reached at the end of warmup. 3x the 1e-3 that is standard for a small
+      # transformer, on the grounds that a 50000-example batch is far quieter than the ~512
+      # such defaults assume. This is the single least-established number in the file and the
+      # first thing worth a short sweep -- try 1e-3 and 1e-2 over a few thousand epochs and
+      # read loss.epoch.val, since the schedule makes the early curve comparable across them.
+      lr: 0.003
+      # AdamW decouples the decay from the gradient, so this is a true weight-norm constraint.
+      # Deliberately at torch's default rather than the 0.1 used in LLM pretraining: this model
+      # is underfitting, so decay is here to bound the weight-norm growth that fed the
+      # averaging failure (|x| grew 2.5e-6 per step in t1c9ehzp), not to regularise.
+      weight_decay: 0.01
+      # Left at torch's defaults, recorded explicitly so a change is visible in a diff. The
+      # 0.9/0.95 pair common in LLM pretraining exists for runs of ~1e5 steps; at 6.8M steps
+      # beta2=0.999 is still a very short window.
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      # total_steps is injected by the trainer as epochs * batches_per_epoch; do not set it
+      # here, or it will silently disagree with the run length.
+      #
+      # 0.2% of 6.8M steps is ~13600 steps of warmup -- generous in absolute terms, and the
+      # usual fractions (1-2%) would spend over a hundred thousand steps ramping up.
+      warmup_fraction: 0.002
+      # ~680000 steps, about 7 hours. The decay is where most of the improvement appears in
+      # WSD; it is not a cool-down formality, so do not kill the run before it completes.
+      decay_fraction: 0.1
+      final_lr_fraction: 0.0
+      # Hägele et al. 2024 (arXiv:2405.18392) found 1-sqrt to beat linear and cosine at equal
+      # budget: it holds the rate high through most of the decay, then drops steeply.
+      decay_shape: 1-sqrt
+  validation_period: 1000
+  # Above `epochs`, so it can never fire. With WSD that is deliberate: the loss is expected to
+  # sit flat through the stable phase and only fall in the last 10%, which is exactly the shape
+  # patience-based stopping would cut short.
+  early_stopping_patience_epochs: 1000000
+  # A spike guard, not a step-size control. Roughly twice the largest gradient norm seen at any
+  # model state measured, so it fires only on a genuine outlier. Watch the `grad_norm` metric:
+  # if it sits at this value the threshold has become the learning rate, which is how run
+  # lu4xqw0w spent 100k epochs degrading while its loss weighting was silently normalised away.
+  clip_grad_norm: 10.
+  # The 72-hour budget. At the measured 2.976 s per epoch this is 70.3 h, leaving ~2% margin;
+  # 4007729 // 50000 = 80 steps per epoch, so 6.8M optimiser steps. Changing this changes the
+  # schedule, since the decay is placed as a fraction of the whole -- re-derive it from a fresh
+  # ms/step measurement rather than editing one number.
+  epochs: 85000
+tokeniser:
+  name: lemat_bulk_ehull_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000
