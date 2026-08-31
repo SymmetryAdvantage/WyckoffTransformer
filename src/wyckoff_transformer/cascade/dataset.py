@@ -1,10 +1,22 @@
 from typing import List, Tuple, Optional
 from enum import Enum
+from itertools import accumulate
 import logging
+import random
 import torch
 from torch import Tensor, LongTensor
 
 logger = logging.getLogger(__name__)
+
+# Above this ratio of viable set to batch, `sample_viable_batch` draws without replacement.
+# The two costs move in opposite directions and the crossover is not a free parameter: drawing
+# without replacement means permuting the whole viable set, which is expensive exactly when the
+# set is large, while the penalty for drawing with replacement is the finite-population
+# correction 1/(1 - n_samples/n_viable), which only bites when the batch covers an appreciable
+# share of the set -- i.e. when the set is small and permuting it is cheap. At 16 the permuted
+# path is capped at a 6.7% variance saving forgone, and on LeMat-Bulk it is taken by 3.7% of
+# steps and never permutes more than 251k rows (0.24 ms).
+SAMPLE_WITHOUT_REPLACEMENT_RATIO = 16
 
 def randint_tensor(high: torch.Tensor) -> Tensor:
     """
@@ -298,6 +310,7 @@ class AugmentedCascadeDataset():
                                (self.data[cascade_order[0]] == self.stops[cascade_order[0]]) | \
                                (self.data[cascade_order[0]] == self.masks[cascade_order[0]])
             self.pure_sequences_lengths = torch.max(is_service_token, dim=1).indices
+        self._build_length_index()
         self.target = None if target_name is None else data[target_name].to(self.device)
         # padding length is the same for all cascade elements
         # prepending 0 to account for the start token
@@ -320,6 +333,89 @@ class AugmentedCascadeDataset():
 
     def __len__(self):
         return self.num_examples
+
+
+    def _build_length_index(self):
+        """Index the examples by sequence length, so that a batch viable at a given
+        known_seq_len can be drawn directly.
+
+        Sorting the examples by pure sequence length descending makes the set viable at
+        known_seq_len k exactly a prefix of that order: every example with length >= k. The
+        alternative -- filtering a random window and retrying until it is non-empty -- degrades
+        badly once the sequence cap is much larger than a typical sequence, since most draws then
+        land where almost no data exists.
+        """
+        self.length_sorted_indices = torch.argsort(
+            self.pure_sequences_lengths, descending=True, stable=True).to(self.augmented_storage_device)
+        # viable_counts[k] is the size of the viable prefix at known_seq_len k. Kept on the CPU:
+        # it is read once per training step, and a device round trip there would serialise
+        # the step against the GPU queue.
+        histogram = torch.bincount(
+            self.pure_sequences_lengths.to(torch.int64).cpu(),
+            minlength=self.max_sequence_length + 1)
+        self.viable_counts = torch.flip(torch.cumsum(torch.flip(histogram, (0,)), dim=0), (0,)).tolist()
+        # Cumulative weights for sampling a known_seq_len in proportion to how many examples are
+        # viable there; see sample_known_seq_len. Kept on the CPU for the same reason as
+        # viable_counts, and cumulative so the draw is a bisection rather than a scan.
+        self._known_seq_len_cum_weights = list(
+            accumulate(self.viable_counts[:self.max_sequence_length]))
+
+
+    def sample_known_seq_len(self) -> int:
+        """Draw a known_seq_len in proportion to the number of examples viable there.
+
+        Sampling it uniformly instead wastes most steps once the sequence cap sits far above the
+        typical length: at the LeMat-Bulk cap of 62 with a median length of 4, 82% of uniform
+        draws land where under 1% of the data is viable, while the reported loss draws 88% of its
+        mass from known_seq_len <= 4 -- which those draws reach 8% of the time. Rescaling the loss
+        by viable_count instead does not fix it, because clip_grad_norm discards the rescale on
+        exactly the steps it is meant to upweight. Putting the weight in the sampling distribution
+        makes the expected gradient proportional to the full objective whatever the clipping does,
+        and leaves every step on the same loss scale.
+        """
+        return random.choices(
+            range(self.max_sequence_length), cum_weights=self._known_seq_len_cum_weights)[0]
+
+
+    def viable_count(self, known_seq_len: int) -> int:
+        """Number of examples whose target at `known_seq_len` is viable."""
+        if known_seq_len >= len(self.viable_counts):
+            return 0
+        return self.viable_counts[known_seq_len]
+
+
+    def sample_viable_batch(self, known_seq_len: int, batch_size: Optional[int]) -> Tensor:
+        """Draw indices of examples viable at `known_seq_len`.
+
+        Returns min(batch_size, viable_count) indices sampled from the viable set, so the batch is
+        as full as the data allows. They are distinct, except on the thin-slice path below, where
+        the batch covers under 1/SAMPLE_WITHOUT_REPLACEMENT_RATIO of the viable set and the draw
+        is i.i.d. A caller summing the loss towards a split-level total must rescale by
+        viable_count / len(result) to keep the per-known_seq_len contribution on the same scale
+        as an unfiltered pass over the split; a caller taking one gradient step per draw of
+        sample_known_seq_len already has that weight in the draw.
+        """
+        n_viable = self.viable_count(known_seq_len)
+        if n_viable == 0:
+            raise ValueError(
+                f"No example in the dataset is viable at known_seq_len={known_seq_len}; "
+                f"the longest sequence has {int(self.pure_sequences_lengths.max())} elements.")
+        n_samples = n_viable if batch_size is None else min(batch_size, n_viable)
+        device = self.length_sorted_indices.device
+        if n_samples == n_viable:
+            # The batch is the whole viable set, so there is nothing to sample. Drawing it anyway
+            # would return a bootstrap resample that misses ~37% of the examples it is supposed
+            # to cover -- which, at the LeMat-Bulk cap, is every known_seq_len from 13 up, in
+            # evaluation as well as in training.
+            return self.length_sorted_indices[:n_viable]
+        if n_samples * SAMPLE_WITHOUT_REPLACEMENT_RATIO >= n_viable:
+            positions = torch.randperm(n_viable, device=device)[:n_samples]
+        else:
+            # Sampling this thin a slice, with and without replacement differ by a
+            # finite-population correction below 1/SAMPLE_WITHOUT_REPLACEMENT_RATIO, which is not
+            # worth permuting a multi-million row set for on every step.
+            positions = torch.randint(0, n_viable, (n_samples,), device=device)
+        return self.length_sorted_indices[positions]
 
 
     # Compilation is safe since the function only ever uses the same data
@@ -609,28 +705,20 @@ class AugmentedCascadeLoader():
 
     def get_next_viable_batch(self, known_seq_len: int) -> Tensor:
         """
-        Get the next batch, filtering to only examples with viable targets
-        for the given known sequence length. Keeps advancing until a non-empty
-        viable batch is found.
+        Get a batch of examples whose targets are viable for the given known sequence length.
+
+        Drawn directly from the dataset's length index rather than by filtering a window of the
+        shuffle order: with a sequence cap well above the typical sequence length, most
+        known_seq_len draws are viable for a tiny fraction of the data, and filtering a window
+        then yields a nearly empty batch after rescanning much of the split.
+
+        Note that the loss summed over the returned examples is on a different scale than one
+        summed over a filtered window, because the batch is now as full as the data allows.
+        Callers must rescale by viable_count / len(batch); see WyckoffTrainer.get_loss.
 
         Args:
             known_seq_len: The known sequence length to filter by.
         Returns:
             Indices of viable examples in the batch.
         """
-        batch_target_is_viable = ()
-        while len(batch_target_is_viable) == 0:
-            batch_start = self.next_batch_index * self.batch_size
-            batch_end = batch_start + self.batch_size
-            batch_selection = self.this_shuffle_order[batch_start:batch_end]
-            logging.debug("The current batch size is %i", len(batch_selection))
-            # STOP is not included in the pure length, but is a viable target
-            target_is_viable = self.dataset.pure_sequences_lengths[batch_selection] >= known_seq_len
-            batch_target_is_viable = batch_selection[target_is_viable]
-            if batch_end >= self.num_examples:
-                self.this_shuffle_order = torch.randperm(
-                    self.num_examples, device=self.dataset.device)
-                self.next_batch_index = 0
-            else:
-                self.next_batch_index += 1
-        return batch_target_is_viable
+        return self.dataset.sample_viable_batch(known_seq_len, self.batch_size)

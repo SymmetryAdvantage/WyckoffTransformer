@@ -1,5 +1,6 @@
 from typing import Tuple, Dict, Optional, List, Any, Union, Set
 import importlib
+import math
 import shutil
 from random import randint
 import logging
@@ -32,7 +33,32 @@ from wyckoff_transformer.evaluation import (
 logger = logging.getLogger(__file__)
 start_token_distribution_file_name = "spacegroup_distribution.json"
 
+# Transforms applied to the conditioning feature on its way into the model. The feature is stored,
+# logged and passed around in its physical units everywhere else, so --condition-value 0.1 always
+# means 0.1 eV/atom regardless of the transform in use.
+# log1p suits energy above hull: it is near-linear where the interesting structures are
+# (0.03 -> 0.0296) and compressive in the tail (37 -> 3.65), which keeps a handful of extreme
+# outliers from dominating the scale of the AdaLN modulation input.
+CONDITION_TRANSFORMS = {
+    "log1p": torch.log1p,
+}
+
+
+def get_condition_transform(name: Optional[str]):
+    """Resolve a conditioning transform by name; None means the identity."""
+    if name is None:
+        return None
+    try:
+        return CONDITION_TRANSFORMS[name]
+    except KeyError:
+        raise ValueError(
+            f"Unknown condition_transform {name!r}; available: {sorted(CONDITION_TRANSFORMS)}") from None
+
 class WyckoffTrainer():
+    # Fixed seed for the schedule_free_lag evaluations, so x and z are compared on identical
+    # batches and successive checkpoints are comparable to each other.
+    LAG_EVAL_SEED = 20260831
+
     def __init__(
         self,
         model: nn.Module,
@@ -66,6 +92,7 @@ class WyckoffTrainer():
         tokeniser_config: Optional[DictConfig] = None,
         production_training: bool = False,
         condition_feature: Optional[str] = None,
+        condition_transform: Optional[str] = None,
     ):
         """
         Initializes the WyckoffTrainer.
@@ -105,6 +132,10 @@ class WyckoffTrainer():
             processor: Optional WyckoffProcessor instance.
             tokeniser_config: Configuration for the tokenisers.
             production_training: If True, merges all dataset splits (train/val/test) for training.
+            condition_feature: Name of the feature to condition on via AdaLN.
+            condition_transform: Name of a transform from CONDITION_TRANSFORMS applied to the
+                conditioning feature on its way into the model. The stored data and the values
+                accepted by generate_structures stay in physical units.
         """
         if isinstance(target, str):
             target = TargetClass[target]
@@ -135,6 +166,8 @@ class WyckoffTrainer():
 
         self.run_path = run_path
         self.condition_feature = condition_feature
+        self.condition_transform = condition_transform
+        self._condition_transform_fn = get_condition_transform(condition_transform)
         extra_fields = [condition_feature] if condition_feature is not None else None
 
         if target == TargetClass.NextToken:
@@ -276,8 +309,13 @@ class WyckoffTrainer():
                 if cond_tensor.dim() == 1:
                     cond_tensor = cond_tensor.unsqueeze(1)
                 ds.data[self.condition_feature] = cond_tensor
+                # Stored in physical units; the transform is applied on the way into the model.
+                # Validate once here rather than per step, which would force a device sync.
+                self._validate_condition_values(cond_tensor)
     
-        self.clip_grad_norm = optimisation_config.clip_grad_norm
+        # Optional: omit, or set to null, to train without a norm constraint. The pre-clip norm
+        # is logged either way, so a run can watch the gradient scale without being shaped by it.
+        self.clip_grad_norm = optimisation_config.get("clip_grad_norm", None)
         self.cascade_len = len(cascade_order)
         self.cascade_order = cascade_order
         self.epochs = optimisation_config.epochs
@@ -290,6 +328,21 @@ class WyckoffTrainer():
         self.multiclass_next_token_with_order_permutation = multiclass_next_token_with_order_permutation
         self.evaluation_samples = evaluation_samples
         self.start_token_distribution = start_token_distribution
+
+
+    def _validate_condition_values(self, values: Tensor):
+        """Reject conditioning values the transform cannot represent, with a legible message."""
+        if self.condition_transform == "log1p" and bool((values < 0).any()):
+            raise ValueError(
+                f"condition_transform='log1p' requires {self.condition_feature} >= 0, "
+                "but negative values were supplied")
+
+
+    def transform_condition(self, values: Optional[Tensor]) -> Optional[Tensor]:
+        """Map a conditioning tensor from physical units to what the model consumes."""
+        if values is None or self._condition_transform_fn is None:
+            return values
+        return self._condition_transform_fn(values)
 
 
     @staticmethod
@@ -397,6 +450,7 @@ class WyckoffTrainer():
             )
             train_data = tensors["train"]
             val_data = tensors["val"]
+            test_data = None
             if not no_test:
                 if "test" in tensors:
                     test_data = tensors["test"]
@@ -518,9 +572,20 @@ class WyckoffTrainer():
         known_cascade_len: int|None,
         loader: Optional[AugmentedCascadeLoader] = None,
         no_batch: bool = False,
-        testing: bool = False) -> Tensor:
+        testing: bool = False,
+        return_n_samples: bool = False,
+        rescale_to_viable: bool = True) -> Tensor | tuple[Tensor, int]:
         """
         Computes loss on the dataset.
+
+        Args:
+            return_n_samples: also return the number of examples the summed loss was computed
+                over. Needed to rescale a mini-batch loss to a whole-split estimate.
+            rescale_to_viable: put the summed loss on the scale of a pass over every example
+                viable at this known_seq_len. What evaluation wants, since it sums over every
+                known_seq_len and so has to weight each one by how much data reaches it.
+                Training draws known_seq_len from that same distribution instead (see
+                AugmentedCascadeDataset.sample_known_seq_len) and so passes False.
         """
         logging.debug("Known sequence length: %i", known_seq_len)
         logging.debug("Known cascade length: %s", str(known_cascade_len))
@@ -566,7 +631,7 @@ class WyckoffTrainer():
 
         cond = None
         if self.condition_feature is not None:
-            cond = dataset.data[self.condition_feature][batch_selection]
+            cond = self.transform_condition(dataset.data[self.condition_feature][batch_selection])
 
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
@@ -586,11 +651,29 @@ class WyckoffTrainer():
             raise ValueError(f"Unknown target: {self.target}")
         # Step 3: Calculate the loss
         # logger.debug("Target isnan: %s", target.isnan().any())
-        logger.debug("Target min: %s, max: %s", target.min(), target.max())
-        logger.debug("Prediction shape: %s", prediction.shape)
+        if logger.isEnabledFor(logging.DEBUG):
+            # Logging arguments are evaluated eagerly, so without this guard every step pays for
+            # two device reductions and the synchronisation they imply, whatever the log level.
+            logger.debug("Target min: %s, max: %s", target.min(), target.max())
+            logger.debug("Prediction shape: %s", prediction.shape)
         if testing:
-            return self.testing_criterion(prediction, target)
-        return self.criterion(prediction, target)
+            loss = self.testing_criterion(prediction, target)
+        else:
+            loss = self.criterion(prediction, target)
+        n_samples = start_tokens.size(0)
+        if (rescale_to_viable and self.target == TargetClass.NextToken
+                and self.multiclass_next_token_with_order_permutation):
+            # The batch holds as many examples viable at this known_seq_len as the data allows,
+            # so the summed cross-entropy is put back on the scale of a pass over every viable
+            # example. Without this, a known_seq_len only 0.1% of the data reaches would
+            # contribute to the split's total NLL as if it reached all of it. In batchless mode
+            # the batch already is every viable example, so the factor is exactly 1.
+            n_viable = dataset.viable_count(known_seq_len)
+            if n_viable != n_samples:
+                loss = loss * (n_viable / n_samples)
+        if return_n_samples:
+            return loss, n_samples
+        return loss
 
 
     def train_epoch(self):
@@ -601,19 +684,41 @@ class WyckoffTrainer():
             self.optimizer.train()
         for _ in trange(self.train_loader.batches_per_epoch, leave=False):
             self.optimizer.zero_grad(set_to_none=True)
-            if self.target == TargetClass.NextToken:
-                known_cascade_len = randint(0, self.cascade_target_count - 1)
-                known_seq_len = randint(0, self.train_dataset.max_sequence_length - 1)
-            elif self.target == TargetClass.NumUniqueTokens:
-                known_cascade_len = 0
-                known_seq_len = randint(0, self.train_dataset.max_sequence_length - 1)
+            if self.target in (TargetClass.NextToken, TargetClass.NumUniqueTokens):
+                known_cascade_len = (
+                    randint(0, self.cascade_target_count - 1)
+                    if self.target == TargetClass.NextToken else 0)
+                if self.multiclass_next_token_with_order_permutation:
+                    # Weight each known_seq_len by how much data reaches it here, in the
+                    # sampling, rather than in the loss. clip_grad_norm survives this and does
+                    # not survive the alternative; it also never draws a known_seq_len no
+                    # example is viable at.
+                    known_seq_len = self.train_dataset.sample_known_seq_len()
+                else:
+                    known_seq_len = randint(0, self.train_dataset.max_sequence_length - 1)
             elif self.target == TargetClass.Scalar:
                 # Use full sequences
                 known_cascade_len = None
                 known_seq_len = self.train_dataset.max_sequence_length - 1
             else:
                 raise ValueError(f"Unknown target: {self.target}")
-            loss = self.get_loss(self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader)
+            if self.target == TargetClass.NextToken and self.multiclass_next_token_with_order_permutation:
+                # Every step is a draw from the split's own distribution over known_seq_len, so
+                # the per-known_seq_len weight lives in the sampling and the loss needs no
+                # reweighting -- only a reduction. A per-example mean, rather than the sum the
+                # criterion returns, is what makes the learning rate and clip_grad_norm mean
+                # something on their own: gradient norms land in [0.05, 5] instead of [1e3, 1e5],
+                # so a threshold can be set above the working range and actually catch outliers,
+                # and the learning rate stops being a function of train_batch_size.
+                # (The non-multiclass branch below keeps its summed loss: the learning rates in
+                # the other ~130 configs are tuned against that scale.)
+                loss, n_samples = self.get_loss(
+                    self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
+                    rescale_to_viable=False, return_n_samples=True)
+                loss = loss / n_samples
+            else:
+                loss = self.get_loss(
+                    self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader)
             if self.target == TargetClass.NumUniqueTokens:
                 # Predictions are [batch_size, cascade_size]
                 # Unreduced MSE is [batch_size, cascade_size]
@@ -621,11 +726,83 @@ class WyckoffTrainer():
                 # the loss for each cascade field separately.
                 loss = loss.mean()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.clip_grad_norm)
+            # Measure the norm whether or not it is constrained: an infinite max_norm makes
+            # clip_grad_norm_ a no-op that still returns the pre-clip norm. Worth logging even
+            # when clipping is on -- a threshold that binds on every step is not catching
+            # outliers, it is setting the step size, and only this metric shows the difference.
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                math.inf if self.clip_grad_norm is None else self.clip_grad_norm)
             self.optimizer.step()
             wandb.log({"loss.batch.train": loss,
+                       "grad_norm": grad_norm,
                        "known_seq_len": known_seq_len,
                        "known_cascade_len": known_cascade_len})
+
+
+    @torch.no_grad()
+    def schedule_free_lag(self) -> Dict[str, float]:
+        """How far the reported iterate has fallen behind the one the optimiser is moving.
+
+        Schedule-free optimisers report and checkpoint `x`, a weighted mean of the raw iterates
+        `z`. With the default r=0 that mean is uniform over the whole run, so `x` only converges
+        if `z` settles. A full-batch gradient vanishes at a stationary point and `z` does settle;
+        a mini-batch gradient never vanishes, so `z` keeps moving and `x` trails it by a distance
+        that grows with the step count. Every mini-batched run in this project has a rising
+        training loss; no full-batch one does.
+
+        The signature is unambiguous and appears long before the loss curve bends: `lag` climbing
+        without bound, and `loss_x_minus_z` -- normally negative, since averaging is the point --
+        rising towards zero. An average that is worse than what it averages has gone stale, and
+        the fix is to shorten the window (schedule-free's `r`), restart the averaging, or stop
+        `z` drifting at all (`weight_decay`).
+
+        Returns an empty dict for optimisers that keep no such average.
+        """
+        state = getattr(self.optimizer, "state", None)
+        if state is None or self.train_dataset is None:
+            return {}
+        params = [p for group in self.optimizer.param_groups for p in group["params"]]
+        if not any(state.get(p, {}).get("z") is not None for p in params):
+            return {}
+        # `evaluate` leaves the optimiser in eval mode, so the parameters hold x; make sure of it.
+        self.optimizer.eval()
+        x = [p.detach().clone() for p in params]
+        # A parameter that never received a gradient has no z: the optimiser has never moved it,
+        # so x and z coincide there and it contributes nothing to the lag.
+        z = [state.get(p, {}).get("z", p).detach() for p in params]
+        flat_x = torch.cat([t.flatten() for t in x])
+        flat_z = torch.cat([t.flatten() for t in z])
+        norm_x = flat_x.norm()
+        metrics = {"lag": (flat_x - flat_z).norm().item(),
+                   "norm_x": norm_x.item(),
+                   "norm_z": flat_z.norm().item()}
+        metrics["lag_relative"] = metrics["lag"] / metrics["norm_x"] if norm_x > 0 else float("nan")
+        # Evaluate both iterates on the same batches and the same permutations: the quantity of
+        # interest is their difference, and an unpaired comparison would bury it in estimator
+        # noise. A fixed seed also makes the metric comparable from checkpoint to checkpoint.
+        # The training stream is restored afterwards so the monitor cannot alter the run.
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        try:
+            torch.manual_seed(self.LAG_EVAL_SEED)
+            loss_x = self.evaluate(self.train_dataset, self.train_loader).sum().item()
+            for p, zi in zip(params, z):
+                p.copy_(zi)
+            try:
+                torch.manual_seed(self.LAG_EVAL_SEED)
+                loss_z = self.evaluate(self.train_dataset, self.train_loader).sum().item()
+            finally:
+                for p, xi in zip(params, x):
+                    p.copy_(xi)
+        finally:
+            torch.set_rng_state(rng_state)
+            if cuda_rng_state is not None:
+                torch.cuda.set_rng_state_all(cuda_rng_state)
+        metrics["loss_x"] = loss_x
+        metrics["loss_z"] = loss_z
+        metrics["loss_x_minus_z"] = loss_x - loss_z
+        return metrics
 
 
     @torch.no_grad()
@@ -681,15 +858,35 @@ class WyckoffTrainer():
 
         # return loss / self.evaluation_samples / len(dataset)
 
-        # default (w/o batching)
+        # Without a loader every viable example of the split goes through the model in a single
+        # forward pass per (known_seq_len, known_cascade_len). That is exact, but the activations
+        # scale with the whole split times max_sequence_length, which does not fit on a GPU for
+        # datasets the size of LeMat-Bulk. With a loader we evaluate one mini-batch per
+        # (known_seq_len, known_cascade_len) instead and rescale each summed loss by
+        # n_viable / n_samples, which keeps the returned quantity on the same scale as the
+        # exact path (mean total NLL per structure) so runs stay comparable.
         for _ in range(self.evaluation_samples):
             for known_seq_len in range(dataset.max_sequence_length):
+                if dataset.viable_count(known_seq_len) == 0:
+                    # Nothing in this split reaches that far. The padded width comes from the
+                    # tensors and can exceed the longest sequence of an individual split, which
+                    # leaves both the sampled and the exhaustive path with an empty batch.
+                    continue
                 if self.target == TargetClass.NextToken:
                     for known_cascade_len in range(self.cascade_target_count):
+                        # get_loss already rescales a sampled batch to the whole viable set.
                         loss[known_cascade_len] += self.get_loss(
-                            dataset, known_seq_len, known_cascade_len, no_batch=True) # True if no_batch
+                            dataset, known_seq_len, known_cascade_len, loader=loader,
+                            no_batch=loader is None)
                 else: # NumUniqueTokens
-                    loss += self.get_loss(dataset, known_seq_len, 0, no_batch=True).sum(dim=0) # True if no_batch
+                    if loader is None:
+                        loss += self.get_loss(dataset, known_seq_len, 0, no_batch=True).sum(dim=0)
+                    else:
+                        batch_loss, n_samples = self.get_loss(
+                            dataset, known_seq_len, 0, loader=loader, no_batch=False,
+                            return_n_samples=True)
+                        loss += batch_loss.sum(dim=0) * (
+                            dataset.viable_count(known_seq_len) / n_samples)
             # ln(P) = ln p(t_n|t_n-1, ..., t_1) + ... + ln p(t_2|t_1)
             # We are minimising the negative log likelihood of the whole sequences
         return loss / self.evaluation_samples / len(dataset)
@@ -733,9 +930,13 @@ class WyckoffTrainer():
                     for name, loss in raw_losses.items():
                         loss_dict[name] = {name: loss[i] for i, name in enumerate(self.cascade_order)}
                         loss_dict[name]["total"] = loss.sum().item()
-                wandb.log({"loss.epoch": loss_dict,
-                           "lr": self.optimizer.param_groups[0]['lr'],
-                           "epoch": epoch}, commit=False)
+                logged = {"loss.epoch": loss_dict,
+                          "lr": self.optimizer.param_groups[0]['lr'],
+                          "epoch": epoch}
+                lag_metrics = self.schedule_free_lag()
+                if lag_metrics:
+                    logged["schedule_free"] = lag_metrics
+                wandb.log(logged, commit=False)
                 if total_val_loss < best_val_loss:
                     best_val_loss = total_val_loss
                     best_val_epoch = epoch
@@ -790,7 +991,8 @@ class WyckoffTrainer():
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
                 defines a custom pool. Only used when element-constrained generation is active.
             temperature: Softmax temperature for sampling.
-            cond: Optional tensor of shape [n_structures, condition_dim] for AdaLN conditioning.
+            cond: Optional tensor of shape [n_structures, condition_dim] for AdaLN conditioning,
+                in physical units (any condition_transform is applied here, not by the caller).
         """
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
@@ -801,7 +1003,8 @@ class WyckoffTrainer():
         if calibrate:
             if self.val_dataset is None:
                 raise ValueError("Calibration requires a validation dataset")
-            generator.calibrate(self.val_dataset, condition_feature=condition_feature)
+            generator.calibrate(self.val_dataset, condition_feature=condition_feature,
+                                condition_transform=self.transform_condition)
         if start_tensor is None:
             start_tensor = self._sample_start_tokens_from_distribution(n_structures)
         else:
@@ -822,6 +1025,11 @@ class WyckoffTrainer():
                     f"condition_feature={condition_feature!r} is set but no `cond` was provided "
                     "and no train_dataset is available to sample from."
                 )
+
+        if cond is not None:
+            # Both branches above, and anything a caller passes in, are in physical units.
+            self._validate_condition_values(cond)
+            cond = self.transform_condition(cond)
 
         if required_element_set is not None:
             if 'elements' not in self.tokenisers:

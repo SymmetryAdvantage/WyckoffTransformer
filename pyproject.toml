@@ -86,9 +86,12 @@ torch-sparse = ["torch"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
+# Slow tests are opt-in: run them with `pytest -m slow`, which overrides this.
+addopts = ["-m", "not slow"]
 markers = [
   "needs_cache: mark test as requiring the cache file data.pkl.gz",
   "needs_relax: mark test as requiring network access and a MACE model (pass --run-relax)",
+  "slow: long-running diagnostic, not run by default (select with -m slow)",
 ]
 filterwarnings = [
   "ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
