@@ -13,6 +13,7 @@ from omegaconf import OmegaConf
 import sys
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
 
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.data import (
     read_cif,
     compute_symmetry_sites,
@@ -34,6 +35,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("output", type=Path, help="Where to write predictions (.csv or .csv.gz).")
     source_group = parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--wandb-run", type=str, help="W&B run id to load the model from.")
+    parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
+                        help="W&B entity holding --wandb-run")
+    parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
     source_group.add_argument("--model-path", type=Path,
                               help="Directory with best_model_params.pt and tokeniser artifacts.")
     parser.add_argument("--input-type", choices=["cif", "pyxtal"], required=True,
@@ -85,9 +89,11 @@ def load_config_from_run(run: wandb.apis.public.Run) -> OmegaConf:
 def load_wandb_model(
     run_id: str,
     device: torch.device,
-    use_cached_tensors: bool) -> Tuple[WyckoffTrainer, OmegaConf]:
+    use_cached_tensors: bool,
+    entity: str = WANDB_ENTITY,
+    project: str = WANDB_PROJECT) -> Tuple[WyckoffTrainer, OmegaConf]:
 
-    wandb_run = wandb.Api().run(f"WyckoffTransformer/{run_id}")
+    wandb_run = wandb.Api().run(wandb_run_path(run_id, entity, project))
     run_dir = Path(__file__).parent.parent / "runs" / run_id
     ensure_run_artifacts(wandb_run, run_dir)
     config = load_config_from_run(wandb_run)
@@ -401,7 +407,8 @@ def run_prediction(args: argparse.Namespace) -> None:
         torch.set_float32_matmul_precision("high")
 
     if args.wandb_run:
-        trainer, _ = load_wandb_model(args.wandb_run, args.device, args.use_cached_tensors)
+        trainer, _ = load_wandb_model(args.wandb_run, args.device, args.use_cached_tensors,
+                                      args.wandb_entity, args.wandb_project)
     else:
         trainer, _ = load_local_model(args.model_path, args.device, args.use_cached_tensors)
 

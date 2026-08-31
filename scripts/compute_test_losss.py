@@ -4,6 +4,7 @@ import torch
 from omegaconf import OmegaConf
 import wandb
 from tqdm import trange
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.trainer import WyckoffTrainer
 
 @torch.no_grad()
@@ -15,8 +16,12 @@ def main():
         help="Number of samples to use for data augmentation")
     parser.add_argument("--compile-model", action="store_true", help="Compile the model before running")
     parser.add_argument("wandb_run", type=str, help="The W&B run ID.")
+    parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
+                        help="W&B entity holding the run")
+    parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
     args = parser.parse_args()
-    wandb_run = wandb.Api().run(f"WyckoffTransformer/{args.wandb_run}")
+    wandb_run = wandb.Api().run(
+        wandb_run_path(args.wandb_run, args.wandb_entity, args.wandb_project))
     wandb_config = OmegaConf.create(dict(wandb_run.config))
     if base_config_name := (wandb_config.get("base_config", None)):
         base_config = OmegaConf.load(Path(__file__).parent.parent / "yamls" / "models" / f"{base_config_name}.yaml")

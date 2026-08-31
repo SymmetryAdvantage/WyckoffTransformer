@@ -7,6 +7,7 @@ import wandb
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: E402
 from wyckoff_transformer.trainer import train_from_config  # noqa: E402
 # from wyckoff_transformer.bigtrainer import train_from_config
 
@@ -27,6 +28,10 @@ def main():
                         help="Force WyckoffTrainer_args.compile_model=true")
     parser.add_argument("--no-compile", dest="compile_model", action="store_false", default=None,
                         help="Force WyckoffTrainer_args.compile_model=false")
+    parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
+                        help="W&B entity to log under. Pinned by default so a run's home does not "
+                             "depend on the shell's W&B configuration.")
+    parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
     args = parser.parse_args()
     
     if args.debug:
@@ -63,7 +68,8 @@ def main():
     wandb_config = OmegaConf.to_container(config)
     args.run_path.mkdir(parents=True, exist_ok=True)
     with wandb.init(
-        project="WyckoffTransformer",
+        entity=args.wandb_entity,
+        project=args.wandb_project,
         job_type="train",
         tags=tags,
         config=wandb_config,
