@@ -7,11 +7,12 @@ import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
-from wyckoff_transformer.cryspr.calculator import build_mace_calculator
 from wyckoff_transformer.cryspr.generator import func_run
+from wyckoff_transformer.cryspr.mlips import MLIP_REGISTRY, build_calculator
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,22 @@ _SINGLE_THREAD_ENV_VARS = {
 }
 
 
+def _build(mlip: Optional[str], model: Optional[str], device: str):
+    """Construct the relaxation calculator from either --mlip or --model."""
+    if mlip is not None:
+        return build_calculator(mlip=mlip, device=device, checkpoint=model)
+    # Imported lazily: the MACE builder pulls in torch, which is absent from
+    # backend environments that do not need it (GRACE runs on TensorFlow).
+    from wyckoff_transformer.cryspr.calculator import build_mace_calculator
+
+    return build_mace_calculator(model=model, device=device)
+
+
 def _worker(
     id_gene: int,
     wyckoffgene: dict,
-    model: str,
+    mlip: Optional[str],
+    model: Optional[str],
     device: str,
     output_dir: Path,
     model_name: str,
@@ -37,10 +50,14 @@ def _worker(
     # but set them again here and also limit PyTorch's own runtime thread count.
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ[key] = value
-    import torch
-    torch.set_num_threads(1)
+    try:
+        import torch
+    except ImportError:
+        torch = None  # torch-free backend (GRACE); OMP/MKL env vars still apply
+    else:
+        torch.set_num_threads(1)
 
-    calculator = build_mace_calculator(model=model, device=device)
+    calculator = _build(mlip, model, device)
     atoms, formula, energy, energy_per_atom, cif = func_run(
         id_gene=id_gene,
         wyckoffgene=wyckoffgene,
@@ -50,6 +67,14 @@ def _worker(
         n_trials=n_trials,
         fmax=fmax,
     )
+    # Hand cached-but-unused GPU blocks back to the driver. Each worker is a
+    # separate process, so memory one worker has cached is unavailable to its
+    # siblings: without this the caching allocator grows monotonically across
+    # genes until the pool collectively exhausts the card, which starved
+    # PET-OAM-XL down to 13 of 300 genes with 414 OOM events.
+    if torch is not None and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return {
         "model": model_name,
         "id": id_gene,
@@ -87,12 +112,25 @@ def main() -> None:
         help="Last index (exclusive). Defaults to the end of the file.",
     )
     parser.add_argument(
+        "--mlip",
+        type=str,
+        default=None,
+        choices=sorted(MLIP_REGISTRY),
+        help=(
+            "Registered foundation MLIP to relax with. Each backend needs its own "
+            "dependency set (see wyckoff_transformer.cryspr.mlips). When omitted, "
+            "--model is interpreted as a MACE model, preserving the original behaviour."
+        ),
+    )
+    parser.add_argument(
         "--model",
         type=str,
-        required=True,
+        default=None,
         help=(
-            "MACE model to use: either a local filesystem path or an HTTPS URL. "
-            "URL-based models are downloaded once and cached in "
+            "Model checkpoint: a local filesystem path or an HTTPS URL. With --mlip "
+            "this overrides that MLIP's default checkpoint; without it, the model is "
+            "loaded as MACE (a tag from mace_urls.py is also accepted). URL-based "
+            "models are downloaded once and cached in "
             "~/.cache/wyckoff_transformer/mace_models/."
         ),
     )
@@ -140,6 +178,19 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--max-tasks-per-child",
+        type=int,
+        default=None,
+        help=(
+            "Restart each worker process after this many genes. Bounds backends "
+            "whose memory grows monotonically across structures rather than with "
+            "structure size -- TensorFlow/XLA caches a compiled kernel per cell "
+            "shape, which otherwise exhausts the GPU budget mid-run and wedges "
+            "the worker for every subsequent gene. Costs one calculator rebuild "
+            "per restart. Default: never restart."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable DEBUG-level logging.",
@@ -158,10 +209,13 @@ def main() -> None:
     with opener(args.input, mode="rt", encoding="utf-8") as f:
         data = json.load(f)
 
+    if args.mlip is None and args.model is None:
+        parser.error("one of --mlip or --model is required")
+
     end = args.end if args.end is not None else len(data)
     selected = data[args.start:end]
 
-    model_name = args.model_name or Path(args.model.split("?")[0]).stem
+    model_name = args.model_name or args.mlip or Path(args.model.split("?")[0]).stem
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -181,13 +235,19 @@ def main() -> None:
         # fork (the Linux default) would inherit already-initialised thread pools,
         # making the env vars ineffective.
         _spawn_ctx = multiprocessing.get_context("spawn")
-        pool = ProcessPoolExecutor(max_workers=args.workers, mp_context=_spawn_ctx)
+        _pool_kwargs = {}
+        if args.max_tasks_per_child is not None:
+            _pool_kwargs["max_tasks_per_child"] = args.max_tasks_per_child
+        pool = ProcessPoolExecutor(
+            max_workers=args.workers, mp_context=_spawn_ctx, **_pool_kwargs
+        )
         try:
             for i, wyckoffgene in enumerate(selected, start=args.start):
                 fut = pool.submit(
                     _worker,
                     i,
                     wyckoffgene,
+                    args.mlip,
                     args.model,
                     args.device,
                     args.output_dir,
@@ -236,8 +296,8 @@ def main() -> None:
 
         results = [results_map[i] for i in sorted(results_map)]
     else:
-        logger.info("Building MACE calculator from %s", args.model)
-        calculator = build_mace_calculator(model=args.model, device=args.device)
+        logger.info("Building %s calculator", args.mlip or f"MACE ({args.model})")
+        calculator = _build(args.mlip, args.model, args.device)
 
         results = []
         for i, wyckoffgene in enumerate(selected, start=args.start):

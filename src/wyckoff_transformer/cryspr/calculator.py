@@ -125,7 +125,10 @@ def build_mace_calculator(
     # Probe availability before constructing the calculator so that we never
     # partially initialise MACECalculator (which can allocate GPU memory and
     # spawn helper processes) only to tear it down and build a second instance.
-    enable_cueq = _cueq_available()
+    # cuEQ is a CUDA-only acceleration path: enabling it on a CPU device makes
+    # MACE allocate on the GPU anyway, which raises "CUDA error: out of memory"
+    # when the GPU is busy and silently fails every relaxation.
+    enable_cueq = _cueq_available() and str(device).startswith("cuda")
 
     torch_dtype = _DTYPE_BY_NAME[dtype]
 
