@@ -16,7 +16,7 @@ from wyckoff_transformer.cascade.model import (
     CascadeTransformer,
 )
 from wyckoff_transformer.generator import WyckoffGenerator
-from wyckoff_transformer.trainer import WyckoffTrainer
+from wyckoff_transformer.trainer import WyckoffTrainer, get_condition_transform
 
 
 def _make_minimal_dataset(extra_fields=None, energy_values=None, energy_dtype=torch.float64):
@@ -333,6 +333,8 @@ class TestGenerateStructuresConditioning(unittest.TestCase):
         trainer.production_training = False
         trainer.run_path = None
         trainer.condition_feature = condition_feature
+        trainer.condition_transform = None
+        trainer._condition_transform_fn = None
         return trainer
 
     def test_missing_train_dataset_raises_clear_error(self):
@@ -404,6 +406,61 @@ class TestGenerateEvaluateAndLogWp(unittest.TestCase):
             trainer.generate_evaluate_and_log_wp(
                 generation_name="t", calibrate=False, n_structures=1, evaluator=evaluator)
         mock_eval.assert_called_once()
+
+
+class TestConditionTransform(unittest.TestCase):
+    """The conditioning feature is stored in physical units; the transform is applied on the
+    way into the model, so a caller always speaks eV/atom."""
+
+    def _trainer(self, condition_transform):
+        trainer = WyckoffTrainer.__new__(WyckoffTrainer)
+        trainer.condition_feature = "energy_above_hull"
+        trainer.condition_transform = condition_transform
+        trainer._condition_transform_fn = get_condition_transform(condition_transform)
+        return trainer
+
+    def test_unknown_transform_is_rejected(self):
+        with self.assertRaises(ValueError):
+            get_condition_transform("not_a_transform")
+
+    def test_none_is_identity(self):
+        trainer = self._trainer(None)
+        values = torch.tensor([[0.0], [0.235], [37.4]])
+        self.assertTrue(torch.equal(trainer.transform_condition(values), values))
+
+    def test_log1p_keeps_zero_at_zero_and_compresses_the_tail(self):
+        trainer = self._trainer("log1p")
+        out = trainer.transform_condition(torch.tensor([[0.0], [0.03], [37.4]]))
+        # e_hull = 0, the value we generate at, must stay exactly 0.
+        self.assertEqual(out[0].item(), 0.0)
+        # Near-linear where the interesting structures are.
+        self.assertAlmostEqual(out[1].item(), 0.0296, places=4)
+        # The outlier that motivated the transform lands in the same order of magnitude.
+        self.assertLess(out[2].item(), 4.0)
+
+    def test_log1p_is_monotone(self):
+        trainer = self._trainer("log1p")
+        out = trainer.transform_condition(
+            torch.tensor([[0.0], [0.03], [0.1], [1.0], [5.0], [37.4]])).squeeze()
+        self.assertTrue(torch.all(out[1:] > out[:-1]))
+
+    def test_negative_values_rejected_for_log1p(self):
+        trainer = self._trainer("log1p")
+        with self.assertRaises(ValueError):
+            trainer._validate_condition_values(torch.tensor([[-0.5]]))
+
+    def test_generate_structures_transforms_caller_supplied_cond(self):
+        """A caller passing --condition-value 0.1 means 0.1 eV/atom, not log1p(0.1)."""
+        trainer = WyckoffTrainer.__new__(WyckoffTrainer)
+        trainer.condition_feature = "energy_above_hull"
+        trainer.condition_transform = "log1p"
+        trainer._condition_transform_fn = get_condition_transform("log1p")
+        raw = torch.tensor([[0.1], [1.0]])
+        transformed = trainer.transform_condition(raw)
+        self.assertAlmostEqual(transformed[0].item(), 0.09531, places=4)
+        self.assertAlmostEqual(transformed[1].item(), 0.69315, places=4)
+        # The caller's tensor is not modified in place.
+        self.assertAlmostEqual(raw[0].item(), 0.1, places=6)
 
 
 if __name__ == "__main__":

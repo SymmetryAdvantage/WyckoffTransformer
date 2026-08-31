@@ -1,4 +1,4 @@
-from typing import Tuple, List, Dict, Optional, Set, Union
+from typing import Callable, Tuple, List, Dict, Optional, Set, Union
 import logging
 import torch
 from torch import nn, Tensor
@@ -63,15 +63,23 @@ class WyckoffGenerator():
         self.token_engineers = token_engineers
 
 
-    def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100, condition_feature: Optional[str] = None):
+    def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100,
+                  condition_feature: Optional[str] = None,
+                  condition_transform: Optional[Callable[[Tensor], Tensor]] = None):
         """
         The calibraiton is going to be per cascade field.
         We will generate p_predicted and p_true for each cascade field for each
         known sequence length.
+
+        Args:
+            condition_transform: Applied to the conditioning feature before it reaches the model;
+                the dataset stores it in physical units.
         """
         assert dataset.cascade_order == self.cascade_order
 
         full_cond = dataset.data[condition_feature] if condition_feature is not None else None
+        if full_cond is not None and condition_transform is not None:
+            full_cond = condition_transform(full_cond)
 
         with torch.no_grad():
             self.model.eval()

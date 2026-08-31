@@ -12,6 +12,7 @@ import torch
 import wandb
 from omegaconf import OmegaConf
 
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, load_tensor_cache
 from wyckoff_transformer.trainer import WyckoffTrainer
 from wyckoff_transformer.wyckoff_processor import WyckoffProcessor
@@ -146,6 +147,10 @@ def main():
     parser.add_argument("output", type=Path, help="The output file.")
     model_source = parser.add_mutually_exclusive_group(required=True)
     model_source.add_argument("--wandb-run", type=str, help="The W&B run to use for the model.")
+    parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
+                        help="W&B entity holding --wandb-run. Pinned by default so a run is "
+                             "looked up where it was logged, not under the shell's default.")
+    parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
     model_source.add_argument("--model-path", type=Path,
            help="The path to the model directory. Should contain best_model_params.pt, "
                "wyckoff_processor.json, config.yaml")
@@ -171,6 +176,10 @@ def main():
                              "or a custom set (e.g., 'Li-S-P-O'). Defaults to all elements when omitted.")
     parser.add_argument("--sg-dist", type=str, default=None,
                         help="Override the initial space group distribution using tensors cached under cache/<dataset>.")
+    parser.add_argument("--condition-value", type=float, default=None,
+                        help="Value of the model's conditioning feature (e.g. energy_above_hull) to use for "
+                             "every generated structure. Required for conditional models unless "
+                             "--use-cached-tensors is set, in which case the training distribution is sampled.")
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
@@ -188,9 +197,14 @@ def main():
     else:
         if args.wandb_run:
             if args.update_wandb:
-                wandb_run = wandb.init(project="WyckoffTransformer", id=args.wandb_run, resume=True)
+                wandb_run = wandb.init(
+                    entity=args.wandb_entity, project=args.wandb_project,
+                    id=args.wandb_run, resume=True)
             else:
-                wandb_run = wandb.Api().run(f"WyckoffTransformer/{args.wandb_run}")
+                # A two-part path resolves against the account default entity, which is not
+                # necessarily the one the run was logged under.
+                wandb_run = wandb.Api().run(
+                    wandb_run_path(args.wandb_run, args.wandb_entity, args.wandb_project))
             config = OmegaConf.create(dict(wandb_run.config))
             run_path = Path.cwd() / "runs" / args.wandb_run
         elif args.model_path:
@@ -213,6 +227,21 @@ def main():
             n_samples=args.initial_n_samples,
         )
 
+    cond = None
+    if args.condition_value is not None:
+        if trainer.condition_feature is None:
+            parser.error("--condition-value was given, but the model is not conditional.")
+        condition_dim = getattr(trainer.model, "condition_dim", None) or 1
+        cond = torch.full(
+            (args.initial_n_samples, condition_dim),
+            args.condition_value,
+            dtype=torch.float32,
+            device=args.device,
+        )
+        print(f"--- Conditioning on {trainer.condition_feature} = {args.condition_value} ---")
+    elif trainer.condition_feature is not None:
+        print(f"--- Conditional model ({trainer.condition_feature}); sampling condition from training data ---")
+
     use_element_constraints = args.required_elements is not None or args.allowed_elements is not None
     if use_element_constraints:
         print("--- Running in constrained element generation mode ---")
@@ -222,6 +251,7 @@ def main():
         n_structures=args.initial_n_samples,
         calibrate=args.calibrate,
         start_tensor=start_tensor_override,
+        cond=cond,
         required_element_set=args.required_elements if args.required_elements is not None else (set() if use_element_constraints else None),
         allowed_element_set=args.allowed_elements if args.allowed_elements is not None else "all",
     )
