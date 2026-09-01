@@ -11,7 +11,7 @@ from ase.optimize.optimize import Optimizer
 from pyxtal import pyxtal
 from pyxtal.tolerance import Tol_matrix
 
-from wyckoff_transformer.cryspr.relaxer import stepwise_relax
+from wyckoff_transformer.cryspr.relaxer import FINAL_CIF_SUFFIX, stepwise_relax
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +87,15 @@ def func_run(
         output_dir: Root directory for all output files.
         model_name: Label used in log messages and output filenames.
         n_trials: Number of random generation + relaxation trials.
-        fix_symmetry: Apply symmetry constraints during relaxation.
+        fix_symmetry: Run the symmetry-constrained step of the relaxation;
+            the unconstrained step that follows it always runs.
         fmax: Force convergence criterion in eV/Å.
         optimizer: ASE local optimisation algorithm class.
 
     Returns:
         Tuple ``(atoms, formula, energy, energy_per_atom, cif)`` for the
-        lowest-energy successful trial, where *cif* is the text of the
-        symmetrized ``*_2_cell+pos_symmetrized.cif`` file.
+        lowest-energy successful trial, where *cif* is the text of that trial's
+        final, symmetry-free relaxation stage.
         Returns ``(None, None, None, None, None)`` when all trials fail.
     """
     output_dir = Path(output_dir)
@@ -151,23 +152,20 @@ def func_run(
         os.symlink(lowest_key, symlink_lowest, target_is_directory=True)
 
     lowest_dir = gene_dir / lowest_key
-    cell_pos_cifs = list(lowest_dir.glob("*_cell+pos.cif"))
-    if cell_pos_cifs:
+    # The final relaxation stage; earlier stages write CIFs of their own into
+    # the same directory, so match its suffix rather than any "*_cell+pos.cif".
+    final_cifs = sorted(lowest_dir.glob(f"*{FINAL_CIF_SUFFIX}"))
+    if final_cifs:
         symlink_cif = gene_dir / "min_e_strc.cif"
         if not symlink_cif.exists():
             # Relative symlink so it survives directory moves
-            cif_rel = Path("trial-lowest") / cell_pos_cifs[0].name
+            cif_rel = Path("trial-lowest") / final_cifs[0].name
             os.symlink(cif_rel, symlink_cif)
 
     atoms = atoms_by_trial[lowest_key]
     energy = energy_by_trial[lowest_key]
     energy_per_atom = energy / len(atoms)
 
-    # Read the symmetrized final CIF; fall back to the raw cell+pos CIF if absent.
-    lowest_dir = gene_dir / lowest_key
-    cif_candidates = sorted(lowest_dir.glob("*_2_cell+pos_symmetrized.cif"))
-    if not cif_candidates:
-        cif_candidates = sorted(lowest_dir.glob("*_cell+pos.cif"))
-    cif_content: Optional[str] = cif_candidates[0].read_text() if cif_candidates else None
+    cif_content: Optional[str] = final_cifs[0].read_text() if final_cifs else None
 
     return atoms, formula, energy, energy_per_atom, cif_content

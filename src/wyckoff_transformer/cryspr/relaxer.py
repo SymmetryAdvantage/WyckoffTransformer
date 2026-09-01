@@ -17,6 +17,12 @@ import spglib
 
 logger = logging.getLogger(__name__)
 
+#: Label of the final, symmetry-free stage of :func:`stepwise_relax`.
+FINAL_CIF_LABEL = "3_no-sym_cell+pos"
+#: Filename suffix of the CIF that stage writes; :mod:`wyckoff_transformer.cryspr.generator`
+#: globs for it to pick up each trial's relaxed structure.
+FINAL_CIF_SUFFIX = f"_{FINAL_CIF_LABEL}.cif"
+
 
 def _get_spacegroup_info(atoms: Atoms, symprec: float) -> tuple[str, int]:
     """Return the international symbol and number from spglib."""
@@ -53,6 +59,7 @@ def run_ase_relaxer(
         fmax: float = 0.05,
         steps_limit: int = 500,
         wdir: Path = Path("."),
+        label: Optional[str] = None,
         logfile: Optional[Path] = None,
 ) -> Atoms:
     """Run a single ASE relaxation pass on *atoms_in*.
@@ -71,6 +78,8 @@ def run_ase_relaxer(
         fmax: Force convergence criterion in eV/Å.
         steps_limit: Maximum number of optimisation steps.
         wdir: Directory for the output CIF file.
+        label: Stage name used in the output CIF filename.  Defaults to
+            ``"fix-cell"`` or ``"cell+pos"`` depending on *cell_filter*.
         logfile: Path to append optimiser output; ``None`` writes to *stderr*.
 
     Returns:
@@ -81,11 +90,15 @@ def run_ase_relaxer(
     reduced_formula = atoms.get_chemical_formula(mode="metal", empirical=True)
     atoms.calc = calculator
 
-    if fix_fractional:
-        atoms.set_constraint([FixAtoms(indices=list(range(len(atoms))))])
     spg0_symbol, spg0_number = _get_spacegroup_info(atoms, symprec=symprec)
+    # Set every constraint in one call: Atoms.copy() carries the previous stage's
+    # constraints over, so an unconstrained stage has to clear them explicitly.
+    constraints = []
+    if fix_fractional:
+        constraints.append(FixAtoms(indices=list(range(len(atoms)))))
     if fix_symmetry:
-        atoms.set_constraint([FixSymmetry(atoms, symprec=symprec)])
+        constraints.append(FixSymmetry(atoms, symprec=symprec))
+    atoms.set_constraint(constraints)
     target = cell_filter(atoms, hydrostatic_strain=hydrostatic_strain) if cell_filter is not None else atoms
 
     E0 = atoms.get_potential_energy()
@@ -98,11 +111,9 @@ def run_ase_relaxer(
     opt = optimizer(atoms=target, logfile=log_arg)
     opt.run(fmax=fmax, steps=steps_limit)
 
-    cif_stem = f"{reduced_formula}_{full_formula}"
-    if cell_filter is None:
-        cif_path = wdir / f"{cif_stem}_fix-cell.cif"
-    else:
-        cif_path = wdir / f"{cif_stem}_cell+pos.cif"
+    if label is None:
+        label = "fix-cell" if cell_filter is None else "cell+pos"
+    cif_path = wdir / f"{reduced_formula}_{full_formula}_{label}.cif"
     write(filename=str(cif_path), images=atoms, format="cif")
 
     E1 = atoms.get_potential_energy()
@@ -130,13 +141,30 @@ def stepwise_relax(
         logfile_prefix: str = "",
         logfile_postfix: str = "",
 ) -> Atoms:
-    """Two-stage relaxation: fix-cell first, then full cell + atomic positions.
+    """Relax under symmetry constraints first, then release them.
+
+    The schedule is:
+
+    1. Symmetry-constrained: a fix-cell warm-up (so that a random PyXtal cell is
+       not dragged around by badly placed atoms), then cell + positions with a
+       :class:`~ase.constraints.FixSymmetry` constraint.  Skipped, apart from
+       the warm-up, when *fix_symmetry* is ``False``.
+    2. Unconstrained: cell + positions with no symmetry constraint, so the
+       structure can relax into a lower-symmetry minimum if one is nearby.
+
+    Note that a structure converged to a symmetric stationary point in step 1
+    stays there in step 2 unless something breaks the symmetry — the force and
+    stress components along symmetry-breaking modes vanish exactly for an
+    invariant potential, and only the MLIP's numerical asymmetry seeds a
+    descent.  Step 2 mainly matters when step 1 hit *steps_limit* or when the
+    symmetric point is unstable enough for that noise to grow.
 
     Args:
         atoms_in: Input structure.
         calculator: ASE Calculator.
         optimizer: Optimisation algorithm class.
-        fix_symmetry: Apply symmetry constraints during both stages.
+        fix_symmetry: Run the symmetry-constrained step.  When ``False`` only
+            the warm-up and the unconstrained step run.
         hydrostatic_strain: Restrict cell relaxation to isotropic strain.
         symprec: Symmetry tolerance in Å.
         fmax: Force convergence criterion in eV/Å.
@@ -146,7 +174,7 @@ def stepwise_relax(
         logfile_postfix: Postfix for log file names.
 
     Returns:
-        Relaxed :class:`~ase.Atoms` after both stages.
+        Relaxed :class:`~ase.Atoms` after the unconstrained step.
     """
     wdir = Path(wdir)
     wdir.mkdir(parents=True, exist_ok=True)
@@ -156,53 +184,52 @@ def stepwise_relax(
     reduced_formula = atoms.get_chemical_formula(mode="metal", empirical=True)
 
     write(
-        filename=str(wdir / f"{reduced_formula}_{full_formula}_0_initial_symmetrized.cif"),
+        filename=str(wdir / f"{reduced_formula}_{full_formula}_0_initial.cif"),
         images=atoms,
         format="cif",
     )
 
-    # Stage 1: fix cell, relax atomic positions
-    parts1 = [p for p in [logfile_prefix, "fix-cell", logfile_postfix] if p]
-    logfile1 = wdir / ("_".join(parts1) + ".log")
-    atoms1 = run_ase_relaxer(
-        atoms_in=atoms,
+    def logfile_for(stage: str) -> Path:
+        parts = [p for p in (logfile_prefix, stage, logfile_postfix) if p]
+        return wdir / ("_".join(parts) + ".log")
+
+    shared = dict(
         calculator=calculator,
         optimizer=optimizer,
+        hydrostatic_strain=hydrostatic_strain,
+        symprec=symprec,
+        fmax=fmax,
+        steps_limit=steps_limit,
+        wdir=wdir,
+    )
+
+    # Step 1: symmetry-constrained, cell fixed first and then released.
+    atoms = run_ase_relaxer(
+        atoms_in=atoms,
         fix_symmetry=fix_symmetry,
         cell_filter=None,
-        hydrostatic_strain=hydrostatic_strain,
-        symprec=symprec,
-        fmax=fmax,
-        steps_limit=steps_limit,
-        wdir=wdir,
-        logfile=logfile1,
+        label="1_fix-cell",
+        logfile=logfile_for("fix-cell"),
+        **shared,
     )
-    write(
-        filename=str(wdir / f"{reduced_formula}_{full_formula}_1_fix-cell_symmetrized.cif"),
-        images=atoms1,
-        format="cif",
-    )
+    if fix_symmetry:
+        atoms = run_ase_relaxer(
+            atoms_in=atoms,
+            fix_symmetry=True,
+            cell_filter=CellFilter,
+            label="2_sym_cell+pos",
+            logfile=logfile_for("sym_cell+positions"),
+            **shared,
+        )
 
-    # Stage 2: relax both cell and atomic positions
-    parts2 = [p for p in [logfile_prefix, "cell+positions", logfile_postfix] if p]
-    logfile2 = wdir / ("_".join(parts2) + ".log")
-    atoms2 = run_ase_relaxer(
-        atoms_in=atoms1,
-        calculator=calculator,
-        optimizer=optimizer,
-        fix_symmetry=fix_symmetry,
+    # Step 2: no symmetry constraint, so the structure may lower its symmetry.
+    atoms = run_ase_relaxer(
+        atoms_in=atoms,
+        fix_symmetry=False,
         cell_filter=CellFilter,
-        hydrostatic_strain=hydrostatic_strain,
-        symprec=symprec,
-        fmax=fmax,
-        steps_limit=steps_limit,
-        wdir=wdir,
-        logfile=logfile2,
-    )
-    write(
-        filename=str(wdir / f"{reduced_formula}_{full_formula}_2_cell+pos_symmetrized.cif"),
-        images=atoms2,
-        format="cif",
+        label=FINAL_CIF_LABEL,
+        logfile=logfile_for("no-sym_cell+positions"),
+        **shared,
     )
 
-    return atoms2
+    return atoms

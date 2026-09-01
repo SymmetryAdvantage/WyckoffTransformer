@@ -157,6 +157,8 @@ Output layout is identical to the CHGNet variant below. Key options:
 - `--device auto|cpu|cuda` — PyTorch device selection (default: auto)
 - `--workers W` — number of parallel worker processes; each worker builds its own calculator (default 1)
 
+Each PyXtal trial is relaxed in two steps: first with a `FixSymmetry` constraint (a fix-cell warm-up, then cell + positions), and then without it, so the structure can settle into a lower-symmetry minimum if one is nearby. Per-trial CIFs are numbered by stage; `${reduced_formula}_${full_formula}_3_no-sym_cell+pos.cif` is the final structure, and `min_e_strc.cif` links to it for the lowest-energy trial.
+
 ### CHGNet relaxation
 The structures from all models can be optionally relaxed with CHGNet.
 ```bash
