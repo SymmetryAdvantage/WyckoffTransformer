@@ -321,6 +321,7 @@ class TestGenerateStructuresConditioning(unittest.TestCase):
         trainer.token_engineers = {}
         trainer.tokenisers = {"elements": MagicMock()}
         trainer.masks_dict = {}
+        trainer.stops_dict = {}
         trainer.start_name = "spacegroup_number"
         trainer.start_token_distribution = None
         trainer.train_dataset = train_dataset

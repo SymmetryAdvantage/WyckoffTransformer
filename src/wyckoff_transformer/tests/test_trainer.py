@@ -85,6 +85,7 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         self.trainer.token_engineers = {}
         self.trainer.tokenisers = {'elements': MagicMock()}
         self.trainer.masks_dict = {}
+        self.trainer.stops_dict = {"spacegroup": 7}
         self.trainer.start_name = "spacegroup_number"
         self.trainer.start_token_distribution = None
         
@@ -124,6 +125,10 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         
         # Assertions
         mock_generator_instance.generate_tensors.assert_called_once()
+        # Without `stops` the generator cannot tell a finished sequence from a live one, and
+        # the per-length validity metric degenerates into the stop rate.
+        self.assertEqual(
+            MockWyckoffGenerator.call_args.kwargs.get("stops"), self.trainer.stops_dict)
         self.assertEqual(len(structures), 2)
         self.assertEqual(structures[0], "pyxtal_mock")
         # Ensure that harmonic_site_symmetries is deleted from tensors during processing 

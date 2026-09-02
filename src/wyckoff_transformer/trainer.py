@@ -1082,10 +1082,13 @@ class WyckoffTrainer():
             cond: Optional tensor of shape [n_structures, condition_dim] for AdaLN conditioning,
                 in physical units (any condition_transform is applied here, not by the caller).
         """
+        # `stops` must be passed: without it the generator cannot tell a finished sequence
+        # from a live one, and `compute_validity_per_known_sequence_length` then scores STOP
+        # tokens as invalid Wyckoff positions.
         generator = WyckoffGenerator(
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
-            self.masks_dict, self.max_sequence_length)
-            
+            self.masks_dict, self.max_sequence_length, stops=self.stops_dict)
+
         condition_feature = self.condition_feature
 
         if calibrate:
@@ -1175,6 +1178,9 @@ class WyckoffTrainer():
         validity_table = wandb.Table(data=validity_data, columns=["known_seq_len", "ss_validity", "enumeration_validity"])
         # Important note. The logged values denote the validity specifially *at* given known sequence length,
         # not the validity of the sequences from the start up to the known sequence length.
+        # They are averaged over structures still placing real sites at that length; one that has
+        # emitted STOP is excluded from that point on, rather than having its STOP scored as an
+        # invalid Wyckoff position.
         wandb.log({
             "ss_validity": wandb.plot.line(validity_table, "known_seq_len", "ss_validity",
                 title="Site Symmetry validity"),

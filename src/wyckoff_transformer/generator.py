@@ -159,12 +159,23 @@ class WyckoffGenerator():
                 It doesn't include the start token.
             If compute_validity is True, also returns the formal validity of the generated sequences
                 for the site symmetries and the enumeration (if applicable) for each known sequence length.
+                Measured over structures that are still generating real sites: a structure is dropped
+                from the average at the position where any cascade field emits STOP, and at every
+                position after it. Requires `stops`.
         """
         element_constrained = required_element_set is not None
         device = start.device
         batch_size = start.size(0)
         if max_length is None:
             max_length = self.max_sequence_len
+        if compute_validity and self.stops is None:
+            # Without stop tokens a finished sequence is indistinguishable from a live one,
+            # and every STOP would be counted as an invalid Wyckoff position, since STOP is
+            # not a key of the multiplicity table. That reads as validity collapsing with
+            # sequence length when it is really the stop rate.
+            raise ValueError(
+                "compute_validity requires `stops`; construct WyckoffGenerator with "
+                "stops={field: tokeniser.stop_token}.")
 
         if element_constrained:
             if elements_vocab is not None and 'STOP' in elements_vocab:
@@ -311,8 +322,10 @@ class WyckoffGenerator():
                             torch.multinomial(calibrated_probas, num_samples=1).squeeze()
                             
                     if self.stops is not None:
-                        stop_mask = (generated[known_cascade_len][:, known_seq_len] == self.stops[cascade_name]).cpu().numpy()
-                        stop_generated |= stop_mask
+                        this_stop = self.stops.get(cascade_name)
+                        if this_stop is not None:
+                            stop_mask = (generated[known_cascade_len][:, known_seq_len] == this_stop).cpu().numpy()
+                            stop_generated |= stop_mask
                 else:
                     if known_cascade_len != len(self.cascade_order) - 1:
                         raise NotImplementedError("Only the last cascade field can be non-target")
