@@ -54,6 +54,36 @@ def get_condition_transform(name: Optional[str]):
         raise ValueError(
             f"Unknown condition_transform {name!r}; available: {sorted(CONDITION_TRANSFORMS)}") from None
 
+
+#: Prefix `torch.compile` adds to every parameter name of the module it wraps.
+_COMPILE_PREFIX = "_orig_mod."
+
+
+def load_model_weights(
+        model: nn.Module,
+        path: Path,
+        device: torch.device | str = "cpu") -> None:
+    """Load a checkpoint into `model` regardless of which side was compiled.
+
+    `torch.compile` renames every parameter with a `_orig_mod.` prefix, so a
+    checkpoint saved from a compiled model loads only into another compiled model
+    and vice versa. Training compiles on GPU while generation has no reason to,
+    which otherwise makes a GPU run's checkpoint unreadable on CPU. The prefix is
+    therefore normalised to whatever this particular `model` expects.
+
+    Args:
+        model: Destination module, compiled or not.
+        path: Checkpoint written by `torch.save(model.state_dict(), ...)`.
+        device: Device to map the storages onto. Without this a CUDA-trained
+            checkpoint refuses to load where no GPU is visible.
+    """
+    state_dict = torch.load(path, map_location=device, weights_only=True)
+    weights = {key.removeprefix(_COMPILE_PREFIX): value for key, value in state_dict.items()}
+    if any(key.startswith(_COMPILE_PREFIX) for key in model.state_dict()):
+        weights = {_COMPILE_PREFIX + key: value for key, value in weights.items()}
+    model.load_state_dict(weights)
+
+
 class WyckoffTrainer():
     # Fixed seed for the schedule_free_lag evaluations, so x and z are compared on identical
     # batches and successive checkpoints are comparable to each other.
@@ -250,7 +280,14 @@ class WyckoffTrainer():
         optimizer_module_obj = importlib.import_module(optimisation_config.optimiser.get("module", "torch.optim"))
         self.optimizer = getattr(optimizer_module_obj, optimisation_config.optimiser.name)(
             model.parameters(), **optimisation_config.optimiser.config)
-        if "scheduler" in optimisation_config:
+        # Generation-only mode has no training set, so a step-indexed schedule has no
+        # horizon to size itself from -- and nothing ever steps it. Skipping it here is
+        # what lets a run trained under such a schedule be sampled without its dataset.
+        if "scheduler" in optimisation_config and self.train_loader is None:
+            logger.info("No training set; skipping the LR schedule, which generation never steps.")
+            self.scheduler = None
+            self.scheduler_steps_per_batch = False
+        elif "scheduler" in optimisation_config:
             scheduler_config = dict(optimisation_config.scheduler.get("config", {}))
             scheduler_module = importlib.import_module(
                 optimisation_config.scheduler.get("module", "torch.optim.lr_scheduler"))
@@ -264,9 +301,6 @@ class WyckoffTrainer():
             else:
                 # Step-indexed: it is stepped after every optimiser step and takes no metric.
                 if scheduler_name in getattr(scheduler_module, "NEEDS_TOTAL_STEPS", ()):
-                    if self.train_loader is None:
-                        raise ValueError(
-                            f"{scheduler_name} needs a training set to size its schedule")
                     # The horizon is in optimiser steps, which is what the schedule indexes on;
                     # `epochs` counts passes, each of them batches_per_epoch steps.
                     scheduler_config.setdefault(
@@ -353,7 +387,7 @@ class WyckoffTrainer():
         self.cascade_order = cascade_order
         self.epochs = optimisation_config.epochs
         if weights_path is not None:
-            self.model.load_state_dict(torch.load(weights_path))
+            load_model_weights(self.model, weights_path, device)
 
         self.validation_period = optimisation_config.validation_period
         self.early_stopping_patience_epochs = optimisation_config.early_stopping_patience_epochs
@@ -592,9 +626,7 @@ class WyckoffTrainer():
             run_path=model_path,
             load_datasets=load_datasets,
         )
-        trainer.model.load_state_dict(
-            torch.load(model_path / "best_model_params.pt", weights_only=True, map_location=device)
-        )
+        load_model_weights(trainer.model, model_path / "best_model_params.pt", device)
         return trainer
 
 
@@ -1256,7 +1288,8 @@ def train_from_config(
         config.evaluation.get("n_structures_to_generate", 0) > 0:
 
         print("Training complete, loading the best model")
-        trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
+        load_model_weights(
+            trainer.model, trainer.run_path / "best_model_params.pt", trainer.device)
 
         evaluator: Optional[StatisticalEvaluator] = None
         if not no_test:

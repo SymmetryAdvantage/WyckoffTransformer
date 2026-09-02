@@ -14,7 +14,7 @@ from omegaconf import OmegaConf
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, load_tensor_cache
-from wyckoff_transformer.trainer import WyckoffTrainer
+from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.wyckoff_processor import WyckoffProcessor
 
 
@@ -218,7 +218,8 @@ def main():
             use_cached_tensors=args.use_cached_tensors,
             run_path=run_path,
             load_datasets=args.use_cached_tensors or args.calibrate)
-        trainer.model.load_state_dict(torch.load(trainer.run_path / "best_model_params.pt", weights_only=True))
+        load_model_weights(
+            trainer.model, trainer.run_path / "best_model_params.pt", args.device)
     start_tensor_override = None
     if args.sg_dist is not None:
         start_tensor_override = prepare_start_tensor_from_cache(
