@@ -53,3 +53,11 @@ while kill -0 "$audit_pid" 2>/dev/null; do
 done
 wait "$audit_pid"
 trap - INT TERM EXIT
+
+# SUN reads the already-processed structures; retain the same one-core affinity
+# even though this stage normally uses little CPU.
+for energy in unrelaxed relaxed; do
+    taskset -c "$cpu_set" "$python_bin" "$driver" --stage sun --energy "$energy" \
+        --structures-pkl "$out_dir/ehull_${target}_processed.pkl" \
+        --sun-json "$out_dir/ehull_${target}_sun_${energy}.json"
+done
