@@ -11,7 +11,7 @@ from ase.optimize.optimize import Optimizer
 from pyxtal import pyxtal
 from pyxtal.tolerance import Tol_matrix
 
-from wyckoff_transformer.cryspr.relaxer import FINAL_CIF_SUFFIX, stepwise_relax
+from wyckoff_transformer.cryspr.relaxer import final_cif_suffix, stepwise_relax
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ def func_run(
         model_name: str = "model",
         n_trials: int = 6,
         fix_symmetry: bool = True,
+        release_symmetry: bool = True,
         fmax: float = 0.01,
         optimizer: type[Optimizer] = BFGS,
 ) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float], Optional[str]]:
@@ -87,8 +88,9 @@ def func_run(
         output_dir: Root directory for all output files.
         model_name: Label used in log messages and output filenames.
         n_trials: Number of random generation + relaxation trials.
-        fix_symmetry: Run the symmetry-constrained step of the relaxation;
-            the unconstrained step that follows it always runs.
+        fix_symmetry: Run the symmetry-constrained step of the relaxation.
+        release_symmetry: Run the final unconstrained step.  ``False`` gives the
+            two-stage schedule; see :func:`~wyckoff_transformer.cryspr.relaxer.stepwise_relax`.
         fmax: Force convergence criterion in eV/Å.
         optimizer: ASE local optimisation algorithm class.
 
@@ -124,6 +126,7 @@ def func_run(
                 calculator=calculator,
                 optimizer=optimizer,
                 fix_symmetry=fix_symmetry,
+                release_symmetry=release_symmetry,
                 fmax=fmax,
                 wdir=trial_dir,
                 logfile_prefix=formula,
@@ -154,7 +157,7 @@ def func_run(
     lowest_dir = gene_dir / lowest_key
     # The final relaxation stage; earlier stages write CIFs of their own into
     # the same directory, so match its suffix rather than any "*_cell+pos.cif".
-    final_cifs = sorted(lowest_dir.glob(f"*{FINAL_CIF_SUFFIX}"))
+    final_cifs = sorted(lowest_dir.glob(f"*{final_cif_suffix(release_symmetry)}"))
     if final_cifs:
         symlink_cif = gene_dir / "min_e_strc.cif"
         if not symlink_cif.exists():

@@ -46,13 +46,17 @@ Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 [project.scripts]
 wyformer-generate = "wyckoff_transformer.cli.generate:main"
 wyformer-cryspr   = "wyckoff_transformer.cli.relax:main"
+wyformer-protocol = "wyckoff_transformer.cli.protocol:main"
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
 cdvae = ["cdvae-property-models"]
 publish = ["build", "twine", "packaging >=25"]
 research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "ipympl"]
-relax = ["mace-torch >=0.3", "ase >=3.23"]
+# orb-models pins the ORB v3 weights by a date-stamped URL literal in its own
+# source, identically from 0.5.1 through 0.7.0, so the floor is enough to fix
+# the checkpoint that LeMat-Bulk's orb_conserv_inf hull was built with.
+relax = ["mace-torch >=0.3", "ase >=3.23", "orb-models >=0.5.1"]
 cuequivariance-cu13 = ["cuequivariance-torch >=0.9", "triton >=3", "cuequivariance-ops-torch-cu13 >=0.9"]
 
 [build-system]
@@ -76,6 +80,8 @@ include = [
 
 [tool.uv.sources]
 cdvae-property-models = { path = "cdvae_property_models" }
+# Test oracle only; see the genbench-oracle dependency group.
+material-hasher = { git = "https://github.com/LeMaterial/material-hasher.git" }
 
 # In the ideal world, we would forget about these packages
 # However, if cdvaae-property-models are requested, they drag
@@ -95,4 +101,15 @@ markers = [
 ]
 filterwarnings = [
   "ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
+]
+
+[dependency-groups]
+# Oracles for tests/test_genbench_equivalence.py, which diffs our BAWL, validity
+# and hull-energy implementations against the originals. Never imported at
+# runtime, and a dependency group rather than an optional-dependency extra
+# because neither package is on PyPI and PyPI rejects direct URL references in
+# published metadata. Install with: uv sync --group genbench-oracle
+genbench-oracle = [
+  "material-hasher",
+  "func-timeout >=4.3.5",
 ]

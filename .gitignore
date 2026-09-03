@@ -44,3 +44,10 @@ dist/
 relax/
 mp_20_test.json.gz
 *.log
+# BAWL novelty reference copied from LeMat-GenBench (272 MB); see
+# wyckoff_transformer.evaluation.bawl_reference
+data/unique_fingerprints.parquet
+cache/bawl_reference.pkl.gz
+cache/lemat_bulk_ehull/gene_fingerprints.pkl.gz
+generated/protocol_smoke/
+.cache/

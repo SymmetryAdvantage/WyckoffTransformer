@@ -182,6 +182,34 @@ wylm-dcpp,8,Na4Lu4F16,-149.18192
 - `${reduced_formula}_${full_formula}_cell+pos.cif` is the CHGNet relaxed structure.
 ### DFT relaxation
 We followed the [Materials Project protocol](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details), [`atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker`](https://materialsproject.github.io/atomate2/reference/atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker.html). There isn't much to add, as the rest of the details of running DFT, unfortunately, depend on the HPC setup, and VASP is not open source. [Here](https://github.com/kazeevn/NSCC-VASP-computer) is the code to run at ASPIRE2.
+
+## Ranking model variants (`wyformer-protocol`)
+
+For comparing WyFormer variants during development, `wyformer-protocol` runs the
+whole funnel from sampled Wyckoff genes to MetaSUN in one command:
+
+```bash
+uv run wyformer-protocol generated/<run>/wyckoff_genes.json.gz \
+    --output-dir generated/<run>/protocol \
+    --cores 20            # or --devices cuda:0,cuda:1
+```
+
+Filters that need no potential — validity, uniqueness, novelty against
+LeMat-Bulk — run first, so only gene-novel structures are relaxed, and the
+relaxation itself uses one PyXtal trial and two stages. That is about 3.5×
+cheaper than the full CrySPR protocol at equal statistical power. The headline
+number is `metasun_per_sampled_gene` in `<output-dir>/funnel.json`.
+
+`--mlip` is restricted to potentials LeMat-Bulk publishes a convex hull for
+(ORB by default), because `e_above_hull` is only meaningful when the energy and
+the hull come from the same model. Structure validity, BAWL fingerprinting and
+the hull energy are implemented in `wyckoff_transformer.evaluation` and pinned
+to LeMat-GenBench's own implementations by tests, so nothing imports that
+package at runtime.
+
+See [the de novo ranking protocol](docs/de_novo_ranking_protocol.md) for the
+measurement rationale, the sample sizes it can resolve, required reference data,
+and known limitations.
 ## Generated Data Analysis
 ### Storage
 #### Public Figshare
