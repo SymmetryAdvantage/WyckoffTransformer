@@ -16,15 +16,16 @@ def main():
     parser.add_argument("config_file", type=Path, help="The tokeniser configuration file")
     parser.add_argument("--debug", action="store_true", help="Set the logging level to debug")
     parser.add_argument('--pilot', action='store_true', help="Run a pilot experiment")
-    parser.add_argument("--n-jobs", type=int, help="Number of jobs to use")
+    parser.add_argument("--n-jobs", type=int,
+        help="Pandarallel workers. Left unset, pandarallel sizes its pool from the machine's "
+             "physical cores, which is wrong inside a cgroup-limited batch job: on a 128-core "
+             "node holding 16 CPUs it forks 128 workers over a 5.8 GB frame and gets OOM-killed. "
+             "Set it to the CPUs the job actually owns.")
     tokenizer_source = parser.add_mutually_exclusive_group(required=True)
     tokenizer_source.add_argument("--tokenizer-path", type=Path, help="Load a saved WyckoffProcessor (.json)")
     tokenizer_source.add_argument("--new-tokenizer", action="store_true",
         help="Generate a new tokenizer, potentially overwriting files")
     args = parser.parse_args()
-    if args.n_jobs is not None:
-        raise NotImplementedError("n_jobs is not implemented yet"
-            "Pandarallel will consume what it likes")
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     config = omegaconf.OmegaConf.load(args.config_file)

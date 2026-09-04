@@ -22,7 +22,8 @@
 #    structures under pandarallel, writing ~5.5 GB. Later links find it and skip
 #    straight to training. What it costs comes out of this job's wall clock, so
 #    the training timeout below is what is left of the budget after it, not a
-#    fixed number.
+#    fixed number. It runs with --n-jobs $NCPUS: left to itself pandarallel reads
+#    the node's core count rather than the cgroup's and OOMs (see TOKENISE_JOBS).
 #
 # 3. Attention to `epochs` before you trust the schedule. The config inherits
 #    85000 from ehull_adamw_wsd.yaml, where it was derived from a measured
@@ -74,6 +75,11 @@ ATTEMPT=${ATTEMPT:-1}        # bumped via `qsub -v` on each link
 # flushes, W&B uploads, and the next job is queued while we still own it.
 JOB_BUDGET=${JOB_BUDGET:-84600}          # 23 h 30 m for everything this link does
 TOKENISE_TIMEOUT=${TOKENISE_TIMEOUT:-14400}   # 4 h ceiling on the one-off cache build
+# Pandarallel sizes its pool from the machine's *physical cores*, not the cgroup: on these
+# 128-core nodes it forks 128 workers over a 5.8 GB frame and the job is OOM-killed within
+# half an hour (rc 137), which is exactly how attempt 1 of this run died. PBS exports NCPUS
+# as what the job actually owns.
+TOKENISE_JOBS=${TOKENISE_JOBS:-${NCPUS:-16}}
 MIN_TRAIN_SECONDS=1800       # below this, chain instead of starting a stub epoch
 
 cd "$REPO"
@@ -147,7 +153,7 @@ if [ ! -f "$TENSOR_CACHE" ]; then
     set +e
     timeout --signal=TERM --kill-after=180 "$TOKENISE_TIMEOUT" \
         "${IN_CONTAINER[@]}" python scripts/tokenise_a_dataset.py \
-            "$DATASET" "$TOKENISER_YAML" --new-tokenizer
+            "$DATASET" "$TOKENISER_YAML" --new-tokenizer --n-jobs "$TOKENISE_JOBS"
     tok_rc=$?
     set -e
     if [ "$tok_rc" -ne 0 ] || [ ! -f "$TENSOR_CACHE" ]; then
