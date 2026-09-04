@@ -51,3 +51,10 @@ cache/bawl_reference.pkl.gz
 cache/lemat_bulk_ehull/gene_fingerprints.pkl.gz
 generated/protocol_smoke/
 .cache/
+
+# Resolved against whichever uv.toml is active, and uv.toml is itself untracked: the
+# lock hard-codes the local wheel registry (/mnt/hdd/torch_wheels/) on this box, which
+# the CPU setup in uv.toml.cpu cannot fetch. A committed lock is wrong for every
+# machine but the one that wrote it. Removed twice before (72248e9, and this); it came
+# back both times because nothing was ignoring it. Do not drop this line.
+uv.lock
