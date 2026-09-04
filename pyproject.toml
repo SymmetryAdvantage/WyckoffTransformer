@@ -104,8 +104,8 @@ filterwarnings = [
 ]
 
 [dependency-groups]
-# Oracles for tests/test_genbench_equivalence.py, which diffs our BAWL, validity
-# and hull-energy implementations against the originals. Never imported at
+# Oracles for tests/test_genbench_equivalence.py, which diffs our validity and
+# hull-energy implementations against the originals. Never imported at
 # runtime, and a dependency group rather than an optional-dependency extra
 # because neither package is on PyPI and PyPI rejects direct URL references in
 # published metadata. Install with: uv sync --group genbench-oracle

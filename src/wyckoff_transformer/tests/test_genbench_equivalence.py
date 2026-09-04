@@ -84,36 +84,6 @@ def structures():
     return found or FALLBACK_STRUCTURES
 
 
-class TestBawlEquivalence:
-    """Our BAWL hashes must equal material-hasher's, string for string."""
-
-    @staticmethod
-    def _reference(shorten):
-        pytest.importorskip("material_hasher")
-        from material_hasher.hasher.bawl import BAWLHasher
-        from pymatgen.analysis.local_env import EconNN
-
-        return BAWLHasher(
-            graphing_algorithm="WL",
-            bonding_algorithm=EconNN,
-            bonding_kwargs={"tol": 0.2, "cutoff": 10, "use_fictive_radius": True},
-            include_composition=True,
-            symmetry_labeling="SPGLib",
-            shorten_hash=shorten,
-        )
-
-    @pytest.mark.parametrize("shorten", [True, False])
-    def test_fingerprints_match(self, genbench, structures, shorten):
-        from wyckoff_transformer.evaluation.bawl import BawlFingerprinter
-
-        ours = BawlFingerprinter(shorten=shorten)
-        theirs = self._reference(shorten)
-        for structure in structures:
-            assert ours(structure) == theirs.get_material_hash(structure), (
-                f"BAWL mismatch for {structure.composition.reduced_formula}"
-            )
-
-
 class TestValidityEquivalence:
     """Our validity verdict must match OverallValidityMetric's."""
 

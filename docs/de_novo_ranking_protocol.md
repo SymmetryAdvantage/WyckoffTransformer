@@ -32,7 +32,7 @@ wyformer-protocol genes.json.gz --output-dir run/ --stage score    # ~1 min
 | file | contents |
 |---|---|
 | `screen.json` | validity, uniqueness with counts, gene novelty |
-| `structures.csv` | per gene: energy, validity, BAWL hash, `e_above_hull` |
+| `structures.csv` | per gene: energy, validity, uniqueness, novelty, `e_above_hull` |
 | `funnel.json` | the whole cascade, as rates per *sampled* gene |
 | `manifest.json` | MLIP, checkpoint, trials, devices |
 | `cifs/`, `cryspr/` | relaxed structures and relaxation logs |
@@ -41,22 +41,62 @@ wyformer-protocol genes.json.gz --output-dir run/ --stage score    # ~1 min
 
 ```
 sampled → valid gene → unique gene (keep counts)
-        → gene-novel?  no  → count into the denominator, stop
-                        yes → PyXtal + 1 trial × 2-stage CrySPR
-        → valid structure → BAWL-unique → BAWL-novel → e_hull ≤ 0.1 → ≤ 0
+        → PyXtal + 1 trial × 2-stage CrySPR
+        → valid structure → unique structure → novel structure
+        → e_hull ≤ 0.1 → ≤ 0
 ```
-
-Two ideas make it cheap.
-
-**Free filters run before the expensive one.** A gene that is not novel cannot
-contribute to SUN or MetaSUN by definition, so it is counted into the
-denominator and never relaxed. On `upi73i4k` that skips 627 of 2500 genes — 25%
-of the relaxation budget, for free.
 
 **Uniqueness deduplicates but keeps counts.** Every rate stays per sampled gene;
 a duplicate belongs once in the numerator and once per sample in the
 denominator. Reporting over the deduplicated set instead would make uniqueness
 ≈1.0 by construction.
+
+**Every unique gene is relaxed**, gene-known ones included. An earlier version
+skipped them, on the grounds that a gene already in LeMat-Bulk cannot contribute
+to SUN. Three reasons to relax them anyway, and they cost only ~20% more
+compute:
+
+1. **Novelty needs them.** A known gene is a candidate for `StructureMatcher`,
+   not a verdict; skipping it decides novelty by fingerprint alone.
+2. **The `e_above_hull` distribution becomes unbiased.** Scoring only the
+   gene-novel genes conditions the energy distribution on novelty, and the
+   genes it drops are exactly the ones that reproduce real materials — so the
+   reported mean is biased upwards by an unknown amount.
+3. **It is a CrySPR control.** These genes came from LeMat-Bulk structures, so
+   whether the reconstruction recovers them measures reconstruction quality on
+   a set where the right answer is known. See the [reconstruction
+   study](cryspr_reconstruction_study.md).
+
+### Novelty and uniqueness are two-stage
+
+Both use `NoveltyFilter` and `filter_by_unique_structure` from
+`evaluation/novelty.py`: the augmented Wyckoff fingerprint first, then
+`StructureMatcher` on whatever shares it.
+
+The fingerprint alone is not a verdict. Two structures with the same space
+group and the same elements on the same Wyckoff orbits differ in their free
+coordinates and lattice parameters, so a gene that occurs in LeMat-Bulk can
+still relax into a structure that is not in it. The screen therefore produces
+*candidates* for the matcher rather than a decision.
+
+That is what makes the reference affordable. LeMat-Bulk has 4.2M entries and
+the matcher needs a `Structure` per candidate, which is far too much to hold;
+but only entries whose fingerprint collides with a generated one can ever reach
+it. On `upi73i4k`'s 2500 genes, 627 fingerprints collide, over **795** reference
+structures — a median of 1 candidate each and never more than 6. So the
+reference is built per run: one streaming pass over the Wyckoff cache for the
+colliding `immutable_id`s, then one chunked pass over `lemat_pbe.csv.gz` for
+their geometry.
+
+**This replaces BAWL, which was silently vacuous.** The score stage used to hash
+each structure with BAWL and test membership in
+`data/unique_fingerprints.parquet`. That parquet does not hold BAWL hashes: all
+4,719,106 of its entries are LeMat-GenBench *augmented Wyckoff* fingerprints
+(`AUG_12_('Ba', '4j', 1):1_...`), which no BAWL hash can ever equal. Novelty
+therefore came out at exactly 1.0 for every structure ever scored. In
+LeMat-GenBench that file belongs to `novelty_new_metric.AugmentedNovelty`; its
+BAWL `NoveltyMetric` builds its own reference by hashing LeMat-Bulk from
+HuggingFace at run time.
 
 ## Why these settings
 
@@ -79,6 +119,11 @@ shift. And a continuous readout does *not* help: the `e_hull` tail is heavy
 optimal. There is no free power in the statistic — the leverage is all in cost
 per gene.
 
+These p₀ values come from the MACE/LeMat-GenBench run that predates the ORB
+default. The ORB numbers over the same genes are lower — 0.259 at ≤0.1 and
+0.015 at ≤0 over valid structures — which moves the required n but not the
+ordering, so the conclusion stands and the table has not been recomputed.
+
 ### One trial, two stages
 
 Counting relaxations as cost, and modelling fewer trials as extra per-gene noise
@@ -96,10 +141,11 @@ power**.
 
 Dropping the third relaxation stage is safe for the *energy* — it moves by more
 than 1 meV/atom in 0.4% of trials ([CrySPR trial and stage
-spread](cryspr_trial_and_stage_spread.md)) — and also for *novelty*, which was
-the open question, since BAWL hashes include a space-group label. Measured on
-398 random `upi73i4k` genes, stage-2 and stage-3 spglib space groups agree
-**398/398** at symprec 0.01.
+spread](cryspr_trial_and_stage_spread.md)). It is also safe for *novelty*: stage
+1 fingerprints the sampled gene, which the relaxation cannot change at all, and
+stage 2 compares geometries that stage 3 barely moves. Measured on 398 random
+`upi73i4k` genes, stage-2 and stage-3 spglib space groups agree **398/398** at
+symprec 0.01.
 
 ### ORB by default
 
@@ -146,17 +192,16 @@ portability and consistency beat tracking their changes.
 | `evaluation/hull_energy.py` | `preprocess.reference_energies.get_energy_above_hull` |
 | `evaluation/structure_validity.py` | `metrics.validity_metrics.OverallValidityMetric` |
 | `evaluation/oxidation_state.py` | `utils.oxidation_state` (vendored verbatim) |
-| `evaluation/bawl.py` | `material_hasher.hasher.bawl` |
-| `evaluation/bawl_reference.py` | `data.reference_fingerprint_loader` |
+| `evaluation/structure_novelty.py` | `metrics.novelty_new_metric` (reference half) |
 
-One new runtime dependency, `structuregraph-helpers`, which keeps the
-Weisfeiler-Lehman hash itself out of our code.
+Novelty is *not* a port: it is our own `evaluation/novelty.py`, which predates
+the benchmark and answers the same question with `StructureMatcher` rather than
+with a hash.
 
-`tests/test_genbench_equivalence.py` pins all of it against the originals on 12
-real CrySPR structures: BAWL hashes are string-identical for both variants,
-validity verdicts and charge deviations match exactly, and `e_above_hull` agrees
-to 1e-9. Those tests are the only reference to LeMat-GenBench and skip when it is
-absent:
+`tests/test_genbench_equivalence.py` pins the ported half against the originals
+on 12 real CrySPR structures: validity verdicts and charge deviations match
+exactly, and `e_above_hull` agrees to 1e-9. Those tests are the only reference
+to LeMat-GenBench and skip when it is absent:
 
 ```bash
 uv sync --group genbench-oracle
@@ -175,7 +220,7 @@ them.
 |---|---|---|
 | `cache/lemat_bulk_ehull/data.pkl.gz` | LeMat-Bulk in the Wyckoff representation | existing |
 | `cache/lemat_bulk_ehull/gene_fingerprints.pkl.gz` | 3.96M gene fingerprints | built on first `screen` |
-| `data/unique_fingerprints.parquet` | 4.72M BAWL fingerprints | copy from LeMat-GenBench's `data/augmented_fingerprints/`; `$BAWL_REFERENCE_PARQUET` overrides |
+| `data/lemat-bulk/lemat_pbe.csv.gz` | LeMat-Bulk CIFs, by `immutable_id` | the geometry `StructureMatcher` needs; `--lemat-cif-csv` overrides |
 
 The hull parquet is fetched from HuggingFace and cached there. The first `screen`
 takes ~8 minutes, almost all of it unpickling the 4.2M-row reference; cached, ~2
@@ -183,12 +228,14 @@ minutes.
 
 ## Known limitations
 
-- **Gene novelty is not BAWL novelty.** The screen filters on the augmented
-  Wyckoff fingerprint; the benchmark scores the relaxed structure's BAWL hash.
-  Aggregate rates agree closely on `upi73i4k` — 0.7492 gene-novel against 0.740
-  BAWL-novel — but that is not per-structure agreement, and genes routed to the
-  free branch may have relaxed into novel structures. Fine for ranking while the
-  transfer rate is stable across variants; not a leaderboard estimate.
+- **Novelty is judged on the sampled gene, not the relaxed one.** Stage 1 uses
+  the gene WyFormer emitted; relaxation can lower the symmetry, so a structure
+  whose *relaxed* fingerprint is in LeMat-Bulk while its sampled one is not will
+  be called novel without the matcher ever seeing it. Bounding this needs the
+  relaxed structure re-fingerprinted, which the score stage does not yet do.
+- **The matcher runs at pymatgen's defaults** (`ltol=0.2, stol=0.3,
+  angle_tol=5`, primitive cell, scaled). A looser tolerance would find more
+  matches and lower the novelty rate.
 - **Single MLIP, not the ensemble.** The leaderboard averages ORB+MACE+UMA, each
   against its own hull.
 - **The leaderboard is pre-relaxation.** It scores structures exactly as

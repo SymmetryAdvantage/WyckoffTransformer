@@ -10,9 +10,9 @@ Three stages, each resumable from the previous one's output::
 expensive stage.  ``score`` is cheap but depends on the relaxed structures, so
 it is kept separate to be re-runnable without repeating the relaxations.
 
-All three run in this environment: validity, BAWL fingerprinting and the hull
-energy are implemented in :mod:`wyckoff_transformer.evaluation`, pinned to
-LeMat-GenBench's own implementations by tests rather than importing them.
+All three run in this environment: validity, novelty and the hull energy are
+implemented in :mod:`wyckoff_transformer.evaluation` rather than imported from
+LeMat-GenBench.
 """
 from __future__ import annotations
 
@@ -61,8 +61,12 @@ _SINGLE_THREAD_ENV_VARS = {
     "OPENBLAS_NUM_THREADS": "1",
 }
 
-#: Set by :func:`_init_worker` in each pool process.
+#: Set by :func:`_init_worker` in each pool process.  ``_WORKER_DEVICE`` is the
+#: device as requested on the command line, kept for reporting;
+#: ``_WORKER_TORCH_DEVICE`` is what torch is told, after the pinning below
+#: renumbers the visible cards.
 _WORKER_DEVICE: Optional[str] = None
+_WORKER_TORCH_DEVICE: Optional[str] = None
 _WORKER_CALCULATOR = None
 
 
@@ -102,11 +106,48 @@ def resolve_devices(
     return ["cpu"] * n
 
 
+def _pin_visible_device(device: str) -> str:
+    """Hide every GPU but the claimed one, and return its new device string.
+
+    Passing ``device="cuda:N"`` to the calculator is not enough to keep a worker
+    off the other cards.  Anything that reaches for the *current* device instead
+    of the given one -- ``torch.cuda.synchronize()``, a tensor built with
+    ``device="cuda"``, a library's own default -- lands on ``cuda:0`` and leaves
+    a CUDA primary context there, ~200 MB per worker.  With twenty workers that
+    is 4 GB taken from a card someone else is training on.
+
+    ``CUDA_VISIBLE_DEVICES`` makes it impossible rather than unlikely: the
+    driver reads it at initialisation, which has not happened yet in a freshly
+    spawned worker, and the claimed card is then the only one that exists, at
+    index 0.
+
+    Args:
+        device: The device this worker claimed, e.g. ``"cuda:1"`` or ``"cpu"``.
+
+    Returns:
+        The device string to hand to torch afterwards.
+    """
+    if not device.startswith("cuda"):
+        return device
+    _, _, index = device.partition(":")
+    if not index:  # bare "cuda": no card was named, so pin nothing.
+        return device
+    os.environ["CUDA_VISIBLE_DEVICES"] = index
+    return "cuda:0"
+
+
 def _init_worker(device_queue, mlip: str) -> None:
     """Claim one device for this process and build its calculator once."""
-    global _WORKER_DEVICE, _WORKER_CALCULATOR
+    global _WORKER_DEVICE, _WORKER_TORCH_DEVICE, _WORKER_CALCULATOR
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ[key] = value
+
+    try:
+        _WORKER_DEVICE = device_queue.get_nowait()
+    except queue.Empty:  # pragma: no cover - pool size matches the queue
+        _WORKER_DEVICE = "cpu"
+    _WORKER_TORCH_DEVICE = _pin_visible_device(_WORKER_DEVICE)
+
     try:
         import torch
     except ImportError:
@@ -114,13 +155,9 @@ def _init_worker(device_queue, mlip: str) -> None:
     else:
         torch.set_num_threads(1)
 
-    try:
-        _WORKER_DEVICE = device_queue.get_nowait()
-    except queue.Empty:  # pragma: no cover - pool size matches the queue
-        _WORKER_DEVICE = "cpu"
     # Built once per process rather than per gene: loading an MLIP costs far
     # more than relaxing one structure.
-    _WORKER_CALCULATOR = build_hull_calculator(mlip, device=_WORKER_DEVICE)
+    _WORKER_CALCULATOR = build_hull_calculator(mlip, device=_WORKER_TORCH_DEVICE)
 
 
 def _relax_one(
@@ -171,28 +208,63 @@ def stage_screen(args) -> None:
     write_screen(screen, args.output_dir / SCREEN_FILE)
     print(json.dumps(screen.summary(), indent=2))
     print(
-        f"\n{len(screen.novel)} genes to relax "
-        f"({len(screen.valid) - len(screen.novel)} valid genes skipped: "
-        f"{screen.n_unique - len(screen.novel)} known, "
-        f"{len(screen.valid) - screen.n_unique} duplicates)."
+        f"\n{screen.n_unique} genes to relax "
+        f"({len(screen.novel)} with no LeMat-Bulk entry sharing their "
+        f"fingerprint, {len(screen.known)} whose relaxed structure the matcher "
+        f"still has to rule on; "
+        f"{len(screen.valid) - screen.n_unique} duplicates skipped)."
     )
 
 
+def _already_relaxed(output_dir: Path) -> set[int]:
+    """Representative indices that a previous relax run already wrote a row for.
+
+    Read from the structures CSV rather than from the CIF directory: a gene that
+    produced no structure has a row and no CIF, and re-relaxing it would only
+    fail again.
+    """
+    path = output_dir / STRUCTURES_FILE
+    if not path.is_file():
+        return set()
+    return set(pd.read_csv(path, usecols=["index"])["index"].astype(int))
+
+
 def stage_relax(args) -> None:
-    """PyXtal + CrySPR on the gene-novel representatives only."""
+    """PyXtal + CrySPR on every unique gene.
+
+    Gene-known representatives are relaxed too.  Their fingerprint matching a
+    LeMat-Bulk entry only makes them *candidates* for the matcher: the same
+    space group with the same elements on the same Wyckoff orbits is not the
+    same structure, so a known gene can still relax into a novel one, and
+    dropping it here would decide novelty by fingerprint alone.
+    """
     genes = load_genes(args.input)
     screen = read_screen(args.output_dir / SCREEN_FILE)
     spec = resolve_hull_mlip(args.mlip)
     slots = resolve_devices(args.cores, args.devices, args.workers_per_device)
 
-    todo = [i for i in screen.novel if args.limit is None or i < args.limit]
+    todo = sorted(
+        i for i in screen.counts if args.limit is None or i < args.limit
+    )
+    already = _already_relaxed(args.output_dir) if args.resume else set()
+    if already:
+        todo = [i for i in todo if i not in already]
+        logger.info("Resuming: %d representatives already have a row", len(already))
     logger.info(
-        "Relaxing %d gene-novel representatives with %s on %d worker(s): %s",
+        "Relaxing %d representatives with %s on %d worker(s): %s",
         len(todo), args.mlip, len(slots), ", ".join(sorted(set(slots))),
     )
 
     cif_dir = args.output_dir / CIF_DIR
     cif_dir.mkdir(parents=True, exist_ok=True)
+
+    # Set here, in the parent, and not only in _init_worker: a spawned worker
+    # imports pandas (and with it numpy) before the initialiser runs, and MKL
+    # fixes its thread count when it is first loaded.  Setting them afterwards
+    # leaves every worker multi-threaded, which oversubscribes the machine
+    # without making any single relaxation faster.
+    for key, value in _SINGLE_THREAD_ENV_VARS.items():
+        os.environ.setdefault(key, value)
 
     ctx = multiprocessing.get_context("spawn")
     device_queue = ctx.Queue()
@@ -233,7 +305,13 @@ def stage_relax(args) -> None:
             if done % 50 == 0 or done == len(futures):
                 logger.info("Relaxed %d/%d", done, len(futures))
 
-    frame = pd.DataFrame(rows).set_index("index").sort_index()
+    frame = pd.DataFrame(rows).set_index("index")
+    if already:
+        # Rows from the earlier invocation, whose CIFs are still on disk.
+        previous = pd.read_csv(args.output_dir / STRUCTURES_FILE, index_col="index")
+        frame = pd.concat([previous, frame])
+        frame = frame[~frame.index.duplicated(keep="last")]
+    frame = frame.sort_index()
     frame.to_csv(args.output_dir / STRUCTURES_FILE)
     _write_manifest(args, spec, slots, n_relaxed=len(frame))
     print(
@@ -243,31 +321,35 @@ def stage_relax(args) -> None:
 
 
 def stage_score(args) -> None:
-    """Structure validity, BAWL uniqueness and novelty, and e_above_hull.
+    """Structure validity, uniqueness, novelty and e_above_hull.
 
-    Everything here runs in-process: validity, fingerprinting and the hull
-    energy are our own implementations, pinned to LeMat-GenBench's by
-    ``tests/test_genbench_equivalence.py``.  The only thing still sourced from
-    that project is the reference fingerprint parquet, which is data.
+    Everything here runs in-process.  Uniqueness and novelty are both the
+    two-stage filter from :mod:`wyckoff_transformer.evaluation.novelty`: the
+    augmented Wyckoff fingerprint narrows the comparison down to the handful of
+    structures that could possibly match, then ``StructureMatcher`` decides.
+    The reference for novelty is built per run, since only LeMat-Bulk entries
+    whose fingerprint collides with a generated one ever reach the matcher.
     """
     from pymatgen.core import Structure
 
-    from wyckoff_transformer.evaluation.bawl import BawlFingerprinter, get_fingerprint
-    from wyckoff_transformer.evaluation.bawl_reference import load_bawl_reference
     from wyckoff_transformer.evaluation.hull_energy import HullEnergyCalculator
+    from wyckoff_transformer.evaluation.novelty import (
+        NoveltyFilter,
+        filter_by_unique_structure,
+    )
+    from wyckoff_transformer.evaluation.structure_novelty import build_novelty_reference
     from wyckoff_transformer.evaluation.structure_validity import is_valid
 
     screen = read_screen(args.output_dir / SCREEN_FILE)
     frame = pd.read_csv(args.output_dir / STRUCTURES_FILE, index_col="index")
     cif_dir = args.output_dir / CIF_DIR
 
+    genes = load_genes(args.input)
+    # Not persisted by write_screen -- large, and cheap to recompute.
+    fingerprinter = GeneFingerprinter()
     hull = HullEnergyCalculator(args.mlip)
-    fingerprinter = BawlFingerprinter(shorten=args.short_bawl)
-    reference = load_bawl_reference(
-        args.bawl_reference, cache=args.bawl_reference_cache
-    )
 
-    validity, fingerprints, hull_energies = {}, {}, {}
+    validity, fingerprints, structures, hull_energies = {}, {}, {}, {}
     for index in frame.index:
         cif_path = cif_dir / f"{index}.cif"
         if not cif_path.is_file():
@@ -279,7 +361,11 @@ def stage_score(args) -> None:
             continue
 
         validity[index] = is_valid(structure)
-        fingerprints[index] = get_fingerprint(structure, fingerprinter)
+        structures[index] = structure
+        try:
+            fingerprints[index] = fingerprinter.fingerprint(genes[index])
+        except Exception as exc:
+            logger.warning("Gene %d: no fingerprint (%s)", index, exc)
 
         energy = frame.at[index, "energy"]
         if pd.notna(energy):
@@ -293,29 +379,39 @@ def stage_score(args) -> None:
                 logger.warning("Gene %d: e_above_hull failed (%s)", index, exc)
 
     frame["valid_structure"] = pd.Series(validity)
-    frame["bawl_fingerprint"] = pd.Series(fingerprints)
     frame["e_above_hull"] = pd.Series(hull_energies)
 
-    # Uniqueness within the generated batch: first occurrence of each BAWL hash
-    # wins.  Rows without a fingerprint cannot be shown unique, so they are not.
-    seen: set[str] = set()
-    unique = {}
-    for index, fingerprint in frame["bawl_fingerprint"].items():
-        if not isinstance(fingerprint, str):
-            unique[index] = False
-            continue
-        unique[index] = fingerprint not in seen
-        seen.add(fingerprint)
-    frame["bawl_unique"] = pd.Series(unique)
-
-    frame["bawl_novel"] = pd.Series(
+    # Only structures that got this far can be unique or novel, and comparing
+    # the ones that did not would just cost matcher calls.
+    scored = pd.DataFrame(
         {
-            index: isinstance(fingerprint, str) and fingerprint not in reference
-            for index, fingerprint in frame["bawl_fingerprint"].items()
+            "fingerprint": pd.Series(fingerprints),
+            "structure": pd.Series(structures),
         }
+    ).dropna()
+    scored = scored.loc[
+        [i for i in scored.index if bool(validity.get(i, False))]
+    ]
+
+    unique_index = filter_by_unique_structure(scored).index
+    frame["unique_structure"] = pd.Series(
+        {index: index in set(unique_index) for index in scored.index}
     )
 
-    frame.to_csv(args.output_dir / STRUCTURES_FILE)
+    reference = build_novelty_reference(
+        scored["fingerprint"],
+        cache=args.reference_cache,
+        splits=tuple(s.strip() for s in args.reference_splits.split(",")),
+        lemat_cif_csv=args.lemat_cif_csv,
+    )
+    novelty_filter = NoveltyFilter(reference)
+    frame["novel_structure"] = pd.Series(
+        {index: novelty_filter.is_novel(row) for index, row in scored.iterrows()}
+    )
+
+    frame.drop(columns=["structure"], errors="ignore").to_csv(
+        args.output_dir / STRUCTURES_FILE
+    )
     report = funnel(screen, frame)
     (args.output_dir / FUNNEL_FILE).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -411,6 +507,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=int, default=None,
         help="Only relax genes with an index below this. For smoke tests.",
     )
+    relax.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=False,
+        help=(
+            "Skip representatives the structures CSV already has a row for, and "
+            "merge the new rows into it. For extending an interrupted run, or "
+            "one made before the gene-known representatives were relaxed too."
+        ),
+    )
 
     reference = parser.add_argument_group("references")
     reference.add_argument(
@@ -431,27 +535,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     reference.add_argument(
-        "--bawl-reference", type=Path,
-        default=Path(
-            os.environ.get("BAWL_REFERENCE_PARQUET", "data/unique_fingerprints.parquet")
-        ),
+        "--lemat-cif-csv", type=Path,
+        default=Path("data/lemat-bulk/lemat_pbe.csv.gz"),
         help=(
-            "LeMat-Bulk BAWL fingerprints, for structure novelty. This is the "
-            "only file the score stage still takes from LeMat-GenBench, where it "
-            "ships as data/augmented_fingerprints/unique_fingerprints.parquet; "
-            "copy it somewhere stable. Defaults to $BAWL_REFERENCE_PARQUET."
-        ),
-    )
-    reference.add_argument(
-        "--bawl-reference-cache", type=Path,
-        default=Path("cache/bawl_reference.pkl.gz"),
-        help="Compact cache of that fingerprint set, written on first load.",
-    )
-    reference.add_argument(
-        "--short-bawl", action=argparse.BooleanOptionalAction, default=True,
-        help=(
-            "Use the short BAWL hash, which omits the space-group label. On by "
-            "default, matching LeMat-GenBench's leaderboard configuration."
+            "LeMat-Bulk export with immutable_id and cif. Structure novelty "
+            "needs the reference geometries: the Wyckoff cache carries no "
+            "coordinates, and StructureMatcher cannot rule on a fingerprint "
+            "collision without them."
         ),
     )
 

@@ -1,4 +1,5 @@
 """Tests for the de novo ranking protocol."""
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,7 +8,11 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from wyckoff_transformer.cli.protocol import build_parser, resolve_devices
+from wyckoff_transformer.cli.protocol import (
+    _pin_visible_device,
+    build_parser,
+    resolve_devices,
+)
 from wyckoff_transformer.cryspr.relaxer import (
     FINAL_CIF_SUFFIX,
     SYMMETRIC_CIF_SUFFIX,
@@ -117,6 +122,109 @@ class TestResolveDevices(unittest.TestCase):
             resolve_devices(None, " , ", 1)
         with self.assertRaises(ValueError):
             resolve_devices(None, "cuda:0", 0)
+
+
+class TestPinVisibleDevice(unittest.TestCase):
+    def setUp(self):
+        self._saved = os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        if self._saved is not None:
+            os.environ["CUDA_VISIBLE_DEVICES"] = self._saved
+
+    def test_a_named_card_becomes_the_only_visible_one(self):
+        # The worker keeps its own card and loses the others, so nothing it does
+        # can leave a CUDA context on a GPU somebody else is using.
+        self.assertEqual(_pin_visible_device("cuda:1"), "cuda:0")
+        self.assertEqual(os.environ["CUDA_VISIBLE_DEVICES"], "1")
+
+    def test_cpu_is_left_alone(self):
+        self.assertEqual(_pin_visible_device("cpu"), "cpu")
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", os.environ)
+
+    def test_bare_cuda_pins_nothing(self):
+        # No card was named, so there is nothing to hide and no renumbering.
+        self.assertEqual(_pin_visible_device("cuda"), "cuda")
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", os.environ)
+
+
+class TestTwoStageNovelty(unittest.TestCase):
+    """Novelty is the fingerprint *and* the matcher, not the fingerprint alone."""
+
+    @staticmethod
+    def _structures():
+        from pymatgen.core import Lattice, Structure
+
+        silicon = Structure(
+            Lattice.cubic(5.43), ["Si", "Si"], [[0, 0, 0], [0.25, 0.25, 0.25]]
+        )
+        salt = Structure(
+            Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+        )
+        return silicon, salt
+
+    def _filter(self, reference_structure):
+        from wyckoff_transformer.evaluation.novelty import NoveltyFilter
+
+        return NoveltyFilter(
+            pd.DataFrame(
+                {"fingerprint": ["F"], "structure": [reference_structure]},
+                index=["agm000000001"],
+            )
+        )
+
+    def test_a_shared_fingerprint_with_a_different_structure_is_still_novel(self):
+        # The case the gene screen alone gets wrong: same space group, same
+        # elements on the same Wyckoff orbits, different structure.
+        silicon, salt = self._structures()
+        novelty = self._filter(silicon)
+        record = pd.Series({"fingerprint": "F", "structure": salt})
+        self.assertTrue(novelty.is_novel(record))
+
+    def test_a_shared_fingerprint_with_the_same_structure_is_known(self):
+        silicon, _ = self._structures()
+        novelty = self._filter(silicon)
+        record = pd.Series({"fingerprint": "F", "structure": silicon.copy()})
+        self.assertFalse(novelty.is_novel(record))
+
+    def test_an_unseen_fingerprint_needs_no_matching(self):
+        silicon, salt = self._structures()
+        novelty = self._filter(silicon)
+        record = pd.Series({"fingerprint": "G", "structure": silicon.copy()})
+        self.assertTrue(novelty.is_novel(record))
+
+    def test_uniqueness_keeps_different_structures_sharing_a_fingerprint(self):
+        from wyckoff_transformer.evaluation.novelty import filter_by_unique_structure
+
+        silicon, salt = self._structures()
+        frame = pd.DataFrame(
+            {
+                "fingerprint": ["F", "F", "F"],
+                "structure": [silicon, salt, silicon.copy()],
+            },
+            index=[0, 1, 2],
+        )
+        kept = filter_by_unique_structure(frame)
+        # 2 is silicon again, so it goes; 1 is a different structure, so it stays.
+        self.assertEqual(list(kept.index), [0, 1])
+
+
+class TestNoveltyReference(unittest.TestCase):
+    def test_nothing_to_match_needs_no_reference_data(self):
+        # Every generated fingerprint absent from LeMat-Bulk means no candidate
+        # can exist, so neither the 4M-row cache nor the 1 GB CIF export is read.
+        from wyckoff_transformer.evaluation.structure_novelty import (
+            build_novelty_reference,
+        )
+
+        reference = build_novelty_reference(
+            [], cache=Path("/nonexistent.pkl.gz"),
+            lemat_cif_csv=Path("/nonexistent.csv.gz"),
+        )
+        self.assertTrue(reference.empty)
+        self.assertEqual(list(reference.columns), ["fingerprint", "structure"])
 
 
 class TestCliDefaults(unittest.TestCase):
@@ -263,8 +371,8 @@ class TestFunnel(unittest.TestCase):
             {
                 "has_structure": [True, True, True],
                 "valid_structure": [True, True, False],
-                "bawl_unique": [True, True, True],
-                "bawl_novel": [True, True, True],
+                "unique_structure": [True, True, True],
+                "novel_structure": [True, True, True],
                 "e_above_hull": [0.05, 0.3, 0.0],
             },
             index=[0, 1, 2],
@@ -285,14 +393,14 @@ class TestFunnel(unittest.TestCase):
             {
                 "has_structure": [True],
                 "valid_structure": [False],
-                "bawl_unique": [True],
-                "bawl_novel": [True],
+                "unique_structure": [True],
+                "novel_structure": [True],
                 "e_above_hull": [-0.5],
             },
             index=[0],
         )
         report = funnel(self._screen(), structures)
-        self.assertEqual(report["bawl_novel"], 0)
+        self.assertEqual(report["novel_structure"], 0)
         self.assertEqual(report["stable"], 0)
 
     def test_missing_columns_report_none_rather_than_assuming_success(self):

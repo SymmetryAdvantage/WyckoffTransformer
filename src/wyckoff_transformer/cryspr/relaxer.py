@@ -182,7 +182,7 @@ def stepwise_relax(
             it drops moves the energy by more than 1 meV/atom in 0.4% of trials
             and leaves the spglib space group unchanged in 398 of 398 sampled
             genes, so it is close to free of consequence for both energy and
-            the space-group-dependent BAWL fingerprint.  It does still guard
+            the space-group-dependent Wyckoff fingerprint.  It does still guard
             against structures that hit *steps_limit* under constraint.
         hydrostatic_strain: Restrict cell relaxation to isotropic strain.
         symprec: Symmetry tolerance in Å.

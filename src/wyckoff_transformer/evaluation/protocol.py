@@ -3,17 +3,21 @@
 The cascade is::
 
     sampled -> valid gene -> unique gene (keep counts)
-            -> gene-novel?  no  -> count into the denominator, stop
-                            yes -> PyXtal + 1 trial x 2-stage CrySPR
-            -> valid structure -> BAWL-unique -> BAWL-novel
+            -> PyXtal + 1 trial x 2-stage CrySPR
+            -> valid structure -> unique structure -> novel structure
             -> e_hull <= 0.1 -> e_hull <= 0
 
-Two properties make it cheap.  First, the filters that need no potential run
-before the one that does: a gene that is not novel cannot contribute to SUN or
-MetaSUN by definition, so it is counted into the denominator and never relaxed.
-Second, the relaxation budget is one PyXtal trial and two relaxation stages
-rather than three trials and three stages -- 4.5x less work per gene for about
-30% more genes at equal statistical power.
+Novelty and uniqueness are both decided in two stages: the augmented Wyckoff
+fingerprint first, then ``StructureMatcher`` on whatever shares it.  The
+fingerprint alone is not a verdict -- two structures with the same space group
+and the same elements on the same Wyckoff orbits can still be different
+structures -- so the gene screen produces *candidates* for the matcher rather
+than a decision, and a gene already present in LeMat-Bulk can still relax into
+a novel structure.
+
+What keeps this cheap is the relaxation budget: one PyXtal trial and two
+relaxation stages rather than three trials and three stages -- 4.5x less work
+per gene for about 30% more genes at equal statistical power.
 
 Uniqueness is applied by *deduplicating* genes but *keeping their counts*, so
 every rate stays per sampled gene.  A duplicate belongs once in the numerator
@@ -74,8 +78,9 @@ class GeneScreen:
         counts: Representative index -> how many sampled genes share its
             fingerprint.  The representative is the first occurrence.
         novel: Representative indices whose fingerprint is absent from the
-            reference; these are the ones worth relaxing.
-        known: Representative indices whose fingerprint is present.
+            reference, so no LeMat-Bulk entry can match them.
+        known: Representative indices whose fingerprint is present, i.e. the
+            ones whose relaxed structure the matcher still has to rule on.
         fingerprint: Index -> augmented Wyckoff fingerprint, for valid genes.
     """
 
@@ -300,7 +305,8 @@ def funnel(
         screen: Stage-A result.
         structures: One row per relaxed representative, indexed by gene index,
             with boolean columns ``has_structure``, ``valid_structure``,
-            ``bawl_unique``, ``bawl_novel`` and a float ``e_above_hull``.
+            ``unique_structure``, ``novel_structure`` and a float
+            ``e_above_hull``.
             Columns absent from *structures* are reported as ``None`` rather
             than assumed, so a partial run stays honest about what it measured.
 
@@ -320,8 +326,8 @@ def funnel(
     stages = [
         ("structure", "has_structure"),
         ("valid_structure", "valid_structure"),
-        ("bawl_unique", "bawl_unique"),
-        ("bawl_novel", "bawl_novel"),
+        ("unique_structure", "unique_structure"),
+        ("novel_structure", "novel_structure"),
     ]
     surviving = None
     for label, column in stages:
