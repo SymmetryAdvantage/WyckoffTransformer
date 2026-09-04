@@ -46,6 +46,7 @@ def _make_trainer(clip_grad_norm):
     trainer.multiclass_next_token_with_order_permutation = True
     trainer.condition_feature = None
     trainer.cascade_target_count = 1
+    trainer.cascade_target_indices = (0,)
     trainer.clip_grad_norm = clip_grad_norm
     trainer.train_dataset = dataset
     trainer.train_loader = AugmentedCascadeLoader.from_dataset(dataset)

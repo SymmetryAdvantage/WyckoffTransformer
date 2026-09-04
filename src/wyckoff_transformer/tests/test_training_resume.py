@@ -78,6 +78,7 @@ def _make_trainer(run_path: Path, epochs: int, resume: bool = False,
     trainer.condition_feature = None
     trainer.cascade_len = 1
     trainer.cascade_target_count = 1
+    trainer.cascade_target_indices = (0,)
     trainer.cascade_order = ("field1",)
     trainer.evaluation_samples = 1
     trainer.device = torch.device("cpu")

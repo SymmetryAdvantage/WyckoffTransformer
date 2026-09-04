@@ -327,13 +327,18 @@ class WyckoffGenerator():
                             stop_mask = (generated[known_cascade_len][:, known_seq_len] == this_stop).cpu().numpy()
                             stop_generated |= stop_mask
                 else:
-                    if known_cascade_len != len(self.cascade_order) - 1:
-                        raise NotImplementedError("Only the last cascade field can be non-target")
+                    # A non-target field is filled from fields already decided for this
+                    # token, so it may sit anywhere after them -- and has to, when a later
+                    # target must see it. WyckoffTrainer checks that ordering at setup.
                     if self.token_engineers[cascade_name].inputs[0] != 'spacegroup_number':
                         raise NotImplementedError("Only engineers with spacegroup_number first input are supported")
                     this_engineer_input = []
                     for input_field in self.token_engineers[cascade_name].inputs[1:]:
                         if input_field in cascade_index_by_name:
+                            if cascade_index_by_name[input_field] > known_cascade_len:
+                                raise ValueError(
+                                    f"Engineer for {cascade_name} reads {input_field}, which "
+                                    "is generated later in the cascade and is still MASK here")
                             this_cascade_input = generated[cascade_index_by_name[input_field]][:, known_seq_len]
                         elif cascade_name == 'harmonic_site_symmetries' and input_field == 'sites_enumeration':
                             # Since we don't natively support either two engineers for one field or

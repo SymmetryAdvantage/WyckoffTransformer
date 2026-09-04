@@ -48,6 +48,7 @@ def _make_trainer(optimizer_cls, **opt_kwargs):
     t.condition_feature = None
     t.cascade_len = 1
     t.cascade_target_count = 1
+    t.cascade_target_indices = (0,)
     t.cascade_order = ("field1",)
     t.evaluation_samples = 1
     t.device = torch.device("cpu")

@@ -17,6 +17,9 @@ class CustomBuildHook(BuildHookInterface):
         root = Path(__file__).parent
         sys.path.insert(0, str(root / "src"))
         from wyckoff_transformer.preprocess_wychoffs import (  # noqa: PLC0415
-            generate_wyckoff_mappings, enumerate_wychoffs_by_ss)
+            generate_wyckoff_mappings, enumerate_wychoffs_by_ss,
+            build_site_symmetry_ops_engineer, build_site_symmetry_ops_id_engineer)
         generate_wyckoff_mappings()
         enumerate_wychoffs_by_ss()
+        build_site_symmetry_ops_engineer()
+        build_site_symmetry_ops_id_engineer()

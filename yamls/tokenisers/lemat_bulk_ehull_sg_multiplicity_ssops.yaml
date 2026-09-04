@@ -1,0 +1,59 @@
+# For the code to work, must be the same as the file name
+name: lemat_bulk_ehull_sg_multiplicity_ssops
+# tokens will be just numbered in a random order, withot a guarantee of reproducibility
+dtype: int16
+# uint8 is not enough for LeMat-Bulk, which has more than 256 tokens per field
+# not only memory savings, but also debug assist!
+# if we forget to propely convert dtype somewhere ahead
+# torch will highly likely complain about it
+token_fields:
+  pure_categorical:
+    - site_symmetries
+    - elements
+    # We don't use the original Wyckoff letter, but the enumeration
+    # for each site symmetry, hence the order is not important,
+    # and it's a bona fide categorical field.
+    - sites_enumeration
+  engineered:
+    multiplicity:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+      - sites_enumeration
+    # The site symmetry expressed the way SpaceGroupEncoder expresses the space
+    # group: wp.get_site_symmetry_object().to_matrix_representation().ravel() for
+    # the canonical Wyckoff position of each (sg, ss) pair, with the columns that
+    # are constant over the whole 230-group enumeration dropped. 1146 pairs, 46
+    # surviving binary columns, pairwise distinct within every space group -- which
+    # is the scope that matters, since the model receives the space group through
+    # the start token.
+    #
+    # This is the id form: the token carries an integer, and the model expands it
+    # through engineers/site_symmetry_ops_id_table.json, which holds the 1149 x 46
+    # vectors (1146 real + MASK, STOP, PAD) once. The dense sibling field,
+    # site_symmetry_ops, stores the 46 floats on every token instead: identical
+    # input to the encoder, but [n_structures, 62, 46] resident -- 85 GiB of int64
+    # for this dataset, against 2 GB for the ids. Use the dense one only where the
+    # dataset is small (see yamls/tokenisers/mp_20_sg_multiplicity_ssops.yaml).
+    #
+    # No dtype override: an id fits the int16 default, unlike the float vector.
+    site_symmetry_ops_id:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+augmented_token_fields:
+  # must be named <field-name>_augmented in the dataframe
+  - sites_enumeration
+sequence_fields:
+  space_group:
+    - spacegroup_number
+  # AdaLN conditioning feature, taken as-is from the dataframe
+  no_processing:
+    - energy_above_hull
+  # converts a Counter into tokens, uses the specified field name embedding
+  # Basically, aimed at e. g.
+  # {Element Nd: 1.0, Element Al: 8.0, Element Cu: 4.0}
+  counters:
+    composition: elements

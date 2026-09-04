@@ -8,6 +8,7 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from omegaconf import OmegaConf
 
 from wyckoff_transformer.cascade.dataset import batched_bincount
+from wyckoff_transformer.wyckoff_processor import load_frozen_table
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,26 @@ class AdaLNTransformerEncoder(TransformerEncoder):
             output = self.norm(output)
         return output
 
+class FrozenTableEmbedding(nn.Module):
+    """Expands a per-token integer id into a fixed vector through a lookup table.
+
+    Numerically identical to feeding the model those vectors as a pass-through vector
+    field, but the table is held once as [n_ids, n_features] instead of being
+    materialised per (structure, position) in the resident dataset. The table is not
+    learned; it is a registered buffer, so it travels with the checkpoint and takes no
+    optimiser state.
+    """
+    def __init__(self, table: Tensor):
+        super().__init__()
+        if table.dim() != 2:
+            raise ValueError(f"A frozen table must be 2-D, got shape {tuple(table.size())}")
+        self.register_buffer("table", table)
+        self.embedding_dim = table.size(1)
+
+    def forward(self, x: Tensor) -> Tensor:
+        return self.table[x]
+
+
 class SpecialEmbedding(torch.nn.Module):
     ScalarPassThrough = 0
     VectorPassThrough = 1
@@ -79,6 +100,9 @@ class CascadeEmbedding(nn.Module):
                 N_i is the number of possible values for the i-th token
                 d_i is the dimensionality of the i-th token embedding
                 - If d_i is None, the token is deemed to be a scalar and is passed through
+                - If d_i has the key "frozen_table", the token is an integer id, expanded
+                    into a fixed vector by the named lookup table (package data written by
+                    preprocess_wychoffs), which is not learned
                 - If d_i has the operator [], it must also have the key "pass_through_vector",
                     and the token is deemed to be a vector and is passed through
                 - If d_i is 0, the token is not embedded and is not supplied to the model
@@ -96,6 +120,20 @@ class CascadeEmbedding(nn.Module):
                 logger.debug("Scalar pass-through for %i values", n)
                 self.embeddings.append(SpecialEmbedding(SpecialEmbedding.ScalarPassThrough))
                 self.total_embedding_dim += 1
+            elif hasattr(d, "get") and "frozen_table" in d:
+                # Checked before the generic dict branch below: a config node with a
+                # "frozen_table" key also answers to __getitem__.
+                table_name = d["frozen_table"]
+                table = torch.from_numpy(load_frozen_table(table_name))
+                if table.size(0) < n:
+                    raise ValueError(
+                        f"Frozen table {table_name} has {table.size(0)} rows, too few for "
+                        f"{n} token values")
+                embedding = FrozenTableEmbedding(table)
+                logger.debug("Frozen table %s for %i values, dim %i",
+                             table_name, n, embedding.embedding_dim)
+                self.embeddings.append(embedding)
+                self.total_embedding_dim += embedding.embedding_dim
             elif hasattr(d, "__getitem__"):
                 self.embeddings.append(SpecialEmbedding(SpecialEmbedding.VectorPassThrough))
                 logger.debug("Vector pass-through for %i values, dim %i", n, d["pass_through_vector"])

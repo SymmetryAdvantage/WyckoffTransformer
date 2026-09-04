@@ -1,0 +1,219 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Full training of yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_ssops.yaml on
+# one GPU in the AI partition (aiq1, 24 h ceiling), with live W&B logging.
+#
+# Same chaining scheme as train_ehull_5x.pbs -- read that file's header for the
+# queue routing, the W&B auth path, and how the resubmission works; only what is
+# specific to the ssops run is argued here.
+#
+# THREE THINGS THIS RUN NEEDS THAT THE OTHERS DO NOT
+#
+# 1. The site_symmetry_ops_id engineer and its lookup table. They are generated
+#    package data (src/wyckoff_transformer/engineers/ is gitignored), produced by
+#    the hatchling build hook on install. A venv built before that hook existed
+#    will not have them, so this script builds them if they are missing -- about
+#    a minute, deterministic, and idempotent.
+#
+# 2. A tensor cache for the lemat_bulk_ehull_sg_multiplicity_ssops tokeniser.
+#    The tokeniser is new, so cache/lemat_bulk_ehull/tensors/ has nothing for it
+#    and train.py would die on a missing safetensors file. The first link of the
+#    chain builds it with scripts/tokenise_a_dataset.py: one pass over the 4.0M
+#    structures under pandarallel, writing ~5.5 GB. Later links find it and skip
+#    straight to training. What it costs comes out of this job's wall clock, so
+#    the training timeout below is what is left of the budget after it, not a
+#    fixed number.
+#
+# 3. Attention to `epochs` before you trust the schedule. The config inherits
+#    85000 from ehull_adamw_wsd.yaml, where it was derived from a measured
+#    2.976 s/epoch for a 144k-parameter model at d_model 40. This model is 268k
+#    parameters at d_model 72, so that derivation does not hold, and WSD places
+#    its decay as a fraction of the total -- an epoch count that overruns the
+#    wall gets the run killed mid-stable-phase, before the decay where most of
+#    the improvement appears. Read s/epoch off the first link's log (or a
+#    `--pilot` run), re-derive, and edit the config before committing 72 hours.
+#
+# Submit:
+#     cd /scratch/users/nus/kna/WyckoffTransformer
+#     mkdir -p logs
+#     qsub scripts/train_ehull_ssops.pbs
+#
+# Start a fresh run (new W&B id) after a completed / abandoned one:
+#     rm -f runs/.ehull_ssops.runid
+#
+# Force the tensor cache to be rebuilt (e.g. after editing the tokeniser yaml):
+#     rm -f cache/lemat_bulk_ehull/tensors/lemat_bulk_ehull_sg_multiplicity_ssops.safetensors
+# ---------------------------------------------------------------------------
+#PBS -N wyf_ssops
+#PBS -q ai
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=64gb
+#PBS -l walltime=23:59:59
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyckoffTransformer/logs/
+
+set -u
+
+JOB_START=$(date +%s)
+
+# --- fixed paths ---------------------------------------------------------------
+REPO=/scratch/users/nus/kna/WyckoffTransformer
+SIF=/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif
+CONFIG=yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_ssops.yaml
+DATASET=lemat_bulk_ehull
+TOKENISER=lemat_bulk_ehull_sg_multiplicity_ssops
+TOKENISER_YAML="yamls/tokenisers/${TOKENISER}.yaml"
+TENSOR_CACHE="$REPO/cache/$DATASET/tensors/${TOKENISER}.safetensors"
+OPS_TABLE="$REPO/src/wyckoff_transformer/engineers/site_symmetry_ops_id_table.json"
+PBS_SCRIPT="$REPO/scripts/train_ehull_ssops.pbs"
+QSUB=/opt/pbs/bin/qsub
+
+MAX_ATTEMPTS=8               # hard stop on the resubmission chain
+ATTEMPT=${ATTEMPT:-1}        # bumped via `qsub -v` on each link
+# Hand the node back this far before the 23:59:59 wall so the last checkpoint
+# flushes, W&B uploads, and the next job is queued while we still own it.
+JOB_BUDGET=${JOB_BUDGET:-84600}          # 23 h 30 m for everything this link does
+TOKENISE_TIMEOUT=${TOKENISE_TIMEOUT:-14400}   # 4 h ceiling on the one-off cache build
+MIN_TRAIN_SECONDS=1800       # below this, chain instead of starting a stub epoch
+
+cd "$REPO"
+mkdir -p logs runs
+
+# --- persistent W&B run id ---------------------------------------------------
+RUNID_FILE="$REPO/runs/.ehull_ssops.runid"
+if [ -n "${RUN_ID:-}" ]; then
+    :                                       # passed down the chain
+elif [ -f "$RUNID_FILE" ]; then
+    RUN_ID=$(cat "$RUNID_FILE")
+else
+    RUN_ID="ehull-ssops-$(date +%Y%m%d-%H%M%S)"
+    echo "$RUN_ID" > "$RUNID_FILE"
+fi
+RUN_DIR="$REPO/runs/$RUN_ID"
+
+echo "=========================================================="
+echo "attempt   : $ATTEMPT / $MAX_ATTEMPTS"
+echo "config    : $CONFIG"
+echo "tokeniser : $TOKENISER"
+echo "wandb id  : $RUN_ID"
+echo "run dir   : $RUN_DIR"
+echo "pbs job   : ${PBS_JOBID:-<interactive>}   node: $(hostname)"
+echo "start     : $(date -Is)"
+echo "=========================================================="
+nvidia-smi || true
+
+if [ -f "$RUN_DIR/COMPLETED" ]; then
+    echo "run already marked COMPLETED -- nothing to do"
+    exit 0
+fi
+
+# --- environment for the container -----------------------------------------
+# Put singularity on PATH without relying on the module system in a batch shell.
+if ! command -v singularity >/dev/null 2>&1; then
+    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+fi
+command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
+singularity --version
+
+export SINGULARITYENV_WANDB_RUN_ID="$RUN_ID"
+export SINGULARITYENV_WANDB__SERVICE_WAIT=300
+export SINGULARITYENV_HF_HUB_OFFLINE=1
+export SINGULARITYENV_TOKENIZERS_PARALLELISM=false
+export SINGULARITYENV_OMP_NUM_THREADS=16
+# export SINGULARITYENV_WANDB_MODE=offline   # offline + `wandb sync <run-dir>` later
+
+# `timeout` execs its argument, so every call below goes through the launcher
+# script directly rather than a shell function it could not exec.
+IN_CONTAINER=(bash "$REPO/scripts/run_in_singularity.sh")
+
+# --- one-off: the operations engineer and its lookup table -------------------
+# The model reads the table at construction time and keeps it as a buffer, so a
+# missing file is a hard failure rather than a silent fallback.
+if [ ! -f "$OPS_TABLE" ]; then
+    echo "site_symmetry_ops_id table missing -> building the engineers ($(date -Is))"
+    "${IN_CONTAINER[@]}" python -c "
+from wyckoff_transformer.preprocess_wychoffs import (
+    build_site_symmetry_ops_engineer, build_site_symmetry_ops_id_engineer)
+build_site_symmetry_ops_engineer()
+build_site_symmetry_ops_id_engineer()
+print('engineers built')
+" || { echo "failed to build the site_symmetry_ops engineers" >&2; exit 1; }
+fi
+
+# --- one-off: the tensor cache for this tokeniser ---------------------------
+if [ ! -f "$TENSOR_CACHE" ]; then
+    echo "tensor cache missing -> tokenising $DATASET with $TOKENISER ($(date -Is))"
+    echo "this is a one-off pass over the whole dataset; later links skip it"
+    set +e
+    timeout --signal=TERM --kill-after=180 "$TOKENISE_TIMEOUT" \
+        "${IN_CONTAINER[@]}" python scripts/tokenise_a_dataset.py \
+            "$DATASET" "$TOKENISER_YAML" --new-tokenizer
+    tok_rc=$?
+    set -e
+    if [ "$tok_rc" -ne 0 ] || [ ! -f "$TENSOR_CACHE" ]; then
+        # A half-written cache would poison every later link, so clear it.
+        rm -f "$TENSOR_CACHE"
+        echo "tokenisation failed (rc $tok_rc) -> hard stop, nothing to train on" >&2
+        exit 1
+    fi
+    echo "tensor cache built: $(du -h "$TENSOR_CACHE" | cut -f1)   ($(date -Is))"
+fi
+
+# --- what is left of this job's budget for training -------------------------
+ELAPSED=$(( $(date +%s) - JOB_START ))
+TRAIN_TIMEOUT=$(( JOB_BUDGET - ELAPSED ))
+echo "spent $ELAPSED s so far; $TRAIN_TIMEOUT s left for training this link"
+
+if [ "$TRAIN_TIMEOUT" -lt "$MIN_TRAIN_SECONDS" ]; then
+    echo "too little of the wall left to train usefully -> chaining now"
+    if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+        echo "attempt cap ($MAX_ATTEMPTS) reached -> stopping" >&2
+        exit 1
+    fi
+    "$QSUB" -v RUN_ID="$RUN_ID",ATTEMPT="$((ATTEMPT + 1))" "$PBS_SCRIPT"
+    exit 0
+fi
+
+# A run dir with no checkpoint is a crash before the first save: nothing to
+# resume, and train.py refuses to mkdir over an existing dir, so clear it.
+RESUME_ARGS=()
+if [ -f "$RUN_DIR/last_checkpoint.pt" ]; then
+    RESUME_ARGS=(--resume "$RUN_ID")
+    echo "resuming from $RUN_DIR/last_checkpoint.pt"
+elif [ -d "$RUN_DIR" ]; then
+    echo "run dir exists without a checkpoint -> removing and starting fresh"
+    rm -rf "$RUN_DIR"
+fi
+
+# --- train -----------------------------------------------------------------
+set +e
+timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
+    "${IN_CONTAINER[@]}" python scripts/train.py "$CONFIG" "$DATASET" cuda \
+        --run-path "$REPO/runs" ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+rc=$?
+set -e
+
+echo "----------------------------------------------------------"
+echo "train.py exit code: $rc   ($(date -Is))"
+
+# --- completion / chaining -------------------------------------------------
+if [ "$rc" -eq 0 ]; then
+    touch "$RUN_DIR/COMPLETED"
+    echo "TRAINING COMPLETE for $RUN_ID"
+    exit 0
+fi
+
+# rc 124 = our timeout fired (expected once per ~24 h). Any other non-zero is a
+# crash: only chain past it if a checkpoint exists, to avoid a fast crash-loop.
+if [ "$rc" -ne 124 ] && [ ! -f "$RUN_DIR/last_checkpoint.pt" ]; then
+    echo "non-timeout failure with no checkpoint -> hard stop (see log above)" >&2
+    exit "$rc"
+fi
+
+if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+    echo "attempt cap ($MAX_ATTEMPTS) reached -> stopping; 'qsub $PBS_SCRIPT' to continue" >&2
+    exit "$rc"
+fi
+
+echo "resubmitting to continue from checkpoint (attempt $((ATTEMPT + 1)))"
+"$QSUB" -v RUN_ID="$RUN_ID",ATTEMPT="$((ATTEMPT + 1))" "$PBS_SCRIPT"

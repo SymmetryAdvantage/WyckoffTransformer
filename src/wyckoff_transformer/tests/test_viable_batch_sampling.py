@@ -140,6 +140,7 @@ class TestTrainStepScale(unittest.TestCase):
         trainer.multiclass_next_token_with_order_permutation = True
         trainer.condition_feature = None
         trainer.cascade_target_count = 1
+        trainer.cascade_target_indices = (0,)
         trainer.clip_grad_norm = 1e9
         trainer.train_dataset = dataset
         trainer.train_loader = loader
@@ -224,6 +225,7 @@ class TestEvaluateSkipsUnreachableLengths(unittest.TestCase):
         trainer.condition_feature = None
         trainer.cascade_len = 1
         trainer.cascade_target_count = 1
+        trainer.cascade_target_indices = (0,)
         trainer.evaluation_samples = 1
         trainer.device = torch.device("cpu")
         trainer.optimizer = None

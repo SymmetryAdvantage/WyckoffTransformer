@@ -86,11 +86,15 @@ class TestSiteSymmetryOpsEngineer(unittest.TestCase):
     SG (different SS strings in the same SG must map to different vectors).
     """
 
-    def test_builder_produces_per_sg_unique_vectors(self):
-        from ..preprocess_wychoffs import build_site_symmetry_ops_engineer
+    @classmethod
+    def setUpClass(cls):
+        from ..preprocess_wychoffs import build_site_symmetry_ops_engineer  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory() as tmp:
-            engineer = build_site_symmetry_ops_engineer(engineers_dir=Path(tmp))
+            cls.engineer = build_site_symmetry_ops_engineer(engineers_dir=Path(tmp))
+
+    def test_builder_produces_per_sg_unique_vectors(self):
+        engineer = self.engineer
 
         self.assertEqual(tuple(engineer.db.index.names),
                          ("spacegroup_number", "site_symmetries"))
@@ -98,9 +102,12 @@ class TestSiteSymmetryOpsEngineer(unittest.TestCase):
         self.assertEqual(engineer.mask_token.shape, (d,))
         self.assertEqual(engineer.pad_token.shape, (d,))
         self.assertEqual(engineer.stop_token.shape, (d,))
-        # Mask must be distinguishable from pad/stop and from any encoded value.
-        self.assertTrue(np.all(engineer.mask_token == 1.0))
+        # Mask must be distinguishable from pad/stop and from any encoded value: ones over
+        # the operation columns, and the real-value flag cleared.
+        self.assertTrue(np.all(engineer.mask_token[:-1] == 1.0))
+        self.assertEqual(engineer.mask_token[-1], 0.0)
         self.assertTrue(np.all(engineer.pad_token == 0.0))
+        self.assertTrue(np.all(engineer.stop_token == 0.0))
 
         # Per-SG uniqueness across SS strings.
         for sg, sub in engineer.db.groupby(level="spacegroup_number"):
@@ -111,6 +118,21 @@ class TestSiteSymmetryOpsEngineer(unittest.TestCase):
                     key, seen,
                     f"SG {sg}: {ss!r} and {seen.get(key)!r} share an encoding")
                 seen[key] = ss
+
+    def test_no_real_site_symmetry_looks_like_a_service_token(self):
+        """Site symmetry "1" has no operations, so before the real-value flag was added its
+        vector was all zeros -- identical to STOP and PAD, in every one of the 230 groups."""
+        for key, vector in self.engineer.db.items():
+            with self.subTest(key=key):
+                self.assertFalse(np.array_equal(vector, self.engineer.pad_token))
+                self.assertFalse(np.array_equal(vector, self.engineer.stop_token))
+                self.assertFalse(np.array_equal(vector, self.engineer.mask_token))
+
+    def test_the_general_position_is_still_encoded_as_having_no_operations(self):
+        # The flag distinguishes it; it must not invent operations that are not there.
+        general = self.engineer.db.loc[(1, "1")]
+        self.assertTrue(np.all(general[:-1] == 0.0))
+        self.assertEqual(general[-1], 1.0)
 
     def test_builder_serialised_json_roundtrips(self):
         from ..preprocess_wychoffs import build_site_symmetry_ops_engineer
@@ -128,6 +150,72 @@ class TestSiteSymmetryOpsEngineer(unittest.TestCase):
         # Spot-check a handful of entries.
         for key in list(built.db.index)[:10]:
             self.assertTrue(np.allclose(built.db.loc[key], loaded.db.loc[key]))
+
+
+class TestSiteSymmetryOpsIdEngineer(unittest.TestCase):
+    """``site_symmetry_ops_id`` must carry exactly the information the dense
+    ``site_symmetry_ops`` field carries: an id plus the lookup table has to resolve to
+    the same vector, for real (sg, ss) pairs and for the service tokens alike.
+    """
+    @classmethod
+    def setUpClass(cls):
+        from ..preprocess_wychoffs import (  # noqa: PLC0415
+            build_site_symmetry_ops_engineer, build_site_symmetry_ops_id_engineer)
+        from ..wyckoff_processor import load_frozen_table  # noqa: PLC0415
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        directory = Path(cls.tmp.name)
+        cls.dense = build_site_symmetry_ops_engineer(engineers_dir=directory)
+        cls.ids = build_site_symmetry_ops_id_engineer(engineers_dir=directory)
+        cls.table = load_frozen_table("site_symmetry_ops_id", engineers_dir=directory)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_id_and_table_reproduce_the_dense_vectors(self):
+        self.assertEqual(set(self.ids.db.index), set(self.dense.db.index))
+        self.assertEqual(self.table.shape[1], self.dense.feature_shape[0])
+        for key in self.dense.db.index:
+            np.testing.assert_array_equal(
+                self.table[self.ids.db.loc[key]], self.dense.db.loc[key],
+                err_msg=f"id and dense encodings disagree for {key}")
+
+    def test_service_tokens_match_the_dense_service_vectors(self):
+        for name, id_token, dense_vector in (
+                ("MASK", self.ids.mask_token, self.dense.mask_token),
+                ("STOP", self.ids.stop_token, self.dense.stop_token),
+                ("PAD", self.ids.pad_token, self.dense.pad_token),
+                ("default", self.ids.default_value, self.dense.default_value)):
+            with self.subTest(token=name):
+                np.testing.assert_array_equal(self.table[id_token], dense_vector)
+
+    def test_ids_follow_the_tokeniser_sizing_convention(self):
+        # tokenise_dataset sizes a PassThroughTokeniser as db.max() + 1 + 3 and takes the
+        # service tokens from the engineer; the table has to have a row for each of them.
+        n_real = int(self.ids.db.max()) + 1
+        self.assertEqual(sorted(self.ids.db.unique()), list(range(n_real)))
+        self.assertEqual(
+            [self.ids.mask_token, self.ids.stop_token, self.ids.pad_token],
+            [n_real, n_real + 1, n_real + 2])
+        self.assertEqual(self.table.shape[0], n_real + 3)
+
+    def test_table_json_round_trips(self):
+        from ..wyckoff_processor import (  # noqa: PLC0415
+            frozen_table_path, load_frozen_table, save_frozen_table)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = save_frozen_table("round_trip", self.table, engineers_dir=Path(tmp))
+            self.assertEqual(path, frozen_table_path("round_trip", engineers_dir=Path(tmp)))
+            np.testing.assert_array_equal(
+                load_frozen_table("round_trip", engineers_dir=Path(tmp)), self.table)
+
+    def test_missing_table_is_a_clear_error(self):
+        from ..wyckoff_processor import load_frozen_table  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                load_frozen_table("no_such_field", engineers_dir=Path(tmp))
 
 
 class TestTupleAndTokenisers(unittest.TestCase):
@@ -702,6 +790,58 @@ class TestTensorToPyxtal(unittest.TestCase):
         self.assertEqual(result["sites"], [["2a"]])
         self.assertEqual(result["species"], ["Na"])
         self.assertEqual(result["numIons"], [2])
+
+    def test_tensor_to_pyxtal_ignores_auxiliary_cascade_fields(self):
+        """A cascade may carry a deterministic auxiliary field such as
+        site_symmetry_ops_id. It is an input, not part of the decoded structure, so
+        decoding must pick it out by name rather than reject the cascade."""
+        tokenisers = self._build_tokenisers_for_modes()
+        tokenisers["site_symmetry_ops_id"] = tok.PassThroughTokeniser(
+            values_count=4, stop_token=1, pad_token=2, mask_token=3)
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
+        element = tokenisers["elements"]["Na"]
+        ss = tokenisers["site_symmetries"]["m"]
+        enum = tokenisers["sites_enumeration"][0]
+
+        # The auxiliary column carries a real id in the first token and STOP in the
+        # second, and sits out of cascade order to check the permutation is by name.
+        wp_tensor = torch.tensor(
+            [
+                [element, ss, 0, enum],
+                [
+                    tokenisers["elements"].stop_token,
+                    tokenisers["site_symmetries"].stop_token,
+                    tokenisers["site_symmetry_ops_id"].stop_token,
+                    tokenisers["sites_enumeration"].stop_token,
+                ],
+            ],
+            dtype=torch.int64,
+        )
+        result = processor.tensor_to_pyxtal(
+            space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
+            wp_tensor=wp_tensor,
+            cascade_order=(
+                "elements", "site_symmetries", "site_symmetry_ops_id", "sites_enumeration"),
+            letter_from_ss_enum_idx={1: {"m": {enum: "a"}}},
+            ss_from_letter={1: {"a": "m"}},
+            wp_index={1: {"m": {"a": (2, 1)}}},
+        )
+        self.assertEqual(result["group"], 1)
+        self.assertEqual(result["sites"], [["2a"]])
+        self.assertEqual(result["numIons"], [2])
+
+    def test_tensor_to_pyxtal_rejects_a_cascade_it_cannot_decode(self):
+        tokenisers = self._build_tokenisers_for_modes()
+        processor = tok.WyckoffProcessor(config={}, tokenisers=tokenisers, token_engineers={})
+        with self.assertRaises(NotImplementedError):
+            processor.tensor_to_pyxtal(
+                space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
+                wp_tensor=torch.tensor([[0, 0]], dtype=torch.int64),
+                cascade_order=("elements", "multiplicity"),
+                letter_from_ss_enum_idx={},
+                ss_from_letter={},
+                wp_index={},
+            )
 
     def test_tensor_to_pyxtal_wyckoff_letters_mode(self):
         tokenisers = self._build_tokenisers_for_modes()

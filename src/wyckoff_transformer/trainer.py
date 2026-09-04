@@ -114,6 +114,44 @@ def load_model_weights(
     model.load_state_dict(_match_compile_prefix(state_dict, model))
 
 
+def cascade_target_indices(
+    cascade_order: Tuple[str, ...],
+    cascade_is_target: Dict[str, bool],
+    token_engineers: Dict) -> Tuple[int, ...]:
+    """Positions of the cascade fields that have a prediction head, validating the rest.
+
+    A non-target field is filled in by its engineer rather than predicted, so it need not
+    be last -- and it must not be, when a later target has to see it.
+    ``get_masked_multiclass_cascade_data`` masks every field from the predicted one onwards
+    at the current position, so a non-target field placed after a head that needs it is
+    invisible exactly where it matters. What is required instead is that its engineer's
+    inputs are all decided before it: the sequence-level first input (the start token),
+    plus cascade fields sitting earlier in the order.
+
+    Returns positions rather than a count because the targets need not be a prefix.
+    """
+    is_target_in_order = [cascade_is_target[field] for field in cascade_order]
+    if not any(is_target_in_order):
+        raise ValueError("At least one cascade field must be a prediction target")
+    for position, (field, is_target) in enumerate(zip(cascade_order, is_target_in_order)):
+        if is_target:
+            continue
+        engineer = token_engineers.get(field)
+        if engineer is None:
+            raise ValueError(
+                f"Cascade field {field} is not a target and has no engineer to fill it in, "
+                "so nothing would ever set its value")
+        for engineer_input in engineer.inputs[1:]:
+            if engineer_input in cascade_order and \
+                    list(cascade_order).index(engineer_input) > position:
+                raise ValueError(
+                    f"Non-target cascade field {field} at position {position} is filled "
+                    f"from {engineer_input}, which comes later in the cascade; move it "
+                    "after that field")
+    return tuple(
+        position for position, is_target in enumerate(is_target_in_order) if is_target)
+
+
 class WyckoffTrainer():
     # Fixed seed for the schedule_free_lag evaluations, so x and z are compared on identical
     # batches and successive checkpoints are comparable to each other.
@@ -222,12 +260,11 @@ class WyckoffTrainer():
         if isinstance(target, str):
             target = TargetClass[target]
         if target != TargetClass.Scalar:
-            is_target_in_order = [cascade_is_target[field] for field in cascade_order]
-            if not all(is_target_in_order[:-1]):
-                raise NotImplementedError("Only one not targret field is supported "
-                    "at the moment and it must be the last")
-            self.cascade_target_count = sum(is_target_in_order)
+            self.cascade_target_indices = cascade_target_indices(
+                cascade_order, cascade_is_target, token_engineers)
+            self.cascade_target_count = len(self.cascade_target_indices)
         else:
+            self.cascade_target_indices = ()
             self.cascade_target_count = 0
         self.token_engineers = token_engineers
         self.processor = processor or WyckoffProcessor(
@@ -813,7 +850,7 @@ class WyckoffTrainer():
             self.optimizer.zero_grad(set_to_none=True)
             if self.target in (TargetClass.NextToken, TargetClass.NumUniqueTokens):
                 known_cascade_len = (
-                    randint(0, self.cascade_target_count - 1)
+                    self.cascade_target_indices[randint(0, self.cascade_target_count - 1)]
                     if self.target == TargetClass.NextToken else 0)
                 if self.multiclass_next_token_with_order_permutation:
                     # Weight each known_seq_len by how much data reaches it here, in the
@@ -1002,7 +1039,7 @@ class WyckoffTrainer():
                     # leaves both the sampled and the exhaustive path with an empty batch.
                     continue
                 if self.target == TargetClass.NextToken:
-                    for known_cascade_len in range(self.cascade_target_count):
+                    for known_cascade_len in self.cascade_target_indices:
                         # get_loss already rescales a sampled batch to the whole viable set.
                         loss[known_cascade_len] += self.get_loss(
                             dataset, known_seq_len, known_cascade_len, loader=loader,
@@ -1350,10 +1387,16 @@ class WyckoffTrainer():
         else:
             generated_tensors = generator.generate_tensors(start_tensor, compute_validity=False, cond=cond)
 
-        generated_cascade_order = self.cascade_order
-        if self.cascade_order[-1] == "harmonic_site_symmetries":
-            del generated_tensors[-1]
-            generated_cascade_order = generated_cascade_order[:-1]
+        # Non-target fields are filled in by their engineers (harmonic_site_symmetries,
+        # site_symmetry_ops_id, ...). They are inputs to the model, not part of the generated
+        # structure, and a vector-valued one cannot be stacked with the [batch, length] token
+        # fields anyway. Dropped back to front so the surviving indices stay valid.
+        generated_cascade_order = list(self.cascade_order)
+        for position in reversed(range(len(self.cascade_order))):
+            if not self.cascade_is_target.get(self.cascade_order[position], False):
+                del generated_tensors[position]
+                del generated_cascade_order[position]
+        generated_cascade_order = tuple(generated_cascade_order)
         generated_tensors = torch.stack(generated_tensors, dim=-1)
 
         if 'sites_enumeration' in self.tokenisers:
