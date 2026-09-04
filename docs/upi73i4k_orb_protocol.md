@@ -262,6 +262,44 @@ What remains, in order of how well the evidence supports it:
    the dataset holds entries: CrySPR found a strictly lower ORB minimum for 15
    of 583 known genes.)
 
+   **Before any of that, there is a constant to fix.** PyXtal's cells come out
+   systematically too large: against the LeMat-Bulk reference the initial volume
+   per atom has a geometric mean ratio of **1.177** (median 1.174), and only 25%
+   of trials start within 10% of the right volume. That is not an MLIP/DFT
+   disagreement — the ORB-relaxed volume over the DFT reference volume has
+   median **1.000** (interquartile range 0.996-1.007), so ORB reproduces the DFT
+   cell and the excess is entirely the starting guess.
+
+   It is associated with recovery, for genes with positional freedom:
+
+   | start volume / reference | trials | recovery |
+   |---|---:|---:|
+   | <0.80 | 57 | 0.368 |
+   | 0.80-0.95 | 73 | 0.603 |
+   | **0.95-1.05** | 141 | **0.766** |
+   | 1.05-1.25 | 339 | 0.652 |
+   | 1.25-1.60 | 255 | 0.588 |
+   | >1.60 | 71 | 0.549 |
+   | all | 936 | 0.623 |
+
+   Stage 1 relaxes positions at *fixed cell*, so the guessed volume is the box
+   the positions are arranged in before the cell is ever released -- which is
+   why the guess is consequential rather than merely a slow start. Landing in
+   the 0.95-1.05 band is worth +0.14 absolute recovery over the current mix.
+
+   Two hard-coded constants in ``cryspr/generator.py`` inflate the cell, neither
+   exposed as a parameter: ``from_random`` is never passed ``factor``, so it
+   takes PyXtal's default of **1.1**, and ``_DEFAULT_IADM =
+   Tol_matrix(prototype="atomic", factor=1.3)`` inflates every minimum
+   interatomic distance by 30%, forcing the cell open further. Setting the
+   volume factor to ~0.935 would move the median ratio to 1.00 and raise
+   "within 25% of correct" from 60% to 77%.
+
+   The table above is an association, not an intervention: genes whose volume
+   PyXtal estimates well may be easier for other reasons. The clean test is to
+   re-run the same genes with only that constant changed, which is cheap and
+   not yet done.
+
    A related cheap option is a learned re-ranker from the unrelaxed structure to
    the relaxed energy. The physics version of this is dead (see the pre-screen
    table above), but every protocol run generates the supervised data for a

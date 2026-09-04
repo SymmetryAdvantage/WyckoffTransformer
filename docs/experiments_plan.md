@@ -1,6 +1,6 @@
 CRySPR
-0. Allocate relaxation budget per DoF
-1. Rattling to break symmetry
+0. Allocate relaxation budget per DoF (pending zeus study)
+1. Rattling to break symmetry (iapetus running)
 
 Backbone
 1. Train the models longer with the low LR
