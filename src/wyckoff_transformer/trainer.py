@@ -1,6 +1,8 @@
 from typing import Tuple, Dict, Optional, List, Any, Union, Set
 import importlib
 import math
+import os
+import random
 import shutil
 from random import randint
 import logging
@@ -58,6 +60,37 @@ def get_condition_transform(name: Optional[str]):
 #: Prefix `torch.compile` adds to every parameter name of the module it wraps.
 _COMPILE_PREFIX = "_orig_mod."
 
+#: Everything `train()` needs to pick a crashed run up where it stopped: weights, optimiser
+#: and schedule state, the RNG, the loaders' shuffle position and the early-stopping
+#: bookkeeping. Distinct from `best_model_params.pt`, which holds only the weights that
+#: scored best and is what generation and evaluation load.
+CHECKPOINT_FILENAME = "last_checkpoint.pt"
+
+#: Bumped when the checkpoint layout changes in a way that makes older files unreadable.
+#: A resume that finds an older version fails loudly rather than restoring half a run.
+CHECKPOINT_FORMAT_VERSION = 1
+
+
+def atomic_torch_save(obj: Any, path: Path) -> None:
+    """`torch.save` to a temporary file in the same directory, then rename over the target.
+
+    Saving straight to the destination leaves a truncated file behind if the process dies
+    mid-write -- which is exactly the event a checkpoint exists to survive, and it would
+    otherwise destroy the previous, good checkpoint on its way out. `os.replace` is atomic
+    within a filesystem, so the destination is always one whole checkpoint or the other.
+    """
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def _match_compile_prefix(state_dict: Dict[str, Any], model: nn.Module) -> Dict[str, Any]:
+    """Rename the keys of `state_dict` to the `_orig_mod.` convention `model` expects."""
+    weights = {key.removeprefix(_COMPILE_PREFIX): value for key, value in state_dict.items()}
+    if any(key.startswith(_COMPILE_PREFIX) for key in model.state_dict()):
+        weights = {_COMPILE_PREFIX + key: value for key, value in weights.items()}
+    return weights
+
 
 def load_model_weights(
         model: nn.Module,
@@ -78,10 +111,7 @@ def load_model_weights(
             checkpoint refuses to load where no GPU is visible.
     """
     state_dict = torch.load(path, map_location=device, weights_only=True)
-    weights = {key.removeprefix(_COMPILE_PREFIX): value for key, value in state_dict.items()}
-    if any(key.startswith(_COMPILE_PREFIX) for key in model.state_dict()):
-        weights = {_COMPILE_PREFIX + key: value for key, value in weights.items()}
-    model.load_state_dict(weights)
+    model.load_state_dict(_match_compile_prefix(state_dict, model))
 
 
 class WyckoffTrainer():
@@ -98,6 +128,13 @@ class WyckoffTrainer():
     #: Optimiser steps the step-indexed schedule was sized for, or None when the schedule
     #: does not depend on a horizon. train() checks this against the run it is about to do.
     scheduler_total_steps = None
+
+    #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
+    resume = False
+
+    #: How often, in epochs, train() writes that checkpoint. Class defaults for the same
+    #: reason as the two above: trainers built by tests via __new__ skip __init__.
+    checkpoint_period = 1
 
     def __init__(
         self,
@@ -133,6 +170,7 @@ class WyckoffTrainer():
         production_training: bool = False,
         condition_feature: Optional[str] = None,
         condition_transform: Optional[str] = None,
+        resume: bool = False,
     ):
         """
         Initializes the WyckoffTrainer.
@@ -176,6 +214,10 @@ class WyckoffTrainer():
             condition_transform: Name of a transform from CONDITION_TRANSFORMS applied to the
                 conditioning feature on its way into the model. The stored data and the values
                 accepted by generate_structures stay in physical units.
+            resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
+                RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
+                the epoch after the one the checkpoint recorded. Mutually exclusive with
+                `weights_path`, which starts a *new* run from someone else's weights.
         """
         if isinstance(target, str):
             target = TargetClass[target]
@@ -386,10 +428,28 @@ class WyckoffTrainer():
         self.cascade_len = len(cascade_order)
         self.cascade_order = cascade_order
         self.epochs = optimisation_config.epochs
+        self.resume = resume
+        if resume and weights_path is not None:
+            # Both write the model's weights, and the checkpoint also carries the optimiser
+            # state that goes with them. Applying weights_path afterwards would leave an
+            # optimiser whose moments belong to different weights.
+            raise ValueError(
+                "resume and weights_path are mutually exclusive: a resumed run takes its "
+                "weights from its own checkpoint.")
         if weights_path is not None:
             load_model_weights(self.model, weights_path, device)
 
         self.validation_period = optimisation_config.validation_period
+        # Validation epochs are the natural cadence -- the loop already pauses there, and the
+        # early-stopping bookkeeping the checkpoint carries only moves then. A run with a long
+        # validation_period can buy a tighter one: the cost is a file write, the benefit is
+        # that a crash loses less. A period longer than the run itself is not an error: the
+        # checkpoint train() writes when the loop ends is unconditional.
+        self.checkpoint_period = int(
+            optimisation_config.get("checkpoint_period", self.validation_period))
+        if self.checkpoint_period < 1:
+            raise ValueError(
+                f"checkpoint_period must be at least 1 epoch, got {self.checkpoint_period}")
         self.early_stopping_patience_epochs = optimisation_config.early_stopping_patience_epochs
         self.target = target
         self.multiclass_next_token_with_order_permutation = multiclass_next_token_with_order_permutation
@@ -499,7 +559,8 @@ class WyckoffTrainer():
                     run_path: Optional[Path] = Path("runs"),
                     load_datasets: bool = True,
                     production_training: bool = False,
-                    no_test: bool = False):
+                    no_test: bool = False,
+                    resume: bool = False):
         config = OmegaConf.create(config_dict)
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
@@ -591,6 +652,7 @@ class WyckoffTrainer():
             processor=processor,
             tokeniser_config=config.tokeniser,
             production_training=production_training,
+            resume=resume,
             **config.model.WyckoffTrainer_args)
 
 
@@ -959,6 +1021,132 @@ class WyckoffTrainer():
         return loss / self.evaluation_samples / len(dataset)
 
 
+    @property
+    def checkpoint_path(self) -> Path:
+        """Where train() writes the resume checkpoint for this run."""
+        if self.run_path is None:
+            raise ValueError("Checkpointing requires a run_path")
+        return self.run_path / CHECKPOINT_FILENAME
+
+    def _loaders(self) -> Dict[str, AugmentedCascadeLoader]:
+        """The loaders whose shuffle position is part of the run's state, by split name."""
+        candidates = {"train": self.train_loader, "val": self.val_loader, "test": self.test_loader}
+        return {name: loader for name, loader in candidates.items() if loader is not None}
+
+    def save_training_checkpoint(
+            self, epoch: int, best_val_loss: float, best_val_epoch: int) -> Path:
+        """Write everything needed to re-enter the training loop at `epoch`.
+
+        Weights and optimiser state are captured in the same instant and must stay that way.
+        It matters most for the schedule-free optimisers: what sits in the parameters is `y`
+        or `x` depending on whether `train()` or `eval()` was called last, `z` lives in the
+        optimiser state, and the flag that says which is in the optimiser's param_groups.
+        Saving the pair together makes the triple self-consistent whenever it was taken;
+        saving them apart would silently resume from a mixture of two iterates.
+
+        The RNG snapshot covers `random` and torch, the two the training loop draws from --
+        `known_seq_len`, the augmentation choice and the batch draw. numpy is deliberately
+        absent: nothing in the loop uses it, and its state does not survive
+        `torch.load(weights_only=True)`, which is worth keeping.
+
+        Args:
+            epoch: The epoch a resume should start at, i.e. one past the last one completed.
+            best_val_loss: Best total validation loss seen so far.
+            best_val_epoch: Epoch that achieved it, which is what early stopping counts from.
+
+        Returns:
+            The path written.
+        """
+        checkpoint = {
+            "format_version": CHECKPOINT_FORMAT_VERSION,
+            "epoch": int(epoch),
+            "best_val_loss": float(best_val_loss),
+            "best_val_epoch": int(best_val_epoch),
+            "model": self.model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": None if self.scheduler is None else self.scheduler.state_dict(),
+            # Checked on load: a schedule resumed against a different horizon is a different
+            # schedule, and the mismatch is otherwise invisible until the decay misses.
+            "scheduler_total_steps": self.scheduler_total_steps,
+            "epochs": self.epochs,
+            "loaders": {name: loader.state_dict() for name, loader in self._loaders().items()},
+            "rng": {
+                "python": random.getstate(),
+                "torch": torch.get_rng_state(),
+                # Gated on the run's own device rather than on a GPU being present: reading
+                # the CUDA RNG initialises a context on the default device, which a CPU run
+                # has no business doing and which fails outright when someone else's job is
+                # already filling that card.
+                "cuda": (torch.cuda.get_rng_state_all()
+                         if self.device.type == "cuda" else []),
+            },
+            # A plain string: the checkpoint is read back with weights_only=True, which
+            # accepts primitives and tensors and nothing else.
+            "wandb_run_id": None if wandb.run is None else str(wandb.run.id),
+        }
+        atomic_torch_save(checkpoint, self.checkpoint_path)
+        logger.info("Wrote the resume checkpoint for epoch %d to %s", epoch, self.checkpoint_path)
+        return self.checkpoint_path
+
+    def load_training_checkpoint(self) -> Dict[str, Any]:
+        """Restore the state saved by `save_training_checkpoint` into this trainer.
+
+        Everything the training loop owns -- weights, optimiser, schedule, RNG, loader
+        positions -- is restored in place. The epoch counters are returned instead, because
+        they are locals of `train()`.
+
+        Returns:
+            The `epoch`, `best_val_loss` and `best_val_epoch` to resume the loop with.
+        """
+        path = self.checkpoint_path
+        checkpoint = torch.load(path, map_location=self.device, weights_only=True)
+        version = checkpoint.get("format_version")
+        if version != CHECKPOINT_FORMAT_VERSION:
+            raise ValueError(
+                f"{path} is a format {version} checkpoint; this version of the trainer writes "
+                f"and reads format {CHECKPOINT_FORMAT_VERSION}. It cannot be resumed.")
+        if checkpoint["epochs"] != self.epochs:
+            raise ValueError(
+                f"{path} was written by a {checkpoint['epochs']}-epoch run, but this one is "
+                f"configured for {self.epochs}. Resuming would place the schedule and the "
+                f"early-stopping budget on a horizon neither run has.")
+        if checkpoint["scheduler_total_steps"] != self.scheduler_total_steps:
+            raise ValueError(
+                f"{path} was written under a schedule of {checkpoint['scheduler_total_steps']} "
+                f"optimiser steps; this run's is {self.scheduler_total_steps}. The step budget "
+                f"is usually the dataset changing size under a run.")
+        self.model.load_state_dict(_match_compile_prefix(checkpoint["model"], self.model))
+        self.optimizer.load_state_dict(checkpoint["optimizer"])
+        if (self.scheduler is None) != (checkpoint["scheduler"] is None):
+            raise ValueError(
+                "The checkpoint has a learning rate schedule and this run does not, or the "
+                "other way round.")
+        if self.scheduler is not None:
+            self.scheduler.load_state_dict(checkpoint["scheduler"])
+        for name, loader in self._loaders().items():
+            if name in checkpoint["loaders"]:
+                loader.load_state_dict(checkpoint["loaders"][name])
+            else:
+                logger.warning("The checkpoint holds no %s loader state; reshuffling it.", name)
+        random.setstate(checkpoint["rng"]["python"])
+        torch.set_rng_state(checkpoint["rng"]["torch"].to(torch.uint8).cpu())
+        cuda_state = checkpoint["rng"]["cuda"]
+        if cuda_state and self.device.type == "cuda":
+            if len(cuda_state) == torch.cuda.device_count():
+                torch.cuda.set_rng_state_all(cuda_state)
+            else:
+                # Restoring a subset would leave the remaining devices on a state that has
+                # already been used, which is worse than starting them fresh.
+                logger.warning(
+                    "The checkpoint holds CUDA RNG state for %d devices and this host has %d; "
+                    "leaving the CUDA RNG as it is.", len(cuda_state), torch.cuda.device_count())
+        return {
+            "epoch": int(checkpoint["epoch"]),
+            "best_val_loss": float(checkpoint["best_val_loss"]),
+            "best_val_epoch": int(checkpoint["best_val_epoch"]),
+        }
+
+
     def train(self):
         if self.train_dataset is None:
             raise ValueError("train() requires a train dataset")
@@ -986,8 +1174,22 @@ class WyckoffTrainer():
                     self.early_stopping_patience_epochs, self.epochs)
         best_val_loss = float('inf')
         best_val_epoch = 0
+        start_epoch = 0
         self.run_path.mkdir(exist_ok=True)
         best_model_params_path = self.run_path / "best_model_params.pt"
+        if self.resume:
+            resumed = self.load_training_checkpoint()
+            start_epoch = resumed["epoch"]
+            best_val_loss = resumed["best_val_loss"]
+            best_val_epoch = resumed["best_val_epoch"]
+            if start_epoch >= self.epochs:
+                logger.info(
+                    "The checkpoint records all %d epochs as done; nothing left to train.",
+                    self.epochs)
+            else:
+                logger.info(
+                    "Resuming at epoch %d of %d; best validation loss %.4f at epoch %d.",
+                    start_epoch, self.epochs, best_val_loss, best_val_epoch)
         self.save_start_token_distribution()
 
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
@@ -997,7 +1199,7 @@ class WyckoffTrainer():
         wandb.define_metric("known_seq_len", hidden=True)
         wandb.define_metric("known_cascade_len", hidden=True)
 
-        for epoch in (train_tqdm := trange(self.epochs)):
+        for epoch in (train_tqdm := trange(start_epoch, self.epochs)):
             self.train_epoch()
             if epoch % self.validation_period == 0 or epoch == self.epochs - 1:
                 train_loss = self.evaluate(self.train_dataset, self.train_loader)
@@ -1025,9 +1227,12 @@ class WyckoffTrainer():
                     logged["schedule_free"] = lag_metrics
                 wandb.log(logged, commit=False)
                 if total_val_loss < best_val_loss:
-                    best_val_loss = total_val_loss
+                    # A float, not the 0-dim tensor: this is what the checkpoint carries
+                    # across a resume, and what the comparison above is against on the
+                    # first epoch of one.
+                    best_val_loss = float(total_val_loss)
                     best_val_epoch = epoch
-                    torch.save(self.model.state_dict(), best_model_params_path)
+                    atomic_torch_save(self.model.state_dict(), best_model_params_path)
                     best_model_artifact = wandb.Artifact(
                         name=f"best_model_{wandb.run.id}",
                         type="model",
@@ -1047,7 +1252,13 @@ class WyckoffTrainer():
                 if (self.scheduler and not self.scheduler_steps_per_batch
                         and epoch % self.validation_period == 0):
                     self.scheduler.step(total_val_loss)
+            if (epoch + 1) % self.checkpoint_period == 0:
+                self.save_training_checkpoint(epoch + 1, best_val_loss, best_val_epoch)
 
+        # Record that the loop is over, whether it ran to `epochs` or stopped early. A crash in
+        # the generation and evaluation that follows then costs no training at all: resuming
+        # from this checkpoint enters the loop with nothing to do and goes straight on to them.
+        self.save_training_checkpoint(self.epochs, best_val_loss, best_val_epoch)
         # Make sure we log the last evaluation results
         wandb.log({}, commit=True)
 
@@ -1262,32 +1473,93 @@ class WyckoffTrainer():
         return mean_predictions, stacked_predictions
 
 
+#: Sentinel for "this key is not in that config at all", which None is a legitimate value for.
+_MISSING = object()
+
+
+def flatten_config(config: Any, prefix: str = "") -> Dict[str, Any]:
+    """A config as a flat {dotted.key: leaf} mapping, for reporting where two of them differ."""
+    if isinstance(config, dict):
+        flat = {}
+        for key, value in config.items():
+            flat.update(flatten_config(value, f"{prefix}.{key}" if prefix else str(key)))
+        return flat
+    if isinstance(config, list):
+        flat = {}
+        for index, value in enumerate(config):
+            flat.update(flatten_config(value, f"{prefix}[{index}]"))
+        return flat
+    return {prefix: config}
+
+
+def check_resume_config(config_dict: dict|DictConfig, saved_config_path: Path) -> None:
+    """Refuse to resume a run under a config other than the one it started under.
+
+    A resumed run carries the optimiser, the schedule and its horizon forward from the
+    checkpoint, so a changed learning rate, batch size or model shape would produce something
+    that is neither the run on disk nor the one on the command line -- and the W&B run it
+    logs into would claim to be the former. `load_training_checkpoint` catches the epoch count
+    and the step budget; this catches everything else, before any training happens.
+
+    Raises:
+        ValueError: The configs differ, listing the keys that do.
+    """
+    if not saved_config_path.exists():
+        raise FileNotFoundError(
+            f"Cannot verify the config of the run being resumed: {saved_config_path} is missing.")
+    saved = flatten_config(OmegaConf.to_container(OmegaConf.load(saved_config_path), resolve=True))
+    current = flatten_config(OmegaConf.to_container(OmegaConf.create(config_dict), resolve=True))
+    differences = []
+    for key in sorted(set(saved) | set(current)):
+        if saved.get(key, _MISSING) != current.get(key, _MISSING):
+            differences.append(
+                f"  {key}: {saved.get(key, '<absent>')!r} (saved) != "
+                f"{current.get(key, '<absent>')!r} (given)")
+    if differences:
+        raise ValueError(
+            f"The config given differs from the one {saved_config_path} recorded for this run, "
+            f"so it cannot be resumed:\n" + "\n".join(differences))
+
+
 def train_from_config(
     config_dict: dict,
     device: torch.device,
     run_path: Path = Path(__file__).resolve().parent.parent / "runs",
     production_training: bool = False,
-    no_test: bool = False):
+    no_test: bool = False,
+    resume: bool = False):
 
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
-    this_run_path.mkdir(parents=True, exist_ok=False)
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test)
-    shutil.copy(
-        Path(wyckoff_transformer.__file__).parent / WYCKOFF_MAPPINGS_FILENAME,
-        this_run_path / WYCKOFF_MAPPINGS_FILENAME,
-    )
-    tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
-    processor_json = trainer.processor.save_pretrained(this_run_path)
-    tokenizers_engineers.add_file(processor_json)
-    tokenizers_engineers.add_file(this_run_path / WYCKOFF_MAPPINGS_FILENAME)
-    wandb.log_artifact(tokenizers_engineers)
-    config_save_path = this_run_path / "config.yaml"
-    OmegaConf.save(config_dict, config_save_path)
-    run_config_artifact = wandb.Artifact(name=f"run_config_{wandb.run.id}", type="config")
-    run_config_artifact.add_file(config_save_path)
-    wandb.log_artifact(run_config_artifact)
+    if resume:
+        checkpoint_path = this_run_path / CHECKPOINT_FILENAME
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Asked to resume run {wandb.run.id}, but it has no checkpoint at "
+                f"{checkpoint_path}. A run that died before writing one has to be started over.")
+        check_resume_config(config_dict, this_run_path / "config.yaml")
+        logger.info("Resuming run %s from %s", wandb.run.id, checkpoint_path)
+    else:
+        this_run_path.mkdir(parents=True, exist_ok=False)
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume)
+    if not resume:
+        # A resumed run wrote all of these on its first attempt, and their W&B artifacts with
+        # them; the config one is what check_resume_config just held it to.
+        shutil.copy(
+            Path(wyckoff_transformer.__file__).parent / WYCKOFF_MAPPINGS_FILENAME,
+            this_run_path / WYCKOFF_MAPPINGS_FILENAME,
+        )
+        tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
+        processor_json = trainer.processor.save_pretrained(this_run_path)
+        tokenizers_engineers.add_file(processor_json)
+        tokenizers_engineers.add_file(this_run_path / WYCKOFF_MAPPINGS_FILENAME)
+        wandb.log_artifact(tokenizers_engineers)
+        config_save_path = this_run_path / "config.yaml"
+        OmegaConf.save(config_dict, config_save_path)
+        run_config_artifact = wandb.Artifact(name=f"run_config_{wandb.run.id}", type="config")
+        run_config_artifact.add_file(config_save_path)
+        wandb.log_artifact(run_config_artifact)
     trainer.train()
     config = OmegaConf.create(config_dict)
     if config.model.WyckoffTrainer_args.target == "NextToken" and \

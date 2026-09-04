@@ -1,4 +1,4 @@
-from typing import List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from enum import Enum
 from itertools import accumulate
 import logging
@@ -678,6 +678,29 @@ class AugmentedCascadeLoader():
     def from_dataset(cls, dataset: AugmentedCascadeDataset) -> 'AugmentedCascadeLoader':
         """Create a loader using the batch_size and fix_batch_size stored on the dataset."""
         return cls(dataset, batch_size=dataset._batch_size, fix_batch_size=dataset._fix_batch_size)
+
+    def state_dict(self) -> Dict[str, Any]:
+        """The shuffle order and the position in it, for a run that has to be resumed.
+
+        The order is stored rather than redrawn from a restored RNG: redrawing lands the
+        loader at a different point of a different permutation, which is an equally valid
+        sample but not the run that was interrupted. Moved to the CPU so a checkpoint
+        written on a GPU host stays loadable anywhere.
+        """
+        return {
+            "this_shuffle_order": self.this_shuffle_order.cpu(),
+            "next_batch_index": self.next_batch_index,
+        }
+
+    def load_state_dict(self, state: Dict[str, Any]) -> None:
+        """Restore the shuffle position saved by `state_dict`."""
+        order = state["this_shuffle_order"]
+        if len(order) != self.num_examples:
+            raise ValueError(
+                f"The checkpoint was written by a loader over {len(order)} examples, but this "
+                f"one has {self.num_examples}: the dataset changed under the run.")
+        self.this_shuffle_order = order.to(self.dataset.augmented_storage_device)
+        self.next_batch_index = int(state["next_batch_index"])
 
     def get_next_batch(self) -> Tensor:
         """

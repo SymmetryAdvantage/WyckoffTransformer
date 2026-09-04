@@ -75,6 +75,19 @@ python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --t
 python scripts/train.py <path-to-model-yaml> <dataset-name> <device>
 ```
 The model weights are saved to `runs/<run-id>`, and to WanDB, along with the processor metadata. See [here](yamls/models/README.md) for the list of configs. Adding `--pilot` will run the model for a small number of epochs.
+### Resuming an interrupted run
+Training writes `runs/<run-id>/last_checkpoint.pt` every `optimisation.checkpoint_period` epochs
+(defaulting to `validation_period`) and once more when the loop ends. It holds the weights, the
+optimiser and schedule state, the RNG and the loaders' shuffle position, so a run continued from
+it takes the same steps it would have taken had it never stopped -- unlike
+`best_model_params.pt`, which holds weights alone and restarts the optimiser cold.
+```bash
+python scripts/train.py <path-to-model-yaml> <dataset-name> <device> --resume <run-id>
+```
+This logs back into the same W&B run rather than opening a second one, and refuses to start if
+the config given differs from the one that run recorded, since the schedule and the optimiser
+are carried over from the checkpoint. A run that died before writing its first checkpoint has to
+be started over.
 ## Preparing Representative Checkpoints
 To train and prepare representative checkpoints for datasets like `alex_mp_20` or `mp_20`, you can follow this end-to-end pipeline. Please replace `<dataset-name>` with your target dataset (e.g., `alex_mp_20` or `mp_20`).
 

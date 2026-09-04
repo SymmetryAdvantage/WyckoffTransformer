@@ -28,6 +28,10 @@ def main():
                         help="Force WyckoffTrainer_args.compile_model=true")
     parser.add_argument("--no-compile", dest="compile_model", action="store_false", default=None,
                         help="Force WyckoffTrainer_args.compile_model=false")
+    parser.add_argument("--resume", type=str, metavar="RUN_ID", default=None,
+                        help="Continue the W&B run with this id from the last checkpoint in its "
+                             "run directory, instead of starting a new one. The config given "
+                             "must be the one that run started with.")
     parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
                         help="W&B entity to log under. Pinned by default so a run's home does not "
                              "depend on the shell's W&B configuration.")
@@ -73,22 +77,28 @@ def main():
         job_type="train",
         tags=tags,
         config=wandb_config,
+        # Log back into the same run rather than opening a second one, so the loss curve of a
+        # resumed run is continuous and its run directory is the one holding the checkpoint.
+        # "must" rather than "allow": a typo in the id has to fail, not silently start afresh.
+        id=args.resume,
+        resume="must" if args.resume else None,
         settings=wandb.Settings(
                 init_timeout=180
             )
         ):
 
-        configuration_artifact = wandb.Artifact(name=f"config_{config.name}_{wandb.run.id}", type="config")
-        configuration_artifact.add_file(args.config, name="model.yaml")
-        configuration_artifact.add_file(tokeniser_config_path, name="tokeniser.yaml")
-        wandb.log_artifact(configuration_artifact)
+        if not args.resume:
+            configuration_artifact = wandb.Artifact(name=f"config_{config.name}_{wandb.run.id}", type="config")
+            configuration_artifact.add_file(args.config, name="model.yaml")
+            configuration_artifact.add_file(tokeniser_config_path, name="tokeniser.yaml")
+            wandb.log_artifact(configuration_artifact)
 
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume))
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume))
 
 
 if __name__ == '__main__':
