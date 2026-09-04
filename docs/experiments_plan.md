@@ -8,7 +8,7 @@ Backbone
 2. Conditioning audit - new robust protocol on converged models
 3. Increase model capacity
 4. Predict cell volume
-5. Architecture improvement - pooling, log-z
+5. Architecture improvement - pooling, log-z, conditioning
 6. Enrich internal representation - technical and physical
 
 Dataset
