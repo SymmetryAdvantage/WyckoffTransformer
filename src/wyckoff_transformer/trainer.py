@@ -24,6 +24,7 @@ from huggingface_hub import snapshot_download
 import wyckoff_transformer
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
+from wyckoff_transformer.censored import CensoredMinDiagnostics, CensoredMinLoss
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers,
     load_wyckoff_mappings, WYCKOFF_MAPPINGS_FILENAME,
@@ -129,6 +130,14 @@ class WyckoffTrainer():
     #: does not depend on a horizon. train() checks this against the run it is about to do.
     scheduler_total_steps = None
 
+    #: Which likelihood a Scalar target is fitted with, "mse" or "censored". A class
+    #: attribute for the same reason as `scheduler_steps_per_batch`: the Scalar paths
+    #: branch on it, and a trainer built by __new__ should read as the default.
+    scalar_loss = "mse"
+
+    #: Set to a CensoredMinDiagnostics when scalar_loss is "censored", and None otherwise.
+    censored_diagnostics = None
+
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
     resume = False
 
@@ -170,6 +179,8 @@ class WyckoffTrainer():
         production_training: bool = False,
         condition_feature: Optional[str] = None,
         condition_transform: Optional[str] = None,
+        scalar_loss: str = "mse",
+        censored_loss_args: Optional[dict] = None,
         resume: bool = False,
     ):
         """
@@ -214,6 +225,15 @@ class WyckoffTrainer():
             condition_transform: Name of a transform from CONDITION_TRANSFORMS applied to the
                 conditioning feature on its way into the model. The stored data and the values
                 accepted by generate_structures stay in physical units.
+            scalar_loss: Which likelihood a Scalar target is fitted with. "mse" regresses the
+                conditional mean, which for a Wyckoff gene is E[E | gene]. "censored" reads
+                every label as an upper bound and regresses min(E | gene) instead -- what CSP
+                wants, since the gene fixes neither the coordinates nor the cell and the
+                downstream reconstruction gets many attempts at the manifold it does fix.
+                See wyckoff_transformer.censored. Requires CascadeTransformer_args.outputs=2
+                unless censored_loss_args sets predict_scale=False.
+            censored_loss_args: Keyword arguments for CensoredMinLoss when scalar_loss is
+                "censored": noise, min_scale, predict_scale, init_scale.
             resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
@@ -251,6 +271,8 @@ class WyckoffTrainer():
         self.condition_transform = condition_transform
         self._condition_transform_fn = get_condition_transform(condition_transform)
         extra_fields = [condition_feature] if condition_feature is not None else None
+        self.scalar_loss = scalar_loss
+        self.censored_diagnostics = None
 
         if target == TargetClass.NextToken:
             # Sequences have difference lengths, so we need to make sure that
@@ -261,9 +283,22 @@ class WyckoffTrainer():
                 raise NotImplementedError("NumUniqueTokens is not implemented without permutations")
             self.criterion = nn.MSELoss(reduction="none")
         elif target == TargetClass.Scalar:
-            # Assumes the batch size is the same for all batches
-            self.criterion = nn.MSELoss(reduction='mean')
-            self.testing_criterion = nn.L1Loss(reduction='mean')
+            if scalar_loss == "mse":
+                # Assumes the batch size is the same for all batches
+                self.criterion = nn.MSELoss(reduction='mean')
+                self.testing_criterion = nn.L1Loss(reduction='mean')
+            elif scalar_loss == "censored":
+                # Regressing min(E | gene) rather than E[E | gene]: every label is
+                # an upper bound on the target, so the loss reads it as one. See
+                # wyckoff_transformer.censored.
+                self.criterion = CensoredMinLoss(
+                    reduction='mean', **(censored_loss_args or {})).to(device)
+                # Reported instead of an MAE, which is not the objective and is
+                # floored by the mean excess. Selects checkpoints on the NLL.
+                self.testing_criterion = self.criterion
+                self.censored_diagnostics = CensoredMinDiagnostics(self.criterion)
+            else:
+                raise ValueError(f"Unknown scalar_loss: {scalar_loss}")
         else:
             raise ValueError(f"Unknown target: {target}")
         
@@ -321,7 +356,7 @@ class WyckoffTrainer():
                 {"config": {"lr": optimisation_config.optimiser.lr_per_sqrt_n_samples * samples_per_step**0.5}})
         optimizer_module_obj = importlib.import_module(optimisation_config.optimiser.get("module", "torch.optim"))
         self.optimizer = getattr(optimizer_module_obj, optimisation_config.optimiser.name)(
-            model.parameters(), **optimisation_config.optimiser.config)
+            list(self.trainable_parameters()), **optimisation_config.optimiser.config)
         # Generation-only mode has no training set, so a step-indexed schedule has no
         # horizon to size itself from -- and nothing ever steps it. Skipping it here is
         # what lets a run trained under such a schedule be sampled without its dataset.
@@ -455,6 +490,19 @@ class WyckoffTrainer():
         self.multiclass_next_token_with_order_permutation = multiclass_next_token_with_order_permutation
         self.evaluation_samples = evaluation_samples
         self.start_token_distribution = start_token_distribution
+
+
+    def trainable_parameters(self):
+        """Every parameter the optimiser should move.
+
+        Almost always just the model's. `CensoredMinLoss` with `predict_scale=False`
+        holds the excess scale as a parameter of the criterion, and it has to be
+        optimised alongside the weights or the likelihood is fitted at a fixed scale
+        nobody chose.
+        """
+        yield from self.model.parameters()
+        if isinstance(self.criterion, nn.Module):
+            yield from self.criterion.parameters()
 
 
     def _validate_condition_values(self, values: Tensor):
@@ -772,7 +820,13 @@ class WyckoffTrainer():
             #logger.debug("Start tokens isnan: %s", start_tokens.isnan().any())
             #logger.debug("Masked data isnan: %s", any((a.isnan().any() for a in masked_data)))
             #logger.debug("Padding mask isnan: %s", padding_mask.isnan().any())
-            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond).squeeze()
+            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond)
+            if self.scalar_loss == "censored":
+                # [batch, n_outputs]; the criterion splits the columns itself, and a
+                # bare squeeze() would fuse them for a batch of one.
+                prediction = prediction.reshape(-1, self.criterion.n_outputs)
+            else:
+                prediction = prediction.squeeze()
             #logger.debug("Prediction isnan: %s", prediction.isnan().any())
         else:
             raise ValueError(f"Unknown target: {self.target}")
@@ -858,7 +912,7 @@ class WyckoffTrainer():
             # when clipping is on -- a threshold that binds on every step is not catching
             # outliers, it is setting the step size, and only this metric shows the difference.
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
+                self.trainable_parameters(),
                 math.inf if self.clip_grad_norm is None else self.clip_grad_norm)
             self.optimizer.step()
             if self.scheduler_steps_per_batch:
@@ -1021,6 +1075,37 @@ class WyckoffTrainer():
         return loss / self.evaluation_samples / len(dataset)
 
 
+    @torch.no_grad()
+    def scalar_diagnostics(
+        self,
+        dataset: AugmentedCascadeDataset,
+        loader: AugmentedCascadeLoader) -> Dict[str, float]:
+        """Calibration diagnostics for a censored Scalar fit, averaged over one pass.
+
+        Returns an empty dict for every other configuration. See
+        `wyckoff_transformer.censored.CensoredMinDiagnostics` for what the keys mean.
+        """
+        if self.censored_diagnostics is None:
+            return {}
+        self.model.eval()
+        if hasattr(self.optimizer, "eval"):
+            self.optimizer.eval()
+        totals: Dict[str, Tensor] = {}
+        for _ in range(loader.batches_per_epoch):
+            batch_selection = loader.get_next_batch()
+            start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(
+                batch_selection=batch_selection)
+            cond = None
+            if self.condition_feature is not None:
+                cond = self.transform_condition(
+                    dataset.data[self.condition_feature][batch_selection])
+            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond)
+            prediction = prediction.reshape(-1, self.criterion.n_outputs)
+            for key, value in self.censored_diagnostics(prediction, target).items():
+                totals[key] = totals.get(key, 0.) + value
+        return {key: (value / loader.batches_per_epoch).item() for key, value in totals.items()}
+
+
     @property
     def checkpoint_path(self) -> Path:
         """Where train() writes the resume checkpoint for this run."""
@@ -1063,6 +1148,9 @@ class WyckoffTrainer():
             "best_val_loss": float(best_val_loss),
             "best_val_epoch": int(best_val_epoch),
             "model": self.model.state_dict(),
+            # Empty for every criterion except a CensoredMinLoss holding a global scale.
+            "criterion": (self.criterion.state_dict()
+                          if isinstance(self.criterion, nn.Module) else {}),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": None if self.scheduler is None else self.scheduler.state_dict(),
             # Checked on load: a schedule resumed against a different horizon is a different
@@ -1116,6 +1204,11 @@ class WyckoffTrainer():
                 f"optimiser steps; this run's is {self.scheduler_total_steps}. The step budget "
                 f"is usually the dataset changing size under a run.")
         self.model.load_state_dict(_match_compile_prefix(checkpoint["model"], self.model))
+        # Absent from checkpoints written before the criterion could carry state, and empty
+        # for every criterion that carries none, so a missing key is not an error.
+        criterion_state = checkpoint.get("criterion") or {}
+        if criterion_state:
+            self.criterion.load_state_dict(criterion_state)
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         if (self.scheduler is None) != (checkpoint["scheduler"] is None):
             raise ValueError(
@@ -1212,8 +1305,16 @@ class WyckoffTrainer():
                 loss_dict = {}
                 if self.target == TargetClass.Scalar:
                     total_val_loss = raw_losses['val']
+                    metric_name = "nll" if self.scalar_loss == "censored" else "mae"
                     for name, loss in raw_losses.items():
-                        loss_dict[name] = {"mae": loss.item()}
+                        loss_dict[name] = {metric_name: loss.item()}
+                    if self.censored_diagnostics is not None:
+                        # The NLL moves with the fitted scale and cannot be read as an
+                        # error, so log the three quantities that can be: how often the
+                        # predicted minimum is above an observation (should be ~0), the
+                        # mean excess, and the scale the model thinks it has.
+                        loss_dict["val"].update(
+                            self.scalar_diagnostics(self.val_dataset, self.val_loader))
                 else:
                     total_val_loss = raw_losses['val'].sum()
                     for name, loss in raw_losses.items():
@@ -1425,7 +1526,8 @@ class WyckoffTrainer():
         Returns:
             A tuple (mean_predictions, all_predictions) where:
                 - mean_predictions is a tensor of shape [num_examples] with the average prediction across
-                  augmentation samples.
+                  augmentation samples. Under scalar_loss="censored" this is the location head,
+                  i.e. the estimate of min(E | gene), not of the energy of any one structure.
                 - all_predictions is a tensor of shape [augmentation_samples, num_examples] with raw
                   predictions per augmentation sample.
         """
@@ -1463,7 +1565,13 @@ class WyckoffTrainer():
             for _ in range(augmentation_samples):
                 start_tokens, cascade_tokens, _, padding_mask = \
                     prediction_dataset.get_augmented_data() # Defaults to all examples
-                preds = self.model(start_tokens, cascade_tokens, padding_mask, None).squeeze()
+                preds = self.model(start_tokens, cascade_tokens, padding_mask, None)
+                if self.scalar_loss == "censored":
+                    # The location column is the estimate of min(E | gene); the scale column
+                    # describes the spread above it and is not a prediction of the energy.
+                    preds, _ = self.criterion.split(preds.reshape(-1, self.criterion.n_outputs))
+                else:
+                    preds = preds.squeeze()
                 sample_predictions.append(preds)
             stacked_predictions = torch.stack(sample_predictions, dim=0)
             mean_predictions = stacked_predictions.mean(dim=0)

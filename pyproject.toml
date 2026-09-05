@@ -47,6 +47,7 @@ Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 wyformer-generate = "wyckoff_transformer.cli.generate:main"
 wyformer-cryspr   = "wyckoff_transformer.cli.relax:main"
 wyformer-protocol = "wyckoff_transformer.cli.protocol:main"
+wyformer-csp      = "wyckoff_transformer.cli.csp:main"
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
