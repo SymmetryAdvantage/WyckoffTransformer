@@ -1,2 +1,4 @@
 # It's too large for GitHub LFS
 lemat-bulk/
+# Derived tables; rebuilt by wyckoff_transformer.formula_energy.dataset
+formula_energy/
