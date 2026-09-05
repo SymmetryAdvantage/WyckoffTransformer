@@ -210,7 +210,7 @@ Fm-3m z=4.
 ### Where the cell size comes from
 
 `z` here is the crystallographic Z: the number of **reduced** formula units in
-the **conventional** cell. Conventional, not primitive, which is why rocksalt is
+the **conventional** cell. It is an output, not an input — see below. Conventional, not primitive, which is why rocksalt is
 Z=4 in Fm-3m though its primitive rhombohedral cell holds one formula unit --
 Wyckoff multiplicities are conventional-cell counts, so everything downstream
 has to be. Reduced, because Z is a property of the compound and not of how the
@@ -228,17 +228,49 @@ channel from the conditioning help: the constraint needs the same number.
 
 It is not free either, which is what makes it tractable. z has to satisfy the
 same reachability the decoder enforces, so `SpaceGroupCombinatorics.feasible_z`
-enumerates it per space group and `wyformer-csp` sweeps the result, up to
-`--max-z`. Centring does most of the pruning: every position of an F-centred
-group has a multiplicity divisible by four, so three quarters of the values are
-gone before any model is consulted. Scarce fixed positions do the rest — Pm-3m
-has exactly two 1-fold positions, so NaCl at z=2 would need both for one element
-and leave nothing for the other, and z=2 is duly absent.
+bounds it per space group. Centring does most of the pruning: every position of
+an F-centred group has a multiplicity divisible by four, so three quarters of
+the values are gone before any model is consulted. Scarce fixed positions do the
+rest — Pm-3m has exactly two 1-fold positions, so NaCl at z=2 would need both
+for one element and leave nothing for the other, and z=2 is duly absent.
+
+### The model chooses z, not the caller
+
+Enumerating z and decoding each value separately works, but it splits the
+relaxation budget evenly over cell sizes most of which are wrong: about 800
+(space group, z) pairs per formula against 230 space groups, so roughly 26,000
+candidate genes where 7,000 would do, each one a PyXtal reconstruction and a
+relaxation.
+
+So z is folded into the decoder instead. `ConstrainedDecoder.decode` takes a
+`CompositionRatio` -- the reduced formula, cell content left open -- and a
+placement is legal while *any* allowed z remains reachable, illegal only when it
+strands them all. `BeamState` therefore tracks what has been *placed* rather
+than what is owed, because what is owed is not known until the cell size is.
+
+Termination is what fixes z, and it becomes a decision rather than a
+consequence: STOP is offered exactly when the sites placed so far are a whole
+number of formula units, and masked otherwise. A state that is a valid cell at
+z=2 may still be extended towards z=4, and which the compound adopts is the
+model's call, taken against its own distribution. One pass per space group then
+returns candidates spread over z by model preference — decoding `NaCl` against
+the real backbone, Pm-3m puts 17 of 24 candidates at z=4 while Pnma puts 23 of
+24 at z=8 — and the budget falls 3.6x with the allocation no longer ours to get
+wrong.
 
 Ranking across z is sound because the regressor's target is a formation energy
 *per atom*, so a z=4 candidate and a z=8 one are on one scale. Passing `--z`
-explicitly narrows the enumeration rather than overriding it, so an impossible
-request is dropped rather than attempted.
+narrows which cell sizes a pass may end on rather than overriding feasibility,
+so an impossible request is dropped rather than attempted.
+
+One model cannot do this: a backbone trained with the composition conditioning's
+cell-size channel. That vector has to be built before the pass, and the size is
+not known until the model has chosen where to stop. Such a backbone falls back
+to one pass per z, through the same code path, and `wyformer-csp` says so on
+startup. Which is the argument for `composition_size_channel: false` on a model
+meant for CSP: the size channel tells the model the answer to the question the
+decoder is trying to let it answer. Leave it on for de novo generation, where
+asking for a cell of a given size is a meaningful request.
 
 ### `sample` or `beam`
 

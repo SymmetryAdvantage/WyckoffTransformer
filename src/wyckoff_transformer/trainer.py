@@ -147,6 +147,7 @@ class WyckoffTrainer():
     #: of the element vocabulary it is expressed over. Class attributes for the same
     #: reason as `scheduler_steps_per_batch`: every conditioning path reads them.
     composition_conditioning = False
+    composition_size_channel = True
     n_elements = None
 
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
@@ -193,6 +194,7 @@ class WyckoffTrainer():
         scalar_loss: str = "mse",
         censored_loss_args: Optional[dict] = None,
         composition_conditioning: bool = False,
+        composition_size_channel: bool = True,
         resume: bool = False,
     ):
         """
@@ -252,6 +254,11 @@ class WyckoffTrainer():
                 ('counters: {composition: elements}' under sequence_fields) and
                 CascadeTransformer_args.condition_dim to equal `self.condition_dim`, which
                 this constructor checks. See wyckoff_transformer.composition.
+            composition_size_channel: Include log1p of the cell's atom count in that
+                vector. Leave it on for de novo generation; turn it off for a model
+                meant for CSP, where the cell size is what the model is being asked to
+                choose and telling it the answer forces the decoder to work one z at a
+                time. See docs/csp_mode.md.
             resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
@@ -292,6 +299,7 @@ class WyckoffTrainer():
         self.scalar_loss = scalar_loss
         self.censored_diagnostics = None
         self.composition_conditioning = composition_conditioning
+        self.composition_size_channel = composition_size_channel
         self.n_elements = len(tokenisers["elements"]) if "elements" in tokenisers else None
         if composition_conditioning:
             if self.n_elements is None:
@@ -301,7 +309,8 @@ class WyckoffTrainer():
             # extra_fields, and the ragged counters the tokeniser stores are neither.
             for raw in (train_dataset, val_dataset, test_dataset):
                 if raw is not None:
-                    attach_composition_vector(raw, self.n_elements)
+                    attach_composition_vector(
+                        raw, self.n_elements, size_channel=composition_size_channel)
             extra_fields = (extra_fields or []) + [COMPOSITION_FIELD]
 
         if target == TargetClass.NextToken:
@@ -498,7 +507,8 @@ class WyckoffTrainer():
                     f"The model was built with condition_dim={declared}, but this run's "
                     f"conditioning is {self.condition_dim} wide "
                     f"({'scalar + ' if self.condition_feature else ''}"
-                    f"{composition_conditioning_dim(self.n_elements)} for the composition "
+                    f"{composition_conditioning_dim(self.n_elements, composition_size_channel)}"
+                    f" for the composition "
                     f"over {self.n_elements} element tokens). Set "
                     f"CascadeTransformer_args.condition_dim to {self.condition_dim}.")
     
@@ -574,7 +584,8 @@ class WyckoffTrainer():
         """
         width = 1 if self.condition_feature is not None else 0
         if self.composition_conditioning:
-            width += composition_conditioning_dim(self.n_elements)
+            width += composition_conditioning_dim(
+                self.n_elements, self.composition_size_channel)
         return width or None
 
 
@@ -757,7 +768,9 @@ class WyckoffTrainer():
         # config hardcode a number that silently rots when the vocabulary changes.
         trainer_args = config.model.WyckoffTrainer_args
         if trainer_args.get("composition_conditioning", False):
-            derived = composition_conditioning_dim(len(tokenisers["elements"]))
+            derived = composition_conditioning_dim(
+                len(tokenisers["elements"]),
+                trainer_args.get("composition_size_channel", True))
             if trainer_args.get("condition_feature") is not None:
                 derived += 1
             declared = config.model.CascadeTransformer_args.get("condition_dim")

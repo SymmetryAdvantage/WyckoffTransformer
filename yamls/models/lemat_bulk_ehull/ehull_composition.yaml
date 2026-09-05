@@ -11,8 +11,8 @@
 #   - CascadeTransformer_args.condition_dim is dropped, because it stops being a
 #     free choice: it is 1 for e_hull plus one column per element token plus one
 #     for the cell size, so it follows the dataset's vocabulary. from_config
-#     derives it (85 for lemat_bulk_ehull's 83 element tokens) and refuses a
-#     config that hardcodes a different number.
+#     derives it (84 for lemat_bulk_ehull's 83 element tokens, with the cell-size
+#     channel off) and refuses a config that hardcodes a different number.
 #
 # The tokeniser must emit the composition counters. lemat_bulk_ehull_sg_multiplicity
 # already carries `counters: {composition: elements}`, so no re-cache is needed.
@@ -45,6 +45,12 @@ model:
     condition_transform: log1p
     # The formula as a vector over the element vocabulary, concatenated after the scalar.
     composition_conditioning: true
+    # No cell-size channel. The conditioning is the chemistry only, so a CSP decode can
+    # span every z in one pass and let the model choose where to stop; with the channel
+    # on, the vector would have to be built before the pass and z would be back to being
+    # an input. Turn it on for a de novo model, where asking for a cell of a given size
+    # is a meaningful request. See docs/csp_mode.md.
+    composition_size_channel: false
     # LeMat-Bulk is ~4.2M structures, full-batch training is not an option.
     # Measured on an RTX 6000 Ada: per-step cost is dominated by kernel launches rather than
     # arithmetic for this 144k-parameter model, so throughput rises with batch size up to

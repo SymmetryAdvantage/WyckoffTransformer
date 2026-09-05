@@ -62,6 +62,10 @@ logger = logging.getLogger(__name__)
 #: rather than silently truncated.
 MAX_ATOMS_PER_ELEMENT = 256
 
+#: Default ceiling on formula units per conventional cell. Z above this is rare in the
+#: training sets and every extra value costs a target to check at every decoding step.
+DEFAULT_MAX_Z = 8
+
 #: Ceiling on nodes explored by the exact special-position search before it gives up
 #: and reports "feasible". Erring towards feasible only lets a doomed sequence run to
 #: the end, where it is dropped; erring the other way would forbid legal structures.
@@ -437,14 +441,63 @@ def _element_token(symbol: str, elements_tokeniser) -> int:
     raise KeyError(f"Element {symbol!r} is not in the model's vocabulary")
 
 
+@dataclass(frozen=True)
+class CompositionRatio:
+    """A reduced formula in element-token space, with the cell content left open.
+
+    `CompositionTarget` is a specific cell: ``Na4Cl4``. This is the compound:
+    ``NaCl``, whose cell content is ``z`` times these counts for some ``z`` the
+    space group can hold. Decoding against the ratio rather than against one
+    target is what lets a single pass span every ``z``, so the model's own
+    probability decides how the candidates are distributed over cell sizes
+    instead of a caller splitting the budget evenly across them.
+    """
+    symbols: Tuple[str, ...]
+    unit_counts: Tuple[int, ...]
+    element_tokens: Tuple[int, ...]
+
+    @classmethod
+    def for_formula(cls, formula: str, elements_tokeniser) -> "CompositionRatio":
+        symbols, counts, tokens = [], [], []
+        for symbol, count in sorted(reduce_formula(parse_formula(formula)).items()):
+            symbols.append(symbol)
+            counts.append(count)
+            tokens.append(_element_token(symbol, elements_tokeniser))
+        return cls(tuple(symbols), tuple(counts), tuple(tokens))
+
+    def counts_at(self, z: int) -> Tuple[int, ...]:
+        """The conventional-cell atom counts at ``z`` formula units."""
+        if z < 1:
+            raise ValueError(f"z must be at least 1, got {z}")
+        return tuple(count * z for count in self.unit_counts)
+
+    def target_at(self, z: int) -> CompositionTarget:
+        return CompositionTarget(self.symbols, self.counts_at(z), self.element_tokens)
+
+    def feasible_z(self, combinatorics: "SpaceGroupCombinatorics",
+                   max_sites: int, max_z: int) -> List[int]:
+        return combinatorics.feasible_z(self.unit_counts, max_sites, max_z)
+
+    def __str__(self) -> str:
+        return "".join(f"{s}{c if c > 1 else ''}" for s, c in zip(self.symbols, self.unit_counts))
+
+
 @dataclass
 class BeamState:
-    """One partially decoded gene under an exact composition constraint."""
-    deficits: List[int]
+    """One partially decoded gene, against a ratio rather than one cell content.
+
+    Carries what has been *placed* rather than what is owed, because what is owed
+    depends on which ``z`` the sequence ends up at, and that is not decided until
+    the model emits STOP.
+    """
+    placed: Tuple[int, ...]
     used_fixed: frozenset = frozenset()
     rows: List[Tuple[int, int, int]] = field(default_factory=list)
     log_prob: float = 0.0
-    finished: bool = False
+
+    @classmethod
+    def empty(cls, n_elements: int) -> "BeamState":
+        return cls(placed=(0,) * n_elements)
 
     @property
     def n_sites(self) -> int:
@@ -452,45 +505,74 @@ class BeamState:
 
     def place(self, element_index: int, position: WyckoffPosition,
               element_token: int, log_prob: float) -> "BeamState":
-        deficits = list(self.deficits)
-        deficits[element_index] -= position.multiplicity
+        placed = list(self.placed)
+        placed[element_index] += position.multiplicity
         used = self.used_fixed
         if not position.reusable:
             used = used | {(position.ss_token, position.enum_token)}
         return BeamState(
-            deficits=deficits,
+            placed=tuple(placed),
             used_fixed=used,
             rows=self.rows + [(element_token, position.ss_token, position.enum_token)],
-            log_prob=self.log_prob + log_prob,
-            finished=all(d == 0 for d in deficits),
-        )
+            log_prob=self.log_prob + log_prob)
+
+    def completed_z(self, targets: Dict[int, Tuple[int, ...]]) -> Optional[int]:
+        """The ``z`` this state exactly realises, if any.
+
+        At most one can match: the targets are distinct multiples of one ratio.
+        A match makes STOP legal; it does not force it, because a state that is
+        a valid cell at z=2 may still be extended towards z=4, and which of those
+        the compound actually adopts is the model's call.
+        """
+        for z, counts in targets.items():
+            if self.placed == counts:
+                return z
+        return None
+
+    def _survives(
+        self,
+        placed: Tuple[int, ...],
+        used: frozenset,
+        targets: Dict[int, Tuple[int, ...]],
+        combinatorics: SpaceGroupCombinatorics,
+        slots_left: int,
+    ) -> bool:
+        """Whether *some* allowed z is still reachable from this placement.
+
+        The union over z is the whole point: a placement is legal if it strands
+        no more than some of the cell sizes, and only illegal when it strands
+        them all.
+        """
+        for counts in targets.values():
+            deficits = [want - have for want, have in zip(counts, placed)]
+            if all(d == 0 for d in deficits):
+                return True
+            if combinatorics.can_complete(deficits, used, slots_left):
+                return True
+        return False
 
     def legal_positions(
         self,
         element_index: int,
         combinatorics: SpaceGroupCombinatorics,
         max_sites: int,
+        targets: Dict[int, Tuple[int, ...]],
     ) -> List[WyckoffPosition]:
-        """Positions this element may take next without stranding the composition.
-
-        A position is legal when it does not overshoot the element's deficit, is
-        still available if it is a fixed one, and leaves a state that can still be
-        completed within the remaining sequence slots.
-        """
-        owed = self.deficits[element_index]
+        """Positions this element may take next without stranding every z."""
         slots_left = max_sites - self.n_sites - 1
+        largest = max(counts[element_index] for counts in targets.values())
         legal = []
         for position in combinatorics.positions:
-            if position.multiplicity > owed:
+            if self.placed[element_index] + position.multiplicity > largest:
                 continue
             if not position.reusable and (position.ss_token, position.enum_token) in self.used_fixed:
                 continue
-            deficits = list(self.deficits)
-            deficits[element_index] = owed - position.multiplicity
+            placed = list(self.placed)
+            placed[element_index] += position.multiplicity
             used = self.used_fixed
             if not position.reusable:
                 used = used | {(position.ss_token, position.enum_token)}
-            if combinatorics.can_complete(deficits, used, slots_left):
+            if self._survives(tuple(placed), used, targets, combinatorics, slots_left):
                 legal.append(position)
         return legal
 
@@ -498,20 +580,23 @@ class BeamState:
         self,
         combinatorics: SpaceGroupCombinatorics,
         max_sites: int,
+        targets: Dict[int, Tuple[int, ...]],
     ) -> List[int]:
         """Indices of elements that can legally receive the next site."""
-        return [index for index, owed in enumerate(self.deficits)
-                if owed > 0 and self.legal_positions(index, combinatorics, max_sites)]
-
+        return [index for index in range(len(self.placed))
+                if self.legal_positions(index, combinatorics, max_sites, targets)]
 
 
 @dataclass
 class CSPCandidate:
-    """A completed gene with the target composition."""
+    """A completed gene with a composition proportional to the target formula."""
     sg_number: int
     rows: Tuple[Tuple[int, int, int], ...]
     log_prob: float
     n_sites: int
+    #: Formula units in the conventional cell, chosen by the model rather than
+    #: supplied: the site at which it emitted STOP is what fixed it.
+    z: int = 1
     #: Predicted ``min(E | gene)`` from the censored regressor; None until ranked.
     predicted_energy: Optional[float] = None
 
@@ -724,7 +809,9 @@ class ConstrainedDecoder:
         self,
         start: Tensor,
         sg_number: int,
-        target: CompositionTarget,
+        ratio: CompositionRatio,
+        allowed_z: Optional[Sequence[int]] = None,
+        max_z: int = DEFAULT_MAX_Z,
         n_candidates: int = 64,
         strategy: str = "sample",
         beam_width: Optional[int] = None,
@@ -732,99 +819,143 @@ class ConstrainedDecoder:
         cond: Optional[Tensor] = None,
         generator: Optional[torch.Generator] = None,
     ) -> List[CSPCandidate]:
-        """Decode genes with exactly `target`'s composition in one space group.
+        """Decode genes whose composition is proportional to `ratio`, in one space group.
+
+        One pass spans every cell size the space group can hold. The mask keeps a
+        placement legal while *any* allowed ``z`` remains reachable, and STOP is
+        offered exactly when the sites placed so far are a whole number of formula
+        units -- so the model chooses where to stop, and the candidates come out
+        distributed over ``z`` by its own probability rather than by an even split
+        of the caller's budget.
 
         Args:
             start: The space group start token, shape ``[1]`` or ``[1, d]``.
             sg_number: The real space group number the start token encodes.
-            target: The conventional-cell composition every gene must have.
+            ratio: The reduced formula every gene must be a whole multiple of.
+            allowed_z: Cell sizes to consider. Defaults to every one this space
+                group can hold up to `max_z`; a list narrows that, and is itself
+                filtered by feasibility. A single value reproduces exact-target
+                decoding, which is what a backbone conditioned on the cell size
+                needs, since that conditioning has to be built before the pass.
+            max_z: Ceiling for the default enumeration.
             n_candidates: Genes to return (``sample``), or paths to carry
                 (``beam``, where it also defaults `beam_width`).
             strategy: ``"sample"`` or ``"beam"``.
             beam_width: Paths kept per cascade field under ``beam``.
             temperature: Softmax temperature; below 1 sharpens.
-            cond: Conditioning vector, shape ``[1, condition_dim]``. For CSP this
-                carries ``Delta_E_polymorph = 0`` or the hull-target energy.
+            cond: Conditioning vector, shape ``[1, condition_dim]``.
             generator: RNG for reproducible sampling.
 
         Returns:
-            Completed candidates, most likely first.  Every one has the target
-            composition; the list is shorter than requested only if the space
-            group cannot express it at all.
+            Completed candidates, most likely first, each carrying the ``z`` the
+            model settled on. Empty when the space group cannot express the
+            formula at any allowed cell size.
         """
         if strategy not in ("sample", "beam"):
             raise ValueError(f"Unknown strategy: {strategy}")
+        if self.stops is None or "elements" not in self.stops:
+            raise ValueError(
+                "CSP decoding needs the elements STOP token: it is how the model says "
+                "the cell is complete, and so how z gets chosen.")
         combinatorics = self.combinatorics(sg_number, start)
         width = beam_width or n_candidates
         self.model.eval()
 
-        if not combinatorics.can_complete(list(target.counts), frozenset(), self.max_sequence_len):
-            logger.info("Space group %d cannot build %s", sg_number, target)
+        feasible = combinatorics.feasible_z(
+            ratio.unit_counts, self.max_sequence_len, max_z)
+        if allowed_z is not None:
+            requested = set(allowed_z)
+            feasible = [z for z in feasible if z in requested]
+        if not feasible:
+            logger.info("Space group %d cannot build %s at any allowed z", sg_number, ratio)
             return []
+        targets = {z: ratio.counts_at(z) for z in feasible}
+        logger.debug("Space group %d, %s: z in %s", sg_number, ratio, sorted(targets))
 
-        live = [BeamState(deficits=list(target.counts))
+        stop_token = int(self.stops["elements"])
+        live = [BeamState.empty(len(ratio.unit_counts))
                 for _ in range(n_candidates if strategy == "sample" else 1)]
-        finished: List[BeamState] = []
+        finished: List[Tuple[BeamState, int]] = []
 
         for site in range(self.max_sequence_len):
             if not live:
                 break
             proposals = self._choose_elements(
-                start, live, site, target, combinatorics, temperature, cond, strategy,
-                width, generator)
+                start, live, site, ratio, targets, stop_token, combinatorics, temperature,
+                cond, strategy, width, generator)
+            for proposal in proposals:
+                if proposal.element_token == stop_token:
+                    # STOP is only ever offered on a state that is a whole number of
+                    # formula units, so completed_z is never None here.
+                    z = proposal.state.completed_z(targets)
+                    stopped = BeamState(
+                        placed=proposal.state.placed, used_fixed=proposal.state.used_fixed,
+                        rows=proposal.state.rows,
+                        log_prob=proposal.state.log_prob + proposal.log_prob_delta)
+                    finished.append((stopped, z))
+            proposals = [p for p in proposals if p.element_token != stop_token]
             proposals = self._choose_field(
                 start, proposals, site, "site_symmetries", combinatorics, temperature, cond,
-                strategy, width, generator)
+                strategy, width, generator, targets)
             proposals = self._choose_field(
                 start, proposals, site, "sites_enumeration", combinatorics, temperature, cond,
-                strategy, width, generator)
+                strategy, width, generator, targets)
             live = []
             for proposal in proposals:
                 position = combinatorics.by_key[(proposal.ss_token, proposal.enum_token)]
-                state = proposal.state.place(
+                live.append(proposal.state.place(
                     proposal.element_index, position, proposal.element_token,
-                    proposal.log_prob_delta)
-                (finished if state.finished else live).append(state)
+                    proposal.log_prob_delta))
             if strategy == "beam" and len(live) > width:
                 live.sort(key=lambda s: s.log_prob, reverse=True)
                 live = live[:width]
 
         if live:
-            logger.info("%d paths hit the %d-site cap without completing %s in space group %d",
-                        len(live), self.max_sequence_len, target, sg_number)
+            logger.debug("%d paths hit the %d-site cap without completing %s in space group %d",
+                         len(live), self.max_sequence_len, ratio, sg_number)
         candidates = [
             CSPCandidate(sg_number=sg_number, rows=tuple(state.rows),
-                         log_prob=state.log_prob, n_sites=state.n_sites)
-            for state in finished]
+                         log_prob=state.log_prob, n_sites=state.n_sites, z=z)
+            for state, z in finished]
         candidates.sort(key=lambda c: c.log_prob, reverse=True)
         return candidates[:n_candidates]
 
     def _choose_elements(
-        self, start, live, site, target, combinatorics, temperature, cond, strategy,
-        width, generator) -> List["_Proposal"]:
-        """Pick which element receives the site, over elements that can still take one."""
+        self, start, live, site, ratio, targets, stop_token, combinatorics, temperature,
+        cond, strategy, width, generator) -> List["_Proposal"]:
+        """Pick which element receives the site, or STOP if the cell is complete.
+
+        STOP is offered exactly when what has been placed is a whole number of
+        formula units. That makes ending the sequence a decision the model takes
+        against its own distribution, and since where it ends is what fixes z,
+        the model is what chooses the cell size.
+        """
         seeds = [_Proposal(state=state) for state in live]
         log_probs = self._stage_log_probs(
             start, seeds, site, "elements", combinatorics, temperature, cond)
-        options = []
+        options, index_maps = [], []
         for row, state in enumerate(live):
-            allowed_indices = state.live_elements(combinatorics, self.max_sequence_len)
-            if not allowed_indices:
+            allowed_indices = state.live_elements(
+                combinatorics, self.max_sequence_len, targets)
+            allowed_tokens = [ratio.element_tokens[i] for i in allowed_indices]
+            index_map = dict(zip(allowed_tokens, allowed_indices))
+            if state.completed_z(targets) is not None:
+                allowed_tokens = allowed_tokens + [stop_token]
+            if not allowed_tokens:
                 continue
-            allowed_tokens = [target.element_tokens[i] for i in allowed_indices]
             masked = self._masked(log_probs[row], allowed_tokens)
             options.append((row, state, allowed_indices, allowed_tokens, masked))
+            index_maps.append(index_map)
         return self._resolve(
             options, strategy, width, generator,
             build=lambda state, token, index_map, delta: _Proposal(
-                state=state, element_index=index_map[token], element_token=token,
+                state=state, element_index=index_map.get(token), element_token=token,
                 log_prob_delta=delta),
-            index_maps=[dict(zip(tokens, indices))
-                        for _, _, indices, tokens, _ in options])
+            index_maps=index_maps)
 
     def _choose_field(
         self, start, proposals, site, field, combinatorics, temperature, cond, strategy,
-        width, generator) -> List["_Proposal"]:
+        width, generator, targets) -> List["_Proposal"]:
         """Pick a site symmetry, then an enumeration, among positions still legal."""
         if not proposals:
             return []
@@ -833,7 +964,7 @@ class ConstrainedDecoder:
         options = []
         for row, proposal in enumerate(proposals):
             legal = proposal.state.legal_positions(
-                proposal.element_index, combinatorics, self.max_sequence_len)
+                proposal.element_index, combinatorics, self.max_sequence_len, targets)
             if field == "sites_enumeration":
                 legal = [p for p in legal if p.ss_token == proposal.ss_token]
             allowed = sorted({p.ss_token if field == "site_symmetries" else p.enum_token

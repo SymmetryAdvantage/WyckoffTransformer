@@ -16,6 +16,7 @@ Backbone
 9. Inverse cascade - sample elements, then Wyckoffs
 10. Condition on E - min(E, polymorphs); gene-level label implemented, backbone untrained
 11. Condition on the composition - implemented, CPU pilot only (yamls/models/lemat_bulk_ehull/ehull_composition.yaml)
+12. CSP decoder picks z itself - union-over-z decoding, 3.6x less relaxation budget
 
 Dataset
 1. Dataset selection: full, deduplicated Wyckoff genes, E_hull <= 0.1 eV

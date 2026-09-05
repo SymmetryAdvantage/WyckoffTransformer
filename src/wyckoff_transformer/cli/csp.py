@@ -19,8 +19,9 @@ import gzip
 import json
 import logging
 import time
+from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import torch
 from omegaconf import OmegaConf
@@ -28,7 +29,7 @@ from omegaconf import OmegaConf
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.composition import composition_vector, describe
 from wyckoff_transformer.csp import (
-    CompositionTarget,
+    CompositionRatio,
     ConstrainedDecoder,
     candidates_to_pyxtal,
     rank_by_predicted_minimum,
@@ -96,16 +97,17 @@ def start_tensor_for(trainer: WyckoffTrainer, sg_number: int,
 
 def build_condition_vector(
     backbone: WyckoffTrainer,
-    target: CompositionTarget,
+    ratio: CompositionRatio,
+    z: Optional[int],
     scalar_cond: Optional[torch.Tensor],
     device: torch.device,
 ) -> Optional[torch.Tensor]:
     """Assemble what the backbone's AdaLN expects, for one target composition.
 
     Mirrors `WyckoffTrainer.build_cond`, which does the same job from a dataset:
-    the scalar first, then the composition. A backbone that was not trained with
-    composition conditioning gets only the scalar, and the formula reaches it as
-    a decoding constraint alone.
+    the scalar first, then the composition. `z` is needed only when the model was
+    trained with the cell-size channel; without it the conditioning is the ratio
+    alone and one vector serves every cell size.
     """
     parts = []
     if backbone.condition_feature is not None:
@@ -115,11 +117,12 @@ def build_condition_vector(
                 "pass --condition-value.")
         parts.append(scalar_cond)
     if backbone.composition_conditioning:
+        counts = ratio.counts_at(z if z is not None else 1)
         parts.append(composition_vector(
-            target.element_tokens, target.counts, backbone.n_elements,
-            device=device).unsqueeze(0))
-        logger.info("Conditioning on composition %s: %s", target,
-                    ", ".join(describe(parts[-1][0], backbone.tokenisers["elements"])))
+            ratio.element_tokens, counts, backbone.n_elements, device=device,
+            size_channel=backbone.composition_size_channel).unsqueeze(0))
+        logger.debug("Conditioning on %s: %s", ratio,
+                     ", ".join(describe(parts[-1][0], backbone.tokenisers["elements"])))
     if not parts:
         return None
     total = torch.cat(parts, dim=-1)
@@ -129,6 +132,24 @@ def build_condition_vector(
             f"Built a {total.shape[-1]}-wide conditioning vector for a model expecting "
             f"{declared}.")
     return total
+
+
+def z_groups_for(backbone: WyckoffTrainer, feasible: List[int]) -> List[List[int]]:
+    """How the cell sizes are split across decoding passes.
+
+    One group, holding every feasible z, is the point of union-over-z decoding:
+    a single pass spans them all and the model's own probability decides how the
+    candidates land, instead of the caller splitting a budget evenly over sizes
+    most of which are wrong.
+
+    A backbone trained with the cell-size conditioning channel cannot do that.
+    Its conditioning vector has to be built before the pass, and the size is not
+    known until the model has chosen where to stop, so such a model gets one pass
+    per z -- the old behaviour, reached through the same code path.
+    """
+    if backbone.composition_conditioning and backbone.composition_size_channel:
+        return [[z] for z in feasible]
+    return [feasible]
 
 
 def run_csp(
@@ -149,12 +170,12 @@ def run_csp(
 ) -> List[dict]:
     """Decode and rank candidates for one formula, over every space group and z.
 
-    `z_values` of None enumerates the formula-unit counts each space group can
-    actually hold, up to `max_z`; a list restricts that enumeration rather than
-    overriding it, so an impossible request is dropped rather than attempted.
+    `z_values` of None lets each space group offer every cell size it can hold up
+    to `max_z`; a list narrows that rather than overriding it, so an impossible
+    request is dropped rather than attempted.
 
-    Sampling repeats genes wherever a space group has few legal ones -- at z=1 in a
-    high-symmetry group there may be only a handful -- and a repeat costs a
+    Sampling repeats genes wherever a space group has few legal ones -- at small z
+    in a high-symmetry group there may be only a handful -- and a repeat costs a
     relaxation without buying a structure, so identical genes are collapsed unless
     `deduplicate` is False. Two genes are the same when they occupy the same
     Wyckoff positions with the same elements; the decoding order is not part of
@@ -176,40 +197,25 @@ def run_csp(
         scalar_cond = backbone.transform_condition(
             torch.full((1, 1), condition_value, dtype=torch.float32, device=device))
 
+    ratio = CompositionRatio.for_formula(formula, backbone.tokenisers["elements"])
     generator = torch.Generator(device="cpu").manual_seed(seed) if seed is not None else None
     scored: List[tuple] = []
     seen: set = set()
-    # Atoms per formula unit, in the order CompositionTarget puts its columns.
-    unit = CompositionTarget.for_formula(formula, 1, backbone.tokenisers["elements"])
-    targets: Dict[int, CompositionTarget] = {}
-    conds: Dict[int, Optional[torch.Tensor]] = {}
+    passes = 0
     for sg_number in space_groups:
         start = start_tensor_for(backbone, sg_number, device)
         combinatorics = decoder.combinatorics(sg_number, start)
-        # z is part of what CSP predicts, not an input, so it is enumerated over what
-        # this space group can actually hold rather than guessed by the caller.
-        allowed = combinatorics.feasible_z(
-            unit.counts, backbone.max_sequence_length, max_z)
+        feasible = ratio.feasible_z(combinatorics, backbone.max_sequence_length, max_z)
         if z_values is not None:
-            requested = set(z_values)
-            skipped = sorted(requested - set(allowed))
-            allowed = [z for z in allowed if z in requested]
-            if skipped:
-                logger.debug("Space group %d cannot hold %s at z in %s",
-                             sg_number, formula, skipped)
-        if not allowed:
+            feasible = [z for z in feasible if z in set(z_values)]
+        if not feasible:
             continue
-        logger.info("Space group %3d: z in %s", sg_number, allowed)
-        for z in allowed:
-            if z not in targets:
-                targets[z] = CompositionTarget.for_formula(
-                    formula, z, backbone.tokenisers["elements"])
-                # The composition vector carries the cell size, which z sets.
-                conds[z] = build_condition_vector(
-                    backbone, targets[z], scalar_cond, device)
-            target, cond = targets[z], conds[z]
+        for group in z_groups_for(backbone, feasible):
+            passes += 1
+            cond = build_condition_vector(
+                backbone, ratio, group[0] if len(group) == 1 else None, scalar_cond, device)
             candidates = decoder.decode(
-                start=start, sg_number=sg_number, target=target,
+                start=start, sg_number=sg_number, ratio=ratio, allowed_z=group, max_z=max_z,
                 n_candidates=n_candidates, strategy=strategy, beam_width=beam_width,
                 temperature=temperature, cond=cond, generator=generator)
             if not candidates:
@@ -217,8 +223,9 @@ def run_csp(
             if regressor is not None:
                 candidates = rank_by_predicted_minimum(
                     candidates, regressor, start, combinatorics)
-            logger.info("  z=%d: %d candidates%s", z,
-                        len(candidates),
+            by_z = Counter(candidate.z for candidate in candidates)
+            logger.info("Space group %3d: %d candidates, z %s%s", sg_number, len(candidates),
+                        dict(sorted(by_z.items())),
                         "" if regressor is None else
                         f", best predicted {candidates[0].predicted_energy:.4f} eV/atom")
             for candidate, structure in zip(
@@ -234,13 +241,15 @@ def run_csp(
                     seen.add(fingerprint)
                 structure = dict(structure)
                 structure["csp"] = {
-                    "formula": formula, "z": z, "space_group": sg_number,
+                    "formula": formula, "z": candidate.z, "space_group": sg_number,
                     "log_prob": candidate.log_prob, "n_sites": candidate.n_sites,
                     "predicted_energy": candidate.predicted_energy,
                 }
                 scored.append((candidate, structure))
 
-    # Rank across space groups too: which setting this formula adopts is the question.
+    logger.info("%d decoding passes over %d space groups", passes, len(space_groups))
+    # Rank across space groups and cell sizes too: which of them the formula adopts
+    # is the question. Comparable because the regressor's target is per atom.
     if regressor is not None:
         scored.sort(key=lambda item: item[0].predicted_energy)
     else:
@@ -324,6 +333,9 @@ def main():
     if backbone.composition_conditioning:
         print("--- Backbone is conditioned on the composition; the formula is an input, "
               "not only a decoding constraint ---")
+        if backbone.composition_size_channel:
+            print("--- It was trained with the cell-size channel, so z is decoded one "
+                  "value at a time rather than in a single pass ---")
     else:
         print("--- Backbone is not composition-conditioned; the formula enters as a "
               "decoding constraint only ---")

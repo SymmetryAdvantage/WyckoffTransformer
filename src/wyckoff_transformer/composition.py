@@ -57,9 +57,9 @@ COMPOSITION_FIELD = "composition_vector"
 COMPOSITION_SOURCE_FIELDS = ("composition_tokens", "composition_counts")
 
 
-def composition_conditioning_dim(n_elements: int) -> int:
+def composition_conditioning_dim(n_elements: int, size_channel: bool = True) -> int:
     """Width of the vector `composition_vector` produces for a given vocabulary."""
-    return n_elements + COMPOSITION_EXTRA_CHANNELS
+    return n_elements + (COMPOSITION_EXTRA_CHANNELS if size_channel else 0)
 
 
 def composition_vector(
@@ -67,14 +67,22 @@ def composition_vector(
     counts: Sequence[float] | Tensor,
     n_elements: int,
     device: Optional[torch.device] = None,
+    size_channel: bool = True,
 ) -> Tensor:
-    """One composition as ``[n_elements + 1]``: element fractions, then log1p(size).
+    """One composition as element fractions, optionally then log1p(size).
 
     Args:
         element_tokens: Element token ids present in the composition.
         counts: Atoms of each, in the same order. Conventional-cell counts.
         n_elements: Size of the element vocabulary, service tokens included.
         device: Where to build the tensor.
+        size_channel: Append log1p of the total atom count. Right for de novo
+            generation, where asking for a cell of a given size is meaningful.
+            Wrong for CSP, where the cell size is what the model is being asked
+            to choose: `csp.ConstrainedDecoder` decides ``z`` by where the model
+            emits STOP, which is after the conditioning has already been built,
+            so a model trained with this channel has to be decoded one ``z`` at a
+            time and cannot spread its own probability over the alternatives.
 
     Raises:
         ValueError: on a token outside the vocabulary, a non-positive count, or
@@ -95,13 +103,14 @@ def composition_vector(
     if bool((amounts <= 0).any()):
         raise ValueError(f"Non-positive atom count in {amounts.tolist()}")
 
-    vector = torch.zeros(composition_conditioning_dim(n_elements),
+    vector = torch.zeros(composition_conditioning_dim(n_elements, size_channel),
                          dtype=torch.float32, device=device)
     total = amounts.sum()
     # index_add rather than assignment: a composition should never list an element
     # twice, but if a caller's parser does, summing is the sane reading.
     vector[:n_elements].index_add_(0, tokens, amounts / total)
-    vector[n_elements] = torch.log1p(total)
+    if size_channel:
+        vector[n_elements] = torch.log1p(total)
     return vector
 
 
@@ -110,8 +119,9 @@ def composition_vectors(
     counts: Sequence[Sequence[float] | Tensor],
     n_elements: int,
     device: Optional[torch.device] = None,
+    size_channel: bool = True,
 ) -> Tensor:
-    """`composition_vector` over a whole split, into ``[N, n_elements + 1]``.
+    """`composition_vector` over a whole split, into one dense block.
 
     The tokeniser stores compositions as one ragged tensor per structure, since
     different compounds have different numbers of elements. This is where they
@@ -122,7 +132,8 @@ def composition_vectors(
             f"{len(element_tokens)} compositions against {len(counts)} count vectors")
     if not element_tokens:
         raise ValueError("No compositions given")
-    rows = [composition_vector(tokens, amounts, n_elements, device=device)
+    rows = [composition_vector(tokens, amounts, n_elements, device=device,
+                               size_channel=size_channel)
             for tokens, amounts in zip(element_tokens, counts)]
     return torch.stack(rows)
 
@@ -132,6 +143,7 @@ def attach_composition_vector(
     n_elements: int,
     device: Optional[torch.device] = None,
     field: str = COMPOSITION_FIELD,
+    size_channel: bool = True,
 ) -> Dict:
     """Add the densified composition to a split's data dict, in place.
 
@@ -152,7 +164,8 @@ def attach_composition_vector(
             "'counters: {composition: elements}' under sequence_fields in the "
             "tokeniser config and re-cache the dataset.")
     data[field] = composition_vectors(
-        data["composition_tokens"], data["composition_counts"], n_elements, device=device)
+        data["composition_tokens"], data["composition_counts"], n_elements, device=device,
+        size_channel=size_channel)
     return data
 
 
@@ -160,6 +173,7 @@ def composition_vector_for_formula(
     formula_counts: Dict[str, float],
     elements_tokeniser,
     device: Optional[torch.device] = None,
+    size_channel: bool = True,
 ) -> Tensor:
     """The conditioning vector for a formula given as element symbols to counts.
 
@@ -171,7 +185,8 @@ def composition_vector_for_formula(
 
     tokens = [_element_token(symbol, elements_tokeniser) for symbol in formula_counts]
     return composition_vector(
-        tokens, list(formula_counts.values()), len(elements_tokeniser), device=device)
+        tokens, list(formula_counts.values()), len(elements_tokeniser), device=device,
+        size_channel=size_channel)
 
 
 def describe(vector: Tensor, elements_tokeniser) -> List[str]:
@@ -182,5 +197,6 @@ def describe(vector: Tensor, elements_tokeniser) -> List[str]:
     for index in torch.nonzero(vector[:n_elements]).reshape(-1).tolist():
         symbol = str(to_token[index]) if to_token is not None else f"#{index}"
         parts.append(f"{symbol}={vector[index]:.3f}")
-    parts.append(f"log1p(atoms)={vector[n_elements]:.3f}")
+    if vector.shape[-1] > n_elements:
+        parts.append(f"log1p(atoms)={vector[n_elements]:.3f}")
     return parts

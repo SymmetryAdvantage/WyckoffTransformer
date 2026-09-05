@@ -12,6 +12,7 @@ import unittest
 import torch
 
 from wyckoff_transformer.csp import (
+    CompositionRatio,
     CompositionTarget,
     ConstrainedDecoder,
     CSPCandidate,
@@ -239,10 +240,12 @@ class _UniformModel(torch.nn.Module):
         return torch.zeros(start.shape[0], self.sizes[cascade_index])
 
 
+#: Service tokens sit above every position token in the stub vocabulary.
 def _decoder_for(sg_number, max_sequence_len=8, max_atoms=64):
     """A decoder whose tables are injected, so no tokenisers are needed."""
     combinatorics = _combinatorics(sg_number, max_atoms=max_atoms)
-    vocabulary = max(max(p.ss_token, p.enum_token) for p in combinatorics.positions) + 2
+    vocabulary = max(max(p.ss_token, p.enum_token) for p in combinatorics.positions) + 4
+    stop, mask = vocabulary - 2, vocabulary - 1
     cascade_order = ("elements", "site_symmetries", "sites_enumeration")
     decoder = ConstrainedDecoder(
         model=_UniformModel([vocabulary] * 3),
@@ -250,12 +253,19 @@ def _decoder_for(sg_number, max_sequence_len=8, max_atoms=64):
         cascade_is_target={name: True for name in cascade_order},
         tokenisers={"elements": None, "site_symmetries": None, "sites_enumeration": None},
         token_engineers={},
-        masks={name: vocabulary - 1 for name in cascade_order},
-        stops=None,
+        masks={name: mask for name in cascade_order},
+        stops={name: stop for name in cascade_order},
         max_sequence_len=max_sequence_len,
         device=torch.device("cpu"))
     decoder._combinatorics[sg_number] = combinatorics
     return decoder, combinatorics
+
+
+def _ratio(unit_counts, tokens):
+    return CompositionRatio(
+        symbols=tuple(f"E{i}" for i in range(len(unit_counts))),
+        unit_counts=tuple(unit_counts),
+        element_tokens=tuple(tokens))
 
 
 def _target(counts, tokens):
@@ -265,45 +275,48 @@ def _target(counts, tokens):
         element_tokens=tuple(tokens))
 
 
-def _composition_of(candidate, combinatorics, target):
+def _composition_of(candidate, combinatorics, ratio):
     """Atoms per element token in a decoded gene."""
-    totals = {token: 0 for token in target.element_tokens}
+    totals = {token: 0 for token in ratio.element_tokens}
     for element, ss, enum in candidate.rows:
         totals[element] += combinatorics.by_key[(ss, enum)].multiplicity
     return totals
 
 
 class TestConstrainedDecoding(unittest.TestCase):
-    def _check_all_on_target(self, sg_number, counts, **kwargs):
+    def _check_all_on_target(self, sg_number, unit_counts, z=None, **kwargs):
         decoder, combinatorics = _decoder_for(sg_number)
         # Element tokens must be distinct and inside the stub's vocabulary.
-        target = _target(counts, tuple(range(len(counts))))
+        ratio = _ratio(unit_counts, tuple(range(len(unit_counts))))
         candidates = decoder.decode(
             start=torch.zeros(1, dtype=torch.int64), sg_number=sg_number,
-            target=target, **kwargs)
-        self.assertGreater(len(candidates), 0, f"nothing decoded for {counts} in {sg_number}")
+            ratio=ratio, allowed_z=z, **kwargs)
+        self.assertGreater(len(candidates), 0,
+                           f"nothing decoded for {unit_counts} in {sg_number}")
         for candidate in candidates:
+            # Each gene must be the formula at whichever z the model stopped on.
             self.assertEqual(
-                _composition_of(candidate, combinatorics, target),
-                dict(zip(target.element_tokens, target.counts)))
+                _composition_of(candidate, combinatorics, ratio),
+                dict(zip(ratio.element_tokens, ratio.counts_at(candidate.z))))
         return candidates
 
     def test_sampling_always_hits_the_target_composition(self):
         torch.manual_seed(0)
-        self._check_all_on_target(225, [4, 8], n_candidates=32, strategy="sample")
+        self._check_all_on_target(225, [1, 2], z=[4], n_candidates=32, strategy="sample")
 
     def test_beam_always_hits_the_target_composition(self):
         torch.manual_seed(0)
         self._check_all_on_target(
-            62, [4, 4, 12], n_candidates=16, strategy="beam", beam_width=16)
+            62, [1, 1, 3], z=[4], n_candidates=16, strategy="beam", beam_width=16)
 
     def test_single_element_composition(self):
         torch.manual_seed(0)
-        self._check_all_on_target(194, [4], n_candidates=8, strategy="sample")
+        self._check_all_on_target(194, [1], z=[4], n_candidates=8, strategy="sample")
 
     def test_low_symmetry_group_with_one_multiplicity(self):
         torch.manual_seed(0)
-        candidates = self._check_all_on_target(1, [3], n_candidates=4, strategy="sample")
+        candidates = self._check_all_on_target(
+            1, [3], z=[1], n_candidates=4, strategy="sample")
         # P1's only position is 1a, with dof, so three atoms means exactly three sites.
         for candidate in candidates:
             self.assertEqual(candidate.n_sites, 3)
@@ -311,10 +324,10 @@ class TestConstrainedDecoding(unittest.TestCase):
     def test_fixed_positions_are_never_reused(self):
         torch.manual_seed(0)
         decoder, combinatorics = _decoder_for(221)
-        target = _target([2, 6], (0, 1))
+        ratio = _ratio([1, 3], (0, 1))
         for candidate in decoder.decode(
                 start=torch.zeros(1, dtype=torch.int64), sg_number=221,
-                target=target, n_candidates=48, strategy="sample"):
+                ratio=ratio, allowed_z=[2], n_candidates=48, strategy="sample"):
             occupied = [(ss, enum) for _, ss, enum in candidate.rows
                         if not combinatorics.by_key[(ss, enum)].reusable]
             self.assertEqual(len(occupied), len(set(occupied)),
@@ -325,23 +338,23 @@ class TestConstrainedDecoding(unittest.TestCase):
         decoder, _ = _decoder_for(225)
         self.assertEqual(
             decoder.decode(start=torch.zeros(1, dtype=torch.int64), sg_number=225,
-                           target=_target([1], (0,)), n_candidates=8),
+                           ratio=_ratio([1], (0,)), allowed_z=[1], n_candidates=8),
             [])
 
     def test_composition_too_large_for_the_site_budget_returns_nothing(self):
         decoder, _ = _decoder_for(1, max_sequence_len=3)
         self.assertEqual(
             decoder.decode(start=torch.zeros(1, dtype=torch.int64), sg_number=1,
-                           target=_target([5], (0,)), n_candidates=4),
+                           ratio=_ratio([5], (0,)), allowed_z=[1], n_candidates=4),
             [])
 
     def test_sampling_is_reproducible_and_diverse(self):
         decoder, _ = _decoder_for(62)
-        target = _target([4, 8], (0, 1))
+        ratio = _ratio([1, 2], (0, 1))
         def draw(seed):
             return decoder.decode(
-                start=torch.zeros(1, dtype=torch.int64), sg_number=62, target=target,
-                n_candidates=24, strategy="sample",
+                start=torch.zeros(1, dtype=torch.int64), sg_number=62, ratio=ratio,
+                allowed_z=[4], n_candidates=24, strategy="sample",
                 generator=torch.Generator().manual_seed(seed))
         self.assertEqual([c.rows for c in draw(7)], [c.rows for c in draw(7)])
         # Under a uniform stub every legal gene is equally likely, so a sample of 24
@@ -352,14 +365,16 @@ class TestConstrainedDecoding(unittest.TestCase):
         decoder, _ = _decoder_for(62)
         candidates = decoder.decode(
             start=torch.zeros(1, dtype=torch.int64), sg_number=62,
-            target=_target([4, 8], (0, 1)), n_candidates=8, strategy="beam", beam_width=8)
+            ratio=_ratio([1, 2], (0, 1)), allowed_z=[4], n_candidates=8,
+            strategy="beam", beam_width=8)
         self.assertEqual(len({c.rows for c in candidates}), len(candidates))
 
     def test_candidates_come_back_sorted_by_likelihood(self):
         decoder, _ = _decoder_for(62)
         candidates = decoder.decode(
             start=torch.zeros(1, dtype=torch.int64), sg_number=62,
-            target=_target([4, 8], (0, 1)), n_candidates=16, strategy="beam", beam_width=16)
+            ratio=_ratio([1, 2], (0, 1)), allowed_z=[4], n_candidates=16,
+            strategy="beam", beam_width=16)
         self.assertEqual([c.log_prob for c in candidates],
                          sorted((c.log_prob for c in candidates), reverse=True))
 
@@ -367,7 +382,7 @@ class TestConstrainedDecoding(unittest.TestCase):
         decoder, _ = _decoder_for(225)
         with self.assertRaises(ValueError):
             decoder.decode(start=torch.zeros(1, dtype=torch.int64), sg_number=225,
-                           target=_target([4], (0,)), strategy="greedy")
+                           ratio=_ratio([1], (0,)), strategy="greedy")
 
     def test_conditioning_vector_reaches_the_model(self):
         seen = []
@@ -381,7 +396,7 @@ class TestConstrainedDecoding(unittest.TestCase):
 
         decoder.model.forward = record
         decoder.decode(start=torch.zeros(1, dtype=torch.int64), sg_number=225,
-                       target=_target([4], (0,)), n_candidates=4,
+                       ratio=_ratio([1], (0,)), allowed_z=[4], n_candidates=4,
                        cond=torch.zeros(1, 1))
         self.assertTrue(seen)
         self.assertTrue(all(shape is not None and shape[0] == 4 for shape in seen))
@@ -418,6 +433,99 @@ class TestTargetIsIndependentOfHowTheFormulaIsTyped(unittest.TestCase):
     def test_rejects_a_meaningless_z(self):
         with self.assertRaises(ValueError):
             CompositionTarget.for_formula("NaCl", 0, self._Tokeniser())
+
+
+class TestUnionOverZ(unittest.TestCase):
+    """One pass spans every cell size, and the model decides how they are shared.
+
+    The alternative -- a decode per z with the budget split evenly -- spends the
+    same relaxation budget uniformly over sizes most of which are wrong.
+    """
+
+    def _decode(self, sg_number, unit_counts, **kwargs):
+        decoder, combinatorics = _decoder_for(sg_number, max_sequence_len=10)
+        ratio = _ratio(unit_counts, tuple(range(len(unit_counts))))
+        kwargs.setdefault("n_candidates", 60)
+        kwargs.setdefault("strategy", "sample")
+        kwargs.setdefault("generator", torch.Generator().manual_seed(0))
+        candidates = decoder.decode(
+            start=torch.zeros(1, dtype=torch.int64), sg_number=sg_number,
+            ratio=ratio, **kwargs)
+        return candidates, combinatorics, ratio
+
+    def test_one_pass_returns_more_than_one_cell_size(self):
+        torch.manual_seed(0)
+        candidates, _, _ = self._decode(225, [1, 1])
+        self.assertGreater(len({c.z for c in candidates}), 1)
+
+    def test_every_candidate_matches_the_formula_at_its_own_z(self):
+        torch.manual_seed(0)
+        candidates, combinatorics, ratio = self._decode(225, [1, 1])
+        for candidate in candidates:
+            self.assertEqual(
+                _composition_of(candidate, combinatorics, ratio),
+                dict(zip(ratio.element_tokens, ratio.counts_at(candidate.z))))
+
+    def test_only_feasible_z_appear(self):
+        torch.manual_seed(0)
+        candidates, combinatorics, ratio = self._decode(225, [1, 1])
+        feasible = set(combinatorics.feasible_z(ratio.unit_counts, 10, 8))
+        self.assertTrue({c.z for c in candidates} <= feasible)
+
+    def test_allowed_z_narrows_the_pass(self):
+        torch.manual_seed(0)
+        candidates, _, _ = self._decode(225, [1, 1], allowed_z=[4])
+        self.assertEqual({c.z for c in candidates}, {4})
+
+    def test_max_z_bounds_the_pass(self):
+        torch.manual_seed(0)
+        candidates, _, _ = self._decode(225, [1, 1], max_z=4)
+        self.assertTrue(all(c.z <= 4 for c in candidates))
+
+    def test_a_gene_never_stops_short_of_a_whole_formula_unit(self):
+        """STOP is offered only on a whole number of formula units, so nothing
+        can come back with a composition off the ratio."""
+        torch.manual_seed(0)
+        candidates, combinatorics, ratio = self._decode(194, [1, 2])
+        for candidate in candidates:
+            counts = _composition_of(candidate, combinatorics, ratio)
+            first = counts[ratio.element_tokens[0]] / ratio.unit_counts[0]
+            self.assertEqual(first, int(first))
+            for token, unit in zip(ratio.element_tokens, ratio.unit_counts):
+                self.assertEqual(counts[token], unit * first)
+
+    def test_a_stop_token_is_required(self):
+        decoder, _ = _decoder_for(225)
+        decoder.stops = None
+        with self.assertRaises(ValueError) as caught:
+            decoder.decode(start=torch.zeros(1, dtype=torch.int64), sg_number=225,
+                           ratio=_ratio([1, 1], (0, 1)))
+        self.assertIn("STOP", str(caught.exception))
+
+    def test_impossible_at_every_z_returns_nothing(self):
+        # Fm-3m multiplicities are all divisible by 4, so a 1:1 ratio at odd z
+        # is unreachable -- restricting to those leaves nothing.
+        decoder, _ = _decoder_for(225)
+        self.assertEqual(
+            decoder.decode(start=torch.zeros(1, dtype=torch.int64), sg_number=225,
+                           ratio=_ratio([1, 1], (0, 1)), allowed_z=[1, 3, 5]),
+            [])
+
+
+class TestCompositionRatio(unittest.TestCase):
+    def test_counts_scale_with_z(self):
+        ratio = _ratio([1, 3], (0, 1))
+        self.assertEqual(ratio.counts_at(1), (1, 3))
+        self.assertEqual(ratio.counts_at(4), (4, 12))
+
+    def test_rejects_a_meaningless_z(self):
+        with self.assertRaises(ValueError):
+            _ratio([1], (0,)).counts_at(0)
+
+    def test_target_at_is_the_exact_cell(self):
+        target = _ratio([1, 3], (0, 1)).target_at(2)
+        self.assertEqual(target.counts, (2, 6))
+        self.assertEqual(target.total_atoms, 8)
 
 
 class TestCSPCandidate(unittest.TestCase):
