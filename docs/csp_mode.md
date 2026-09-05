@@ -18,6 +18,28 @@ and the `wyformer-csp` CLI. Piece (1) needs a conditioned backbone to be
 trained; the label it should be trained on is computed by
 `censored.gene_level_polymorph_delta`, and nothing has been trained yet.
 
+**The composition is a decode-time constraint, not a conditioning input.** The
+model is never told which formula it is building. `CompositionTarget` reaches
+only the mask; the model's `cond` vector carries whatever scalar the backbone
+was trained on (`energy_above_hull`, say) and nothing else. So the distribution
+the decoder samples from is the *unconditional* next-token distribution,
+renormalised over the choices that keep the target reachable.
+
+That is enough to guarantee the formula, and it is what makes the acceptance
+rate one, but it is weaker than conditioning in three ways. The model cannot
+plan -- it does not reserve room for the O3, it is merely stopped from making
+that impossible. The `log_prob` a candidate carries is a renormalised
+unconditional probability, not `p(gene | composition)`, which is worth
+remembering because it is what `--strategy beam` searches over and what orders
+the output when no regressor is given. And the gap between the two should be
+widest for unusual compositions, where the unconditional prior pulls hardest
+against the constraint.
+
+Real conditioning is a training change. The tokenisers already emit
+`composition_tokens` and `composition_counts` for a `counters: composition`
+field (`mp_20_CSP.yaml`), but no model reads them today; wiring them into the
+sequence-level input and retraining is what piece (1) actually is.
+
 ## Why `min(E | gene)` and not the energy
 
 A Wyckoff gene fixes the space group, the species and the occupied Wyckoff
@@ -201,8 +223,11 @@ target, and the write-up of any ablation should say so.
 
 ## What has not been done
 
-- **No conditioned backbone has been trained.** `gene_level_polymorph_delta`
-  produces the label; building the dataset and training on it needs a GPU.
+- **No conditioned backbone has been trained**, so the composition enters only
+  as the decode-time constraint described above, and `Delta_E_polymorph` is not
+  a channel any existing model has. `gene_level_polymorph_delta` produces the
+  label; wiring the composition counters into the model, building the dataset
+  and training on it needs a GPU.
 - **No regressor has been trained.** The likelihood is verified on synthetic
   data and through the trainer's real `Scalar` path, but the ceiling on real
   data is unmeasured. The first thing to measure, and it is nearly free: group
