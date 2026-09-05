@@ -18,27 +18,54 @@ and the `wyformer-csp` CLI. Piece (1) needs a conditioned backbone to be
 trained; the label it should be trained on is computed by
 `censored.gene_level_polymorph_delta`, and nothing has been trained yet.
 
-**The composition is a decode-time constraint, not a conditioning input.** The
-model is never told which formula it is building. `CompositionTarget` reaches
-only the mask; the model's `cond` vector carries whatever scalar the backbone
-was trained on (`energy_above_hull`, say) and nothing else. So the distribution
-the decoder samples from is the *unconditional* next-token distribution,
-renormalised over the choices that keep the target reachable.
+## Constraint and conditioning are different things
 
-That is enough to guarantee the formula, and it is what makes the acceptance
-rate one, but it is weaker than conditioning in three ways. The model cannot
-plan -- it does not reserve room for the O3, it is merely stopped from making
-that impossible. The `log_prob` a candidate carries is a renormalised
-unconditional probability, not `p(gene | composition)`, which is worth
-remembering because it is what `--strategy beam` searches over and what orders
-the output when no regressor is given. And the gap between the two should be
-widest for unusual compositions, where the unconditional prior pulls hardest
-against the constraint.
+The decoder guarantees the formula by masking, and it would do that against a
+backbone that has never heard of compositions: the distribution it samples is
+the model's own next-token distribution renormalised over the choices that keep
+the target reachable. That is enough for correctness and it is what makes the
+acceptance rate one, but on its own it is weaker than conditioning in three
+ways. The model cannot plan -- it does not reserve room for the O3, it is merely
+stopped from making that impossible. A candidate's `log_prob` is a renormalised
+*unconditional* probability, not `p(gene | composition)`, which matters because
+it is what `--strategy beam` searches over and what orders the output when no
+regressor is given. And the gap should be widest for unusual compositions, where
+the unconditional prior pulls hardest against the constraint.
 
-Real conditioning is a training change. The tokenisers already emit
-`composition_tokens` and `composition_counts` for a `counters: composition`
-field (`mp_20_CSP.yaml`), but no model reads them today; wiring them into the
-sequence-level input and retraining is what piece (1) actually is.
+`composition_conditioning` closes that gap by making the formula an input.
+`wyckoff_transformer.composition` turns the target into a fixed-width vector
+over the element vocabulary, which joins whatever scalar the model is already
+conditioned on and reaches every encoder layer through the same AdaLN path
+`energy_above_hull` takes. `wyformer-csp` builds the same vector from
+`--formula` and `--z`, so training and sampling see one representation, and it
+says on startup which of the two regimes the backbone is in.
+
+The vector separates two things worth separating. **What** the compound is made
+of, as fractions summing to one: this is z-invariant, so BaTiO3 and Ba2Ti2O6
+give the same chemistry and the model does not have to learn them as unrelated
+inputs. And **how much** of it is in the cell, as `log1p` of the total atom
+count -- not chemistry, but it bounds how many Wyckoff positions the gene needs,
+and on a log scale a 4-atom cell and a 200-atom one are a few units apart rather
+than two orders of magnitude. Together they are a bijection with the raw counts,
+so nothing is lost, and both channels land where an `nn.Linear` into AdaLN can
+use them.
+
+`yamls/models/lemat_bulk_ehull/ehull_composition.yaml` is
+`ehull_schedule_free.yaml` plus `composition_conditioning: true`, and minus its
+`condition_dim`: the width stops being a free choice once it follows the element
+vocabulary, so `from_config` derives it (85 for lemat_bulk_ehull: one e_hull
+column, 83 element columns, one cell-size column) and refuses a config that
+hardcodes a different number. The tokeniser must emit the composition counters
+-- `counters: {composition: elements}` under `sequence_fields`, which
+`lemat_bulk_ehull_sg_multiplicity` already has, so no re-cache is needed.
+
+A 3-epoch CPU pilot on `lemat_bulk_ehull_pilot` trains, checkpoints, calibrates,
+generates and reloads at the derived width, with `grad_norm` at 0.30 -- inside
+the 0.07-0.51 band the unconditioned config was tuned against, so the wider
+input has not destabilised the step size. Driving `wyformer-csp` from it
+conditions on `Ba=0.200, Ti=0.200, O=0.600, log1p(atoms)=1.792`, which is
+BaTiO3 in a 5-atom cell. Nothing about that pilot says the conditioning
+*helps* -- three epochs is not a trained model.
 
 ## Why `min(E | gene)` and not the energy
 
@@ -223,11 +250,13 @@ target, and the write-up of any ablation should say so.
 
 ## What has not been done
 
-- **No conditioned backbone has been trained**, so the composition enters only
-  as the decode-time constraint described above, and `Delta_E_polymorph` is not
-  a channel any existing model has. `gene_level_polymorph_delta` produces the
-  label; wiring the composition counters into the model, building the dataset
-  and training on it needs a GPU.
+- **No conditioned backbone has been trained.** The composition conditioning
+  runs, but only for 3 epochs on CPU, which shows the plumbing works and nothing
+  else; whether it improves candidate ranking over the constraint alone is
+  unmeasured, and it is the ablation this config exists to run.
+  `Delta_E_polymorph` is still not a channel any model has:
+  `gene_level_polymorph_delta` produces the label, and building the dataset and
+  training on it needs a GPU.
 - **No regressor has been trained.** The likelihood is verified on synthetic
   data and through the trainer's real `Scalar` path, but the ceiling on real
   data is unmeasured. The first thing to measure, and it is nearly free: group

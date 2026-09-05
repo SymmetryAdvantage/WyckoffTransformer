@@ -266,7 +266,7 @@ class TestWyckoffGeneratorCalibrateConditioning(unittest.TestCase):
         )
         generator.calibrate(
             dataset, calibration_element_count_threshold=1,
-            condition_feature="energy")
+            cond_builder=lambda ds, selection: ds.data["energy"][selection])
 
         self.assertEqual(observed_cond_sizes, [full_n, full_n // 2])
 

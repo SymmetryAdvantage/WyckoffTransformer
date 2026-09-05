@@ -1,4 +1,4 @@
-from typing import Callable, Tuple, List, Dict, Optional, Set, Union
+from typing import Any, Callable, Tuple, List, Dict, Optional, Set, Union
 import logging
 import torch
 from torch import nn, Tensor
@@ -64,22 +64,22 @@ class WyckoffGenerator():
 
 
     def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100,
-                  condition_feature: Optional[str] = None,
-                  condition_transform: Optional[Callable[[Tensor], Tensor]] = None):
+                  cond_builder: Optional[Callable[[AugmentedCascadeDataset, Any], Optional[Tensor]]] = None):
         """
         The calibraiton is going to be per cascade field.
         We will generate p_predicted and p_true for each cascade field for each
         known sequence length.
 
         Args:
-            condition_transform: Applied to the conditioning feature before it reaches the model;
-                the dataset stores it in physical units.
+            cond_builder: Called as ``cond_builder(dataset, indices)`` to assemble the
+                conditioning vector for the examples being calibrated on, or None for an
+                unconditional model. `WyckoffTrainer.build_cond` is the intended argument:
+                how the conditioning is put together -- which features, in what order,
+                under which transform -- belongs to the trainer, not here, and the
+                generator having its own opinion is how a composition-conditioned model
+                came to be handed a one-column vector.
         """
         assert dataset.cascade_order == self.cascade_order
-
-        full_cond = dataset.data[condition_feature] if condition_feature is not None else None
-        if full_cond is not None and condition_transform is not None:
-            full_cond = condition_transform(full_cond)
 
         with torch.no_grad():
             self.model.eval()
@@ -104,7 +104,7 @@ class WyckoffGenerator():
                             known_seq_len, known_cascade_len,
                             target_type=TargetClass.NextToken, multiclass_target=False,
                             return_chosen_indices=True)
-                    iter_cond = full_cond[chosen_indices] if full_cond is not None else None
+                    iter_cond = None if cond_builder is None else cond_builder(dataset, chosen_indices)
                     model_output = self.model(start_tokens, masked_data, None, known_cascade_len, cond=iter_cond)
                     # Enought data for separate calibration
                     if target.size(0) >= calibration_element_count_threshold:

@@ -26,6 +26,7 @@ import torch
 from omegaconf import OmegaConf
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.composition import composition_vector, describe
 from wyckoff_transformer.csp import (
     CompositionTarget,
     ConstrainedDecoder,
@@ -93,6 +94,43 @@ def start_tensor_for(trainer: WyckoffTrainer, sg_number: int,
     raise ValueError(f"Unsupported start type {trainer.model.start_type!r}")
 
 
+def build_condition_vector(
+    backbone: WyckoffTrainer,
+    target: CompositionTarget,
+    scalar_cond: Optional[torch.Tensor],
+    device: torch.device,
+) -> Optional[torch.Tensor]:
+    """Assemble what the backbone's AdaLN expects, for one target composition.
+
+    Mirrors `WyckoffTrainer.build_cond`, which does the same job from a dataset:
+    the scalar first, then the composition. A backbone that was not trained with
+    composition conditioning gets only the scalar, and the formula reaches it as
+    a decoding constraint alone.
+    """
+    parts = []
+    if backbone.condition_feature is not None:
+        if scalar_cond is None:
+            raise ValueError(
+                f"The backbone is conditioned on {backbone.condition_feature!r}; "
+                "pass --condition-value.")
+        parts.append(scalar_cond)
+    if backbone.composition_conditioning:
+        parts.append(composition_vector(
+            target.element_tokens, target.counts, backbone.n_elements,
+            device=device).unsqueeze(0))
+        logger.info("Conditioning on composition %s: %s", target,
+                    ", ".join(describe(parts[-1][0], backbone.tokenisers["elements"])))
+    if not parts:
+        return None
+    total = torch.cat(parts, dim=-1)
+    declared = getattr(backbone.model, "condition_dim", None)
+    if declared is not None and total.shape[-1] != declared:
+        raise ValueError(
+            f"Built a {total.shape[-1]}-wide conditioning vector for a model expecting "
+            f"{declared}.")
+    return total
+
+
 def run_csp(
     backbone: WyckoffTrainer,
     regressor: Optional[WyckoffTrainer],
@@ -128,17 +166,18 @@ def run_csp(
         max_sequence_len=backbone.max_sequence_length,
         device=device)
 
-    cond = None
+    scalar_cond = None
     if condition_value is not None:
-        condition_dim = getattr(backbone.model, "condition_dim", None) or 1
-        cond = backbone.transform_condition(
-            torch.full((1, condition_dim), condition_value, dtype=torch.float32, device=device))
+        scalar_cond = backbone.transform_condition(
+            torch.full((1, 1), condition_value, dtype=torch.float32, device=device))
 
     generator = torch.Generator(device="cpu").manual_seed(seed) if seed is not None else None
     scored: List[tuple] = []
     seen: set = set()
     for z in z_values:
         target = CompositionTarget.for_formula(formula, z, backbone.tokenisers["elements"])
+        # Built per z: the composition vector carries the cell size, which z sets.
+        cond = build_condition_vector(backbone, target, scalar_cond, device)
         for sg_number in space_groups:
             start = start_tensor_for(backbone, sg_number, device)
             candidates = decoder.decode(
@@ -249,6 +288,12 @@ def main():
         parser.error(
             f"The backbone is conditioned on {backbone.condition_feature!r}; pass "
             "--condition-value (0 for Delta_E_polymorph).")
+    if backbone.composition_conditioning:
+        print("--- Backbone is conditioned on the composition; the formula is an input, "
+              "not only a decoding constraint ---")
+    else:
+        print("--- Backbone is not composition-conditioned; the formula enters as a "
+              "decoding constraint only ---")
 
     regressor = None
     if args.regressor_path or args.regressor_wandb_run:

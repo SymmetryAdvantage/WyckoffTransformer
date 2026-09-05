@@ -25,6 +25,11 @@ import wyckoff_transformer
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.censored import CensoredMinDiagnostics, CensoredMinLoss
+from wyckoff_transformer.composition import (
+    COMPOSITION_FIELD,
+    attach_composition_vector,
+    composition_conditioning_dim,
+)
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers,
     load_wyckoff_mappings, WYCKOFF_MAPPINGS_FILENAME,
@@ -138,6 +143,12 @@ class WyckoffTrainer():
     #: Set to a CensoredMinDiagnostics when scalar_loss is "censored", and None otherwise.
     censored_diagnostics = None
 
+    #: Whether the target composition is part of the conditioning vector, and the width
+    #: of the element vocabulary it is expressed over. Class attributes for the same
+    #: reason as `scheduler_steps_per_batch`: every conditioning path reads them.
+    composition_conditioning = False
+    n_elements = None
+
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
     resume = False
 
@@ -181,6 +192,7 @@ class WyckoffTrainer():
         condition_transform: Optional[str] = None,
         scalar_loss: str = "mse",
         censored_loss_args: Optional[dict] = None,
+        composition_conditioning: bool = False,
         resume: bool = False,
     ):
         """
@@ -234,6 +246,12 @@ class WyckoffTrainer():
                 unless censored_loss_args sets predict_scale=False.
             censored_loss_args: Keyword arguments for CensoredMinLoss when scalar_loss is
                 "censored": noise, min_scale, predict_scale, init_scale.
+            composition_conditioning: Condition on the target chemical formula, as a vector
+                over the element vocabulary appended to whatever `condition_feature`
+                supplies. Requires the tokeniser to emit the composition counters
+                ('counters: {composition: elements}' under sequence_fields) and
+                CascadeTransformer_args.condition_dim to equal `self.condition_dim`, which
+                this constructor checks. See wyckoff_transformer.composition.
             resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
@@ -273,6 +291,18 @@ class WyckoffTrainer():
         extra_fields = [condition_feature] if condition_feature is not None else None
         self.scalar_loss = scalar_loss
         self.censored_diagnostics = None
+        self.composition_conditioning = composition_conditioning
+        self.n_elements = len(tokenisers["elements"]) if "elements" in tokenisers else None
+        if composition_conditioning:
+            if self.n_elements is None:
+                raise ValueError(
+                    "composition_conditioning needs an 'elements' tokeniser to size the vector")
+            # Densify before the datasets are built: they keep only cascade_order and
+            # extra_fields, and the ragged counters the tokeniser stores are neither.
+            for raw in (train_dataset, val_dataset, test_dataset):
+                if raw is not None:
+                    attach_composition_vector(raw, self.n_elements)
+            extra_fields = (extra_fields or []) + [COMPOSITION_FIELD]
 
         if target == TargetClass.NextToken:
             # Sequences have difference lengths, so we need to make sure that
@@ -456,6 +486,21 @@ class WyckoffTrainer():
                 # Stored in physical units; the transform is applied on the way into the model.
                 # Validate once here rather than per step, which would force a device sync.
                 self._validate_condition_values(cond_tensor)
+        if self.composition_conditioning:
+            for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
+                if ds is None:
+                    continue
+                ds.data[COMPOSITION_FIELD] = ds.data[COMPOSITION_FIELD].to(
+                    self.device, dtype=torch.float32)
+            declared = getattr(self.model, "condition_dim", None)
+            if declared is not None and declared != self.condition_dim:
+                raise ValueError(
+                    f"The model was built with condition_dim={declared}, but this run's "
+                    f"conditioning is {self.condition_dim} wide "
+                    f"({'scalar + ' if self.condition_feature else ''}"
+                    f"{composition_conditioning_dim(self.n_elements)} for the composition "
+                    f"over {self.n_elements} element tokens). Set "
+                    f"CascadeTransformer_args.condition_dim to {self.condition_dim}.")
     
         # Optional: omit, or set to null, to train without a norm constraint. The pre-clip norm
         # is logged either way, so a run can watch the gradient scale without being shaped by it.
@@ -518,6 +563,39 @@ class WyckoffTrainer():
         if values is None or self._condition_transform_fn is None:
             return values
         return self._condition_transform_fn(values)
+
+
+    @property
+    def condition_dim(self) -> Optional[int]:
+        """Width of the vector this run feeds to AdaLN, or None when unconditional.
+
+        The scalar `condition_feature` occupies one column and the composition the
+        rest, in that order. `CascadeTransformer_args.condition_dim` has to agree.
+        """
+        width = 1 if self.condition_feature is not None else 0
+        if self.composition_conditioning:
+            width += composition_conditioning_dim(self.n_elements)
+        return width or None
+
+
+    def build_cond(self, dataset: AugmentedCascadeDataset,
+                   batch_selection: 'Tensor | slice' = slice(None)) -> Optional[Tensor]:
+        """Assemble the conditioning vector for a batch, in the model's units.
+
+        One place, because the scalar is stored in physical units and transformed on
+        the way in while the composition is stored ready to use, and getting that
+        order wrong in one of three call sites would be invisible until the
+        conditioning quietly stopped meaning anything.
+        """
+        parts = []
+        if self.condition_feature is not None:
+            parts.append(self.transform_condition(
+                dataset.data[self.condition_feature][batch_selection]))
+        if self.composition_conditioning:
+            parts.append(dataset.data[COMPOSITION_FIELD][batch_selection])
+        if not parts:
+            return None
+        return parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
 
 
     @staticmethod
@@ -674,6 +752,23 @@ class WyckoffTrainer():
                     f"Missing {distribution_path}. This file is required for generation without datasets.")
             distribution = cls.load_start_token_distribution_file(distribution_path)
             max_sequence_length = int(distribution["max_sequence_length"])
+        # The conditioning width is derived data, not a design choice: it follows the element
+        # vocabulary of whichever dataset the run uses. Fill it in rather than making every
+        # config hardcode a number that silently rots when the vocabulary changes.
+        trainer_args = config.model.WyckoffTrainer_args
+        if trainer_args.get("composition_conditioning", False):
+            derived = composition_conditioning_dim(len(tokenisers["elements"]))
+            if trainer_args.get("condition_feature") is not None:
+                derived += 1
+            declared = config.model.CascadeTransformer_args.get("condition_dim")
+            if declared is None:
+                logger.info("Setting condition_dim to %d from the element vocabulary", derived)
+                config.model.CascadeTransformer_args.condition_dim = derived
+            elif declared != derived:
+                raise ValueError(
+                    f"condition_dim is {declared} in the config, but this dataset's element "
+                    f"vocabulary and conditioning make it {derived}. Remove it and let it be "
+                    "derived, or fix it.")
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
         # model.to(torch.float32)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
@@ -804,9 +899,7 @@ class WyckoffTrainer():
                 start_tokens, masked_data, target, batch_selection = dataset.get_masked_cascade_data(
                     known_seq_len, known_cascade_len, return_chosen_indices=True)
 
-        cond = None
-        if self.condition_feature is not None:
-            cond = self.transform_condition(dataset.data[self.condition_feature][batch_selection])
+        cond = self.build_cond(dataset, batch_selection)
 
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
@@ -1095,10 +1188,7 @@ class WyckoffTrainer():
             batch_selection = loader.get_next_batch()
             start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(
                 batch_selection=batch_selection)
-            cond = None
-            if self.condition_feature is not None:
-                cond = self.transform_condition(
-                    dataset.data[self.condition_feature][batch_selection])
+            cond = self.build_cond(dataset, batch_selection)
             prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond)
             prediction = prediction.reshape(-1, self.criterion.n_outputs)
             for key, value in self.censored_diagnostics(prediction, target).items():
@@ -1374,6 +1464,7 @@ class WyckoffTrainer():
             allowed_element_set: Union[str, Set[int]] = "all",
             temperature: float = 1.0,
             cond: Optional[torch.Tensor] = None,
+            composition_cond: Optional[torch.Tensor] = None,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -1391,8 +1482,12 @@ class WyckoffTrainer():
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
                 defines a custom pool. Only used when element-constrained generation is active.
             temperature: Softmax temperature for sampling.
-            cond: Optional tensor of shape [n_structures, condition_dim] for AdaLN conditioning,
-                in physical units (any condition_transform is applied here, not by the caller).
+            cond: Optional tensor of shape [n_structures, 1] carrying the scalar
+                condition_feature, in physical units (any condition_transform is applied
+                here, not by the caller).
+            composition_cond: Optional tensor of shape [n_structures, composition width]
+                for a model with composition_conditioning, as
+                wyckoff_transformer.composition builds it. Concatenated after `cond`.
         """
         # `stops` must be passed: without it the generator cannot tell a finished sequence
         # from a live one, and `compute_validity_per_known_sequence_length` then scores STOP
@@ -1406,8 +1501,7 @@ class WyckoffTrainer():
         if calibrate:
             if self.val_dataset is None:
                 raise ValueError("Calibration requires a validation dataset")
-            generator.calibrate(self.val_dataset, condition_feature=condition_feature,
-                                condition_transform=self.transform_condition)
+            generator.calibrate(self.val_dataset, cond_builder=self.build_cond)
         if start_tensor is None:
             start_tensor = self._sample_start_tokens_from_distribution(n_structures)
         else:
@@ -1418,21 +1512,40 @@ class WyckoffTrainer():
             else:
                 start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
 
-        if condition_feature is not None and cond is None:
-            if hasattr(self, 'train_dataset') and self.train_dataset is not None:
-                random_indices = torch.randint(
-                    0, self.train_dataset.num_examples, (n_structures,), device=self.device)
-                cond = self.train_dataset.data[condition_feature][random_indices]
-            else:
-                raise ValueError(
-                    f"condition_feature={condition_feature!r} is set but no `cond` was provided "
-                    "and no train_dataset is available to sample from."
-                )
-
         if cond is not None:
-            # Both branches above, and anything a caller passes in, are in physical units.
+            # Anything a caller passes in is the scalar, in physical units.
             self._validate_condition_values(cond)
             cond = self.transform_condition(cond)
+            if self.composition_conditioning:
+                if composition_cond is None:
+                    raise ValueError(
+                        "composition_conditioning is on, so a caller supplying `cond` must "
+                        "also supply `composition_cond`; otherwise the model is handed a "
+                        "conditioning vector of the wrong width.")
+                cond = torch.cat([cond, composition_cond.to(cond.device, torch.float32)], dim=-1)
+        elif composition_cond is not None:
+            if not self.composition_conditioning:
+                raise ValueError("composition_cond was given, but this model is not "
+                                 "conditioned on the composition.")
+            cond = composition_cond.to(self.device, torch.float32)
+            if condition_feature is not None:
+                raise ValueError(
+                    f"This model is also conditioned on {condition_feature!r}; pass `cond` "
+                    "for it alongside `composition_cond`.")
+        elif self.condition_dim is not None:
+            # Nothing supplied: draw whole conditioning rows from the training data, which
+            # keeps the scalar and the composition paired as they actually occur rather
+            # than crossing an energy with an unrelated formula.
+            if getattr(self, "train_dataset", None) is None:
+                wanted = [repr(condition_feature)] if condition_feature is not None else []
+                if self.composition_conditioning:
+                    wanted.append("the target composition")
+                raise ValueError(
+                    f"This model is conditioned on {' and '.join(wanted)}, but no `cond` "
+                    "was provided and no train_dataset is available to sample one from.")
+            random_indices = torch.randint(
+                0, self.train_dataset.num_examples, (n_structures,), device=self.device)
+            cond = self.build_cond(self.train_dataset, random_indices)
 
         if required_element_set is not None:
             if 'elements' not in self.tokenisers:
