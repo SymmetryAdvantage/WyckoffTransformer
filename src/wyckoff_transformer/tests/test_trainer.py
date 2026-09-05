@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import torch
 from unittest.mock import patch, MagicMock
 
+from ..cascade.dataset import TargetClass
 from ..trainer import WyckoffTrainer, cascade_target_indices
 
 # Intentionally tests a private helper to validate serialized distribution semantics.
@@ -291,6 +292,63 @@ class TestWyckoffTrainerGeneration(unittest.TestCase):
         self.assertEqual(call_kwargs["required_element_set"], set())
         self.assertEqual(call_kwargs["allowed_element_set"], "Li-O-P")
         self.assertEqual(len(structures), 2)
+
+
+class _CountingDataset:
+    """The only things evaluate() asks of a dataset, with every example viable everywhere."""
+    def __init__(self, max_sequence_length: int, n_structures: int):
+        self.max_sequence_length = max_sequence_length
+        self._n_structures = n_structures
+
+    def __len__(self):
+        return self._n_structures
+
+    def viable_count(self, known_seq_len: int) -> int:  # pylint: disable=unused-argument
+        return self._n_structures
+
+
+class TestEvaluateReportsOnlyTargets(unittest.TestCase):
+    """A non-target field has no head, so it must get no entry in the loss vector.
+
+    It used to get a permanently-zero one, which reached wandb as
+    `loss.epoch.<split>.site_symmetry_ops_id = 0` and is indistinguishable from a head that
+    has collapsed."""
+    ORDER = ("elements", "site_symmetries", "site_symmetry_ops_id", "sites_enumeration")
+    TARGET_INDICES = (0, 1, 3)
+
+    def _trainer(self):
+        trainer = WyckoffTrainer.__new__(WyckoffTrainer)
+        trainer.target = TargetClass.NextToken
+        trainer.model = MagicMock()
+        # Not a schedule-free optimiser: evaluate() only calls .eval() when there is one.
+        trainer.optimizer = None
+        trainer.evaluation_samples = 1
+        trainer.device = torch.device("cpu")
+        trainer.cascade_order = self.ORDER
+        trainer.cascade_len = len(self.ORDER)
+        trainer.cascade_target_indices = self.TARGET_INDICES
+        trainer.cascade_target_count = len(self.TARGET_INDICES)
+        # One unit of loss per cascade position, so an entry landing in the wrong slot shows up
+        # as a wrong value rather than as a coincidence.
+        trainer.get_loss = lambda dataset, known_seq_len, known_cascade_len, **kwargs: \
+            torch.tensor(float(known_cascade_len) + 1.)
+        return trainer
+
+    def test_the_loss_vector_has_one_entry_per_target(self):
+        trainer = self._trainer()
+        loss = trainer.evaluate(_CountingDataset(max_sequence_length=2, n_structures=1))
+        self.assertEqual(tuple(loss.shape), (3,))
+        # Two known_seq_len passes, each contributing known_cascade_len + 1.
+        torch.testing.assert_close(loss, torch.tensor([2., 4., 8.]))
+
+    def test_the_non_target_field_is_not_labelled(self):
+        trainer = self._trainer()
+        loss = trainer.evaluate(_CountingDataset(max_sequence_length=2, n_structures=1))
+        logged = dict(zip(trainer.cascade_target_order, loss.tolist()))
+        self.assertNotIn("site_symmetry_ops_id", logged)
+        # And what survives is labelled by field, not shifted by the hole the drop leaves.
+        self.assertEqual(
+            logged, {"elements": 2., "site_symmetries": 4., "sites_enumeration": 8.})
 
 
 if __name__ == "__main__":

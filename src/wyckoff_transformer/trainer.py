@@ -887,8 +887,11 @@ class WyckoffTrainer():
                 # Predictions are [batch_size, cascade_size]
                 # Unreduced MSE is [batch_size, cascade_size]
                 # We avoid averaging them at the level of self.criterion, so we can log
-                # the loss for each cascade field separately.
-                loss = loss.mean()
+                # the loss for each cascade field separately -- and so we can drop the
+                # non-target columns here, which are filled in by an engineer rather than
+                # predicted and so must not train a head. NextToken needs no such filter:
+                # it computes one head per step, and train_epoch only ever draws a target.
+                loss = loss[:, list(self.cascade_target_indices)].mean()
             loss.backward()
             # Measure the norm whether or not it is constrained: an infinite max_norm makes
             # clip_grad_norm_ a no-op that still returns the pre-clip norm. Worth logging even
@@ -971,6 +974,16 @@ class WyckoffTrainer():
         return metrics
 
 
+    @property
+    def cascade_target_order(self) -> Tuple[str, ...]:
+        """The names of the cascade fields that have a head, in cascade order.
+
+        The labels for a per-field loss vector. Derived rather than stored, so that it cannot
+        drift from `cascade_order`, which generation rebinds.
+        """
+        return tuple(self.cascade_order[i] for i in self.cascade_target_indices)
+
+
     @torch.no_grad()
     def evaluate(self, dataset: AugmentedCascadeDataset, loader: Optional[AugmentedCascadeLoader] = None) -> Tensor:
         """
@@ -979,7 +992,11 @@ class WyckoffTrainer():
             dataset: The dataset to evaluate on.
             loader: The loader to use for batching.
         Returns:
-            The average loss on the dataset.
+            The average loss on the dataset: one entry per *target* cascade field, in the
+            order of `self.cascade_target_order`, not one per cascade field. A non-target
+            field is filled in by its engineer rather than predicted, so it has no head and
+            no loss; it used to occupy a permanently-zero slot here, which reached wandb as
+            `loss.epoch.<split>.<field> = 0` and read like a collapsed head.
         """
         self.model.eval()
         if hasattr(self.optimizer, "eval"):
@@ -999,7 +1016,7 @@ class WyckoffTrainer():
             # Above we check that the batch size is the same for all batches
             return loss / self.evaluation_samples / loader.batches_per_epoch
 
-        loss = torch.zeros(self.cascade_len, device=self.device)          
+        loss = torch.zeros(self.cascade_target_count, device=self.device)
 
         # set to batching mode
         # for _ in range(self.evaluation_samples):
@@ -1039,19 +1056,26 @@ class WyckoffTrainer():
                     # leaves both the sampled and the exhaustive path with an empty batch.
                     continue
                 if self.target == TargetClass.NextToken:
-                    for known_cascade_len in self.cascade_target_indices:
+                    # `loss` is indexed by target rank, `known_cascade_len` by cascade position:
+                    # the two differ as soon as a non-target field sits among the targets.
+                    for target_rank, known_cascade_len in enumerate(self.cascade_target_indices):
                         # get_loss already rescales a sampled batch to the whole viable set.
-                        loss[known_cascade_len] += self.get_loss(
+                        loss[target_rank] += self.get_loss(
                             dataset, known_seq_len, known_cascade_len, loader=loader,
                             no_batch=loader is None)
                 else: # NumUniqueTokens
+                    # One head per cascade field is predicted in a single pass here, so unlike
+                    # NextToken the non-target columns are computed; drop them rather than
+                    # carry them, matching what train_epoch backpropagates.
                     if loader is None:
-                        loss += self.get_loss(dataset, known_seq_len, 0, no_batch=True).sum(dim=0)
+                        loss += self.get_loss(
+                            dataset, known_seq_len, 0, no_batch=True
+                        )[:, list(self.cascade_target_indices)].sum(dim=0)
                     else:
                         batch_loss, n_samples = self.get_loss(
                             dataset, known_seq_len, 0, loader=loader, no_batch=False,
                             return_n_samples=True)
-                        loss += batch_loss.sum(dim=0) * (
+                        loss += batch_loss[:, list(self.cascade_target_indices)].sum(dim=0) * (
                             dataset.viable_count(known_seq_len) / n_samples)
             # ln(P) = ln p(t_n|t_n-1, ..., t_1) + ... + ln p(t_2|t_1)
             # We are minimising the negative log likelihood of the whole sequences
@@ -1254,7 +1278,10 @@ class WyckoffTrainer():
                 else:
                     total_val_loss = raw_losses['val'].sum()
                     for name, loss in raw_losses.items():
-                        loss_dict[name] = {name: loss[i] for i, name in enumerate(self.cascade_order)}
+                        # evaluate() returns one entry per target field, so this zips against
+                        # cascade_target_order; a non-target field has no loss to report.
+                        loss_dict[name] = {
+                            field: loss[i] for i, field in enumerate(self.cascade_target_order)}
                         loss_dict[name]["total"] = loss.sum().item()
                 logged = {"loss.epoch": loss_dict,
                           "lr": self.optimizer.param_groups[0]['lr'],
