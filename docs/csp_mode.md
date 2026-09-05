@@ -263,11 +263,20 @@ Ranking across z is sound because the regressor's target is a formation energy
 narrows which cell sizes a pass may end on rather than overriding feasibility,
 so an impossible request is dropped rather than attempted.
 
+A word on what that channel is, since the name has misled at least once: it is a
+conditioning **input**, one more column of the vector fed to AdaLN beside the
+element fractions. Nothing predicts a cell size. `candidate.z` points the other
+way — the decoder accumulates atoms as it emits sites, STOP is offered only at a
+whole number of formula units, and the multiple standing when STOP is chosen is
+read off as z. So `condition_on_cell_size` fixes an input before decoding, and
+`candidate.z` falls out of decoding, and the first makes the second impossible to
+do in one pass.
+
 One model cannot do this: a backbone trained with the composition conditioning's
 cell-size channel. That vector has to be built before the pass, and the size is
 not known until the model has chosen where to stop. Such a backbone falls back
 to one pass per z, through the same code path, and `wyformer-csp` says so on
-startup. Which is the argument for `composition_size_channel: false` on a model
+startup. Which is the argument for `condition_on_cell_size: false` on a model
 meant for CSP: the size channel tells the model the answer to the question the
 decoder is trying to let it answer. Leave it on for de novo generation, where
 asking for a cell of a given size is a meaningful request.

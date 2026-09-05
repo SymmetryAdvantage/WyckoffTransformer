@@ -120,7 +120,7 @@ def build_condition_vector(
         counts = ratio.counts_at(z if z is not None else 1)
         parts.append(composition_vector(
             ratio.element_tokens, counts, backbone.n_elements, device=device,
-            size_channel=backbone.composition_size_channel).unsqueeze(0))
+            condition_on_cell_size=backbone.condition_on_cell_size).unsqueeze(0))
         logger.debug("Conditioning on %s: %s", ratio,
                      ", ".join(describe(parts[-1][0], backbone.tokenisers["elements"])))
     if not parts:
@@ -147,7 +147,7 @@ def z_groups_for(backbone: WyckoffTrainer, feasible: List[int]) -> List[List[int
     known until the model has chosen where to stop, so such a model gets one pass
     per z -- the old behaviour, reached through the same code path.
     """
-    if backbone.composition_conditioning and backbone.composition_size_channel:
+    if backbone.composition_conditioning and backbone.condition_on_cell_size:
         return [[z] for z in feasible]
     return [feasible]
 
@@ -333,7 +333,7 @@ def main():
     if backbone.composition_conditioning:
         print("--- Backbone is conditioned on the composition; the formula is an input, "
               "not only a decoding constraint ---")
-        if backbone.composition_size_channel:
+        if backbone.condition_on_cell_size:
             print("--- It was trained with the cell-size channel, so z is decoded one "
                   "value at a time rather than in a single pass ---")
     else:

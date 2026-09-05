@@ -22,14 +22,21 @@ things are worth separating in it:
   z-invariant: BaTiO3 and Ba2Ti2O6 give the same vector, which is right, because
   they are the same chemistry and a model that had to learn them as unrelated
   inputs would be wasting capacity.
-- **how much** of it is in the cell, as ``log1p`` of the total atom count. Cell
-  size is not chemistry, but it is not ignorable either -- it bounds how many
-  Wyckoff positions the gene needs -- and on a log scale a 4-atom cell and a
-  200-atom one are a few units apart rather than two orders of magnitude.
+- **how much** of it is in the cell, as ``log1p`` of the total atom count, when
+  `condition_on_cell_size` is set. Cell size is not chemistry, but it is not
+  ignorable either -- it bounds how many Wyckoff positions the gene needs -- and
+  on a log scale a 4-atom cell and a 200-atom one are a few units apart rather
+  than two orders of magnitude.
 
 Together they are a bijection with the raw counts, so nothing is lost, and both
 channels land in a range an `nn.Linear` into AdaLN can use without the largest
 compositions dominating the modulation.
+
+Everything here is an **input**. No part of this module predicts a composition or
+a cell size: it turns something the caller already knows into a vector the model
+reads. That matters for the size channel in particular, because in CSP the cell
+size is not something the caller knows -- `csp` derives it from where the model
+stops instead, and a model conditioned on it cannot be decoded that way.
 
 Widths follow the element tokeniser, service tokens included. Those columns stay
 zero -- STOP is not an element -- which costs a few unused weights and keeps the
@@ -57,9 +64,9 @@ COMPOSITION_FIELD = "composition_vector"
 COMPOSITION_SOURCE_FIELDS = ("composition_tokens", "composition_counts")
 
 
-def composition_conditioning_dim(n_elements: int, size_channel: bool = True) -> int:
+def composition_conditioning_dim(n_elements: int, condition_on_cell_size: bool = True) -> int:
     """Width of the vector `composition_vector` produces for a given vocabulary."""
-    return n_elements + (COMPOSITION_EXTRA_CHANNELS if size_channel else 0)
+    return n_elements + (COMPOSITION_EXTRA_CHANNELS if condition_on_cell_size else 0)
 
 
 def composition_vector(
@@ -67,7 +74,7 @@ def composition_vector(
     counts: Sequence[float] | Tensor,
     n_elements: int,
     device: Optional[torch.device] = None,
-    size_channel: bool = True,
+    condition_on_cell_size: bool = True,
 ) -> Tensor:
     """One composition as element fractions, optionally then log1p(size).
 
@@ -76,13 +83,18 @@ def composition_vector(
         counts: Atoms of each, in the same order. Conventional-cell counts.
         n_elements: Size of the element vocabulary, service tokens included.
         device: Where to build the tensor.
-        size_channel: Append log1p of the total atom count. Right for de novo
-            generation, where asking for a cell of a given size is meaningful.
-            Wrong for CSP, where the cell size is what the model is being asked
-            to choose: `csp.ConstrainedDecoder` decides ``z`` by where the model
-            emits STOP, which is after the conditioning has already been built,
-            so a model trained with this channel has to be decoded one ``z`` at a
-            time and cannot spread its own probability over the alternatives.
+        condition_on_cell_size: Append log1p of the total atom count, making the
+            cell size something the caller *tells* the model. Nothing here
+            predicts a cell size; this is a conditioning input, and turning it on
+            means every sampling call has to commit to one before it can decode.
+
+            Right for de novo generation, where asking for a cell of a given size
+            is a meaningful request. Wrong for CSP, where the cell size is what
+            the model is being asked to choose: `csp.ConstrainedDecoder` settles
+            ``z`` by where the model emits STOP, which is after the conditioning
+            has already been built, so a model trained with this channel has to be
+            decoded one ``z`` at a time and cannot spread its own probability over
+            the alternatives.
 
     Raises:
         ValueError: on a token outside the vocabulary, a non-positive count, or
@@ -103,13 +115,13 @@ def composition_vector(
     if bool((amounts <= 0).any()):
         raise ValueError(f"Non-positive atom count in {amounts.tolist()}")
 
-    vector = torch.zeros(composition_conditioning_dim(n_elements, size_channel),
+    vector = torch.zeros(composition_conditioning_dim(n_elements, condition_on_cell_size),
                          dtype=torch.float32, device=device)
     total = amounts.sum()
     # index_add rather than assignment: a composition should never list an element
     # twice, but if a caller's parser does, summing is the sane reading.
     vector[:n_elements].index_add_(0, tokens, amounts / total)
-    if size_channel:
+    if condition_on_cell_size:
         vector[n_elements] = torch.log1p(total)
     return vector
 
@@ -119,7 +131,7 @@ def composition_vectors(
     counts: Sequence[Sequence[float] | Tensor],
     n_elements: int,
     device: Optional[torch.device] = None,
-    size_channel: bool = True,
+    condition_on_cell_size: bool = True,
 ) -> Tensor:
     """`composition_vector` over a whole split, into one dense block.
 
@@ -133,7 +145,7 @@ def composition_vectors(
     if not element_tokens:
         raise ValueError("No compositions given")
     rows = [composition_vector(tokens, amounts, n_elements, device=device,
-                               size_channel=size_channel)
+                               condition_on_cell_size=condition_on_cell_size)
             for tokens, amounts in zip(element_tokens, counts)]
     return torch.stack(rows)
 
@@ -143,7 +155,7 @@ def attach_composition_vector(
     n_elements: int,
     device: Optional[torch.device] = None,
     field: str = COMPOSITION_FIELD,
-    size_channel: bool = True,
+    condition_on_cell_size: bool = True,
 ) -> Dict:
     """Add the densified composition to a split's data dict, in place.
 
@@ -165,7 +177,7 @@ def attach_composition_vector(
             "tokeniser config and re-cache the dataset.")
     data[field] = composition_vectors(
         data["composition_tokens"], data["composition_counts"], n_elements, device=device,
-        size_channel=size_channel)
+        condition_on_cell_size=condition_on_cell_size)
     return data
 
 
@@ -173,7 +185,7 @@ def composition_vector_for_formula(
     formula_counts: Dict[str, float],
     elements_tokeniser,
     device: Optional[torch.device] = None,
-    size_channel: bool = True,
+    condition_on_cell_size: bool = True,
 ) -> Tensor:
     """The conditioning vector for a formula given as element symbols to counts.
 
@@ -186,7 +198,7 @@ def composition_vector_for_formula(
     tokens = [_element_token(symbol, elements_tokeniser) for symbol in formula_counts]
     return composition_vector(
         tokens, list(formula_counts.values()), len(elements_tokeniser), device=device,
-        size_channel=size_channel)
+        condition_on_cell_size=condition_on_cell_size)
 
 
 def describe(vector: Tensor, elements_tokeniser) -> List[str]:
