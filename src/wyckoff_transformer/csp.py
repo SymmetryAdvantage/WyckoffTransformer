@@ -195,6 +195,33 @@ class SpaceGroupCombinatorics:
         available = [p for p in self.fixed if (p.ss_token, p.enum_token) not in used_fixed]
         return self._search_fixed(tuple(outstanding), available, slots_left)
 
+    def feasible_z(
+        self,
+        reduced_counts: Sequence[int],
+        max_sites: int,
+        max_z: int,
+    ) -> List[int]:
+        """Which formula-unit counts this space group can hold, from 1 to `max_z`.
+
+        The number of formula units in the conventional cell is not something the
+        caller of a CSP run knows -- it is part of what is being predicted -- but
+        it is not free either. It has to satisfy the same reachability the decoder
+        enforces, and centring prunes it hard: every position of an F-centred group
+        has a multiplicity divisible by four, so three quarters of the z values are
+        impossible before any model is consulted.
+
+        Args:
+            reduced_counts: Atoms per formula unit, one entry per element.
+            max_sites: Sequence positions available, which bounds how many
+                positions the cell content can be spread over.
+            max_z: Largest number of formula units to consider.
+        """
+        if max_z < 1:
+            raise ValueError(f"max_z must be at least 1, got {max_z}")
+        return [z for z in range(1, max_z + 1)
+                if self.can_complete([count * z for count in reduced_counts],
+                                     frozenset(), max_sites)]
+
     def _search_fixed(
         self,
         deficits: Tuple[int, ...],

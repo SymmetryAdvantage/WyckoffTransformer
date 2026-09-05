@@ -157,6 +157,50 @@ class TestSpaceGroupCombinatorics(unittest.TestCase):
         self.assertFalse(combinatorics.can_complete([64], frozenset(), 20))
 
 
+class TestFeasibleZ(unittest.TestCase):
+    """How many formula units fit is a prediction, not an input, so it is enumerated."""
+
+    def test_rocksalt_is_z_4_in_fm3m(self):
+        # The case that shows why the caller cannot be asked for z: NaCl's answer in
+        # Fm-3m is 4, and a default of 1 puts the right structure out of reach.
+        self.assertEqual(_combinatorics(225).feasible_z([1, 1], 20, 8), [4, 8])
+
+    def test_centring_prunes_three_quarters_of_the_values(self):
+        # Every position of an F-centred group has a multiplicity divisible by four.
+        for z in _combinatorics(225).feasible_z([1, 1, 3], 20, 8):
+            self.assertEqual(z % 4, 0)
+
+    def test_a_group_can_be_impossible_at_small_z(self):
+        # Pnma's smallest multiplicity is 4, so one formula unit of BaTiO3 cannot
+        # be placed however many sites are offered.
+        self.assertNotIn(1, _combinatorics(62).feasible_z([1, 1, 3], 20, 8))
+
+    def test_scarce_fixed_positions_exclude_a_value(self):
+        # Pm-3m has exactly two 1-fold positions, both fixed, so NaCl at z=2 would
+        # need both for one element and leave nothing for the other.
+        feasible = _combinatorics(221).feasible_z([1, 1], 20, 8)
+        self.assertIn(1, feasible)
+        self.assertNotIn(2, feasible)
+
+    def test_the_site_budget_bounds_z(self):
+        # P1 has one position of multiplicity 1, so z formula units need 2z sites.
+        self.assertEqual(_combinatorics(1).feasible_z([1, 1], 6, 8), [1, 2, 3])
+
+    def test_max_z_bounds_the_enumeration(self):
+        self.assertEqual(_combinatorics(1).feasible_z([1], 20, 3), [1, 2, 3])
+
+    def test_rejects_a_meaningless_max_z(self):
+        with self.assertRaises(ValueError):
+            _combinatorics(1).feasible_z([1], 20, 0)
+
+    def test_every_reported_z_actually_decodes(self):
+        """The contract: nothing enumerated here strands the decoder."""
+        combinatorics = _combinatorics(194)
+        for z in combinatorics.feasible_z([1, 2], 20, 6):
+            self.assertTrue(
+                combinatorics.can_complete([z, 2 * z], frozenset(), 20), f"z={z}")
+
+
 class _UniformModel(torch.nn.Module):
     """Stub backbone: uniform logits over each cascade field's vocabulary.
 

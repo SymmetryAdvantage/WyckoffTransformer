@@ -195,14 +195,41 @@ feeds `wyformer-cryspr` and `wyformer-protocol` unchanged.
 Space groups are enumerated, not sampled: every group that can express the
 composition is decoded from and the candidates are pooled and ranked together,
 because which setting the formula adopts is the question being asked.
-`--z` accepts several values. Identical genes are collapsed by default, since a
-repeat costs a relaxation and buys no structure — at `z=1` in a high-symmetry
-group there may be only a handful of legal genes and sampling will revisit them.
+Identical genes are collapsed by default, since a repeat costs a relaxation and
+buys no structure — at small `z` in a high-symmetry group there may be only a
+handful of legal genes and sampling will revisit them.
 
 Sanity check against the real backbone: `BaTiO3` at `z=1` over space groups 221,
 123 and 62 gives 10 unique candidates, all with exactly the target composition;
-62 is correctly reported as unable to build it (Pnma's smallest multiplicity is
-4). The top Pm-3m candidate is `Ba 1b, Ti 1a, O 3d` — the cubic perovskite.
+62 is correctly reported as unable to build it at that z (Pnma's smallest
+multiplicity is 4). The top Pm-3m candidate is `Ba 1b, Ti 1a, O 3d` — the cubic
+perovskite. With z enumerated rather than fixed, `NaCl` over 225, 221 and 62
+reaches 22 candidates across ten (space group, z) pairs, rocksalt among them at
+Fm-3m z=4.
+
+### Where the cell size comes from
+
+Both the decoding constraint and the conditioning vector are stated over
+*conventional-cell* atom counts, so both need to know how many formula units the
+cell holds. That number is not an input to a CSP problem — it is part of what is
+being predicted — and it cannot be asked of the caller: the answer for NaCl is
+z=4 in Fm-3m, z=1 or 3 or 4 in Pm-3m, and nothing at all in Pnma, which is not
+something you know before choosing the setting. Nor does dropping the size
+channel from the conditioning help: the constraint needs the same number.
+
+It is not free either, which is what makes it tractable. z has to satisfy the
+same reachability the decoder enforces, so `SpaceGroupCombinatorics.feasible_z`
+enumerates it per space group and `wyformer-csp` sweeps the result, up to
+`--max-z`. Centring does most of the pruning: every position of an F-centred
+group has a multiplicity divisible by four, so three quarters of the values are
+gone before any model is consulted. Scarce fixed positions do the rest — Pm-3m
+has exactly two 1-fold positions, so NaCl at z=2 would need both for one element
+and leave nothing for the other, and z=2 is duly absent.
+
+Ranking across z is sound because the regressor's target is a formation energy
+*per atom*, so a z=4 candidate and a z=8 one are on one scale. Passing `--z`
+explicitly narrows the enumeration rather than overriding it, so an impossible
+request is dropped rather than attempted.
 
 ### `sample` or `beam`
 

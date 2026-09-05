@@ -20,7 +20,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import torch
 from omegaconf import OmegaConf
@@ -135,8 +135,9 @@ def run_csp(
     backbone: WyckoffTrainer,
     regressor: Optional[WyckoffTrainer],
     formula: str,
-    z_values: List[int],
+    z_values: Optional[List[int]],
     space_groups: List[int],
+    max_z: int,
     n_candidates: int,
     strategy: str,
     beam_width: Optional[int],
@@ -147,6 +148,10 @@ def run_csp(
     deduplicate: bool = True,
 ) -> List[dict]:
     """Decode and rank candidates for one formula, over every space group and z.
+
+    `z_values` of None enumerates the formula-unit counts each space group can
+    actually hold, up to `max_z`; a list restricts that enumeration rather than
+    overriding it, so an impossible request is dropped rather than attempted.
 
     Sampling repeats genes wherever a space group has few legal ones -- at z=1 in a
     high-symmetry group there may be only a handful -- and a repeat costs a
@@ -174,23 +179,45 @@ def run_csp(
     generator = torch.Generator(device="cpu").manual_seed(seed) if seed is not None else None
     scored: List[tuple] = []
     seen: set = set()
-    for z in z_values:
-        target = CompositionTarget.for_formula(formula, z, backbone.tokenisers["elements"])
-        # Built per z: the composition vector carries the cell size, which z sets.
-        cond = build_condition_vector(backbone, target, scalar_cond, device)
-        for sg_number in space_groups:
-            start = start_tensor_for(backbone, sg_number, device)
+    # Atoms per formula unit, in the order CompositionTarget puts its columns.
+    unit = CompositionTarget.for_formula(formula, 1, backbone.tokenisers["elements"])
+    targets: Dict[int, CompositionTarget] = {}
+    conds: Dict[int, Optional[torch.Tensor]] = {}
+    for sg_number in space_groups:
+        start = start_tensor_for(backbone, sg_number, device)
+        combinatorics = decoder.combinatorics(sg_number, start)
+        # z is part of what CSP predicts, not an input, so it is enumerated over what
+        # this space group can actually hold rather than guessed by the caller.
+        allowed = combinatorics.feasible_z(
+            unit.counts, backbone.max_sequence_length, max_z)
+        if z_values is not None:
+            requested = set(z_values)
+            skipped = sorted(requested - set(allowed))
+            allowed = [z for z in allowed if z in requested]
+            if skipped:
+                logger.debug("Space group %d cannot hold %s at z in %s",
+                             sg_number, formula, skipped)
+        if not allowed:
+            continue
+        logger.info("Space group %3d: z in %s", sg_number, allowed)
+        for z in allowed:
+            if z not in targets:
+                targets[z] = CompositionTarget.for_formula(
+                    formula, z, backbone.tokenisers["elements"])
+                # The composition vector carries the cell size, which z sets.
+                conds[z] = build_condition_vector(
+                    backbone, targets[z], scalar_cond, device)
+            target, cond = targets[z], conds[z]
             candidates = decoder.decode(
                 start=start, sg_number=sg_number, target=target,
                 n_candidates=n_candidates, strategy=strategy, beam_width=beam_width,
                 temperature=temperature, cond=cond, generator=generator)
             if not candidates:
                 continue
-            combinatorics = decoder.combinatorics(sg_number, start)
             if regressor is not None:
                 candidates = rank_by_predicted_minimum(
                     candidates, regressor, start, combinatorics)
-            logger.info("Space group %3d, z=%d: %d candidates%s", sg_number, z,
+            logger.info("  z=%d: %d candidates%s", z,
                         len(candidates),
                         "" if regressor is None else
                         f", best predicted {candidates[0].predicted_energy:.4f} eV/atom")
@@ -245,9 +272,15 @@ def main():
 
     parser.add_argument("--formula", type=str, required=True,
                         help="Reduced formula, e.g. BaTiO3.")
-    parser.add_argument("--z", type=int, nargs="+", default=[1],
-                        help="Formula units per conventional cell. Several may be given; "
-                             "each is decoded separately and the results pooled.")
+    parser.add_argument("--z", type=int, nargs="+", default=None,
+                        help="Formula units per conventional cell. By default every value "
+                             "each space group can actually hold, up to --max-z, is tried "
+                             "and the results pooled: z is part of what CSP predicts, not "
+                             "something the caller knows, and it is not free either -- "
+                             "rocksalt is z=4 in Fm-3m and no z at all in Pnma. Give values "
+                             "here only to narrow that enumeration.")
+    parser.add_argument("--max-z", type=int, default=8,
+                        help="Largest number of formula units to consider.")
     parser.add_argument("--space-groups", type=int, nargs="+", default=None,
                         help="Restrict to these space groups. Defaults to every group the "
                              "model knows that can express the composition.")
@@ -312,7 +345,7 @@ def main():
 
     structures = run_csp(
         backbone=backbone, regressor=regressor, formula=args.formula, z_values=args.z,
-        space_groups=candidate_space_groups(backbone, args.space_groups),
+        space_groups=candidate_space_groups(backbone, args.space_groups), max_z=args.max_z,
         n_candidates=args.n_candidates, strategy=args.strategy, beam_width=args.beam_width,
         temperature=args.temperature, condition_value=args.condition_value,
         device=args.device, seed=args.seed, deduplicate=not args.keep_duplicates)
