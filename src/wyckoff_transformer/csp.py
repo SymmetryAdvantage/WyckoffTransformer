@@ -46,6 +46,8 @@ from __future__ import annotations
 import logging
 import re
 from collections import Counter
+from functools import reduce
+from math import gcd
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -211,7 +213,8 @@ class SpaceGroupCombinatorics:
         impossible before any model is consulted.
 
         Args:
-            reduced_counts: Atoms per formula unit, one entry per element.
+            reduced_counts: Atoms per *reduced* formula unit, one entry per element,
+                as `CompositionTarget.for_formula(formula, 1)` produces them.
             max_sites: Sequence positions available, which bounds how many
                 positions the cell content can be spread over.
             max_z: Largest number of formula units to consider.
@@ -367,14 +370,37 @@ def parse_formula(formula: str) -> Counter:
     return counts
 
 
+def reduce_formula(counts: Counter) -> Counter:
+    """Divide a composition by the common factor of its counts.
+
+    ``Ba2Ti2O6`` and ``BaTiO3`` are the same compound, and Z is defined against
+    the reduced unit, so both have to parse to the same thing. Without this,
+    ``z`` would be a multiplier on whatever the caller happened to type: rocksalt
+    would be Z=4 written as NaCl and Z=2 written as Na2Cl2, ``--max-z`` would
+    cover a different range of cell sizes in each case, and a formula typed
+    pre-multiplied would put every smaller cell out of reach of the enumeration.
+    """
+    factor = reduce(gcd, counts.values())
+    if factor == 1:
+        return Counter(counts)
+    logger.info("Reducing %s by %d; z is counted in reduced formula units",
+                "".join(f"{s}{c}" for s, c in sorted(counts.items())), factor)
+    return Counter({symbol: count // factor for symbol, count in counts.items()})
+
+
 @dataclass
 class CompositionTarget:
     """A conventional-cell composition, in element-token space.
 
-    Multiplicities count atoms in the conventional cell, so this is a *cell*
-    content and not a reduced formula: ``NaCl`` at ``z=4`` is the target, not
-    ``NaCl``.  `for_formula` builds one from a reduced formula and a number of
-    formula units.
+    Wyckoff multiplicities count atoms in the conventional cell, so this is a
+    *cell* content rather than a formula: rocksalt's target is ``Na4Cl4``, and
+    `for_formula` builds it from ``NaCl`` and ``z=4``.
+
+    ``z`` is the crystallographic Z, the number of reduced formula units in the
+    conventional cell -- conventional, not primitive, which is why rocksalt is
+    Z=4 in Fm-3m though its primitive rhombohedral cell holds one formula unit.
+    Written lowercase throughout to avoid colliding with the other Z of materials
+    code, the atomic number.
     """
     symbols: Tuple[str, ...]
     counts: Tuple[int, ...]
@@ -382,9 +408,10 @@ class CompositionTarget:
 
     @classmethod
     def for_formula(cls, formula: str, z: int, elements_tokeniser) -> "CompositionTarget":
-        reduced = parse_formula(formula)
+        if z < 1:
+            raise ValueError(f"z must be at least 1, got {z}")
         symbols, counts, tokens = [], [], []
-        for symbol, count in sorted(reduced.items()):
+        for symbol, count in sorted(reduce_formula(parse_formula(formula)).items()):
             symbols.append(symbol)
             counts.append(count * z)
             tokens.append(_element_token(symbol, elements_tokeniser))

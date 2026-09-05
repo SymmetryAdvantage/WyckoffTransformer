@@ -209,8 +209,17 @@ Fm-3m z=4.
 
 ### Where the cell size comes from
 
+`z` here is the crystallographic Z: the number of **reduced** formula units in
+the **conventional** cell. Conventional, not primitive, which is why rocksalt is
+Z=4 in Fm-3m though its primitive rhombohedral cell holds one formula unit --
+Wyckoff multiplicities are conventional-cell counts, so everything downstream
+has to be. Reduced, because Z is a property of the compound and not of how the
+caller spelled it: `--formula Ba2Ti2O6` is divided down to `BaTiO3` first, and
+the reduction is logged. Written lowercase to avoid colliding with the other Z
+of materials code, the atomic number.
+
 Both the decoding constraint and the conditioning vector are stated over
-*conventional-cell* atom counts, so both need to know how many formula units the
+conventional-cell atom counts, so both need to know how many formula units the
 cell holds. That number is not an input to a CSP problem — it is part of what is
 being predicted — and it cannot be asked of the caller: the answer for NaCl is
 z=4 in Fm-3m, z=1 or 3 or 4 in Pm-3m, and nothing at all in Pnma, which is not

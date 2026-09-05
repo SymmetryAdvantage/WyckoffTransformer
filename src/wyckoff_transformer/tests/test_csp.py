@@ -18,6 +18,7 @@ from wyckoff_transformer.csp import (
     SpaceGroupCombinatorics,
     WyckoffPosition,
     parse_formula,
+    reduce_formula,
 )
 from wyckoff_transformer.tokenization import get_wp_index
 
@@ -86,6 +87,25 @@ class TestFormulaParsing(unittest.TestCase):
         for bad in ("", "2Na", "Na!", "na"):
             with self.assertRaises(ValueError, msg=bad):
                 parse_formula(bad)
+
+
+class TestReduceFormula(unittest.TestCase):
+    """z is the crystallographic Z, so it counts *reduced* formula units."""
+
+    def test_divides_out_the_common_factor(self):
+        self.assertEqual(dict(reduce_formula(parse_formula("Ba2Ti2O6"))),
+                         {"Ba": 1, "Ti": 1, "O": 3})
+
+    def test_an_already_reduced_formula_is_unchanged(self):
+        self.assertEqual(dict(reduce_formula(parse_formula("BaTiO3"))),
+                         {"Ba": 1, "Ti": 1, "O": 3})
+
+    def test_reduces_only_by_a_common_factor(self):
+        # 2 and 3 share nothing, so Fe2O3 is already a reduced unit.
+        self.assertEqual(dict(reduce_formula(parse_formula("Fe2O3"))), {"Fe": 2, "O": 3})
+
+    def test_a_single_element_reduces_to_one_atom(self):
+        self.assertEqual(dict(reduce_formula(parse_formula("Si8"))), {"Si": 1})
 
 
 class TestSpaceGroupCombinatorics(unittest.TestCase):
@@ -365,6 +385,39 @@ class TestConstrainedDecoding(unittest.TestCase):
                        cond=torch.zeros(1, 1))
         self.assertTrue(seen)
         self.assertTrue(all(shape is not None and shape[0] == 4 for shape in seen))
+
+
+class TestTargetIsIndependentOfHowTheFormulaIsTyped(unittest.TestCase):
+    """The bug this guards: z was a multiplier on the string, not on the compound."""
+
+    class _Tokeniser(dict):
+        def __init__(self):
+            super().__init__({"Na": 0, "Cl": 1})
+
+        def __contains__(self, key):
+            return dict.__contains__(self, str(key).replace("Element ", ""))
+
+        def __getitem__(self, key):
+            return dict.__getitem__(self, str(key).replace("Element ", ""))
+
+    def test_equivalent_spellings_give_one_target(self):
+        tokeniser = self._Tokeniser()
+        targets = [CompositionTarget.for_formula(f, 4, tokeniser)
+                   for f in ("NaCl", "Na2Cl2", "Na4Cl4")]
+        for target in targets[1:]:
+            self.assertEqual(target.counts, targets[0].counts)
+        # Rocksalt: Z=4 however the caller wrote the formula.
+        self.assertEqual(targets[0].total_atoms, 8)
+
+    def test_a_pre_multiplied_formula_can_still_reach_the_small_cell(self):
+        # Written Na4Cl4, z=1 used to mean an 8-atom cell, putting the 2-atom one
+        # out of reach of any enumeration.
+        target = CompositionTarget.for_formula("Na4Cl4", 1, self._Tokeniser())
+        self.assertEqual(target.total_atoms, 2)
+
+    def test_rejects_a_meaningless_z(self):
+        with self.assertRaises(ValueError):
+            CompositionTarget.for_formula("NaCl", 0, self._Tokeniser())
 
 
 class TestCSPCandidate(unittest.TestCase):
