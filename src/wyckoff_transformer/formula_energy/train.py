@@ -83,6 +83,10 @@ class TrainConfig:
     #: Provenance features to withhold, by name. Emptying the tuple is the
     #: ablation that asks whether the ICSD flag earns its place.
     drop_provenance: Sequence[str] = ()
+    #: Provenance features the *location* head may also read. Empty keeps the
+    #: exclusion restriction; naming the neighbourhood densities relaxes it for
+    #: features argued to carry chemistry rather than selection.
+    location_features: Sequence[str] = ()
     seed: int = 0
 
 
@@ -252,6 +256,8 @@ def train_one(
         n_provenance=len(PROVENANCE_FEATURES), d_model=config.d_model, n_layers=config.n_layers,
         n_heads=config.n_heads, dim_feedforward=config.dim_feedforward, dropout=config.dropout,
         head_widths=config.head_widths, detach_scale_trunk=config.detach_scale_trunk,
+        location_feature_indices=[list(PROVENANCE_FEATURES).index(name)
+                                  for name in config.location_features],
         # Start the floor at the mean of the bounds it is meant to sit under, so
         # the first epochs are spent learning chemistry rather than the offset.
         location_bias=float(train.target.mean()),
@@ -378,6 +384,9 @@ def main() -> None:
     parser.add_argument("--loss", choices=("censored", "mse"), default="censored")
     parser.add_argument("--drop-provenance", nargs="*", default=None,
                         help="zero these provenance features; the ablation switch")
+    parser.add_argument("--location-features", nargs="*", default=None,
+                        help="let the floor read these provenance features too; "
+                             "relaxes the exclusion restriction, see TrainConfig")
     parser.add_argument("--device", type=torch.device, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -388,7 +397,8 @@ def main() -> None:
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     max_elements = max(len(parse_formula(formula)) for formula in table.index)
     config = TrainConfig(loss=args.loss, noise=args.noise, epochs=args.epochs,
-                         drop_provenance=tuple(args.drop_provenance or ()))
+                         drop_provenance=tuple(args.drop_provenance or ()),
+                         location_features=tuple(args.location_features or ()))
     train = prepare(table[table["split"] == "train"], max_elements=max_elements,
                     drop_provenance=config.drop_provenance).to(device)
     val = prepare(table[table["split"] == "val"], max_elements=max_elements,
@@ -419,6 +429,8 @@ def load_ensemble(
             n_layers=config.n_layers, n_heads=config.n_heads, dim_feedforward=config.dim_feedforward,
             dropout=config.dropout, head_widths=config.head_widths,
             detach_scale_trunk=config.detach_scale_trunk,
+            location_feature_indices=[payload["provenance_features"].index(name)
+                                      for name in config.location_features],
         ).to(device)
         model.load_state_dict(state)
         models.append(model.eval())

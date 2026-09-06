@@ -343,17 +343,38 @@ Added to the excess-scale head it improves the likelihood -- validation NLL
 1.26 against 2.23 / 1.64 / 1.26, with the top decile and top half identical rather
 than merely close.
 
-That is the design telling us something. The scale head's output never enters
-`score = location + sigma - hull`, so its only route to better ranking is
-indirectly freeing the location head, and that route delivers nothing measurable.
-The feature ranks well *directly*, so if it is to help it has to enter the score --
-which means the location head, and that is a deliberate relaxation of the
-exclusion restriction rather than an oversight. The case for trying it is that its
-predictive power on generated structures does not look like a selection artifact:
-a sparse system is sparse largely because that chemistry does not produce stable
-compounds, and the hull-depth artifact runs the wrong way to explain it, since a
-sparse system's hull is a shallow elemental tie-line and should be *easier* to
-beat.
+The scale head's output never enters `score = location + sigma - hull`, so its
+only route to better ranking is indirectly freeing the location head. A third arm
+therefore let the four densities into the *location* head as well -- a scoped
+relaxation of the exclusion restriction, four named columns reaching the floor
+while the other ten stay invisible, enforced by a test.
+
+It changes nothing either. All three arms give MetaSUN **2.23** at the top decile
+of novel formulas, and sit inside each other's intervals everywhere else:
+
+| arm | val NLL | MetaSUN @10% / @25% / @50% |
+|---|---|---|
+| density nowhere | -0.641 | 2.23 / 1.64 / 1.26 |
+| density in the scale head | **-0.703** | 2.23 / 1.61 / 1.26 |
+| density in the location head | -0.586 | 2.23 / 1.64 / 1.23 |
+
+The reason is that the model already has the information. The **control** model,
+which never sees these features, produces a score correlating **-0.42** with
+entries-per-binary and -0.26 with entries-per-ternary on novel generated formulas
+-- it infers neighbourhood density from element identities alone, which a learned
+element embedding over 2.3M formulas is well placed to do. Combining the two
+rankings directly does not help either: rank-averaging gives 1.90 and 2.06 on one
+run against 2.23 for the screener alone, and 1.83 against 1.53 on the other,
+flipping direction between runs.
+
+The standalone 2.39 for entries-per-ternary is best read as the maximum of four
+features tested across two runs; it falls to 1.37 on the smaller run. What
+survives is weak and consistent rather than strong: all eight Spearman
+correlations with the MetaSUN outcome are positive, +0.005 to +0.117.
+
+The conclusion is that neighbourhood density is real information which the
+chemistry encoder already extracts, and the exclusion restriction was not costing
+anything here. It stays.
 
 ## What exists
 

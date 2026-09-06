@@ -27,7 +27,7 @@ of Wren's two-output robust-L1 head, so the two are directly comparable.
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from typing import Optional, Sequence
 
 import torch
 from torch import Tensor, nn
@@ -132,6 +132,12 @@ class FormulaEnergyModel(nn.Module):
 
     Args:
         n_provenance: Width of the provenance vector, ``len(PROVENANCE_FEATURES)``.
+        location_feature_indices: Columns of the provenance vector the *location*
+            head may also read. Empty by default, which is the exclusion
+            restriction: the floor is a function of chemistry alone. Naming a
+            column here is a deliberate relaxation, for a feature argued to carry
+            chemistry rather than selection -- neighbourhood density being the
+            case in point. Everything not named remains invisible to the floor.
         location_bias: Initial value of the location head's output bias. Targets
             are formation energies in eV/atom and are deliberately not
             standardised -- ``CensoredMinLoss`` carries a label-noise scale and a
@@ -154,10 +160,18 @@ class FormulaEnergyModel(nn.Module):
         head_widths: Sequence[int] = (256, 256, 128, 64),
         location_bias: float = 0.0,
         detach_scale_trunk: bool = False,
+        location_feature_indices: Sequence[int] = (),
     ) -> None:
         super().__init__()
+        if any(index >= n_provenance or index < 0 for index in location_feature_indices):
+            raise ValueError(
+                f"location_feature_indices {list(location_feature_indices)} out of range "
+                f"for {n_provenance} provenance features"
+            )
         self.encoder = CompositionEncoder(d_model, n_layers, n_heads, dim_feedforward, dropout)
-        self.location_head = _mlp([d_model, *head_widths], dropout)
+        self.location_feature_indices = tuple(location_feature_indices)
+        self.location_head = _mlp(
+            [d_model + len(self.location_feature_indices), *head_widths], dropout)
         self.scale_head = _mlp([d_model + n_provenance, *head_widths], dropout)
         self.n_provenance = n_provenance
         self.detach_scale_trunk = detach_scale_trunk
@@ -177,17 +191,39 @@ class FormulaEnergyModel(nn.Module):
                 f"Expected {self.n_provenance} provenance features, got {provenance.size(-1)}"
             )
         trunk = self.encoder(element_ids, fractions, padding_mask)
-        location = self.location_head(trunk)
+        location = self.location_head(self._location_input(trunk, provenance))
         scale_trunk = trunk.detach() if self.detach_scale_trunk else trunk
         log_scale = self.scale_head(torch.cat([scale_trunk, provenance], dim=-1))
         return torch.cat([location, log_scale], dim=-1)
 
-    @torch.no_grad()
-    def predict_floor(self, element_ids: Tensor, fractions: Tensor, padding_mask: Tensor) -> Tensor:
-        """The floor alone, with no provenance -- what screening a novel formula needs.
+    def _location_input(self, trunk: Tensor, provenance: Tensor) -> Tensor:
+        """The trunk, plus whichever provenance columns the floor is allowed to see."""
+        if not self.location_feature_indices:
+            return trunk
+        columns = provenance[..., list(self.location_feature_indices)]
+        return torch.cat([trunk, columns], dim=-1)
 
-        A formula nobody has computed has no provenance to supply, and the whole
-        point of the head split is that it does not need any.
+    @torch.no_grad()
+    def predict_floor(
+        self,
+        element_ids: Tensor,
+        fractions: Tensor,
+        padding_mask: Tensor,
+        provenance: Optional[Tensor] = None,
+    ) -> Tensor:
+        """The floor alone -- what screening a novel formula needs.
+
+        With no named location features this takes no provenance at all, which is
+        the point: a formula nobody has computed has none to supply. When some are
+        named they have to be passed, and they are exactly the ones computable for
+        an uncomputed composition.
         """
         trunk = self.encoder(element_ids, fractions, padding_mask)
-        return self.location_head(trunk).squeeze(-1)
+        if self.location_feature_indices and provenance is None:
+            raise ValueError(
+                "This model's floor reads "
+                f"{len(self.location_feature_indices)} provenance features; pass them"
+            )
+        if provenance is None:
+            provenance = torch.zeros(trunk.size(0), self.n_provenance, device=trunk.device)
+        return self.location_head(self._location_input(trunk, provenance)).squeeze(-1)

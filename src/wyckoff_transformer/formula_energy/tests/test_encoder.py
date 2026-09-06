@@ -46,6 +46,39 @@ class TestExclusionRestriction(unittest.TestCase):
         # ...while the excess scale must move, or the channel is doing nothing.
         self.assertFalse(torch.allclose(quiet[:, 1], busy[:, 1]))
 
+    def test_a_named_feature_reaches_the_floor_and_the_others_still_cannot(self):
+        # The relaxation is deliberate and scoped: naming one column lets the
+        # floor read that column and nothing else.
+        torch.manual_seed(0)
+        model = FormulaEnergyModel(
+            n_provenance=len(PROVENANCE_FEATURES), d_model=32, n_layers=2, n_heads=4,
+            dim_feedforward=64, head_widths=(16, 8), location_feature_indices=[0],
+        ).eval()
+        ids, fractions, mask, provenance = _batch()
+        base = model(ids, fractions, mask, provenance)[:, 0]
+
+        moved_named = provenance.clone(); moved_named[:, 0] = 3.0
+        self.assertFalse(torch.allclose(base, model(ids, fractions, mask, moved_named)[:, 0]))
+
+        moved_other = provenance.clone(); moved_other[:, 1:] = 3.0
+        torch.testing.assert_close(base, model(ids, fractions, mask, moved_other)[:, 0])
+
+    def test_a_floor_that_reads_provenance_demands_it(self):
+        torch.manual_seed(0)
+        model = FormulaEnergyModel(
+            n_provenance=len(PROVENANCE_FEATURES), d_model=32, n_layers=2, n_heads=4,
+            dim_feedforward=64, head_widths=(16, 8), location_feature_indices=[0],
+        ).eval()
+        ids, fractions, mask, _ = _batch()
+        with self.assertRaises(ValueError):
+            model.predict_floor(ids, fractions, mask)
+
+    def test_an_out_of_range_index_is_refused(self):
+        with self.assertRaises(ValueError):
+            FormulaEnergyModel(n_provenance=3, d_model=32, n_layers=1, n_heads=4,
+                               dim_feedforward=32, head_widths=(8,),
+                               location_feature_indices=[7])
+
     def test_predict_floor_needs_no_provenance(self):
         # A formula nobody has computed has none to supply.
         model = _model()
