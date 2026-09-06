@@ -276,6 +276,85 @@ compensated by inflating the excess scale to 0.495 eV/atom and drove the floor
 below the data almost everywhere, flagging 77% of formulas. The sweep is recorded
 in `TrainConfig.noise`. At 0.10 the calibration error falls from 0.659 to 0.159.
 
+## The answer key is partly a search-policy detector
+
+Ranking formulas by **how many hull-defining entries their chemical system already
+holds** -- one integer per system, no model, no training -- scores 2.98 / 3.22 /
+3.06 / 2.36 at budgets of 100 / 500 / 1000 / 5000 on the answer key. That beats
+every model above from 500 candidates onward.
+
+It is worth nothing on real generated structures: 1.16 / 0.98 / 1.00 MetaSUN
+enrichment on the WyFormer runs below.
+
+The explanation is that Alexandria is a substitution campaign, so it expands
+around structures that already exist, and system density predicts **where it
+looked** rather than where low-energy structures are. This is the dataset-builder
+problem appearing in the *evaluation* rather than the training data. The
+enrichment figures in the previous section are therefore inflated by an unknown
+amount for the same reason, and the generated-structure test below -- whose
+outcome is an ORB relaxation rather than a campaign's choice -- is the primary
+instrument.
+
+## What screening buys a generation run
+
+`prefilter.py` scores a protocol run retrospectively: every gene is relaxed, and
+the question is whether the top slice by screener score is richer than the whole
+run. Restricted to **novel** formulas, which is what MetaSUN counts and where a
+structure-search budget should go. Over all genes the numbers look far better
+(2.6x metastable) but the top 500 are 100% compositions the archive already holds,
+and those are metastable 43.0% of the time against 16.3% for novel ones, so
+sorting on membership alone is worth 1.39x before any model runs.
+
+2,500 genes, 1,209 novel formulas, MetaSUN base 10.1%:
+
+| slice | MetaSUN enrichment |
+|---|---|
+| top 10% | **2.23 [1.58, 3.05]** |
+| top 25% | 1.64 [1.27, 2.10] |
+| top 50% | 1.26 [1.02, 1.55] |
+
+The 1,000-gene run from the finished checkpoint points the same way (1.53 at the
+top decile) but is not individually significant at 453 novel formulas. Stability
+and SUN cannot be measured at either size -- the novel subsets hold three stable
+structures each.
+
+Operationally: generation costs 22 s per 1,000 genes and relaxation ~10 minutes,
+so the move is to generate more and relax the top slice. Relaxing 1,000 novel
+genes at random yields about 101 MetaSUN; generating 10,000 and relaxing the best
+1,000 projects to about 220, for four extra minutes of sampling. The extrapolation
+to a sharper threshold on a larger pool is not itself measured.
+
+### Neighbourhood density: right idea, wrong head
+
+A system-level covariate is the obvious gap -- two thirds of formulas have one
+entry, so their own counts say almost nothing, and a never-computed composition
+has none at all. Arity has to be controlled combinatorially: a system of `a`
+elements holds exactly `C(a, k)` subsystems of size `k`, so a raw subsystem count
+correlates +0.72 with arity and the exact-system count -0.74, while dividing by
+`C(a, k)` brings both to -0.07 and +0.07.
+
+Controlled that way it works, and the uncontrolled version does not: ranking
+generated structures by entries-per-ternary-subsystem alone gives MetaSUN
+enrichment **2.39 [1.72, 3.23]**, matching the whole ten-model ensemble, where the
+exact-system count gives 1.00.
+
+Added to the excess-scale head it improves the likelihood -- validation NLL
+**-0.703 against -0.641** -- and changes screening by nothing at all: 2.23 / 1.61 /
+1.26 against 2.23 / 1.64 / 1.26, with the top decile and top half identical rather
+than merely close.
+
+That is the design telling us something. The scale head's output never enters
+`score = location + sigma - hull`, so its only route to better ranking is
+indirectly freeing the location head, and that route delivers nothing measurable.
+The feature ranks well *directly*, so if it is to help it has to enter the score --
+which means the location head, and that is a deliberate relaxation of the
+exclusion restriction rather than an oversight. The case for trying it is that its
+predictive power on generated structures does not look like a selection artifact:
+a sparse system is sparse largely because that chemistry does not produce stable
+compounds, and the hull-depth artifact runs the wrong way to explain it, since a
+sparse system's hull is a shallow elemental tie-line and should be *easier* to
+beat.
+
 ## What exists
 
 | | |
@@ -288,7 +367,8 @@ in `TrainConfig.noise`. At 0.10 the calibration error falls from 0.659 to 0.159.
 | `formula_energy/baselines.py` | `g_C`, `g_D`, Magpie + GBDT, chemsys lookup |
 | `formula_energy/answer_key.py` | shallow world and the discovery key |
 | `formula_energy/experiment.py` | the comparison run |
-| `formula_energy/screen.py` | ranking, `P(below hull)`, `L(X)` |
+| `formula_energy/screen.py` | ranking, `P(below hull)`, `L(X)`, `HullLookup` |
+| `formula_energy/prefilter.py` | what screening buys a generation run |
 | `cli/screen.py` | `wyformer-screen` |
 | `scripts/pull_mp_provenance.py` | the ICSD flags LeMat-Bulk does not carry |
 

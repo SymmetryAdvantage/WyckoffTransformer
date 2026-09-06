@@ -96,7 +96,7 @@ def main() -> None:
     if not kept:
         raise SystemExit("No formula had a reference hull to be measured against")
 
-    models, _ = T.load_ensemble(args.ensemble, device)
+    models, _, _feature_names = T.load_ensemble(args.ensemble, device)
     data = T.prepare_formulas(kept, hull=hull).to(device)
     prediction = T.predict(models, data).drop(columns=["target"])
     frame = screening.shortlist(prediction, margin=not args.no_margin, top=args.top)

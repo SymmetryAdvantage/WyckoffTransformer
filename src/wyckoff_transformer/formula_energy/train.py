@@ -146,6 +146,7 @@ def prepare(
     hull_column: str = "e_hull_at_composition",
     max_elements: Optional[int] = None,
     drop_provenance: Sequence[str] = (),
+    feature_names: Sequence[str] = PROVENANCE_FEATURES,
 ) -> FormulaData:
     """Formula table into tensors.
 
@@ -158,13 +159,13 @@ def prepare(
             out, for ablations.
     """
     element_ids, fractions, padding_mask = composition_tensors(table.index, max_elements)
-    provenance = provenance_tensor(table)
+    provenance = provenance_tensor(table, feature_names)
     if drop_provenance:
-        unknown = set(drop_provenance) - set(PROVENANCE_FEATURES)
+        unknown = set(drop_provenance) - set(feature_names)
         if unknown:
             raise ValueError(f"Unknown provenance features: {sorted(unknown)}")
         for name in drop_provenance:
-            provenance[:, PROVENANCE_FEATURES.index(name)] = 0.0
+            provenance[:, list(feature_names).index(name)] = 0.0
     return FormulaData(
         element_ids, fractions, padding_mask, provenance,
         torch.tensor(table[target_column].to_numpy(), dtype=torch.float32),
@@ -177,6 +178,8 @@ def prepare_formulas(
     formulas: Sequence[str],
     hull: Optional[np.ndarray] = None,
     max_elements: Optional[int] = None,
+    system: Optional[pd.DataFrame] = None,
+    feature_names: Sequence[str] = PROVENANCE_FEATURES,
 ) -> FormulaData:
     """Tensors for formulas that are not in the archive.
 
@@ -187,9 +190,17 @@ def prepare_formulas(
     """
     element_ids, fractions, padding_mask = composition_tensors(formulas, max_elements)
     count = len(element_ids)
+    provenance = torch.zeros(count, len(feature_names))
+    if system is not None:
+        # The neighbourhood densities are the one channel a never-computed
+        # composition can still answer, so they are filled where available.
+        for position, name in enumerate(feature_names):
+            if name in system.columns:
+                provenance[:, position] = torch.tensor(
+                    system[name].to_numpy(dtype=np.float32), dtype=torch.float32)
     return FormulaData(
         element_ids, fractions, padding_mask,
-        torch.zeros(count, len(PROVENANCE_FEATURES)),
+        provenance,
         torch.full((count,), float("nan")),
         torch.tensor(np.zeros(count) if hull is None else np.asarray(hull), dtype=torch.float32),
         pd.Index(formulas),
@@ -365,6 +376,8 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--noise", type=float, default=TrainConfig.noise)
     parser.add_argument("--loss", choices=("censored", "mse"), default="censored")
+    parser.add_argument("--drop-provenance", nargs="*", default=None,
+                        help="zero these provenance features; the ablation switch")
     parser.add_argument("--device", type=torch.device, default=None)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -374,9 +387,12 @@ def main() -> None:
     table = pd.read_parquet(args.table)
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     max_elements = max(len(parse_formula(formula)) for formula in table.index)
-    config = TrainConfig(loss=args.loss, noise=args.noise, epochs=args.epochs)
-    train = prepare(table[table["split"] == "train"], max_elements=max_elements).to(device)
-    val = prepare(table[table["split"] == "val"], max_elements=max_elements).to(device)
+    config = TrainConfig(loss=args.loss, noise=args.noise, epochs=args.epochs,
+                         drop_provenance=tuple(args.drop_provenance or ()))
+    train = prepare(table[table["split"] == "train"], max_elements=max_elements,
+                    drop_provenance=config.drop_provenance).to(device)
+    val = prepare(table[table["split"] == "val"], max_elements=max_elements,
+                  drop_provenance=config.drop_provenance).to(device)
     logger.info("train %d, val %d formulas, pad width %d, device %s",
                 len(train), len(val), max_elements, device)
 
@@ -385,7 +401,15 @@ def main() -> None:
     print(f"wrote {args.out} ({args.models} models, pad width {max_elements})")
 
 
-def load_ensemble(path: Path, device: torch.device) -> Tuple[List[FormulaEnergyModel], TrainConfig]:
+def load_ensemble(
+    path: Path, device: torch.device
+) -> Tuple[List[FormulaEnergyModel], TrainConfig, List[str]]:
+    """Returns the members, the config, and the provenance features they expect.
+
+    The feature list travels with the checkpoint so a model trained before the
+    set grew keeps loading, and so a caller cannot silently hand it a vector of
+    the wrong width in the wrong order.
+    """
     payload = torch.load(path, map_location=device, weights_only=False)
     config = TrainConfig(**payload["config"])
     models = []
@@ -398,7 +422,7 @@ def load_ensemble(path: Path, device: torch.device) -> Tuple[List[FormulaEnergyM
         ).to(device)
         model.load_state_dict(state)
         models.append(model.eval())
-    return models, config
+    return models, config, list(payload["provenance_features"])
 
 
 if __name__ == "__main__":

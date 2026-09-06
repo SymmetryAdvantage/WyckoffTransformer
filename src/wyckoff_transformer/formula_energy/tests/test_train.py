@@ -54,6 +54,12 @@ def _synthetic(n_formulas=400, seed=0):
             "n_icsd": 2 if deep else 0, "has_icsd": deep,
             "max_force_min": 0.0, "max_force_median": 0.001,
             "n_elements": 2, "icsd_excess": 0.0 if deep else np.nan,
+            # What SystemDensity.attach adds: a denser neighbourhood for the
+            # well-searched half, so the fixture mirrors the real table.
+            "log1p_sys_entries_per_binary": 3.0 if deep else 0.5,
+            "log1p_sys_entries_per_ternary": 0.0,
+            "log1p_sys_hull_per_binary": 1.5 if deep else 0.2,
+            "log1p_sys_hull_per_ternary": 0.0,
         })
     return pd.DataFrame(rows).set_index("formula")
 
@@ -152,8 +158,11 @@ class TestEnsembleAndPersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ensemble.pt"
             T.save_ensemble(models, path, self.config)
-            restored, config = T.load_ensemble(path, torch.device("cpu"))
+            restored, config, names = T.load_ensemble(path, torch.device("cpu"))
         self.assertEqual(config.d_model, self.config.d_model)
+        # The feature list travels with the checkpoint so a model cannot be
+        # handed a provenance vector of the wrong width or order.
+        self.assertEqual(names, list(PROVENANCE_FEATURES))
         pd.testing.assert_frame_equal(before, T.predict(restored, self.data))
 
 

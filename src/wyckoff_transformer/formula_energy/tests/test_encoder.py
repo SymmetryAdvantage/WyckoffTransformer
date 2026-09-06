@@ -145,3 +145,47 @@ class TestFractionalEncoder(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSystemDensity(unittest.TestCase):
+    """The arity control is the whole point of the combinatoric normalisation."""
+
+    def _density(self):
+        from wyckoff_transformer.formula_energy.features import SystemDensity
+
+        # Every binary subsystem holds ten entries, two of them on the hull.
+        entries = {frozenset(pair): 10 for pair in (("Na", "Cl"), ("Na", "O"), ("Cl", "O"))}
+        hull = {frozenset(pair): 2 for pair in (("Na", "Cl"), ("Na", "O"), ("Cl", "O"))}
+        return SystemDensity(entries, hull)
+
+    def test_the_same_density_scores_the_same_at_any_arity(self):
+        # A ternary contains C(3,2) = 3 binary subsystems holding 30 entries
+        # between them; a binary contains one holding 10. Both are ten entries
+        # per binary subsystem, and the feature must say so.
+        import math
+
+        columns = self._density().columns(["Cl1Na1O1", "Cl1Na1"])
+        per_binary = columns["log1p_sys_entries_per_binary"]
+        self.assertAlmostEqual(per_binary.iloc[0], math.log1p(10.0), places=6)
+        self.assertAlmostEqual(per_binary.iloc[1], math.log1p(10.0), places=6)
+
+    def test_a_raw_count_would_not_have(self):
+        # Stated explicitly because this is what the normalisation buys: the raw
+        # totals differ threefold for the same underlying density.
+        raw_ternary = sum(10 for _ in range(3))
+        raw_binary = 10
+        self.assertNotEqual(raw_ternary, raw_binary)
+
+    def test_subsystems_larger_than_the_system_score_zero(self):
+        columns = self._density().columns(["Cl1Na1"])
+        self.assertEqual(columns["log1p_sys_entries_per_ternary"].iloc[0], 0.0)
+
+    def test_hull_entries_are_counted_separately(self):
+        import math
+
+        columns = self._density().columns(["Cl1Na1O1"])
+        self.assertAlmostEqual(columns["log1p_sys_hull_per_binary"].iloc[0], math.log1p(2.0), places=6)
+
+    def test_an_unseen_system_is_empty_not_missing(self):
+        columns = self._density().columns(["K1Br1"])
+        self.assertTrue((columns.to_numpy() == 0.0).all())

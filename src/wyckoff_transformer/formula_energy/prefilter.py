@@ -33,6 +33,7 @@ from wyckoff_transformer.csp import parse_formula
 from wyckoff_transformer.formula_energy import screen as screening
 from wyckoff_transformer.formula_energy import train as T
 from wyckoff_transformer.formula_energy.dataset import DEFAULT_TABLE, formula_key
+from wyckoff_transformer.formula_energy.features import SystemDensity
 
 logger = logging.getLogger(__name__)
 
@@ -148,13 +149,22 @@ def score_structures(
     reference: Optional[pd.DataFrame] = None,
     device: Optional[torch.device] = None,
     genes: Optional[Path] = None,
+    density: Optional[SystemDensity] = None,
+    feature_names: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     """Attach the screener's verdict to each row of a protocol ``structures.csv``.
 
     Args:
         genes: The gene file the run was made from. Used to recover the
             composition of rows whose reconstruction failed.
+        density: Neighbourhood densities, built from the archive. The only
+            provenance channel a never-computed composition can answer.
+        feature_names: The provenance features the ensemble expects, from
+            :func:`~.train.load_ensemble`.
     """
+    from wyckoff_transformer.formula_energy.features import PROVENANCE_FEATURES  # noqa: PLC0415
+
+    feature_names = list(feature_names or PROVENANCE_FEATURES)
     device = device or torch.device("cpu")
     frame = structures.copy()
     keys = reduced_keys(frame["formula"])
@@ -182,8 +192,10 @@ def score_structures(
     usable = frame["reduced_formula"].notna().to_numpy()
     frame["location"] = np.nan
     frame["sigma_epistemic"] = np.nan
-    data = T.prepare_formulas(frame.loc[usable, "reduced_formula"].tolist(),
-                              hull=frame.loc[usable, "hull"].to_numpy()).to(device)
+    keys_usable = frame.loc[usable, "reduced_formula"].tolist()
+    system = density.columns(keys_usable) if density is not None else None
+    data = T.prepare_formulas(keys_usable, hull=frame.loc[usable, "hull"].to_numpy(),
+                              system=system, feature_names=feature_names).to(device)
     predicted = T.predict(models, data)
     frame.loc[usable, "location"] = predicted["location"].to_numpy()
     frame.loc[usable, "sigma_epistemic"] = predicted["sigma_epistemic"].to_numpy()
@@ -293,8 +305,14 @@ def main() -> None:
     table = pd.read_parquet(args.table, columns=["e_hull_at_composition"])
     reference = load_reference(args.reference, args.reference_tolerance)
 
-    models, _ = T.load_ensemble(args.ensemble, device)
-    scored = score_structures(structures, models, table, reference, device, args.genes)
+    models, _, feature_names = T.load_ensemble(args.ensemble, device)
+    density = None
+    if any(name.startswith("log1p_sys_") for name in feature_names):
+        logger.info("building neighbourhood densities from the archive")
+        density = SystemDensity.from_table(
+            pd.read_parquet(args.table, columns=["e_form_min", "e_hull_at_composition", "chemsys"]))
+    scored = score_structures(structures, models, table, reference, device, args.genes,
+                              density, feature_names)
     if args.out:
         scored.to_csv(args.out, index=False)
 

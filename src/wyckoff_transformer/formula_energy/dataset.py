@@ -363,6 +363,10 @@ def build(
     table = build_formula_table(
         load_rows(energy_csv, provenance_csv, force_csv, max_force, max_abs_e_form, sources)
     )
+    # The archive defines the neighbourhood densities, so this is self-referential
+    # and has to come after the table exists.
+    from wyckoff_transformer.formula_energy.features import SystemDensity  # noqa: PLC0415
+    table = SystemDensity.from_table(table).attach(table)
     if split_by == "formula":
         table["split"] = assign_split(table.index, salt=salt).to_numpy()
     elif split_by == "chemsys":
