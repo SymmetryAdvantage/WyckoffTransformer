@@ -408,6 +408,21 @@ class TestGenerateEvaluateAndLogWp(unittest.TestCase):
                 generation_name="t", calibrate=False, n_structures=1, evaluator=evaluator)
         mock_eval.assert_called_once()
 
+    @patch("wyckoff_transformer.trainer.evaluate_and_log")
+    @patch("wyckoff_transformer.trainer.wandb")
+    @patch("wyckoff_transformer.trainer.MEDIA_TMP")
+    def test_recreates_missing_wandb_media_directory(
+            self, media_tmp, _mock_wandb, _mock_eval):
+        with tempfile.TemporaryDirectory() as tmp:
+            media_directory = Path(tmp) / "wandb-media"
+            media_tmp.name = str(media_directory)
+
+            trainer = self._make_trainer(tmp)
+            trainer.generate_evaluate_and_log_wp(
+                generation_name="t", calibrate=False, n_structures=1, evaluator=None)
+
+            self.assertTrue(media_directory.is_dir())
+
 
 class TestConditionTransform(unittest.TestCase):
     """The conditioning feature is stored in physical units; the transform is applied on the

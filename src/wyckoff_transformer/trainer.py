@@ -19,6 +19,7 @@ from omegaconf import OmegaConf, DictConfig
 from tqdm import trange
 import wandb
 from huggingface_hub import snapshot_download
+from wandb.sdk.data_types._private import MEDIA_TMP
 
 
 import wyckoff_transformer
@@ -75,6 +76,11 @@ CHECKPOINT_FILENAME = "last_checkpoint.pt"
 #: Bumped when the checkpoint layout changes in a way that makes older files unreadable.
 #: A resume that finds an older version fails loudly rather than restoring half a run.
 CHECKPOINT_FORMAT_VERSION = 1
+
+
+def ensure_wandb_media_directory() -> None:
+    """Restore W&B's media staging directory if a long-running job lost it from /tmp."""
+    Path(MEDIA_TMP.name).mkdir(parents=True, exist_ok=True)
 
 
 def atomic_torch_save(obj: Any, path: Path) -> None:
@@ -1621,6 +1627,7 @@ class WyckoffTrainer():
         # They are averaged over structures still placing real sites at that length; one that has
         # emitted STOP is excluded from that point on, rather than having its STOP scored as an
         # invalid Wyckoff position.
+        ensure_wandb_media_directory()
         wandb.log({
             "ss_validity": wandb.plot.line(validity_table, "known_seq_len", "ss_validity",
                 title="Site Symmetry validity"),
