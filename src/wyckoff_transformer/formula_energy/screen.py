@@ -27,8 +27,9 @@ this is a post-filter on a ranked list, never a primary screen.
 from __future__ import annotations
 
 import logging
-from typing import FrozenSet, Iterable, List, Optional, Sequence
+from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,68 @@ def entries_for_chemsys(reference: pd.DataFrame, elements: FrozenSet[str]) -> Li
         PDEntry(row.full_formula, row.energy_corrected, str(row.Index))
         for row in reference[inside.to_numpy()].itertuples()
     ]
+
+
+class HullLookup:
+    """Hull formation energy at arbitrary compositions, with the per-system work cached.
+
+    :func:`hull_energy_per_atom` rescans the whole reference for every call, which
+    is fine for a handful of candidates and hopeless for a thousand. This does the
+    element containment test once as a matrix operation -- the same device
+    ``evaluation/hull_energy.py`` uses -- and keeps one phase diagram per chemical
+    system, so a batch of candidates pays for each system once however many
+    compositions fall inside it.
+    """
+
+    #: Hydrogen through oganesson, indexed by ``Z - 1``.
+    N_ELEMENTS = 118
+
+    def __init__(self, reference: pd.DataFrame) -> None:
+        from pymatgen.core.periodic_table import Element  # noqa: PLC0415
+
+        self.reference = reference
+        rows = np.zeros((len(reference), self.N_ELEMENTS), dtype=bool)
+        for position, chemsys in enumerate(reference["chemsys"].astype(str)):
+            for symbol in chemsys.split("-"):
+                try:
+                    rows[position, Element(symbol).Z - 1] = True
+                except (ValueError, KeyError):
+                    pass
+        self._matrix = rows
+        self._diagrams: Dict[FrozenSet[str], object] = {}
+
+    def _mask(self, elements: FrozenSet[str]) -> np.ndarray:
+        from pymatgen.core.periodic_table import Element  # noqa: PLC0415
+
+        wanted = np.zeros(self.N_ELEMENTS, dtype=bool)
+        for symbol in elements:
+            wanted[Element(symbol).Z - 1] = True
+        # A row belongs in the subspace when it introduces no element the target
+        # does not have: rows & ~wanted must be empty.
+        return ~(self._matrix & ~wanted).any(axis=1)
+
+    def diagram(self, elements: FrozenSet[str]):
+        """The phase diagram over ``elements`` and all its subsystems."""
+        from pymatgen.analysis.phase_diagram import PDEntry  # noqa: PLC0415
+
+        if elements not in self._diagrams:
+            inside = self.reference[self._mask(elements)]
+            if inside.empty:
+                raise ValueError(f"No reference entries cover {sorted(elements)}")
+            entries = [
+                PDEntry(row.full_formula, row.energy_corrected, str(row.Index))
+                for row in inside.itertuples()
+            ]
+            self._diagrams[elements] = _phase_diagram(entries)
+        return self._diagrams[elements]
+
+    def hull_energy_per_atom(self, formula: str) -> float:
+        """What a structure at ``formula`` must beat, in eV/atom of formation energy."""
+        from pymatgen.core.composition import Composition  # noqa: PLC0415
+
+        composition = Composition(formula)
+        elements = frozenset(str(element) for element in composition.elements)
+        return self.diagram(elements).get_hull_energy_per_atom(composition)
 
 
 def hull_energy_per_atom(reference: pd.DataFrame, formula: str) -> float:

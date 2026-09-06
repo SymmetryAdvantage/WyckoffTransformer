@@ -348,6 +348,43 @@ def save_ensemble(models: Sequence[FormulaEnergyModel], path: Path, config: Trai
     }, path)
 
 
+def main() -> None:
+    """Fit an ensemble on a formula table and save it, for screening.
+
+    ``experiment.py`` trains models to compare them and throws them away; this
+    trains one to keep. Screening a *generated* structure wants the model fitted
+    on the whole archive, not the shallow world, because the hull it will be
+    compared against is the whole archive's.
+    """
+    import argparse  # noqa: PLC0415
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument("--table", type=Path, default=Path("data/formula_energy/formula_table.parquet"))
+    parser.add_argument("--out", type=Path, default=Path("runs/formula_energy/ensemble.pt"))
+    parser.add_argument("--models", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--noise", type=float, default=TrainConfig.noise)
+    parser.add_argument("--loss", choices=("censored", "mse"), default="censored")
+    parser.add_argument("--device", type=torch.device, default=None)
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+
+    from wyckoff_transformer.csp import parse_formula  # noqa: PLC0415
+
+    table = pd.read_parquet(args.table)
+    device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    max_elements = max(len(parse_formula(formula)) for formula in table.index)
+    config = TrainConfig(loss=args.loss, noise=args.noise, epochs=args.epochs)
+    train = prepare(table[table["split"] == "train"], max_elements=max_elements).to(device)
+    val = prepare(table[table["split"] == "val"], max_elements=max_elements).to(device)
+    logger.info("train %d, val %d formulas, pad width %d, device %s",
+                len(train), len(val), max_elements, device)
+
+    models, _ = train_ensemble(train, val, config, device, n_models=args.models)
+    save_ensemble(models, args.out, config)
+    print(f"wrote {args.out} ({args.models} models, pad width {max_elements})")
+
+
 def load_ensemble(path: Path, device: torch.device) -> Tuple[List[FormulaEnergyModel], TrainConfig]:
     payload = torch.load(path, map_location=device, weights_only=False)
     config = TrainConfig(**payload["config"])
@@ -362,3 +399,7 @@ def load_ensemble(path: Path, device: torch.device) -> Tuple[List[FormulaEnergyM
         model.load_state_dict(state)
         models.append(model.eval())
     return models, config
+
+
+if __name__ == "__main__":
+    main()
