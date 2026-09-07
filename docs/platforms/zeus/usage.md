@@ -100,9 +100,9 @@ works — argparse accepts the flag and the script then raises
 `NotImplementedError: n_jobs is not implemented yet` before doing anything
 (`scripts/tokenise_a_dataset.py:26`). Omit it.
 
-**The CrySPR relaxation scripts get it wrong.** `scripts/cryspr_orb.py`,
-`cryspr_orb_correction.py` and `cryspr_chgnet.py` use `os.cpu_count()`, i.e.
-**48**, unless `NP` is set:
+**The CrySPR relaxation scripts get it wrong.** `scripts/cryspr_chgnet.py`
+and `cryspr_pyxtal_chgnet.py` use `os.cpu_count()`, i.e. **48**, unless `NP` is
+set:
 
 ```python
 try:
@@ -117,7 +117,7 @@ workers each running a multi-threaded BLAS is far slower than a pool of
 single-threaded ones. Set both:
 
 ```bash
-NP=16 OMP_NUM_THREADS=1 python scripts/cryspr_orb.py ...
+NP=16 OMP_NUM_THREADS=1 python scripts/cryspr_chgnet.py ...
 ```
 
 **16 is the established figure** for CPU MLIP work on this box — it fits inside
@@ -133,18 +133,22 @@ worker, which is what makes an N-worker pool actually use N cores.
 
 ---
 
-## MLIP relaxation: CPU by default
+## MLIP relaxation: ask for CPU explicitly
 
-The CrySPR scripts default to `ORB_DEVICE=cpu`:
+`wyformer-cryspr --device` defaults to **`auto`**, which picks CUDA whenever a
+card is visible (`src/wyckoff_transformer/cli/relax.py:167`). On zeus that is
+usually the wrong choice: the GPUs are contended while the 24 cores are not, and
+a wide CPU pool beats queueing behind someone else's training run. Pass
+`--device cpu` for anything long, and leave `auto` for short jobs.
 
-```python
-DEFAULT_ORB_DEVICE = os.environ.get("ORB_DEVICE", "cpu")
-```
-
-That default suits zeus: the GPUs are usually contended while 24 cores are
-usually not, and a wide CPU pool beats queueing behind someone else's training
-run. `wyformer-cryspr --device` accepts `cpu`, `cuda` or `auto` if you want to
-override it for a short job.
+There is no longer an `ORB_DEVICE` environment variable. The standalone
+`cryspr_*orb*.py` scripts that read it were deleted: they loaded
+`orb_v3_conservative_inf_mpa`, whose energies sit on a different scale from the
+OMat24 hull the protocol scores against. Relaxation goes through
+`wyformer-cryspr` / `wyformer-protocol --stage relax`, which build their
+calculator with `build_hull_calculator`
+(`src/wyckoff_transformer/evaluation/hull_mlips.py`) and so stay paired with
+the hull.
 
 `cuequivariance_torch` is **not installed**, so the cuEQ acceleration path for
 MACE and TACE is off. Both builders check for it by import and fall back
