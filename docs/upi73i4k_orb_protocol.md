@@ -30,6 +30,12 @@ worker-hours in total.
 Uniqueness is exact and unremarkable: `StructureMatcher` found no duplicate
 among the 2271, so every valid structure is distinct.
 
+**These numbers are at one PyXtal trial per gene, which understates the model.**
+Over the gene-novel genes, MetaSUN is 0.1388 at one trial, 0.1732 at two and
+0.1911 at three, and the shortfall is concentrated in the structurally complex
+genes. See [the trial budget](#the-trial-budget); the funnel above has not been
+re-derived at the recommended budget.
+
 ## By degrees of freedom
 
 Every table here is also reported per positional degree of freedom — Σ `dof`
@@ -184,11 +190,134 @@ Three things differ at once, so this is not a model-to-model comparison:
 - novelty: `StructureMatcher` here, structure-matcher-based novelty in the
   `single_mlip` config there (0.740).
 
-## The trial budget is the open question
+## The trial budget
 
-One PyXtal trial per gene is the protocol's biggest deliberate approximation,
-and the recovery table above shows it is not a uniform one. Two further
-measurements, on the gene-known cohort re-run with 3 trials:
+One PyXtal trial per gene was the protocol's biggest deliberate approximation,
+and it is not a uniform one. To size it, all 2500 genes were re-run with 3
+trials and every trial scored separately, so best-of-k can be replayed offline
+for any k: pick the lowest-energy trial of each subset of size k and average
+over all subsets of that size, which removes the arbitrary trial ordering.
+
+2487 of 2500 genes completed all three trials. The 13 that did not are
+discussed under [generation failures](#pyxtal-generation-fails-on-a-fixed-set-of-genes).
+
+### What extra trials buy
+
+Energy first, because it is measurable for every gene rather than only the ones
+with a known answer:
+
+| Σ dof | genes | median gain, k=2 | median gain, k=3 |
+|---|---:|---:|---:|
+| 0 | 493 | 0.0000 | 0.0001 |
+| 1-2 | 563 | 0.0001 | 0.0001 |
+| 3-5 | 706 | **0.0456** | **0.0641** |
+| 6-10 | 445 | 0.0508 | 0.0722 |
+| >10 | 285 | 0.0445 | 0.0643 |
+
+The median gene below dof 3 gains nothing from a second trial. The median gene
+above it gains ~50 meV/atom — half the metastability threshold.
+
+Over the 1873 gene-novel genes (novelty of a gene-known one depends on which
+trial was selected, so those are excluded from this denominator):
+
+| | k=1 | k=2 | k=3 |
+|---|---:|---:|---:|
+| valid | 0.9018 | 0.9025 | 0.9028 |
+| **MetaSUN** | **0.1388** | **0.1732** | **0.1911** |
+| SUN | 0.0044 | 0.0053 | 0.0059 |
+| mean `e_hull` | 0.4185 | 0.3544 | 0.3323 |
+
+A second trial raises MetaSUN by 25% relative, a third by 38%. Validity does not
+move at all: extra trials buy energy and nothing else.
+
+**And the gain is concentrated where reconstruction is hardest**, which is what
+makes this a bias rather than a constant:
+
+| Σ dof | genes | k=1 | k=2 | k=3 | gain |
+|---|---:|---:|---:|---:|---:|
+| 0 | 178 | 0.1723 | 0.1816 | 0.1854 | +0.013 |
+| 1-2 | 383 | 0.1880 | 0.2063 | 0.2115 | +0.024 |
+| 3-5 | 611 | 0.1451 | 0.1849 | 0.2046 | +0.060 |
+| 6-10 | 414 | 0.0998 | 0.1481 | 0.1763 | **+0.077** |
+| >10 | 279 | 0.0980 | 0.1386 | 0.1649 | +0.067 |
+
+At k=1 MetaSUN appears to fall steadily with dof, 0.188 to 0.098. At k=3 that
+trend is largely gone (0.212 to 0.165, and no longer monotone). **Most of the
+"complex genes give worse materials" signal in one-trial data is a
+reconstruction artefact.** Reporting it as a property of the model would have
+been wrong.
+
+### Sampling is the bottleneck, not selection
+
+The gene-known cohort gives the same answer against ground truth, and settles a
+second question. *Delivered* is "the lowest-energy trial matches"; *coverage* is
+"any trial matches", i.e. what a perfect selection rule would reach:
+
+| | k=1 | k=2 | k=3 |
+|---|---:|---:|---:|
+| delivered | 0.803 | 0.867 | 0.895 |
+| coverage | 0.804 | 0.876 | 0.909 |
+
+They are within 1.4 points everywhere. The energy criterion essentially never
+discards a correct answer it already had, so **a better selection rule or
+re-ranker has almost nothing to win** — the entire loss is in the proposal
+distribution. By dof, delivered:
+
+| Σ dof | genes | k=1 | k=2 | k=3 |
+|---|---:|---:|---:|---:|
+| 0 | 315 | 0.982 | 0.986 | 0.987 |
+| 1-2 | 180 | 0.741 | 0.848 | 0.894 |
+| 3-5 | 95 | 0.530 | 0.709 | 0.789 |
+| 6-10 | 31 | 0.333 | 0.387 | 0.419 |
+| >10 | 6 | 0.056 | 0.111 | 0.167 |
+
+The tail stays broken: at dof >10 three trials reach 0.167, so its per-trial
+probability is nearer 0.06 than 0.2 and no affordable budget fixes it.
+
+### The recommended allocation
+
+Fitting each bin's curve with a mixture — a fraction `M` of genes reachable at
+per-trial probability `p`, the rest not reachable at all, `m(k) = M(1-(1-p)^k)` —
+because the measured curves rise more slowly than independent trials would
+predict, genes within a bin not being exchangeable:
+
+| Σ dof | per-trial `p` | MetaSUN ceiling |
+|---|---:|---:|
+| 0 | 0.927 | 0.185 |
+| 1-2 | 0.886 | 0.212 |
+| 3-5 | 0.687 | 0.209 |
+| 6-10 | 0.487 | 0.203 |
+| >10 | 0.526 | 0.183 |
+
+**The ceilings are flat.** MetaSUN spread across dof is 1.95x at k=1 and 1.16x
+at the ceiling, so almost the whole dof dependence of apparent material quality
+is reconstruction failure. Allocating to equalise the fraction of ceiling
+reached:
+
+| target | dof 0 | 1-2 | 3-5 | 6-10 | >10 | cost | MetaSUN |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 90% | 1 | 2 | 2 | 4 | 4 | 3.35x | 0.1881 |
+| **95%** | **2** | **2** | **3** | **5** | **5** | **4.26x** | **0.1961** |
+| 99% | 2 | 3 | 4 | 7 | 7 | 5.92x | 0.1997 |
+
+**Recommended: 2 / 2 / 3 / 5 / 5**, about 36 GPU-worker-hours per 2500-gene
+evaluation against 8.6 for one uniform trial.
+
+**Dof-aware allocation is not a cost saving.** An earlier draft of this document
+claimed it was. Allocating greedily by marginal MetaSUN per second gives 0.1795
+at 2x cost against uniform k=2's 0.1758 — a 2% relative gain, because cheap bins
+have cheap trials and expensive bins expensive ones and the two effects cancel;
+worse, that objective buys trials at dof 0, where they are cheap and nearly
+worthless. The case for allocating by dof is that uniform budgets leave the bias
+in — at uniform k=3 the tail is still at 86% of its ceiling while dof 0 is at
+100% — and a ranking instrument whose bias varies 2x with a property the arms
+differ in is not measuring the model.
+
+Everything beyond k=3 is extrapolation from two parameters fitted to three
+points. The >10 bin's MetaSUN fit (`p`=0.53) disagrees sharply with its recovery
+fit (`p`=0.06, on 6 genes), so that row's true budget may be far higher than 5.
+
+### Why more trials, rather than better ones
 
 **How often do the trials of a gene even disagree?** Spread between the best and
 worst trial's converged energy:
@@ -224,13 +353,15 @@ The raw PyXtal energy is dominated by atomic overlap and carries almost no
 information about which basin the trial will fall into. Ten steps do not fix
 that. This route is closed.
 
-What remains, in order of how well the evidence supports it:
+A learned re-ranker over the same signal is also closed, for a different
+reason: coverage and delivered recovery agree to within 1.4 points, so there is
+essentially no correct answer being generated and then discarded.
 
-1. **Allocate the budget by dof**, sized to equalise recovery probability rather
-   than compute — flat recovery across dof is what makes two variants
-   comparable when their dof mixes differ. Better still, run trials until two
-   agree and cap by dof, which adapts within a bin. Dof is a property of the
-   gene, so the allocation costs nothing to decide.
+What remains, given that the loss is entirely in the proposal distribution:
+
+1. **Allocate the budget by dof**, as above. Running trials until two agree,
+   capped by dof, would adapt within a bin; dof is a property of the gene, so
+   the allocation costs nothing to decide.
 2. **Predict the free coordinates.** The gene fixes symmetry and occupancy but
    not the free coordinates or the lattice, so PyXtal draws them near-uniformly
    and any trial budget is rejection sampling against that. This is the only
@@ -244,11 +375,11 @@ What remains, in order of how well the evidence supports it:
    | lattice dof | 2.29 | 2 | 6 |
 
    The lattice is half the nominal search space — 19.7% of genes have no
-   positional freedom at all — but almost none of the difficulty: those same
-   genes recover 98.9% of the time, because the cell is relaxed by gradient
-   descent in both stages and is effectively unimodal. Predicting the lattice,
-   volume included, buys optimisation steps, not basins. **The failures are
-   entirely positional.**
+   positional freedom at all — and those genes recover 98.9% of the time, which
+   suggests the cell is not where the difficulty lies. That reading turns out to
+   be too quick: stage 1 relaxes positions at *fixed cell*, so the guessed
+   volume is the box the positions are arranged in before the cell is ever
+   released. See the volume measurement below.
 
    And the target is well posed. Of the 627 gene fingerprints in this run that
    occur in LeMat-Bulk, **617 (98.4%) map to exactly one structurally distinct
@@ -358,6 +489,31 @@ its effect legible if it is ever taken.
 Whatever the budget, **report MetaSUN stratified by dof**. It is free and it
 keeps the reconstruction bias visible instead of confounded with the quantity
 being measured.
+
+## PyXtal generation fails on a fixed set of genes
+
+10 of the 2500 genes produced no structure in the 1-trial run. In the 3-trial
+run, 13 genes never completed — and **all 10 of the originals are among them**,
+so this is a reproducible property of those genes, not sampling noise. Their
+trial directories are empty: no generated CIF, no relaxation log. PyXtal was
+retrying random generation, up to `max_count`, for as long as 45 minutes per
+trial; the run was stopped rather than waited out, which costs nothing, since
+the per-trial analysis reads the trial directories directly and empty ones
+contribute nothing either way.
+
+They fall into two groups:
+
+| group | genes | character |
+|---|---|---|
+| enormous search | 280, 638, 1808, 1856, 1871, 2245 | dof 50–186, up to 472 atoms, low symmetry |
+| small and highly symmetric | 942, 1430, 1987, 2122 | **dof 0–2**, 5–32 atoms, space groups 221/225/165 |
+
+The second group is the informative one. With dof 0 or 1 there is essentially
+nothing to sample, so PyXtal cannot be failing to *find* coordinates — it is
+failing to satisfy its distance constraints in the cell it is trying to build.
+That points at the same two hard-coded constants as the volume bias: they do
+not merely inflate cells by 18%, they make some compact high-symmetry genes
+unsatisfiable outright. Exposing them as parameters would address both.
 
 ## What this run changed in the protocol
 

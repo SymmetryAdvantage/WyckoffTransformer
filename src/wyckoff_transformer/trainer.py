@@ -19,11 +19,18 @@ from omegaconf import OmegaConf, DictConfig
 from tqdm import trange
 import wandb
 from huggingface_hub import snapshot_download
+from wandb.sdk.data_types._private import MEDIA_TMP
 
 
 import wyckoff_transformer
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
+from wyckoff_transformer.censored import CensoredMinDiagnostics, CensoredMinLoss
+from wyckoff_transformer.composition import (
+    COMPOSITION_FIELD,
+    attach_composition_vector,
+    composition_conditioning_dim,
+)
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers,
     load_wyckoff_mappings, WYCKOFF_MAPPINGS_FILENAME,
@@ -57,6 +64,95 @@ def get_condition_transform(name: Optional[str]):
             f"Unknown condition_transform {name!r}; available: {sorted(CONDITION_TRANSFORMS)}") from None
 
 
+def normalise_condition_features(condition_feature) -> Tuple[str, ...]:
+    """One name, a list of names, or nothing, as the tuple the trainer works with.
+
+    A config may write `condition_feature: energy_above_hull` or
+    `condition_feature: [energy_above_hull, delta_e_polymorph, max_force]`; both reach
+    here. The tuple's ORDER is what every AdaLN weight is tied to, so it is preserved
+    exactly as written and duplicates are refused -- a repeated name would give one
+    feature two columns and shift every column after it.
+    """
+    if condition_feature is None:
+        return ()
+    if isinstance(condition_feature, str):
+        return (condition_feature,)
+    features = tuple(str(name) for name in condition_feature)
+    duplicates = sorted({name for name in features if features.count(name) > 1})
+    if duplicates:
+        raise ValueError(
+            f"condition_feature repeats {duplicates}; each feature owns exactly one column")
+    return features
+
+
+def normalise_condition_scales(condition_scale, features: Tuple[str, ...]) -> Tuple[float, ...]:
+    """A divisor per conditioning feature, applied before its transform.
+
+    The conditioning channels are not commensurable. Energy above hull and the polymorph
+    gap live on the same eV/atom scale as each other, but `max_force` is a hundred times
+    smaller: its median over this archive is 0.0035 eV/A against 0.23 eV/atom for e_hull,
+    so `log1p` leaves it a near-constant input and the AdaLN modulation has to make up
+    the difference in the weight. Dividing it by 0.01 -- reading it in centi-eV/A -- puts
+    the three channels within a factor of two of each other before the transform sees
+    them, without introducing a fitted statistic that would then have to be persisted
+    alongside the weights.
+
+    Accepts one number for every feature, a list in `features` order, or a mapping keyed
+    by feature name. The stored data and every value crossing the API stay in physical
+    units; this is applied on the way into the model, exactly like the transform.
+    """
+    if condition_scale is None:
+        scales = (1.0,) * len(features)
+    elif isinstance(condition_scale, (int, float)):
+        scales = (float(condition_scale),) * len(features)
+    elif isinstance(condition_scale, (dict, DictConfig)):
+        unknown = sorted(set(condition_scale) - set(features))
+        if unknown:
+            raise ValueError(
+                f"condition_scale names {unknown}, which are not conditioning features "
+                f"{list(features)}")
+        scales = tuple(float(condition_scale.get(name, 1.0)) for name in features)
+    else:
+        scales = tuple(float(value) for value in condition_scale)
+        if len(scales) != len(features):
+            raise ValueError(
+                f"condition_scale has {len(scales)} entries for {len(features)} conditioning "
+                f"features {list(features)}; give one per feature, one number for all of "
+                "them, or a mapping keyed by feature name")
+    bad = [name for name, scale in zip(features, scales) if not scale > 0]
+    if bad:
+        raise ValueError(f"condition_scale must be positive; {bad} are not")
+    return scales
+
+
+def normalise_condition_transforms(
+    condition_transform, features: Tuple[str, ...]) -> Tuple[Optional[str], ...]:
+    """A transform name per conditioning feature.
+
+    Accepts one name applied to every feature (the historical form, and the right one
+    when the features share a support), a list in `features` order, or a mapping from
+    feature name to transform for the case where they do not -- `log1p` is only defined
+    on non-negative values, so a formation energy and an energy above hull cannot share
+    it.
+    """
+    if condition_transform is None or isinstance(condition_transform, str):
+        return (condition_transform,) * len(features)
+    if isinstance(condition_transform, (dict, DictConfig)):
+        unknown = sorted(set(condition_transform) - set(features))
+        if unknown:
+            raise ValueError(
+                f"condition_transform names {unknown}, which are not conditioning features "
+                f"{list(features)}")
+        return tuple(condition_transform.get(name) for name in features)
+    transforms = tuple(condition_transform)
+    if len(transforms) != len(features):
+        raise ValueError(
+            f"condition_transform has {len(transforms)} entries for {len(features)} "
+            f"conditioning features {list(features)}; give one per feature, one name for "
+            "all of them, or a mapping keyed by feature name")
+    return transforms
+
+
 #: Prefix `torch.compile` adds to every parameter name of the module it wraps.
 _COMPILE_PREFIX = "_orig_mod."
 
@@ -69,6 +165,11 @@ CHECKPOINT_FILENAME = "last_checkpoint.pt"
 #: Bumped when the checkpoint layout changes in a way that makes older files unreadable.
 #: A resume that finds an older version fails loudly rather than restoring half a run.
 CHECKPOINT_FORMAT_VERSION = 1
+
+
+def ensure_wandb_media_directory() -> None:
+    """Restore W&B's media staging directory if a long-running job lost it from /tmp."""
+    Path(MEDIA_TMP.name).mkdir(parents=True, exist_ok=True)
 
 
 def atomic_torch_save(obj: Any, path: Path) -> None:
@@ -167,6 +268,21 @@ class WyckoffTrainer():
     #: does not depend on a horizon. train() checks this against the run it is about to do.
     scheduler_total_steps = None
 
+    #: Which likelihood a Scalar target is fitted with, "mse" or "censored". A class
+    #: attribute for the same reason as `scheduler_steps_per_batch`: the Scalar paths
+    #: branch on it, and a trainer built by __new__ should read as the default.
+    scalar_loss = "mse"
+
+    #: Set to a CensoredMinDiagnostics when scalar_loss is "censored", and None otherwise.
+    censored_diagnostics = None
+
+    #: Whether the target composition is part of the conditioning vector, and the width
+    #: of the element vocabulary it is expressed over. Class attributes for the same
+    #: reason as `scheduler_steps_per_batch`: every conditioning path reads them.
+    composition_conditioning = False
+    condition_on_cell_size = True
+    n_elements = None
+
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
     resume = False
 
@@ -208,6 +324,11 @@ class WyckoffTrainer():
         production_training: bool = False,
         condition_feature: Optional[str] = None,
         condition_transform: Optional[str] = None,
+        condition_scale: Optional[float] = None,
+        scalar_loss: str = "mse",
+        censored_loss_args: Optional[dict] = None,
+        composition_conditioning: bool = False,
+        condition_on_cell_size: bool = True,
         resume: bool = False,
     ):
         """
@@ -248,10 +369,43 @@ class WyckoffTrainer():
             processor: Optional WyckoffProcessor instance.
             tokeniser_config: Configuration for the tokenisers.
             production_training: If True, merges all dataset splits (train/val/test) for training.
-            condition_feature: Name of the feature to condition on via AdaLN.
+            condition_feature: Name of the feature to condition on via AdaLN, or a list of
+                names for several. Each occupies one column of the conditioning vector, in
+                the order given; that order is what the learned AdaLN weights are tied to,
+                so reordering the list repoints every one of them.
             condition_transform: Name of a transform from CONDITION_TRANSFORMS applied to the
-                conditioning feature on its way into the model. The stored data and the values
-                accepted by generate_structures stay in physical units.
+                conditioning features on their way into the model. One name applies to every
+                feature; a list gives one per feature in `condition_feature` order; a mapping
+                keyed by feature name does the same for the case where only some need one.
+                The stored data and the values accepted by generate_structures stay in
+                physical units.
+            condition_scale: Divisor applied to each conditioning feature before its
+                transform, in the same one-for-all / list / mapping forms as
+                condition_transform. Defaults to 1. It exists to put channels of very
+                different magnitude on a comparable footing -- see
+                normalise_condition_scales.
+            scalar_loss: Which likelihood a Scalar target is fitted with. "mse" regresses the
+                conditional mean, which for a Wyckoff gene is E[E | gene]. "censored" reads
+                every label as an upper bound and regresses min(E | gene) instead -- what CSP
+                wants, since the gene fixes neither the coordinates nor the cell and the
+                downstream reconstruction gets many attempts at the manifold it does fix.
+                See wyckoff_transformer.censored. Requires CascadeTransformer_args.outputs=2
+                unless censored_loss_args sets predict_scale=False.
+            censored_loss_args: Keyword arguments for CensoredMinLoss when scalar_loss is
+                "censored": noise, min_scale, predict_scale, init_scale.
+            composition_conditioning: Condition on the target chemical formula, as a vector
+                over the element vocabulary appended to whatever `condition_feature`
+                supplies. Requires the tokeniser to emit the composition counters
+                ('counters: {composition: elements}' under sequence_fields) and
+                CascadeTransformer_args.condition_dim to equal `self.condition_dim`, which
+                this constructor checks. See wyckoff_transformer.composition.
+            condition_on_cell_size: Also feed the model log1p of the cell's atom count,
+                as one more column of that vector. An input, not a prediction: the model
+                is *told* the size, so every sampling call has to commit to one. Leave it
+                on for de novo generation; turn it off for a model meant for CSP, where
+                the cell size is what the model is being asked to choose and telling it
+                the answer forces the decoder to work one z at a time.
+                See docs/csp_mode.md.
             resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
@@ -284,10 +438,28 @@ class WyckoffTrainer():
                 raise ValueError("batch_size and train_batch_size differ")
 
         self.run_path = run_path
+        # Order matters only in that both setters re-derive the per-feature transforms, so
+        # whichever is assigned second sees a consistent pair.
         self.condition_feature = condition_feature
+        self.condition_scale = condition_scale
         self.condition_transform = condition_transform
-        self._condition_transform_fn = get_condition_transform(condition_transform)
-        extra_fields = [condition_feature] if condition_feature is not None else None
+        extra_fields = list(self.condition_features) or None
+        self.scalar_loss = scalar_loss
+        self.censored_diagnostics = None
+        self.composition_conditioning = composition_conditioning
+        self.condition_on_cell_size = condition_on_cell_size
+        self.n_elements = len(tokenisers["elements"]) if "elements" in tokenisers else None
+        if composition_conditioning:
+            if self.n_elements is None:
+                raise ValueError(
+                    "composition_conditioning needs an 'elements' tokeniser to size the vector")
+            # Densify before the datasets are built: they keep only cascade_order and
+            # extra_fields, and the ragged counters the tokeniser stores are neither.
+            for raw in (train_dataset, val_dataset, test_dataset):
+                if raw is not None:
+                    attach_composition_vector(
+                        raw, self.n_elements, condition_on_cell_size=condition_on_cell_size)
+            extra_fields = (extra_fields or []) + [COMPOSITION_FIELD]
 
         if target == TargetClass.NextToken:
             # Sequences have difference lengths, so we need to make sure that
@@ -298,9 +470,22 @@ class WyckoffTrainer():
                 raise NotImplementedError("NumUniqueTokens is not implemented without permutations")
             self.criterion = nn.MSELoss(reduction="none")
         elif target == TargetClass.Scalar:
-            # Assumes the batch size is the same for all batches
-            self.criterion = nn.MSELoss(reduction='mean')
-            self.testing_criterion = nn.L1Loss(reduction='mean')
+            if scalar_loss == "mse":
+                # Assumes the batch size is the same for all batches
+                self.criterion = nn.MSELoss(reduction='mean')
+                self.testing_criterion = nn.L1Loss(reduction='mean')
+            elif scalar_loss == "censored":
+                # Regressing min(E | gene) rather than E[E | gene]: every label is
+                # an upper bound on the target, so the loss reads it as one. See
+                # wyckoff_transformer.censored.
+                self.criterion = CensoredMinLoss(
+                    reduction='mean', **(censored_loss_args or {})).to(device)
+                # Reported instead of an MAE, which is not the objective and is
+                # floored by the mean excess. Selects checkpoints on the NLL.
+                self.testing_criterion = self.criterion
+                self.censored_diagnostics = CensoredMinDiagnostics(self.criterion)
+            else:
+                raise ValueError(f"Unknown scalar_loss: {scalar_loss}")
         else:
             raise ValueError(f"Unknown target: {target}")
         
@@ -358,7 +543,7 @@ class WyckoffTrainer():
                 {"config": {"lr": optimisation_config.optimiser.lr_per_sqrt_n_samples * samples_per_step**0.5}})
         optimizer_module_obj = importlib.import_module(optimisation_config.optimiser.get("module", "torch.optim"))
         self.optimizer = getattr(optimizer_module_obj, optimisation_config.optimiser.name)(
-            model.parameters(), **optimisation_config.optimiser.config)
+            list(self.trainable_parameters()), **optimisation_config.optimiser.config)
         # Generation-only mode has no training set, so a step-indexed schedule has no
         # horizon to size itself from -- and nothing ever steps it. Skipping it here is
         # what lets a run trained under such a schedule be sampled without its dataset.
@@ -445,19 +630,46 @@ class WyckoffTrainer():
         if self.max_sequence_length is None:
             raise ValueError("max_sequence_length must be available from datasets or provided explicitly")
 
-        # Pre-cast conditioning feature to (num_examples, condition_dim) float32 on self.device,
+        # Pre-cast every conditioning feature to (num_examples, 1) float32 on self.device,
         # so the loss path can index without a per-step .to(device).to(float32).
-        if self.condition_feature is not None:
+        for name, transform in zip(self.condition_features, self.condition_transforms):
             for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
                 if ds is None:
                     continue
-                cond_tensor = ds.data[self.condition_feature].to(self.device, dtype=torch.float32)
+                cond_tensor = ds.data[name].to(self.device, dtype=torch.float32)
                 if cond_tensor.dim() == 1:
                     cond_tensor = cond_tensor.unsqueeze(1)
-                ds.data[self.condition_feature] = cond_tensor
+                if cond_tensor.dim() != 2 or cond_tensor.shape[-1] != 1:
+                    raise ValueError(
+                        f"Conditioning feature {name!r} is {tuple(cond_tensor.shape)}; a "
+                        "conditioning feature is one scalar per structure.")
+                # `no_processing` copies a dataframe column into a tensor untouched, so a
+                # feature that was NaN for some rows arrives NaN here and would otherwise
+                # poison every AdaLN modulation it touches without ever raising.
+                if bool(torch.isnan(cond_tensor).any()):
+                    raise ValueError(
+                        f"Conditioning feature {name!r} has NaN values. Drop or impute them "
+                        "when the dataset is built; nothing downstream masks them.")
+                ds.data[name] = cond_tensor
                 # Stored in physical units; the transform is applied on the way into the model.
                 # Validate once here rather than per step, which would force a device sync.
-                self._validate_condition_values(cond_tensor)
+                self._validate_condition_column(name, transform, cond_tensor)
+        if self.composition_conditioning:
+            for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
+                if ds is None:
+                    continue
+                ds.data[COMPOSITION_FIELD] = ds.data[COMPOSITION_FIELD].to(
+                    self.device, dtype=torch.float32)
+        # Unconditionally, not only for composition_conditioning: a config declaring a
+        # condition_dim wider than what build_cond produces used to pass every check here
+        # and fail later inside nn.Linear with a bare shape mismatch.
+        declared = getattr(self.model, "condition_dim", None)
+        if declared != self.condition_dim:
+            raise ValueError(
+                f"The model was built with condition_dim={declared}, but this run's "
+                f"conditioning is {self.condition_dim} wide: "
+                f"{self.describe_condition_layout()}. Set "
+                f"CascadeTransformer_args.condition_dim to {self.condition_dim}.")
     
         # Optional: omit, or set to null, to train without a norm constraint. The pre-clip norm
         # is logged either way, so a run can watch the gradient scale without being shaped by it.
@@ -489,24 +701,236 @@ class WyckoffTrainer():
                 f"checkpoint_period must be at least 1 epoch, got {self.checkpoint_period}")
         self.early_stopping_patience_epochs = optimisation_config.early_stopping_patience_epochs
         self.target = target
+        self.target_name = target_name
         self.multiclass_next_token_with_order_permutation = multiclass_next_token_with_order_permutation
         self.evaluation_samples = evaluation_samples
         self.start_token_distribution = start_token_distribution
 
 
-    def _validate_condition_values(self, values: Tensor):
-        """Reject conditioning values the transform cannot represent, with a legible message."""
-        if self.condition_transform == "log1p" and bool((values < 0).any()):
+    def trainable_parameters(self):
+        """Every parameter the optimiser should move.
+
+        Almost always just the model's. `CensoredMinLoss` with `predict_scale=False`
+        holds the excess scale as a parameter of the criterion, and it has to be
+        optimised alongside the weights or the likelihood is fitted at a fixed scale
+        nobody chose.
+        """
+        yield from self.model.parameters()
+        if isinstance(self.criterion, nn.Module):
+            yield from self.criterion.parameters()
+
+
+    @property
+    def condition_feature(self):
+        """What the config asked for: None, one name, or the tuple of names.
+
+        `condition_features` is the canonical form and is what the rest of the class
+        reads. This stays a single string for a single-feature run so that the CLIs,
+        the diagnostics scripts and the saved configs keep round-tripping unchanged.
+        """
+        if not self._condition_features:
+            return None
+        if len(self._condition_features) == 1:
+            return self._condition_features[0]
+        return self._condition_features
+
+
+    @condition_feature.setter
+    def condition_feature(self, value):
+        self._condition_features = normalise_condition_features(value)
+        self._rebuild_condition_transforms()
+
+
+    @property
+    def condition_features(self) -> Tuple[str, ...]:
+        """The conditioning features in column order; empty when unconditional."""
+        return self._condition_features
+
+
+    @property
+    def condition_transform(self):
+        """The transform spec as configured: a name, a list, a mapping, or None."""
+        return self._condition_transform
+
+
+    @condition_transform.setter
+    def condition_transform(self, value):
+        self._condition_transform = value
+        self._rebuild_condition_transforms()
+
+
+    @property
+    def condition_scale(self):
+        """The scale spec as configured: a number, a list, a mapping, or None."""
+        return self._condition_scale
+
+
+    @condition_scale.setter
+    def condition_scale(self, value):
+        self._condition_scale = value
+        self._rebuild_condition_transforms()
+
+
+    def _rebuild_condition_transforms(self):
+        """Re-derive the per-feature transform names, functions and scales.
+
+        Every setter calls this, so they stay consistent no matter which is assigned
+        first -- the test skeletons around this class assign them in several orders.
+        """
+        features = getattr(self, "_condition_features", ())
+        spec = getattr(self, "_condition_transform", None)
+        self.condition_transforms = normalise_condition_transforms(spec, features)
+        self._condition_transform_fns = tuple(
+            map(get_condition_transform, self.condition_transforms))
+        self.condition_scales = normalise_condition_scales(
+            getattr(self, "_condition_scale", None), features)
+        self._condition_is_identity = (
+            all(fn is None for fn in self._condition_transform_fns)
+            and all(scale == 1.0 for scale in self.condition_scales))
+        # The training loop transforms the whole block in one call whenever every column
+        # is treated identically, which is the usual case; the per-column path below is
+        # for mixed transforms and mixed scales.
+        self._condition_is_uniform = (
+            len(set(map(id, self._condition_transform_fns))) == 1
+            and len(set(self.condition_scales)) == 1)
+
+
+    def describe_condition_layout(self) -> str:
+        """The conditioning vector's columns, in order, for an error message."""
+        parts = list(self.condition_features)
+        if self.composition_conditioning:
+            parts.append(
+                f"{composition_conditioning_dim(self.n_elements, self.condition_on_cell_size)} "
+                f"columns for the composition over {self.n_elements} element tokens")
+        return ", ".join(parts) if parts else "nothing"
+
+
+    @staticmethod
+    def _validate_condition_column(name: str, transform: Optional[str], column: Tensor):
+        """Reject values one transform cannot represent, with a legible message."""
+        if transform == "log1p" and bool((column < 0).any()):
             raise ValueError(
-                f"condition_transform='log1p' requires {self.condition_feature} >= 0, "
+                f"condition_transform='log1p' requires {name} >= 0, "
                 "but negative values were supplied")
 
 
+    def _validate_condition_values(self, values: Optional[Tensor]):
+        """Reject a scalar conditioning block the transforms cannot represent."""
+        if values is None or not self.condition_features:
+            return
+        block = values if values.dim() > 1 else values.unsqueeze(-1)
+        if block.shape[-1] != len(self.condition_features):
+            raise ValueError(
+                f"The conditioning values are {block.shape[-1]} wide, but this run "
+                f"conditions on {len(self.condition_features)} features "
+                f"{list(self.condition_features)}. Give one column per feature, in that "
+                "order.")
+        for index, (name, transform) in enumerate(
+                zip(self.condition_features, self.condition_transforms)):
+            self._validate_condition_column(name, transform, block[..., index])
+
+
     def transform_condition(self, values: Optional[Tensor]) -> Optional[Tensor]:
-        """Map a conditioning tensor from physical units to what the model consumes."""
-        if values is None or self._condition_transform_fn is None:
+        """Map the scalar conditioning block from physical units to what the model consumes.
+
+        `values` carries one column per entry of `condition_features`, in that order.
+        When every feature shares a transform -- the usual case, and the only one the
+        training loop hits -- it is applied to the whole block in one call rather than
+        column by column.
+        """
+        fns = self._condition_transform_fns
+        if values is None or not fns or self._condition_is_identity:
             return values
-        return self._condition_transform_fn(values)
+        if self._condition_is_uniform:
+            scaled = values if self.condition_scales[0] == 1.0 else values / self.condition_scales[0]
+            return scaled if fns[0] is None else fns[0](scaled)
+        block = values if values.dim() > 1 else values.unsqueeze(-1)
+        if block.shape[-1] != len(fns):
+            raise ValueError(
+                f"The conditioning values are {block.shape[-1]} wide, but this run "
+                f"conditions on {len(fns)} features {list(self.condition_features)}.")
+        columns = []
+        for fn, scale, column in zip(fns, self.condition_scales, block.split(1, dim=-1)):
+            if scale != 1.0:
+                column = column / scale
+            columns.append(column if fn is None else fn(column))
+        return torch.cat(columns, dim=-1)
+
+
+    @property
+    def condition_dim(self) -> Optional[int]:
+        """Width of the vector this run feeds to AdaLN, or None when unconditional.
+
+        Each `condition_feature` occupies one column, in the order they are configured,
+        and the composition the rest. `CascadeTransformer_args.condition_dim` has to
+        agree.
+        """
+        width = len(self.condition_features)
+        if self.composition_conditioning:
+            width += composition_conditioning_dim(
+                self.n_elements, self.condition_on_cell_size)
+        return width or None
+
+
+    def build_cond(self, dataset: AugmentedCascadeDataset,
+                   batch_selection: 'Tensor | slice' = slice(None)) -> Optional[Tensor]:
+        """Assemble the conditioning vector for a batch, in the model's units.
+
+        One place, because the scalars are stored in physical units and transformed on
+        the way in while the composition is stored ready to use, and getting that
+        order wrong in one of three call sites would be invisible until the
+        conditioning quietly stopped meaning anything.
+        """
+        parts = []
+        if self.condition_features:
+            columns = [dataset.data[name][batch_selection] for name in self.condition_features]
+            block = columns[0] if len(columns) == 1 else torch.cat(columns, dim=-1)
+            parts.append(self.transform_condition(block))
+        if self.composition_conditioning:
+            parts.append(dataset.data[COMPOSITION_FIELD][batch_selection])
+        if not parts:
+            return None
+        return parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
+
+
+    def build_condition_from_values(
+        self,
+        values: 'float | Dict[str, float]',
+        n_rows: int,
+        device: Optional[torch.device] = None,
+    ) -> Optional[Tensor]:
+        """A [n_rows, len(condition_features)] block in physical units, one value per feature.
+
+        Everything that generates at a fixed target -- both CLIs and the diagnostics
+        scripts -- goes through here instead of `torch.full((n, condition_dim), x)`,
+        which writes the same number into every column and so silently mis-conditions
+        any model with more than one channel.
+
+        `values` may be a single number only when the run conditions on exactly one
+        feature; otherwise it is a mapping from feature name to value. The composition
+        block is not built here: it depends on the target formula, which this does not
+        know.
+        """
+        if not self.condition_features:
+            raise ValueError("This model has no scalar conditioning features.")
+        if isinstance(values, (int, float)):
+            if len(self.condition_features) != 1:
+                raise ValueError(
+                    f"This model conditions on {list(self.condition_features)}; a single "
+                    "value is ambiguous. Give one value per feature, by name.")
+            values = {self.condition_features[0]: float(values)}
+        missing = [name for name in self.condition_features if name not in values]
+        unknown = sorted(set(values) - set(self.condition_features))
+        if missing or unknown:
+            raise ValueError(
+                f"Conditioning values must name every feature exactly once. This model "
+                f"conditions on {list(self.condition_features)}"
+                + (f"; missing {missing}" if missing else "")
+                + (f"; unknown {unknown}" if unknown else "") + ".")
+        row = torch.tensor(
+            [float(values[name]) for name in self.condition_features],
+            dtype=torch.float32, device=device if device is not None else self.device)
+        return row.unsqueeze(0).expand(n_rows, -1).contiguous()
 
 
     @staticmethod
@@ -663,6 +1087,34 @@ class WyckoffTrainer():
                     f"Missing {distribution_path}. This file is required for generation without datasets.")
             distribution = cls.load_start_token_distribution_file(distribution_path)
             max_sequence_length = int(distribution["max_sequence_length"])
+        # The conditioning width is derived data, not a design choice: it follows the list of
+        # conditioning features and, when the composition is one of them, the element
+        # vocabulary of whichever dataset the run uses. Fill it in rather than making every
+        # config hardcode a number that silently rots when either changes.
+        trainer_args = config.model.WyckoffTrainer_args
+        condition_features = normalise_condition_features(trainer_args.get("condition_feature"))
+        derived = len(condition_features)
+        if trainer_args.get("composition_conditioning", False):
+            derived += composition_conditioning_dim(
+                len(tokenisers["elements"]),
+                trainer_args.get("condition_on_cell_size", True))
+        declared = config.model.CascadeTransformer_args.get("condition_dim")
+        if derived:
+            if declared is None:
+                logger.info("Setting condition_dim to %d from the conditioning features", derived)
+                config.model.CascadeTransformer_args.condition_dim = derived
+            elif declared != derived:
+                raise ValueError(
+                    f"condition_dim is {declared} in the config, but conditioning on "
+                    f"{list(condition_features)}"
+                    + (" plus the composition" if trainer_args.get("composition_conditioning", False)
+                       else "")
+                    + f" makes it {derived}. Remove it and let it be derived, or fix it.")
+        elif declared is not None:
+            raise ValueError(
+                f"condition_dim is {declared} in the config, but nothing conditions this "
+                "model: set condition_feature and/or composition_conditioning, or remove "
+                "condition_dim.")
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
         # model.to(torch.float32)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
@@ -675,9 +1127,13 @@ class WyckoffTrainer():
             start_dtype = torch.float32
         else:
             raise ValueError(f"Unknown start type: {config.model.CascadeTransformer_args.start_type}")
+        cascade_is_target = config.model.cascade.get("is_target")
+        if cascade_is_target is None:
+            cascade_is_target = {field: False for field in config.model.cascade.order}
+
         return cls(
             model, train_data, val_data, tokenisers, token_engineers, config.model.cascade.order,
-            config.model.cascade.get("is_target", None),
+            cascade_is_target,
             config.model.cascade.get("augmented", None),
             config.model.start_token,
             optimisation_config=config.optimisation, device=device,
@@ -793,9 +1249,7 @@ class WyckoffTrainer():
                 start_tokens, masked_data, target, batch_selection = dataset.get_masked_cascade_data(
                     known_seq_len, known_cascade_len, return_chosen_indices=True)
 
-        cond = None
-        if self.condition_feature is not None:
-            cond = self.transform_condition(dataset.data[self.condition_feature][batch_selection])
+        cond = self.build_cond(dataset, batch_selection)
 
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
@@ -809,7 +1263,13 @@ class WyckoffTrainer():
             #logger.debug("Start tokens isnan: %s", start_tokens.isnan().any())
             #logger.debug("Masked data isnan: %s", any((a.isnan().any() for a in masked_data)))
             #logger.debug("Padding mask isnan: %s", padding_mask.isnan().any())
-            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond).squeeze()
+            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond)
+            if self.scalar_loss == "censored":
+                # [batch, n_outputs]; the criterion splits the columns itself, and a
+                # bare squeeze() would fuse them for a batch of one.
+                prediction = prediction.reshape(-1, self.criterion.n_outputs)
+            else:
+                prediction = prediction.squeeze()
             #logger.debug("Prediction isnan: %s", prediction.isnan().any())
         else:
             raise ValueError(f"Unknown target: {self.target}")
@@ -898,7 +1358,7 @@ class WyckoffTrainer():
             # when clipping is on -- a threshold that binds on every step is not catching
             # outliers, it is setting the step size, and only this metric shows the difference.
             grad_norm = torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
+                self.trainable_parameters(),
                 math.inf if self.clip_grad_norm is None else self.clip_grad_norm)
             self.optimizer.step()
             if self.scheduler_steps_per_batch:
@@ -1082,6 +1542,34 @@ class WyckoffTrainer():
         return loss / self.evaluation_samples / len(dataset)
 
 
+    @torch.no_grad()
+    def scalar_diagnostics(
+        self,
+        dataset: AugmentedCascadeDataset,
+        loader: AugmentedCascadeLoader) -> Dict[str, float]:
+        """Calibration diagnostics for a censored Scalar fit, averaged over one pass.
+
+        Returns an empty dict for every other configuration. See
+        `wyckoff_transformer.censored.CensoredMinDiagnostics` for what the keys mean.
+        """
+        if self.censored_diagnostics is None:
+            return {}
+        self.model.eval()
+        if hasattr(self.optimizer, "eval"):
+            self.optimizer.eval()
+        totals: Dict[str, Tensor] = {}
+        for _ in range(loader.batches_per_epoch):
+            batch_selection = loader.get_next_batch()
+            start_tokens, masked_data, target, padding_mask = dataset.get_augmented_data(
+                batch_selection=batch_selection)
+            cond = self.build_cond(dataset, batch_selection)
+            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond)
+            prediction = prediction.reshape(-1, self.criterion.n_outputs)
+            for key, value in self.censored_diagnostics(prediction, target).items():
+                totals[key] = totals.get(key, 0.) + value
+        return {key: (value / loader.batches_per_epoch).item() for key, value in totals.items()}
+
+
     @property
     def checkpoint_path(self) -> Path:
         """Where train() writes the resume checkpoint for this run."""
@@ -1124,6 +1612,9 @@ class WyckoffTrainer():
             "best_val_loss": float(best_val_loss),
             "best_val_epoch": int(best_val_epoch),
             "model": self.model.state_dict(),
+            # Empty for every criterion except a CensoredMinLoss holding a global scale.
+            "criterion": (self.criterion.state_dict()
+                          if isinstance(self.criterion, nn.Module) else {}),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": None if self.scheduler is None else self.scheduler.state_dict(),
             # Checked on load: a schedule resumed against a different horizon is a different
@@ -1177,6 +1668,11 @@ class WyckoffTrainer():
                 f"optimiser steps; this run's is {self.scheduler_total_steps}. The step budget "
                 f"is usually the dataset changing size under a run.")
         self.model.load_state_dict(_match_compile_prefix(checkpoint["model"], self.model))
+        # Absent from checkpoints written before the criterion could carry state, and empty
+        # for every criterion that carries none, so a missing key is not an error.
+        criterion_state = checkpoint.get("criterion") or {}
+        if criterion_state:
+            self.criterion.load_state_dict(criterion_state)
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         if (self.scheduler is None) != (checkpoint["scheduler"] is None):
             raise ValueError(
@@ -1274,8 +1770,16 @@ class WyckoffTrainer():
                 loss_dict = {}
                 if self.target == TargetClass.Scalar:
                     total_val_loss = raw_losses['val']
+                    metric_name = "nll" if self.scalar_loss == "censored" else "mae"
                     for name, loss in raw_losses.items():
-                        loss_dict[name] = {"mae": loss.item()}
+                        loss_dict[name] = {metric_name: loss.item()}
+                    if self.censored_diagnostics is not None:
+                        # The NLL moves with the fitted scale and cannot be read as an
+                        # error, so log the three quantities that can be: how often the
+                        # predicted minimum is above an observation (should be ~0), the
+                        # mean excess, and the scale the model thinks it has.
+                        loss_dict["val"].update(
+                            self.scalar_diagnostics(self.val_dataset, self.val_loader))
                 else:
                     total_val_loss = raw_losses['val'].sum()
                     for name, loss in raw_losses.items():
@@ -1338,6 +1842,7 @@ class WyckoffTrainer():
             allowed_element_set: Union[str, Set[int]] = "all",
             temperature: float = 1.0,
             cond: Optional[torch.Tensor] = None,
+            composition_cond: Optional[torch.Tensor] = None,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -1355,8 +1860,14 @@ class WyckoffTrainer():
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
                 defines a custom pool. Only used when element-constrained generation is active.
             temperature: Softmax temperature for sampling.
-            cond: Optional tensor of shape [n_structures, condition_dim] for AdaLN conditioning,
-                in physical units (any condition_transform is applied here, not by the caller).
+            cond: Optional tensor of shape [n_structures, len(condition_features)] carrying
+                the scalar conditioning features in their configured order, in physical
+                units (any condition_transform is applied here, not by the caller).
+                `WyckoffTrainer.build_condition_from_values` builds it from one value per
+                named feature.
+            composition_cond: Optional tensor of shape [n_structures, composition width]
+                for a model with composition_conditioning, as
+                wyckoff_transformer.composition builds it. Concatenated after `cond`.
         """
         # `stops` must be passed: without it the generator cannot tell a finished sequence
         # from a live one, and `compute_validity_per_known_sequence_length` then scores STOP
@@ -1365,13 +1876,12 @@ class WyckoffTrainer():
             self.model, self.cascade_order, self.cascade_is_target, self.token_engineers,
             self.masks_dict, self.max_sequence_length, stops=self.stops_dict)
 
-        condition_feature = self.condition_feature
+        condition_features = self.condition_features
 
         if calibrate:
             if self.val_dataset is None:
                 raise ValueError("Calibration requires a validation dataset")
-            generator.calibrate(self.val_dataset, condition_feature=condition_feature,
-                                condition_transform=self.transform_condition)
+            generator.calibrate(self.val_dataset, cond_builder=self.build_cond)
         if start_tensor is None:
             start_tensor = self._sample_start_tokens_from_distribution(n_structures)
         else:
@@ -1382,21 +1892,43 @@ class WyckoffTrainer():
             else:
                 start_tensor = start_tensor.to(self.device).to(torch.int64 if self.model.start_type == "categorial" else torch.float32)
 
-        if condition_feature is not None and cond is None:
-            if hasattr(self, 'train_dataset') and self.train_dataset is not None:
-                random_indices = torch.randint(
-                    0, self.train_dataset.num_examples, (n_structures,), device=self.device)
-                cond = self.train_dataset.data[condition_feature][random_indices]
-            else:
-                raise ValueError(
-                    f"condition_feature={condition_feature!r} is set but no `cond` was provided "
-                    "and no train_dataset is available to sample from."
-                )
-
         if cond is not None:
-            # Both branches above, and anything a caller passes in, are in physical units.
+            # Anything a caller passes in is the scalar block, in physical units.
+            if not condition_features:
+                raise ValueError(
+                    "`cond` was given, but this model has no scalar conditioning features.")
             self._validate_condition_values(cond)
             cond = self.transform_condition(cond)
+            if self.composition_conditioning:
+                if composition_cond is None:
+                    raise ValueError(
+                        "composition_conditioning is on, so a caller supplying `cond` must "
+                        "also supply `composition_cond`; otherwise the model is handed a "
+                        "conditioning vector of the wrong width.")
+                cond = torch.cat([cond, composition_cond.to(cond.device, torch.float32)], dim=-1)
+        elif composition_cond is not None:
+            if not self.composition_conditioning:
+                raise ValueError("composition_cond was given, but this model is not "
+                                 "conditioned on the composition.")
+            cond = composition_cond.to(self.device, torch.float32)
+            if condition_features:
+                raise ValueError(
+                    f"This model is also conditioned on {list(condition_features)}; pass "
+                    "`cond` for those alongside `composition_cond`.")
+        elif self.condition_dim is not None:
+            # Nothing supplied: draw whole conditioning rows from the training data, which
+            # keeps the scalar and the composition paired as they actually occur rather
+            # than crossing an energy with an unrelated formula.
+            if getattr(self, "train_dataset", None) is None:
+                wanted = [repr(name) for name in condition_features]
+                if self.composition_conditioning:
+                    wanted.append("the target composition")
+                raise ValueError(
+                    f"This model is conditioned on {' and '.join(wanted)}, but no `cond` "
+                    "was provided and no train_dataset is available to sample one from.")
+            random_indices = torch.randint(
+                0, self.train_dataset.num_examples, (n_structures,), device=self.device)
+            cond = self.build_cond(self.train_dataset, random_indices)
 
         if required_element_set is not None:
             if 'elements' not in self.tokenisers:
@@ -1463,6 +1995,7 @@ class WyckoffTrainer():
         # They are averaged over structures still placing real sites at that length; one that has
         # emitted STOP is excluded from that point on, rather than having its STOP scored as an
         # invalid Wyckoff position.
+        ensure_wandb_media_directory()
         wandb.log({
             "ss_validity": wandb.plot.line(validity_table, "known_seq_len", "ss_validity",
                 title="Site Symmetry validity"),
@@ -1482,7 +2015,9 @@ class WyckoffTrainer():
     def predict_scalars(
         self,
         prediction_data: Dict[str, torch.Tensor | List[torch.Tensor]],
-        augmentation_samples: int = 1) -> Tuple[Tensor, Tensor]:
+        augmentation_samples: int = 1,
+        cond: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
         """
         Predict scalar targets for pre-tokenised data.
 
@@ -1492,11 +2027,17 @@ class WyckoffTrainer():
                 engineered fields, and augmented variants if applicable.
             augmentation_samples: Number of random augmentation draws to average over. Each draw samples
                 a random augmented variant when available.
+            cond: Scalar conditioning values in physical units, one row per
+                prediction and one column per configured condition feature.
+                The configured transform is applied here. This is intentionally
+                the scalar block only; composition-conditioned scalar models
+                need a composition vector assembled by their caller.
 
         Returns:
             A tuple (mean_predictions, all_predictions) where:
                 - mean_predictions is a tensor of shape [num_examples] with the average prediction across
-                  augmentation samples.
+                  augmentation samples. Under scalar_loss="censored" this is the location head,
+                  i.e. the estimate of min(E | gene), not of the energy of any one structure.
                 - all_predictions is a tensor of shape [augmentation_samples, num_examples] with raw
                   predictions per augmentation sample.
         """
@@ -1504,11 +2045,29 @@ class WyckoffTrainer():
             raise ValueError("predict_scalars is only available for Scalar targets.")
         if augmentation_samples < 1:
             raise ValueError("augmentation_samples must be at least 1.")
+        if self.composition_conditioning:
+            raise ValueError(
+                "predict_scalars does not build composition conditioning. Supply a scalar "
+                "regressor without composition_conditioning for gene screening.")
 
         prediction_data = prediction_data.copy()
         dummy_target_name = "__scalar_prediction_dummy__"
         num_examples = prediction_data[self.start_name].shape[0]
         prediction_data[dummy_target_name] = torch.zeros(num_examples, dtype=torch.float32)
+        if cond is not None:
+            if not self.condition_features:
+                raise ValueError(
+                    "cond was supplied, but this scalar regressor has no conditioning features.")
+            self._validate_condition_values(cond)
+            cond = cond if cond.dim() > 1 else cond.unsqueeze(-1)
+            if cond.shape[0] != num_examples:
+                raise ValueError(
+                    f"cond has {cond.shape[0]} rows for {num_examples} scalar predictions.")
+            cond = self.transform_condition(cond.to(self.device, dtype=torch.float32))
+        elif self.condition_features:
+            raise ValueError(
+                f"This scalar regressor is conditioned on {list(self.condition_features)}; "
+                "pass cond in physical units.")
 
         prediction_dataset = AugmentedCascadeDataset(
             data=prediction_data,
@@ -1521,7 +2080,11 @@ class WyckoffTrainer():
             augmented_fields=self.augmented_fields,
             batch_size=None,
             dtype=self.dtype,
-            start_dtype=self.train_dataset.start_tokens.dtype,
+            start_dtype=(
+                self.train_dataset.start_tokens.dtype
+                if self.train_dataset is not None
+                else (torch.int64 if self.model.start_type == "categorial" else torch.float32)
+            ),
             device=self.device,
             augmented_storage_device=None,
             target_name=dummy_target_name,
@@ -1534,7 +2097,13 @@ class WyckoffTrainer():
             for _ in range(augmentation_samples):
                 start_tokens, cascade_tokens, _, padding_mask = \
                     prediction_dataset.get_augmented_data() # Defaults to all examples
-                preds = self.model(start_tokens, cascade_tokens, padding_mask, None).squeeze()
+                preds = self.model(start_tokens, cascade_tokens, padding_mask, None, cond=cond)
+                if self.scalar_loss == "censored":
+                    # The location column is the estimate of min(E | gene); the scale column
+                    # describes the spread above it and is not a prediction of the energy.
+                    preds, _ = self.criterion.split(preds.reshape(-1, self.criterion.n_outputs))
+                else:
+                    preds = preds.squeeze()
                 sample_predictions.append(preds)
             stacked_predictions = torch.stack(sample_predictions, dim=0)
             mean_predictions = stacked_predictions.mean(dim=0)

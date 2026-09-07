@@ -1,0 +1,360 @@
+# CSP mode: predicting the structure of a given composition
+
+De novo generation asks WyFormer for any plausible crystal and scores the answer
+on novelty. CSP fixes the formula and asks which structure it adopts, where
+there is a right answer and novelty is beside the point. This document describes
+what that mode is, what is implemented, and what has not been measured.
+
+Three pieces:
+
+1. a backbone conditioned on the composition and on how far the structure sits
+   above the best polymorph of that composition,
+2. a regressor that predicts `min(E | gene)` from a Wyckoff gene, fitted with a
+   censored likelihood,
+3. decoding that respects the target composition exactly, ranked by (2).
+
+Piece (2) is `wyckoff_transformer.censored`, (3) is `wyckoff_transformer.csp`
+and the `wyformer-csp` CLI. Piece (1) needs a conditioned backbone to be
+trained; the label it should be trained on is computed by
+`censored.gene_level_polymorph_delta`, and nothing has been trained yet.
+
+## Constraint and conditioning are different things
+
+The decoder guarantees the formula by masking, and it would do that against a
+backbone that has never heard of compositions: the distribution it samples is
+the model's own next-token distribution renormalised over the choices that keep
+the target reachable. That is enough for correctness and it is what makes the
+acceptance rate one, but on its own it is weaker than conditioning in three
+ways. The model cannot plan -- it does not reserve room for the O3, it is merely
+stopped from making that impossible. A candidate's `log_prob` is a renormalised
+*unconditional* probability, not `p(gene | composition)`, which matters because
+it is what `--strategy beam` searches over and what orders the output when no
+regressor is given. And the gap should be widest for unusual compositions, where
+the unconditional prior pulls hardest against the constraint.
+
+`composition_conditioning` closes that gap by making the formula an input.
+`wyckoff_transformer.composition` turns the target into a fixed-width vector
+over the element vocabulary, which joins whatever scalar the model is already
+conditioned on and reaches every encoder layer through the same AdaLN path
+`energy_above_hull` takes. `wyformer-csp` builds the same vector from
+`--formula` and `--z`, so training and sampling see one representation, and it
+says on startup which of the two regimes the backbone is in.
+
+The vector separates two things worth separating. **What** the compound is made
+of, as fractions summing to one: this is z-invariant, so BaTiO3 and Ba2Ti2O6
+give the same chemistry and the model does not have to learn them as unrelated
+inputs. And **how much** of it is in the cell, as `log1p` of the total atom
+count -- not chemistry, but it bounds how many Wyckoff positions the gene needs,
+and on a log scale a 4-atom cell and a 200-atom one are a few units apart rather
+than two orders of magnitude. Together they are a bijection with the raw counts,
+so nothing is lost, and both channels land where an `nn.Linear` into AdaLN can
+use them.
+
+`yamls/models/lemat_bulk_ehull/ehull_composition.yaml` is
+`ehull_schedule_free.yaml` plus `composition_conditioning: true`, and minus its
+`condition_dim`: the width stops being a free choice once it follows the element
+vocabulary, so `from_config` derives it (85 for lemat_bulk_ehull: one e_hull
+column, 83 element columns, one cell-size column) and refuses a config that
+hardcodes a different number. The tokeniser must emit the composition counters
+-- `counters: {composition: elements}` under `sequence_fields`, which
+`lemat_bulk_ehull_sg_multiplicity` already has, so no re-cache is needed.
+
+A 3-epoch CPU pilot on `lemat_bulk_ehull_pilot` trains, checkpoints, calibrates,
+generates and reloads at the derived width, with `grad_norm` at 0.30 -- inside
+the 0.07-0.51 band the unconditioned config was tuned against, so the wider
+input has not destabilised the step size. Driving `wyformer-csp` from it
+conditions on `Ba=0.200, Ti=0.200, O=0.600, log1p(atoms)=1.792`, which is
+BaTiO3 in a 5-atom cell. Nothing about that pilot says the conditioning
+*helps* -- three epochs is not a trained model.
+
+## Why `min(E | gene)` and not the energy
+
+A Wyckoff gene fixes the space group, the species and the occupied Wyckoff
+positions. It fixes neither the free coordinates nor the cell, so it does not
+determine an energy — it determines a manifold of structures, whose width is
+governed by the gene's positional degrees of freedom. The
+[dof study](pyxtal_dof_reduction_study.md) measures how wide: the median
+generated gene has 3 free coordinates and the tail runs to 186.
+
+A regressor fitted to gene→energy pairs with an MSE therefore estimates
+`E[E | gene]`, the average structure on the manifold. That is the wrong end of
+the distribution for CSP. The reconstruction step is a stochastic search that
+can be run repeatedly — the [trial budget](upi73i4k_orb_protocol.md#the-trial-budget)
+shows a second PyXtal trial is worth ~50 meV/atom to the median gene above dof 3
+— so what decides whether a gene is worth spending the budget on is the *best*
+energy it can reach, not the average.
+
+`min(E | gene)` is also a genuine deterministic function of the gene, where
+`E[E | gene]` carries an irreducible spread. There is no noise floor: with
+enough data the regressor can be arbitrarily accurate.
+
+## Why the labels need a censored likelihood
+
+The difficulty moves from the estimand to the labels. The dataset does not
+contain `min(E | gene)`; a dataset entry is *one* structure on the gene's
+manifold, so its energy is an upper bound:
+
+    E_obs >= m(g)
+
+Two consequences, and only the second is obvious.
+
+The bound is loose, by an amount that grows with the gene's degrees of freedom.
+And its looseness is **confounded with how often the gene appears in the
+dataset**: a gene seen once has one loose bound, a gene seen fifty times has
+fifty and its lowest is nearly tight. Regressing the minimum-of-observed
+directly, or the mean with an MSE, both make the model learn part of a
+popularity prior wearing an energy costume — and in a search that then minimises
+the prediction, that is a mode-collapse mechanism, not a rounding error.
+
+The censored likelihood reads the bound literally. Each observation is modelled
+as the gene's optimum plus a non-negative excess, seen through label noise:
+
+    E_obs = m(g) + eps + eta,   eps ~ Exponential(1 / s(g)),  eta ~ Normal(0, sigma^2)
+
+which makes `E_obs` exponentially modified Gaussian and the loss its negative
+log density. The excess scale `s(g)` is predicted per gene alongside the
+location, so it can track the degrees of freedom that produce it; `sigma` is
+fixed, and doubles as the width over which the otherwise hard `E >= m` boundary
+is smoothed into something a gradient can cross.
+
+Nothing groups the data by gene — every row contributes its own term and the
+loss drops into the existing `Scalar` path in place of the MSE. The grouping
+happens implicitly and correctly: a gene appearing `n` times contributes `n`
+terms, each pushing the location down and each blocking it from rising above
+that row's energy, so the frequency weighting the confound came from is exactly
+what the likelihood now uses. The residual bias is analytic,
+`E[min_i E_i] - m(g) = s / n`, and `censored.expected_min_bias` reports it.
+
+On synthetic data where the answer is known, the fit lands on the floor
+(-1.500 against a true -1.500) where an MSE fit lands on the mean (-1.199), and
+recovers the excess scale to within 1%.
+
+### Training the regressor
+
+    uv run python -m wyckoff_transformer.train yamls/models/base_sg_energy_censored.yaml
+
+which differs from `base_sg_energy.yaml` in two lines: `scalar_loss: censored`
+and `outputs: 2`. The labels are unchanged — what changes is how they are read.
+
+W&B gets three diagnostics alongside the NLL, which is not comparable across
+runs because it moves with the fitted scale:
+
+| metric | reads |
+|---|---|
+| `violation` | fraction of observations *below* the predicted minimum. Should be near zero; a rising value means the location head is being pulled towards the conditional mean. |
+| `excess` | mean of `E_obs - m`, which the model claims equals `scale`. |
+| `scale` | mean predicted `s`. Expected to grow with degrees of freedom; worth binning by dof when reading a trained model. |
+
+An MAE is deliberately *not* reported as the objective. The location head aims
+at the bottom of each gene's manifold and the labels scatter above it, so a
+perfect `m` has an MAE of about `s`. `censored.censored_min_mae` computes one
+anyway, for comparison against the MSE runs already on the board.
+
+## Composition-constrained decoding
+
+A gene's composition is the sum of the multiplicities of the Wyckoff positions
+assigned to each element, decided one site at a time. Sampling freely and
+rejecting at the end wastes nearly every draw, because a decoder that has placed
+a 4-fold position for an element needing 6 more atoms has usually made the
+target impossible several sites earlier.
+
+`SpaceGroupCombinatorics` answers the reachability question so the decoder can
+mask any choice that strands the composition. The rule it enforces is the one
+`WyckoffProcessor.pyxtal_notation_to_sites` already applies when turning a gene
+into a structure: a position with no positional freedom (`dof == 0`) is a fixed
+set of points and may be occupied once, while a position with `dof > 0` is a
+continuous orbit and may be occupied repeatedly at different coordinates. So the
+reusable multiplicities form an unbounded coin problem and the fixed ones are a
+scarce resource the elements compete for.
+
+That split is what makes an exact answer cheap. If every element's remaining
+deficit is a sum of reusable multiplicities the elements never interact and the
+state is feasible with no search; if some deficit is not a sum of *any* of the
+group's multiplicities it is infeasible outright; only between the two does a
+bounded depth-first assignment of the scarce fixed positions run. The search
+reports "feasible" if it exhausts its node budget, so a `False` is trustworthy
+and a `True` is occasionally optimistic — the safe direction, since a false
+negative would forbid a legal structure while an optimistic true costs one
+wasted path.
+
+Checked against exhaustive search on 15 space groups spanning triclinic to cubic
+and several centrings, 1200 random (composition, budget) cases: exact agreement,
+no false negatives. Every gene the decoder emits has the target composition by
+construction.
+
+### Running it
+
+    wyformer-csp out.json.gz --model-path runs/upi73i4k \
+        --regressor-path runs/<censored-regressor> \
+        --formula BaTiO3 --z 1 --condition-value 0
+
+Output is the same list of pyxtal dicts `wyformer-generate` writes, plus a `csp`
+key carrying the space group, `z`, log-probability and predicted energy, so it
+feeds `wyformer-cryspr` and `wyformer-protocol` unchanged.
+
+Space groups are enumerated, not sampled: every group that can express the
+composition is decoded from and the candidates are pooled and ranked together,
+because which setting the formula adopts is the question being asked.
+Identical genes are collapsed by default, since a repeat costs a relaxation and
+buys no structure — at small `z` in a high-symmetry group there may be only a
+handful of legal genes and sampling will revisit them.
+
+Sanity check against the real backbone: `BaTiO3` at `z=1` over space groups 221,
+123 and 62 gives 10 unique candidates, all with exactly the target composition;
+62 is correctly reported as unable to build it at that z (Pnma's smallest
+multiplicity is 4). The top Pm-3m candidate is `Ba 1b, Ti 1a, O 3d` — the cubic
+perovskite. With z enumerated rather than fixed, `NaCl` over 225, 221 and 62
+reaches 22 candidates across ten (space group, z) pairs, rocksalt among them at
+Fm-3m z=4.
+
+### Where the cell size comes from
+
+`z` here is the crystallographic Z: the number of **reduced** formula units in
+the **conventional** cell. It is an output, not an input — see below. Conventional, not primitive, which is why rocksalt is
+Z=4 in Fm-3m though its primitive rhombohedral cell holds one formula unit --
+Wyckoff multiplicities are conventional-cell counts, so everything downstream
+has to be. Reduced, because Z is a property of the compound and not of how the
+caller spelled it: `--formula Ba2Ti2O6` is divided down to `BaTiO3` first, and
+the reduction is logged. Written lowercase to avoid colliding with the other Z
+of materials code, the atomic number.
+
+Both the decoding constraint and the conditioning vector are stated over
+conventional-cell atom counts, so both need to know how many formula units the
+cell holds. That number is not an input to a CSP problem — it is part of what is
+being predicted — and it cannot be asked of the caller: the answer for NaCl is
+z=4 in Fm-3m, z=1 or 3 or 4 in Pm-3m, and nothing at all in Pnma, which is not
+something you know before choosing the setting. Nor does dropping the size
+channel from the conditioning help: the constraint needs the same number.
+
+It is not free either, which is what makes it tractable. z has to satisfy the
+same reachability the decoder enforces, so `SpaceGroupCombinatorics.feasible_z`
+bounds it per space group. Centring does most of the pruning: every position of
+an F-centred group has a multiplicity divisible by four, so three quarters of
+the values are gone before any model is consulted. Scarce fixed positions do the
+rest — Pm-3m has exactly two 1-fold positions, so NaCl at z=2 would need both
+for one element and leave nothing for the other, and z=2 is duly absent.
+
+### The model chooses z, not the caller
+
+Enumerating z and decoding each value separately works, but it splits the
+relaxation budget evenly over cell sizes most of which are wrong: about 800
+(space group, z) pairs per formula against 230 space groups, so roughly 26,000
+candidate genes where 7,000 would do, each one a PyXtal reconstruction and a
+relaxation.
+
+So z is folded into the decoder instead. `ConstrainedDecoder.decode` takes a
+`CompositionRatio` -- the reduced formula, cell content left open -- and a
+placement is legal while *any* allowed z remains reachable, illegal only when it
+strands them all. `BeamState` therefore tracks what has been *placed* rather
+than what is owed, because what is owed is not known until the cell size is.
+
+Termination is what fixes z, and it becomes a decision rather than a
+consequence: STOP is offered exactly when the sites placed so far are a whole
+number of formula units, and masked otherwise. A state that is a valid cell at
+z=2 may still be extended towards z=4, and which the compound adopts is the
+model's call, taken against its own distribution. One pass per space group then
+returns candidates spread over z by model preference — decoding `NaCl` against
+the real backbone, Pm-3m puts 17 of 24 candidates at z=4 while Pnma puts 23 of
+24 at z=8 — and the budget falls 3.6x with the allocation no longer ours to get
+wrong.
+
+Ranking across z is sound because the regressor's target is a formation energy
+*per atom*, so a z=4 candidate and a z=8 one are on one scale. Passing `--z`
+narrows which cell sizes a pass may end on rather than overriding feasibility,
+so an impossible request is dropped rather than attempted.
+
+A word on what that channel is, since the name has misled at least once: it is a
+conditioning **input**, one more column of the vector fed to AdaLN beside the
+element fractions. Nothing predicts a cell size. `candidate.z` points the other
+way — the decoder accumulates atoms as it emits sites, STOP is offered only at a
+whole number of formula units, and the multiple standing when STOP is chosen is
+read off as z. So `condition_on_cell_size` fixes an input before decoding, and
+`candidate.z` falls out of decoding, and the first makes the second impossible to
+do in one pass.
+
+One model cannot do this: a backbone trained with the composition conditioning's
+cell-size channel. That vector has to be built before the pass, and the size is
+not known until the model has chosen where to stop. Such a backbone falls back
+to one pass per z, through the same code path, and `wyformer-csp` says so on
+startup. Which is the argument for `condition_on_cell_size: false` on a model
+meant for CSP: the size channel tells the model the answer to the question the
+decoder is trying to let it answer. Leave it on for de novo generation, where
+asking for a cell of a given size is a meaningful request.
+
+### `sample` or `beam`
+
+`sample` draws ancestrally from the composition-masked distribution. Because the
+mask has already removed every choice that strands the composition, the
+acceptance rate is one and each draw is a sample from the model's own
+distribution restricted to the target formula.
+
+`beam` keeps the most likely prefixes at every cascade field. It returns the
+model's modal genes rather than a sample of them, which is right when the
+backbone's likelihood is what you trust and wrong when the candidates are about
+to be reranked by something else: beams sharing a prefix differ only in their
+last sites, so a wide beam spreads the relaxation budget over much less of the
+space than the same number of samples. Sequence log-probability is also a sum
+over sites and so prefers short genes for reasons unrelated to their being
+better structures; `CSPCandidate.normalised_log_prob` divides it out.
+
+The default is `sample`, and reranking a diverse sample is the configuration
+worth measuring first. It is a strict subset of the beam machinery and gives the
+clean ablation: does regressor ranking improve the post-relaxation `e_hull`
+distribution at fixed diversity?
+
+## The conditioning label
+
+For mode (a) — condition on `Delta_E_polymorph = 0`, the gene whose optimum is
+the ground-state polymorph — the label should be assigned **per gene, not per
+structure**. A per-structure `Delta_E` presents a gene-reading model with one
+input and several targets, and the blurred channel is precisely the one CSP then
+conditions at zero. `censored.gene_level_polymorph_delta` computes it from
+`min(E | gene)`, so every structure sharing a gene carries one label.
+
+It also returns `polymorph_count`. A composition seen with a single gene gets
+`Delta_E = 0` by construction, but that zero says only that nothing better was
+*seen*, not that the gene is a ground state — and in MP-20 and LeMat-Bulk a
+large share of compositions are unopposed, so those zeros pile onto exactly the
+value sampling conditions at. Carry the count as a second conditioning channel,
+or restrict training to compositions with more than one polymorph, rather than
+letting them dilute it.
+
+Mode (b) — condition on the formation energy that puts the composition on the
+hull — is an affine reparametrisation of `e_hull = 0` per composition, and is
+what a backbone already conditioned on `energy_above_hull` does. Its new content
+over what `upi73i4k` already ran is the composition constraint, not the energy
+target, and the write-up of any ablation should say so.
+
+## What has not been done
+
+- **No conditioned backbone has been trained.** The composition conditioning
+  runs, but only for 3 epochs on CPU, which shows the plumbing works and nothing
+  else; whether it improves candidate ranking over the constraint alone is
+  unmeasured, and it is the ablation this config exists to run.
+  `Delta_E_polymorph` is still not a channel any model has:
+  `gene_level_polymorph_delta` produces the label, and building the dataset and
+  training on it needs a GPU.
+- **No regressor has been trained.** The likelihood is verified on synthetic
+  data and through the trainer's real `Scalar` path, but the ceiling on real
+  data is unmeasured. The first thing to measure, and it is nearly free: group
+  the training set by augmented fingerprint and look at the spread of energies
+  among structures sharing a gene, bucketed by dof. That bounds what any
+  gene-level regressor can achieve. Second, and also cheap: the 2500
+  `upi73i4k` genes already carry ORB-relaxed energies, so a Spearman
+  correlation between the regressor's prediction and the relaxed `e_hull` on
+  those genes is the go/no-go for the whole ranking step.
+- **The labels are still harvested, not generated.** `min(E | gene)` estimated
+  from dataset entries is an upper bound however it is fitted. The unbiased
+  route is to generate the labels — k PyXtal trials plus relaxation per gene,
+  taking the minimum, with the k-dependence extrapolated — using the CrySPR
+  pipeline that already exists. Expensive, and the only way to labels that are
+  not frequency-confounded at all.
+- **No end-to-end CSP benchmark.** Match rate against known structures on a
+  held-out set is the measurement this mode should be judged by, and it has not
+  been run.
+
+One expectation worth setting: all of this improves the *ranking of genes*.
+Most of the loss in the funnel happens after the gene — median `e_hull` 0.241
+eV/atom on valid structures — and that is a reconstruction problem the dof study
+is attacking. Gene-level energy selection and better free-coordinate priors are
+complements, and the second is likely to move the numbers more.

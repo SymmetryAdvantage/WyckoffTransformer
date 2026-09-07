@@ -7,6 +7,7 @@ import torch
 from omegaconf import OmegaConf
 
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
+from wyckoff_transformer.cli import single_channel_condition
 from wyckoff_transformer.generator import WyckoffGenerator
 from wyckoff_transformer.tokenization import get_wp_index
 
@@ -33,8 +34,7 @@ else:
     sg_of = [_rmap[tuple(r.tolist())] for r in start.cpu()]
 cond = None
 if trainer.condition_feature is not None:
-    cd = getattr(trainer.model, "condition_dim", None) or 1
-    cond = trainer.transform_condition(torch.full((N, cd), COND, dtype=torch.float32))
+    cond = trainer.transform_condition(single_channel_condition(trainer, COND, N))
 
 gen = WyckoffGenerator(trainer.model, trainer.cascade_order, trainer.cascade_is_target,
                        trainer.token_engineers, trainer.masks_dict, trainer.max_sequence_length)

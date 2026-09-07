@@ -13,6 +13,7 @@ import wandb
 from omegaconf import OmegaConf
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.cli import describe_condition, resolve_condition_values
 from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, load_tensor_cache
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.wyckoff_processor import WyckoffProcessor
@@ -176,10 +177,16 @@ def main():
                              "or a custom set (e.g., 'Li-S-P-O'). Defaults to all elements when omitted.")
     parser.add_argument("--sg-dist", type=str, default=None,
                         help="Override the initial space group distribution using tensors cached under cache/<dataset>.")
+    parser.add_argument("--condition", action="append", metavar="NAME=VALUE", default=None,
+                        help="Value of one conditioning feature to use for every generated "
+                             "structure, e.g. --condition energy_above_hull=0. Repeat once "
+                             "per feature; a model conditioned on several channels needs "
+                             "all of them. Omit to sample the conditioning from the training "
+                             "distribution, which needs --use-cached-tensors.")
     parser.add_argument("--condition-value", type=float, default=None,
-                        help="Value of the model's conditioning feature (e.g. energy_above_hull) to use for "
-                             "every generated structure. Required for conditional models unless "
-                             "--use-cached-tensors is set, in which case the training distribution is sampled.")
+                        help="Shorthand for --condition <the one feature>=VALUE. Refused for "
+                             "a model with more than one conditioning feature, where a single "
+                             "number does not say what it applies to.")
     args = parser.parse_args()
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
@@ -229,19 +236,21 @@ def main():
         )
 
     cond = None
-    if args.condition_value is not None:
-        if trainer.condition_feature is None:
-            parser.error("--condition-value was given, but the model is not conditional.")
-        condition_dim = getattr(trainer.model, "condition_dim", None) or 1
-        cond = torch.full(
-            (args.initial_n_samples, condition_dim),
-            args.condition_value,
-            dtype=torch.float32,
-            device=args.device,
-        )
-        print(f"--- Conditioning on {trainer.condition_feature} = {args.condition_value} ---")
-    elif trainer.condition_feature is not None:
-        print(f"--- Conditional model ({trainer.condition_feature}); sampling condition from training data ---")
+    try:
+        condition_values = resolve_condition_values(
+            trainer, args.condition, args.condition_value)
+    except ValueError as error:
+        parser.error(str(error))
+    if condition_values is not None:
+        try:
+            cond = trainer.build_condition_from_values(
+                condition_values, args.initial_n_samples, device=args.device)
+        except ValueError as error:
+            parser.error(str(error))
+        print(f"--- Conditioning on {describe_condition(condition_values)} ---")
+    elif trainer.condition_features:
+        print(f"--- Conditional model ({', '.join(trainer.condition_features)}); "
+              "sampling condition from training data ---")
 
     use_element_constraints = args.required_elements is not None or args.allowed_elements is not None
     if use_element_constraints:

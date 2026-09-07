@@ -1,0 +1,77 @@
+# Gene-energy critic trained on the less-filtered LeMat-Bulk cache.
+#
+# The target is the lowest formation energy observed for each augmented Wyckoff
+# gene across the complete f_max <= 1 eV/A dataset. This intentionally uses MSE,
+# not the censored likelihood: the initial approximation treats that observed
+# minimum as the gene's true attainable energy. max_force is the only input
+# condition. It is observed for training structures and fixed to zero by
+# wyformer-gene-screen, which asks for the energy after a clean relaxation.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    embedding_size:
+      elements: 16
+      site_symmetries: 16
+      sites_enumeration: 8
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: gene_min_formation_energy_per_atom
+    scalar_loss: mse
+    evaluation_samples: 1
+    condition_feature: max_force
+    condition_transform: log1p
+    condition_scale: 0.05
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: mean
+    include_start_in_aggregation: true
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 1
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 250
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 20000
+tokeniser:
+  name: lemat_bulk_fmax1_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000

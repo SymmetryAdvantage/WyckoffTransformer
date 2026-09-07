@@ -1,0 +1,1181 @@
+"""Crystal structure prediction: sampling a Wyckoff gene for a *given* composition.
+
+De novo generation asks the model for any plausible crystal.  CSP fixes the
+formula and asks for the structure it adopts, which changes the sampling problem
+in two ways.
+
+The composition becomes a hard constraint.  A gene's composition is not a free
+choice made at the end -- it is the sum of the multiplicities of the Wyckoff
+positions assigned to each element, decided one site at a time.  Ancestral
+sampling with a rejection test at the end wastes most of its draws: a decoder
+that has placed a 4-fold position for an element needing 6 more atoms can only
+finish if the space group offers positions summing to exactly 6, and usually it
+has already made that impossible several sites earlier.  `SpaceGroupCombinatorics`
+answers the reachability question exactly, so the decoder can mask any choice
+that strands the composition, and every sequence it emits has the target formula
+by construction.
+
+Selection replaces novelty.  There is a right answer, so candidates are ranked
+rather than filtered, and the ranking signal is a regressor trained with the
+censored likelihood in `wyckoff_transformer.censored` -- an estimate of
+``min(E | gene)``, the best energy the gene could reach, which is the correct
+quantity when the downstream reconstruction gets several attempts at the gene's
+manifold.
+
+Two conditioning modes, both supplied by the caller as `condition_value`:
+
+(a) ``Delta_E_polymorph = 0``: the gene whose optimum is the ground-state
+    polymorph of this composition.  The CSP target stated exactly.
+(b) the formation energy that places the composition on the convex hull, for a
+    backbone conditioned on formation energy.  An affine reparametrisation of
+    ``e_hull = 0`` per composition.
+
+The multiplicity rule
+---------------------
+
+A Wyckoff position with no positional freedom (``dof == 0``) is a fixed set of
+points, so a structure can occupy it at most once; a position with ``dof > 0``
+is a continuous orbit and can be occupied repeatedly at different coordinates.
+That is the rule `WyckoffProcessor.pyxtal_notation_to_sites` enforces when it
+turns a gene into a structure, and it is what makes reachability interesting:
+the reusable multiplicities form an unbounded coin problem, and the fixed ones a
+scarce resource shared between the elements.
+"""
+from __future__ import annotations
+
+import logging
+import re
+from collections import Counter
+from functools import reduce
+from math import gcd
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+import torch
+from torch import Tensor
+
+logger = logging.getLogger(__name__)
+
+#: Largest atom count per element the reachability tables are built for. Conventional
+#: cells in the training sets stay far below this; a composition above it is rejected
+#: rather than silently truncated.
+MAX_ATOMS_PER_ELEMENT = 256
+
+#: Default ceiling on formula units per conventional cell. Z above this is rare in the
+#: training sets and every extra value costs a target to check at every decoding step.
+DEFAULT_MAX_Z = 8
+
+#: Ceiling on nodes explored by the exact special-position search before it gives up
+#: and reports "feasible". Erring towards feasible only lets a doomed sequence run to
+#: the end, where it is dropped; erring the other way would forbid legal structures.
+FEASIBILITY_NODE_BUDGET = 4096
+
+
+@dataclass(frozen=True)
+class WyckoffPosition:
+    """One Wyckoff position of one space group, in the model's token space."""
+    ss_token: int
+    enum_token: int
+    letter: str
+    multiplicity: int
+    dof: int
+
+    @property
+    def reusable(self) -> bool:
+        """Whether a structure may occupy this position more than once.
+
+        True exactly when the position has positional freedom: the occupations
+        then sit at different coordinates and are different orbits.
+        """
+        return self.dof > 0
+
+
+def _unbounded_reachability(
+    coins: Sequence[int], limit: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Which totals a multiset of reusable multiplicities can hit, and in how few.
+
+    Returns ``(reachable, min_sites)`` over ``0..limit``. ``min_sites`` is the
+    fewest positions summing to the total, and `limit + 1` where unreachable, so
+    it can be summed across elements and compared with the remaining slots.
+    """
+    reachable = np.zeros(limit + 1, dtype=bool)
+    min_sites = np.full(limit + 1, limit + 1, dtype=np.int32)
+    reachable[0] = True
+    min_sites[0] = 0
+    for total in range(1, limit + 1):
+        for coin in coins:
+            if coin <= total and reachable[total - coin]:
+                reachable[total] = True
+                if min_sites[total - coin] + 1 < min_sites[total]:
+                    min_sites[total] = min_sites[total - coin] + 1
+    return reachable, min_sites
+
+
+class SpaceGroupCombinatorics:
+    """Which per-element atom counts a space group can build, and with what.
+
+    Splits the space group's positions into the reusable ones, which form an
+    unbounded coin system each element can draw on independently, and the fixed
+    ones, which are a scarce resource the elements compete for.  That split is
+    what makes an exact answer cheap in the common case: if every element's
+    deficit is a sum of reusable multiplicities, the elements do not interact
+    and the state is feasible with no search at all.
+
+    Args:
+        sg_number: The real space group number, for diagnostics.
+        positions: Every Wyckoff position of the group.
+        max_atoms: Table size; see `MAX_ATOMS_PER_ELEMENT`.
+    """
+
+    def __init__(
+        self,
+        sg_number: int,
+        positions: Sequence[WyckoffPosition],
+        max_atoms: int = MAX_ATOMS_PER_ELEMENT,
+    ):
+        self.sg_number = sg_number
+        self.positions = tuple(positions)
+        self.max_atoms = max_atoms
+        self.by_key = {(p.ss_token, p.enum_token): p for p in positions}
+        self.reusable = tuple(p for p in positions if p.reusable)
+        self.fixed = tuple(p for p in positions if not p.reusable)
+
+        reusable_mults = sorted({p.multiplicity for p in self.reusable})
+        # Sufficient: reachable with reusable positions alone means the elements never
+        # compete, because a reusable position can serve all of them at once.
+        self.reachable_reusable, self.min_sites_reusable = _unbounded_reachability(
+            reusable_mults, max_atoms)
+        # Necessary: nothing is reachable that is not reachable when the once-only rule
+        # on fixed positions is dropped, so failing this prunes soundly.
+        all_mults = sorted({p.multiplicity for p in positions})
+        self.reachable_any, self.min_sites_any = _unbounded_reachability(all_mults, max_atoms)
+
+    @property
+    def smallest_multiplicity(self) -> int:
+        return min(p.multiplicity for p in self.positions)
+
+    def can_complete(
+        self,
+        deficits: Sequence[int],
+        used_fixed: frozenset,
+        slots_left: int,
+    ) -> bool:
+        """Can the remaining atom deficits be covered exactly?
+
+        Args:
+            deficits: Atoms still owed, one entry per element of the target.
+            used_fixed: ``(ss_token, enum_token)`` keys of fixed positions already
+                occupied, which are no longer available.
+            slots_left: Sequence positions left before `max_sequence_length`.
+
+        Returns:
+            False only when completion is provably impossible.  The bounded search
+            in the middle band reports True when it runs out of budget, so a False
+            is trustworthy and a True is occasionally optimistic.
+        """
+        if any(d < 0 for d in deficits):
+            return False
+        outstanding = [d for d in deficits if d > 0]
+        if not outstanding:
+            return True
+        if any(d > self.max_atoms for d in outstanding):
+            return False
+        if slots_left <= 0:
+            return False
+
+        # Necessary condition, and the cheapest: every deficit must be some sum of the
+        # group's multiplicities, and the sites that takes must fit in the slots left.
+        if not all(self.reachable_any[d] for d in outstanding):
+            return False
+        if sum(self.min_sites_any[d] for d in outstanding) > slots_left:
+            return False
+
+        # Sufficient condition. Reusable positions are unlimited and shared, so if each
+        # element can be finished out of them alone there is nothing to arbitrate.
+        if (all(self.reachable_reusable[d] for d in outstanding)
+                and sum(self.min_sites_reusable[d] for d in outstanding) <= slots_left):
+            return True
+
+        # Otherwise at least one element needs a fixed position, and they are scarce.
+        available = [p for p in self.fixed if (p.ss_token, p.enum_token) not in used_fixed]
+        return self._search_fixed(tuple(outstanding), available, slots_left)
+
+    def feasible_z(
+        self,
+        reduced_counts: Sequence[int],
+        max_sites: int,
+        max_z: int,
+    ) -> List[int]:
+        """Which formula-unit counts this space group can hold, from 1 to `max_z`.
+
+        The number of formula units in the conventional cell is not something the
+        caller of a CSP run knows -- it is part of what is being predicted -- but
+        it is not free either. It has to satisfy the same reachability the decoder
+        enforces, and centring prunes it hard: every position of an F-centred group
+        has a multiplicity divisible by four, so three quarters of the z values are
+        impossible before any model is consulted.
+
+        Args:
+            reduced_counts: Atoms per *reduced* formula unit, one entry per element,
+                as `CompositionTarget.for_formula(formula, 1)` produces them.
+            max_sites: Sequence positions available, which bounds how many
+                positions the cell content can be spread over.
+            max_z: Largest number of formula units to consider.
+        """
+        if max_z < 1:
+            raise ValueError(f"max_z must be at least 1, got {max_z}")
+        return [z for z in range(1, max_z + 1)
+                if self.can_complete([count * z for count in reduced_counts],
+                                     frozenset(), max_sites)]
+
+    def _search_fixed(
+        self,
+        deficits: Tuple[int, ...],
+        available: List[WyckoffPosition],
+        slots_left: int,
+    ) -> bool:
+        """Exact assignment of scarce fixed positions to elements, depth first.
+
+        Each fixed position goes to one element or to none; an element is finished
+        as soon as its remainder is reachable from the reusable positions alone.
+        Distinct positions of equal multiplicity are interchangeable, so only one
+        of each multiplicity is tried at a given depth.
+        """
+        budget = [FEASIBILITY_NODE_BUDGET]
+        seen = set()
+
+        def recurse(index: int, remaining: Tuple[int, ...], slots: int) -> bool:
+            if all(r == 0 or self.reachable_reusable[r] for r in remaining):
+                if sum(0 if r == 0 else self.min_sites_reusable[r] for r in remaining) <= slots:
+                    return True
+            if index >= len(available) or slots <= 0:
+                return False
+            budget[0] -= 1
+            if budget[0] <= 0:
+                logger.debug("Feasibility search budget exhausted in space group %d",
+                             self.sg_number)
+                return True
+            state = (index, remaining, slots)
+            if state in seen:
+                return False
+            seen.add(state)
+            # Prune on the relaxed condition, which stays valid at every depth.
+            if not all(r == 0 or self.reachable_any[r] for r in remaining):
+                return False
+
+            tried_multiplicities = set()
+            for offset in range(index, len(available)):
+                multiplicity = available[offset].multiplicity
+                if multiplicity in tried_multiplicities:
+                    continue
+                tried_multiplicities.add(multiplicity)
+                for element, owed in enumerate(remaining):
+                    if owed < multiplicity:
+                        continue
+                    nxt = list(remaining)
+                    nxt[element] = owed - multiplicity
+                    if recurse(offset + 1, tuple(nxt), slots - 1):
+                        return True
+            return False
+
+        return recurse(0, deficits, slots_left)
+
+
+def group_multiplicity_db(multiplicity_db) -> Dict:
+    """Index the multiplicity table by its space group key.
+
+    The first index level holds whatever the start tokeniser produces, which for
+    a one-hot `SpaceGroupEncoder` is a tuple of the encoded vector and for an
+    enumerating tokeniser a plain integer.  Pandas cannot be asked for "the rows
+    whose first level equals this tuple" without the tuple being read as a
+    multi-level key, so the table is walked once and grouped here instead. It
+    holds a couple of thousand rows, so the pass is not worth avoiding.
+    """
+    grouped: Dict = {}
+    for key, multiplicity in multiplicity_db.items():
+        sg_key, ss_token, enum_token = key
+        grouped.setdefault(sg_key, []).append((ss_token, enum_token, multiplicity))
+    return grouped
+
+
+def start_to_db_key(start: Tensor):
+    """The multiplicity table's space group key for a start tensor.
+
+    Mirrors what `WyckoffGenerator.generate_tensors` does when it feeds the
+    engineers: a multi-valued start token becomes a tuple, a scalar one stays a
+    scalar.
+    """
+    flat = start.reshape(-1) if start.dim() <= 1 else start.reshape(start.shape[0], -1)[0]
+    if flat.numel() == 1:
+        return flat.item()
+    return tuple(flat.tolist())
+
+
+def build_combinatorics(
+    sg_number: int,
+    sg_token,
+    multiplicity_db,
+    letter_from_ss_enum_idx: Dict,
+    wp_index: Dict,
+    ss_tokeniser,
+    max_atoms: int = MAX_ATOMS_PER_ELEMENT,
+    grouped_db: Optional[Dict] = None,
+) -> SpaceGroupCombinatorics:
+    """Assemble one space group's positions from the tokenisers and tables.
+
+    The multiplicity engineer is the authority on which ``(site symmetry,
+    enumeration)`` token pairs exist in the group -- it is what the generator's
+    own validity check consults -- while `wp_index` supplies the degrees of
+    freedom that decide whether a position can be occupied twice.
+
+    Args:
+        sg_token: The start-tensor key into the multiplicity table, as
+            `start_to_db_key` builds it.
+        grouped_db: Output of `group_multiplicity_db`, to avoid regrouping the
+            table once per space group.
+    """
+    positions = []
+    grouped = grouped_db if grouped_db is not None else group_multiplicity_db(multiplicity_db)
+    group_db = grouped.get(sg_token)
+    if not group_db:
+        raise KeyError(f"Space group {sg_number} is absent from the multiplicity table")
+    for ss_token, enum_token, multiplicity in group_db:
+        ss_string = ss_tokeniser.to_token[ss_token]
+        try:
+            letter = letter_from_ss_enum_idx[sg_number][ss_string][enum_token]
+            dof = wp_index[sg_number][ss_string][letter][1]
+        except KeyError:
+            # Present in the multiplicity table but not a real position of this group.
+            continue
+        positions.append(WyckoffPosition(
+            ss_token=int(ss_token), enum_token=int(enum_token), letter=letter,
+            multiplicity=int(multiplicity), dof=int(dof)))
+    if not positions:
+        raise ValueError(f"No Wyckoff positions recovered for space group {sg_number}")
+    return SpaceGroupCombinatorics(sg_number, positions, max_atoms=max_atoms)
+
+
+_FORMULA_TOKEN = re.compile(r"([A-Z][a-z]?)(\d*)")
+
+
+def parse_formula(formula: str) -> Counter:
+    """``"Na2Cl2"`` or ``"BaTiO3"`` into a Counter of element symbol to count."""
+    counts: Counter = Counter()
+    position = 0
+    for match in _FORMULA_TOKEN.finditer(formula.strip()):
+        if match.start() != position:
+            raise ValueError(f"Cannot parse formula {formula!r} at offset {position}")
+        position = match.end()
+        symbol, digits = match.groups()
+        counts[symbol] += int(digits) if digits else 1
+    if position != len(formula.strip()) or not counts:
+        raise ValueError(f"Cannot parse formula {formula!r}")
+    return counts
+
+
+def reduce_formula(counts: Counter) -> Counter:
+    """Divide a composition by the common factor of its counts.
+
+    ``Ba2Ti2O6`` and ``BaTiO3`` are the same compound, and Z is defined against
+    the reduced unit, so both have to parse to the same thing. Without this,
+    ``z`` would be a multiplier on whatever the caller happened to type: rocksalt
+    would be Z=4 written as NaCl and Z=2 written as Na2Cl2, ``--max-z`` would
+    cover a different range of cell sizes in each case, and a formula typed
+    pre-multiplied would put every smaller cell out of reach of the enumeration.
+    """
+    factor = reduce(gcd, counts.values())
+    if factor == 1:
+        return Counter(counts)
+    logger.info("Reducing %s by %d; z is counted in reduced formula units",
+                "".join(f"{s}{c}" for s, c in sorted(counts.items())), factor)
+    return Counter({symbol: count // factor for symbol, count in counts.items()})
+
+
+@dataclass
+class CompositionTarget:
+    """A conventional-cell composition, in element-token space.
+
+    Wyckoff multiplicities count atoms in the conventional cell, so this is a
+    *cell* content rather than a formula: rocksalt's target is ``Na4Cl4``, and
+    `for_formula` builds it from ``NaCl`` and ``z=4``.
+
+    ``z`` is the crystallographic Z, the number of reduced formula units in the
+    conventional cell -- conventional, not primitive, which is why rocksalt is
+    Z=4 in Fm-3m though its primitive rhombohedral cell holds one formula unit.
+    Written lowercase throughout to avoid colliding with the other Z of materials
+    code, the atomic number.
+    """
+    symbols: Tuple[str, ...]
+    counts: Tuple[int, ...]
+    element_tokens: Tuple[int, ...]
+
+    @classmethod
+    def for_formula(cls, formula: str, z: int, elements_tokeniser) -> "CompositionTarget":
+        if z < 1:
+            raise ValueError(f"z must be at least 1, got {z}")
+        symbols, counts, tokens = [], [], []
+        for symbol, count in sorted(reduce_formula(parse_formula(formula)).items()):
+            symbols.append(symbol)
+            counts.append(count * z)
+            tokens.append(_element_token(symbol, elements_tokeniser))
+        return cls(tuple(symbols), tuple(counts), tuple(tokens))
+
+    @property
+    def total_atoms(self) -> int:
+        return sum(self.counts)
+
+    def __str__(self) -> str:
+        return "".join(f"{s}{c}" for s, c in zip(self.symbols, self.counts))
+
+
+def _element_token(symbol: str, elements_tokeniser) -> int:
+    """Element symbol to token, across the several key conventions in use."""
+    from pymatgen.core import Element  # noqa: PLC0415
+    for key in (Element(symbol), f"Element {symbol}", symbol):
+        try:
+            if key in elements_tokeniser:
+                return elements_tokeniser[key]
+        except TypeError:
+            continue
+    raise KeyError(f"Element {symbol!r} is not in the model's vocabulary")
+
+
+@dataclass(frozen=True)
+class CompositionRatio:
+    """A reduced formula in element-token space, with the cell content left open.
+
+    `CompositionTarget` is a specific cell: ``Na4Cl4``. This is the compound:
+    ``NaCl``, whose cell content is ``z`` times these counts for some ``z`` the
+    space group can hold. Decoding against the ratio rather than against one
+    target is what lets a single pass span every ``z``, so the model's own
+    probability decides how the candidates are distributed over cell sizes
+    instead of a caller splitting the budget evenly across them.
+    """
+    symbols: Tuple[str, ...]
+    unit_counts: Tuple[int, ...]
+    element_tokens: Tuple[int, ...]
+
+    @classmethod
+    def for_formula(cls, formula: str, elements_tokeniser) -> "CompositionRatio":
+        symbols, counts, tokens = [], [], []
+        for symbol, count in sorted(reduce_formula(parse_formula(formula)).items()):
+            symbols.append(symbol)
+            counts.append(count)
+            tokens.append(_element_token(symbol, elements_tokeniser))
+        return cls(tuple(symbols), tuple(counts), tuple(tokens))
+
+    def counts_at(self, z: int) -> Tuple[int, ...]:
+        """The conventional-cell atom counts at ``z`` formula units."""
+        if z < 1:
+            raise ValueError(f"z must be at least 1, got {z}")
+        return tuple(count * z for count in self.unit_counts)
+
+    def target_at(self, z: int) -> CompositionTarget:
+        return CompositionTarget(self.symbols, self.counts_at(z), self.element_tokens)
+
+    def feasible_z(self, combinatorics: "SpaceGroupCombinatorics",
+                   max_sites: int, max_z: int) -> List[int]:
+        return combinatorics.feasible_z(self.unit_counts, max_sites, max_z)
+
+    def __str__(self) -> str:
+        return "".join(f"{s}{c if c > 1 else ''}" for s, c in zip(self.symbols, self.unit_counts))
+
+
+@dataclass
+class BeamState:
+    """One partially decoded gene, against a ratio rather than one cell content.
+
+    Carries what has been *placed* rather than what is owed, because what is owed
+    depends on which ``z`` the sequence ends up at, and that is not decided until
+    the model emits STOP.
+    """
+    placed: Tuple[int, ...]
+    used_fixed: frozenset = frozenset()
+    rows: List[Tuple[int, int, int]] = field(default_factory=list)
+    log_prob: float = 0.0
+
+    @classmethod
+    def empty(cls, n_elements: int) -> "BeamState":
+        return cls(placed=(0,) * n_elements)
+
+    @property
+    def n_sites(self) -> int:
+        return len(self.rows)
+
+    def place(self, element_index: int, position: WyckoffPosition,
+              element_token: int, log_prob: float) -> "BeamState":
+        placed = list(self.placed)
+        placed[element_index] += position.multiplicity
+        used = self.used_fixed
+        if not position.reusable:
+            used = used | {(position.ss_token, position.enum_token)}
+        return BeamState(
+            placed=tuple(placed),
+            used_fixed=used,
+            rows=self.rows + [(element_token, position.ss_token, position.enum_token)],
+            log_prob=self.log_prob + log_prob)
+
+    def completed_z(self, targets: Dict[int, Tuple[int, ...]]) -> Optional[int]:
+        """The ``z`` this state exactly realises, if any.
+
+        At most one can match: the targets are distinct multiples of one ratio.
+        A match makes STOP legal; it does not force it, because a state that is
+        a valid cell at z=2 may still be extended towards z=4, and which of those
+        the compound actually adopts is the model's call.
+        """
+        for z, counts in targets.items():
+            if self.placed == counts:
+                return z
+        return None
+
+    def _survives(
+        self,
+        placed: Tuple[int, ...],
+        used: frozenset,
+        targets: Dict[int, Tuple[int, ...]],
+        combinatorics: SpaceGroupCombinatorics,
+        slots_left: int,
+    ) -> bool:
+        """Whether *some* allowed z is still reachable from this placement.
+
+        The union over z is the whole point: a placement is legal if it strands
+        no more than some of the cell sizes, and only illegal when it strands
+        them all.
+        """
+        for counts in targets.values():
+            deficits = [want - have for want, have in zip(counts, placed)]
+            if all(d == 0 for d in deficits):
+                return True
+            if combinatorics.can_complete(deficits, used, slots_left):
+                return True
+        return False
+
+    def legal_positions(
+        self,
+        element_index: int,
+        combinatorics: SpaceGroupCombinatorics,
+        max_sites: int,
+        targets: Dict[int, Tuple[int, ...]],
+    ) -> List[WyckoffPosition]:
+        """Positions this element may take next without stranding every z."""
+        slots_left = max_sites - self.n_sites - 1
+        largest = max(counts[element_index] for counts in targets.values())
+        legal = []
+        for position in combinatorics.positions:
+            if self.placed[element_index] + position.multiplicity > largest:
+                continue
+            if not position.reusable and (position.ss_token, position.enum_token) in self.used_fixed:
+                continue
+            placed = list(self.placed)
+            placed[element_index] += position.multiplicity
+            used = self.used_fixed
+            if not position.reusable:
+                used = used | {(position.ss_token, position.enum_token)}
+            if self._survives(tuple(placed), used, targets, combinatorics, slots_left):
+                legal.append(position)
+        return legal
+
+    def live_elements(
+        self,
+        combinatorics: SpaceGroupCombinatorics,
+        max_sites: int,
+        targets: Dict[int, Tuple[int, ...]],
+    ) -> List[int]:
+        """Indices of elements that can legally receive the next site."""
+        return [index for index in range(len(self.placed))
+                if self.legal_positions(index, combinatorics, max_sites, targets)]
+
+
+@dataclass
+class CSPCandidate:
+    """A completed gene with a composition proportional to the target formula."""
+    sg_number: int
+    rows: Tuple[Tuple[int, int, int], ...]
+    log_prob: float
+    n_sites: int
+    #: Formula units in the conventional cell, chosen by the model rather than
+    #: supplied: the site at which it emitted STOP is what fixed it.
+    z: int = 1
+    #: Predicted ``min(E | gene)`` from the censored regressor; None until ranked.
+    predicted_energy: Optional[float] = None
+
+    def normalised_log_prob(self, length_penalty: float = 1.0) -> float:
+        """Sequence log-probability divided by ``n_sites ** length_penalty``.
+
+        The raw sum has one term per site, so it prefers few-site genes for
+        reasons that have nothing to do with them being better structures.
+        """
+        if length_penalty == 0 or self.n_sites == 0:
+            return self.log_prob
+        return self.log_prob / (self.n_sites ** length_penalty)
+
+
+class ConstrainedDecoder:
+    """Decodes Wyckoff genes whose composition is fixed in advance.
+
+    Wraps a trained backbone and the per-space-group multiplicity tables, and
+    exposes two strategies over the same masking machinery.
+
+    ``sample`` draws ancestrally from the masked distribution.  Because the mask
+    already removes every choice that strands the composition, the acceptance
+    rate is one: each draw is a sample from the model's own distribution
+    restricted to genes with the target formula.  This is the strategy to pair
+    with reranking, since the candidates stay diverse by construction.
+
+    ``beam`` keeps the ``beam_width`` most likely prefixes at every cascade
+    field.  It returns the model's modal genes rather than a sample of them,
+    which is the right thing when the backbone's likelihood is what you trust
+    and the wrong thing when the candidates are about to be reranked by
+    something else: beams sharing a prefix differ only in their last sites, so a
+    wide beam buys much less spread over the relaxation budget than the same
+    number of samples.
+
+    Args:
+        model: A trained `CascadeTransformer` in generation mode.
+        cascade_order: Field order the model was trained with.
+        cascade_is_target: Which of those fields the model predicts.
+        tokenisers, token_engineers, masks, stops: As `WyckoffGenerator` takes them.
+        max_sequence_len: Hard cap on sites per gene.
+        device: Defaults to the model's.
+        max_atoms: Reachability table size; see `MAX_ATOMS_PER_ELEMENT`.
+    """
+
+    def __init__(
+        self,
+        model,
+        cascade_order: Sequence[str],
+        cascade_is_target: Dict[str, bool],
+        tokenisers: Dict,
+        token_engineers: Dict,
+        masks: Dict,
+        stops: Optional[Dict],
+        max_sequence_len: int,
+        device: Optional[torch.device] = None,
+        max_atoms: int = MAX_ATOMS_PER_ELEMENT,
+    ):
+        self.model = model
+        self.cascade_order = tuple(cascade_order)
+        self.cascade_is_target = dict(cascade_is_target)
+        self.tokenisers = tokenisers
+        self.token_engineers = token_engineers
+        self.masks = masks
+        self.stops = stops
+        self.max_sequence_len = int(max_sequence_len)
+        self.device = device or next(model.parameters()).device
+        self.max_atoms = max_atoms
+        for required in ("elements", "site_symmetries", "sites_enumeration"):
+            if required not in self.cascade_order:
+                raise NotImplementedError(
+                    "Composition-constrained decoding needs the site-symmetry cascade "
+                    f"(elements, site_symmetries, sites_enumeration); {required} is missing")
+        self.field_index = {name: i for i, name in enumerate(self.cascade_order)}
+        self.engineered_fields = [name for name in self.cascade_order
+                                  if not self.cascade_is_target.get(name, False)]
+        unsupported = set(self.engineered_fields) - {"multiplicity"}
+        if unsupported:
+            raise NotImplementedError(
+                f"Non-target cascade fields {sorted(unsupported)} are not supported in CSP mode")
+        self._wp_index: Optional[Dict] = None
+        self._letter_index: Optional[Dict] = None
+        self._combinatorics: Dict[int, SpaceGroupCombinatorics] = {}
+        self._grouped_db: Optional[Dict] = None
+
+    @property
+    def wp_index(self) -> Dict:
+        """Wyckoff positions by space group. Built on first use: it costs a couple of
+        seconds and is not needed at all when the tables are supplied directly."""
+        if self._wp_index is None:
+            from wyckoff_transformer.tokenization import get_wp_index  # noqa: PLC0415
+            self._wp_index = get_wp_index()
+        return self._wp_index
+
+    @property
+    def letter_index(self) -> Dict:
+        """Wyckoff letter by space group, site symmetry and enumeration token."""
+        if self._letter_index is None:
+            self._letter_index = self.tokenisers["sites_enumeration"].get_letter_from_ss_enum_idx()
+        return self._letter_index
+
+    def combinatorics(self, sg_number: int, sg_token) -> SpaceGroupCombinatorics:
+        """The reachability tables for one space group, built once and cached."""
+        if sg_number not in self._combinatorics:
+            if self._grouped_db is None:
+                self._grouped_db = group_multiplicity_db(
+                    self.token_engineers["multiplicity"].db)
+            self._combinatorics[sg_number] = build_combinatorics(
+                sg_number=sg_number,
+                sg_token=start_to_db_key(sg_token) if isinstance(sg_token, Tensor) else sg_token,
+                multiplicity_db=None,
+                letter_from_ss_enum_idx=self.letter_index,
+                wp_index=self.wp_index,
+                ss_tokeniser=self.tokenisers["site_symmetries"],
+                max_atoms=self.max_atoms,
+                grouped_db=self._grouped_db)
+        return self._combinatorics[sg_number]
+
+    def _cascade_tensors(
+        self,
+        states: Sequence[BeamState],
+        width: int,
+        combinatorics: SpaceGroupCombinatorics,
+    ) -> List[Tensor]:
+        """Materialise beam states as the cascade tensors the model reads.
+
+        Slots beyond a state's placed sites stay at MASK, which is how the model
+        is told which position it is being asked to predict.
+        """
+        tensors = [
+            torch.full((len(states), width), int(self.masks[name]),
+                       dtype=torch.int64, device=self.device)
+            for name in self.cascade_order]
+        element_index = self.field_index["elements"]
+        ss_index = self.field_index["site_symmetries"]
+        enum_index = self.field_index["sites_enumeration"]
+        multiplicity_index = self.field_index.get("multiplicity")
+        for row, state in enumerate(states):
+            for site, (element, ss, enum) in enumerate(state.rows):
+                tensors[element_index][row, site] = element
+                tensors[ss_index][row, site] = ss
+                tensors[enum_index][row, site] = enum
+                if multiplicity_index is not None:
+                    tensors[multiplicity_index][row, site] = \
+                        combinatorics.by_key[(ss, enum)].multiplicity
+        return tensors
+
+    @torch.no_grad()
+    def _log_probs(
+        self,
+        start: Tensor,
+        states: Sequence[BeamState],
+        site: int,
+        cascade_index: int,
+        combinatorics: SpaceGroupCombinatorics,
+        temperature: float,
+        cond: Optional[Tensor],
+    ) -> Tensor:
+        """Log probabilities over one cascade field, for every state, at one site."""
+        tensors = self._cascade_tensors(states, site + 1, combinatorics)
+        batch_start = start.expand(len(states), *start.shape[1:]) if start.dim() > 1 \
+            else start.expand(len(states))
+        batch_cond = cond.expand(len(states), *cond.shape[1:]) if cond is not None else None
+        logits = self.model(batch_start, tensors, None, cascade_index, cond=batch_cond)
+        return torch.log_softmax(logits.float() / temperature, dim=-1)
+
+    @staticmethod
+    def _masked(log_probs: Tensor, allowed: Sequence[int]) -> Tensor:
+        """Renormalise a row over `allowed` alone; everything else gets -inf."""
+        masked = torch.full_like(log_probs, float("-inf"))
+        index = torch.as_tensor(sorted(allowed), dtype=torch.long, device=log_probs.device)
+        masked[index] = log_probs[index]
+        return masked - torch.logsumexp(masked, dim=0)
+
+    def _partial_tensors(
+        self,
+        proposals: Sequence["_Proposal"],
+        width: int,
+        combinatorics: SpaceGroupCombinatorics,
+    ) -> List[Tensor]:
+        """Cascade tensors for states that have a partly-chosen row at `width - 1`."""
+        tensors = self._cascade_tensors([p.state for p in proposals], width, combinatorics)
+        site = width - 1
+        for row, proposal in enumerate(proposals):
+            if proposal.element_token is not None:
+                tensors[self.field_index["elements"]][row, site] = proposal.element_token
+            if proposal.ss_token is not None:
+                tensors[self.field_index["site_symmetries"]][row, site] = proposal.ss_token
+        return tensors
+
+    @torch.no_grad()
+    def _stage_log_probs(
+        self,
+        start: Tensor,
+        proposals: Sequence["_Proposal"],
+        site: int,
+        field: str,
+        combinatorics: SpaceGroupCombinatorics,
+        temperature: float,
+        cond: Optional[Tensor],
+    ) -> Tensor:
+        tensors = self._partial_tensors(proposals, site + 1, combinatorics)
+        n = len(proposals)
+        batch_start = start.expand(n, *start.shape[1:]) if start.dim() > 1 else start.expand(n)
+        batch_cond = cond.expand(n, *cond.shape[1:]) if cond is not None else None
+        logits = self.model(batch_start, tensors, None, self.field_index[field], cond=batch_cond)
+        return torch.log_softmax(logits.float() / temperature, dim=-1)
+
+    @torch.no_grad()
+    def decode(
+        self,
+        start: Tensor,
+        sg_number: int,
+        ratio: CompositionRatio,
+        allowed_z: Optional[Sequence[int]] = None,
+        max_z: int = DEFAULT_MAX_Z,
+        n_candidates: int = 64,
+        strategy: str = "sample",
+        beam_width: Optional[int] = None,
+        temperature: float = 1.0,
+        cond: Optional[Tensor] = None,
+        generator: Optional[torch.Generator] = None,
+    ) -> List[CSPCandidate]:
+        """Decode genes whose composition is proportional to `ratio`, in one space group.
+
+        One pass spans every cell size the space group can hold. The mask keeps a
+        placement legal while *any* allowed ``z`` remains reachable, and STOP is
+        offered exactly when the sites placed so far are a whole number of formula
+        units -- so the model chooses where to stop, and the candidates come out
+        distributed over ``z`` by its own probability rather than by an even split
+        of the caller's budget.
+
+        Args:
+            start: The space group start token, shape ``[1]`` or ``[1, d]``.
+            sg_number: The real space group number the start token encodes.
+            ratio: The reduced formula every gene must be a whole multiple of.
+            allowed_z: Cell sizes to consider. Defaults to every one this space
+                group can hold up to `max_z`; a list narrows that, and is itself
+                filtered by feasibility. A single value reproduces exact-target
+                decoding, which is what a backbone conditioned on the cell size
+                needs, since that conditioning has to be built before the pass.
+            max_z: Ceiling for the default enumeration.
+            n_candidates: Genes to return (``sample``), or paths to carry
+                (``beam``, where it also defaults `beam_width`).
+            strategy: ``"sample"`` or ``"beam"``.
+            beam_width: Paths kept per cascade field under ``beam``.
+            temperature: Softmax temperature; below 1 sharpens.
+            cond: Conditioning vector, shape ``[1, condition_dim]``.
+            generator: RNG for reproducible sampling.
+
+        Returns:
+            Completed candidates, most likely first, each carrying the ``z`` the
+            model settled on. Empty when the space group cannot express the
+            formula at any allowed cell size.
+        """
+        if strategy not in ("sample", "beam"):
+            raise ValueError(f"Unknown strategy: {strategy}")
+        if self.stops is None or "elements" not in self.stops:
+            raise ValueError(
+                "CSP decoding needs the elements STOP token: it is how the model says "
+                "the cell is complete, and so how z gets chosen.")
+        combinatorics = self.combinatorics(sg_number, start)
+        width = beam_width or n_candidates
+        self.model.eval()
+
+        feasible = combinatorics.feasible_z(
+            ratio.unit_counts, self.max_sequence_len, max_z)
+        if allowed_z is not None:
+            requested = set(allowed_z)
+            feasible = [z for z in feasible if z in requested]
+        if not feasible:
+            logger.info("Space group %d cannot build %s at any allowed z", sg_number, ratio)
+            return []
+        targets = {z: ratio.counts_at(z) for z in feasible}
+        logger.debug("Space group %d, %s: z in %s", sg_number, ratio, sorted(targets))
+
+        stop_token = int(self.stops["elements"])
+        live = [BeamState.empty(len(ratio.unit_counts))
+                for _ in range(n_candidates if strategy == "sample" else 1)]
+        finished: List[Tuple[BeamState, int]] = []
+
+        for site in range(self.max_sequence_len):
+            if not live:
+                break
+            proposals = self._choose_elements(
+                start, live, site, ratio, targets, stop_token, combinatorics, temperature,
+                cond, strategy, width, generator)
+            for proposal in proposals:
+                if proposal.element_token == stop_token:
+                    # STOP is only ever offered on a state that is a whole number of
+                    # formula units, so completed_z is never None here.
+                    z = proposal.state.completed_z(targets)
+                    stopped = BeamState(
+                        placed=proposal.state.placed, used_fixed=proposal.state.used_fixed,
+                        rows=proposal.state.rows,
+                        log_prob=proposal.state.log_prob + proposal.log_prob_delta)
+                    finished.append((stopped, z))
+            proposals = [p for p in proposals if p.element_token != stop_token]
+            proposals = self._choose_field(
+                start, proposals, site, "site_symmetries", combinatorics, temperature, cond,
+                strategy, width, generator, targets)
+            proposals = self._choose_field(
+                start, proposals, site, "sites_enumeration", combinatorics, temperature, cond,
+                strategy, width, generator, targets)
+            live = []
+            for proposal in proposals:
+                position = combinatorics.by_key[(proposal.ss_token, proposal.enum_token)]
+                live.append(proposal.state.place(
+                    proposal.element_index, position, proposal.element_token,
+                    proposal.log_prob_delta))
+            if strategy == "beam" and len(live) > width:
+                live.sort(key=lambda s: s.log_prob, reverse=True)
+                live = live[:width]
+
+        if live:
+            logger.debug("%d paths hit the %d-site cap without completing %s in space group %d",
+                         len(live), self.max_sequence_len, ratio, sg_number)
+        candidates = [
+            CSPCandidate(sg_number=sg_number, rows=tuple(state.rows),
+                         log_prob=state.log_prob, n_sites=state.n_sites, z=z)
+            for state, z in finished]
+        candidates.sort(key=lambda c: c.log_prob, reverse=True)
+        return candidates[:n_candidates]
+
+    def _choose_elements(
+        self, start, live, site, ratio, targets, stop_token, combinatorics, temperature,
+        cond, strategy, width, generator) -> List["_Proposal"]:
+        """Pick which element receives the site, or STOP if the cell is complete.
+
+        STOP is offered exactly when what has been placed is a whole number of
+        formula units. That makes ending the sequence a decision the model takes
+        against its own distribution, and since where it ends is what fixes z,
+        the model is what chooses the cell size.
+        """
+        seeds = [_Proposal(state=state) for state in live]
+        log_probs = self._stage_log_probs(
+            start, seeds, site, "elements", combinatorics, temperature, cond)
+        options, index_maps = [], []
+        for row, state in enumerate(live):
+            allowed_indices = state.live_elements(
+                combinatorics, self.max_sequence_len, targets)
+            allowed_tokens = [ratio.element_tokens[i] for i in allowed_indices]
+            index_map = dict(zip(allowed_tokens, allowed_indices))
+            if state.completed_z(targets) is not None:
+                allowed_tokens = allowed_tokens + [stop_token]
+            if not allowed_tokens:
+                continue
+            masked = self._masked(log_probs[row], allowed_tokens)
+            options.append((row, state, allowed_indices, allowed_tokens, masked))
+            index_maps.append(index_map)
+        return self._resolve(
+            options, strategy, width, generator,
+            build=lambda state, token, index_map, delta: _Proposal(
+                state=state, element_index=index_map.get(token), element_token=token,
+                log_prob_delta=delta),
+            index_maps=index_maps)
+
+    def _choose_field(
+        self, start, proposals, site, field, combinatorics, temperature, cond, strategy,
+        width, generator, targets) -> List["_Proposal"]:
+        """Pick a site symmetry, then an enumeration, among positions still legal."""
+        if not proposals:
+            return []
+        log_probs = self._stage_log_probs(
+            start, proposals, site, field, combinatorics, temperature, cond)
+        options = []
+        for row, proposal in enumerate(proposals):
+            legal = proposal.state.legal_positions(
+                proposal.element_index, combinatorics, self.max_sequence_len, targets)
+            if field == "sites_enumeration":
+                legal = [p for p in legal if p.ss_token == proposal.ss_token]
+            allowed = sorted({p.ss_token if field == "site_symmetries" else p.enum_token
+                              for p in legal})
+            if not allowed:
+                continue
+            options.append((row, proposal, None, allowed, self._masked(log_probs[row], allowed)))
+        return self._resolve(
+            options, strategy, width, generator,
+            build=lambda proposal, token, _, delta: proposal.with_token(field, token, delta),
+            index_maps=[None] * len(options))
+
+    @staticmethod
+    def _resolve(options, strategy, width, generator, build, index_maps):
+        """Sample one continuation per path, or keep the `width` best across all of them."""
+        if strategy == "sample":
+            resolved = []
+            for (_, carrier, _, _, masked), index_map in zip(options, index_maps):
+                token = int(torch.multinomial(
+                    masked.exp(), num_samples=1, generator=generator).item())
+                resolved.append(build(carrier, token, index_map, float(masked[token])))
+            return resolved
+        scored = []
+        for (_, carrier, _, allowed, masked), index_map in zip(options, index_maps):
+            # The element stage carries raw states, the later stages carry proposals that
+            # already hold this row's partial log-probability.
+            base = carrier.log_prob if isinstance(carrier, BeamState) \
+                else carrier.state.log_prob + carrier.log_prob_delta
+            for token in allowed:
+                delta = float(masked[token])
+                scored.append((base + delta, carrier, token, index_map, delta))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [build(carrier, token, index_map, delta)
+                for _, carrier, token, index_map, delta in scored[:width]]
+
+
+@dataclass
+class _Proposal:
+    """A path partway through one site's cascade."""
+    state: BeamState
+    element_index: Optional[int] = None
+    element_token: Optional[int] = None
+    ss_token: Optional[int] = None
+    enum_token: Optional[int] = None
+    log_prob_delta: float = 0.0
+
+    def with_token(self, field: str, token: int, delta: float) -> "_Proposal":
+        updated = _Proposal(
+            state=self.state, element_index=self.element_index,
+            element_token=self.element_token, ss_token=self.ss_token,
+            enum_token=self.enum_token, log_prob_delta=self.log_prob_delta + delta)
+        setattr(updated, "ss_token" if field == "site_symmetries" else "enum_token", token)
+        return updated
+
+
+def candidates_to_tensors(
+    candidates: Sequence[CSPCandidate],
+    start: Tensor,
+    combinatorics: SpaceGroupCombinatorics,
+    cascade_order: Sequence[str],
+    pads: Dict,
+    stops: Dict,
+    augmented_fields: Optional[Sequence[str]] = None,
+    include_stop: bool = True,
+    sequence_length: Optional[int] = None,
+    device: Optional[torch.device] = None,
+) -> Dict[str, Tensor]:
+    """Pack decoded genes into the tokenised form a trained model reads.
+
+    Sites are written in decoding order, then a STOP if the model was trained
+    with one, then PAD to a common width -- the layout the dataset derives its
+    padding mask from.
+
+    Args:
+        candidates: Genes to pack; they need not share a length.
+        start: The space group start token, shape ``[1]`` or ``[1, d]``.
+        combinatorics: Tables for their space group, for the multiplicity field.
+        cascade_order: Field order of the *reading* model, which need not be the
+            decoder's as long as the two share a tokeniser.
+        pads, stops: Per-field service tokens, as `WyckoffTrainer` holds them.
+        augmented_fields: Fields the reader expects an augmented variant of. One
+            variant is supplied, the decoded gene itself.
+        include_stop: Whether the reader's training data carried a STOP token.
+        sequence_length: Padded width; defaults to what the genes need.
+        device: Defaults to `start`'s.
+
+    Returns:
+        A dict suitable for `WyckoffTrainer.predict_scalars`.
+    """
+    device = device or start.device
+    n_sites = max((c.n_sites for c in candidates), default=0)
+    width = sequence_length or (n_sites + (1 if include_stop else 0))
+    if width < n_sites + (1 if include_stop else 0):
+        raise ValueError(
+            f"sequence_length {width} cannot hold a {n_sites}-site gene"
+            + (" plus its STOP" if include_stop else ""))
+
+    tensors: Dict[str, Tensor] = {}
+    for name in cascade_order:
+        tensors[name] = torch.full((len(candidates), width), int(pads[name]),
+                                   dtype=torch.int64, device=device)
+    for row, candidate in enumerate(candidates):
+        for site, (element, ss, enum) in enumerate(candidate.rows):
+            values = {"elements": element, "site_symmetries": ss, "sites_enumeration": enum,
+                      "multiplicity": combinatorics.by_key[(ss, enum)].multiplicity}
+            for name in cascade_order:
+                if name not in values:
+                    raise NotImplementedError(f"Cannot pack cascade field {name!r}")
+                tensors[name][row, site] = values[name]
+        if include_stop:
+            for name in cascade_order:
+                tensors[name][row, candidate.n_sites] = int(stops[name])
+
+    data: Dict[str, Tensor] = dict(tensors)
+    for name in augmented_fields or ():
+        # One variant per example: the gene as decoded. The reader averages over
+        # variants, and with a single one that average is the gene itself.
+        data[f"{name}_augmented"] = [[tensors[name][row]] for row in range(len(candidates))]
+    data["pure_sequence_length"] = torch.tensor(
+        [c.n_sites for c in candidates], dtype=torch.int64, device=device)
+    start_row = start.reshape(1, -1) if start.dim() > 1 else start.reshape(1)
+    data["start"] = start_row.expand(len(candidates), *start_row.shape[1:]).clone()
+    return data
+
+
+def rank_by_predicted_minimum(
+    candidates: Sequence[CSPCandidate],
+    trainer,
+    start: Tensor,
+    combinatorics: SpaceGroupCombinatorics,
+    augmentation_samples: int = 1,
+) -> List[CSPCandidate]:
+    """Order candidates by a gene-energy regressor's attainable-energy estimate.
+
+    This is the selection step of CSP mode. A censored regressor estimates the
+    minimum directly. The simpler MSE critic is also valid when it was trained
+    on ``gene_min_formation_energy_per_atom``: all rows sharing a gene then
+    carry its observed minimum rather than their own structural energy.
+
+    Returns a new list, lowest predicted energy first, with `predicted_energy`
+    filled in.  The input order (model likelihood) is not consulted; blend the
+    two yourself via `CSPCandidate.normalised_log_prob` if you want both.
+    """
+    if not candidates:
+        return []
+    if getattr(trainer, "scalar_loss", "mse") != "censored":
+        logger.warning(
+            "Ranking with a %s regressor. Its target must be an observed per-gene minimum, "
+            "not a raw per-structure energy, to estimate attainable energy.",
+            getattr(trainer, "scalar_loss", "mse"))
+    include_stop = True
+    if trainer.tokeniser_config is not None:
+        include_stop = bool(trainer.tokeniser_config.get("include_stop", True))
+    data = candidates_to_tensors(
+        candidates, start=start, combinatorics=combinatorics,
+        cascade_order=trainer.cascade_order, pads=trainer.pad_dict, stops=trainer.stops_dict,
+        augmented_fields=trainer.augmented_fields, include_stop=include_stop,
+        sequence_length=trainer.max_sequence_length, device=trainer.device)
+    data[trainer.start_name] = data.pop("start")
+    from wyckoff_transformer.gene_energy import build_clean_relaxation_condition  # noqa: PLC0415
+
+    cond = build_clean_relaxation_condition(
+        trainer,
+        len(candidates),
+        device=trainer.device,
+    )
+    predictions, _ = trainer.predict_scalars(
+        data,
+        augmentation_samples=augmentation_samples,
+        cond=cond,
+    )
+    ranked = []
+    for candidate, energy in zip(candidates, predictions.reshape(-1).tolist()):
+        ranked.append(CSPCandidate(
+            sg_number=candidate.sg_number, rows=candidate.rows, log_prob=candidate.log_prob,
+            n_sites=candidate.n_sites, predicted_energy=float(energy)))
+    ranked.sort(key=lambda c: c.predicted_energy)
+    return ranked
+
+
+def candidates_to_pyxtal(
+    candidates: Sequence[CSPCandidate],
+    trainer,
+    start: Tensor,
+    combinatorics: SpaceGroupCombinatorics,
+) -> List[Optional[dict]]:
+    """Convert decoded genes into the pyxtal dicts the rest of the pipeline reads.
+
+    Same shape as `WyckoffTrainer.generate_structures` returns, so CSP output
+    goes straight into ``wyformer-cryspr`` and ``wyformer-protocol``.  Entries
+    the processor rejects come back as None and should be dropped by the caller;
+    with the composition mask in place that should not happen, and it is worth
+    noticing when it does.
+    """
+    from functools import partial  # noqa: PLC0415
+
+    from wyckoff_transformer.tokenization import get_wp_index, load_wyckoff_mappings  # noqa: PLC0415
+
+    if not candidates:
+        return []
+    data = candidates_to_tensors(
+        candidates, start=start, combinatorics=combinatorics,
+        cascade_order=trainer.cascade_order, pads=trainer.pad_dict, stops=trainer.stops_dict,
+        include_stop=True, device=torch.device("cpu"))
+    stacked = torch.stack([data[name] for name in trainer.cascade_order], dim=-1)
+    to_pyxtal = partial(
+        trainer.processor.tensor_to_pyxtal,
+        cascade_order=trainer.cascade_order,
+        letter_from_ss_enum_idx=trainer.tokenisers["sites_enumeration"].get_letter_from_ss_enum_idx(
+            trainer.run_path),
+        ss_from_letter=load_wyckoff_mappings(trainer.run_path).ss_from_letter,
+        wp_index=get_wp_index())
+    starts = data["start"].cpu()
+    return [to_pyxtal(starts[row], stacked[row]) for row in range(len(candidates))]

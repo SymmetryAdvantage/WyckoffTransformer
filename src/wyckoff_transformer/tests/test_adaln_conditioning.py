@@ -266,7 +266,7 @@ class TestWyckoffGeneratorCalibrateConditioning(unittest.TestCase):
         )
         generator.calibrate(
             dataset, calibration_element_count_threshold=1,
-            condition_feature="energy")
+            cond_builder=lambda ds, selection: ds.data["energy"][selection])
 
         self.assertEqual(observed_cond_sizes, [full_n, full_n // 2])
 
@@ -335,7 +335,6 @@ class TestGenerateStructuresConditioning(unittest.TestCase):
         trainer.run_path = None
         trainer.condition_feature = condition_feature
         trainer.condition_transform = None
-        trainer._condition_transform_fn = None
         return trainer
 
     def test_missing_train_dataset_raises_clear_error(self):
@@ -408,6 +407,21 @@ class TestGenerateEvaluateAndLogWp(unittest.TestCase):
                 generation_name="t", calibrate=False, n_structures=1, evaluator=evaluator)
         mock_eval.assert_called_once()
 
+    @patch("wyckoff_transformer.trainer.evaluate_and_log")
+    @patch("wyckoff_transformer.trainer.wandb")
+    @patch("wyckoff_transformer.trainer.MEDIA_TMP")
+    def test_recreates_missing_wandb_media_directory(
+            self, media_tmp, _mock_wandb, _mock_eval):
+        with tempfile.TemporaryDirectory() as tmp:
+            media_directory = Path(tmp) / "wandb-media"
+            media_tmp.name = str(media_directory)
+
+            trainer = self._make_trainer(tmp)
+            trainer.generate_evaluate_and_log_wp(
+                generation_name="t", calibrate=False, n_structures=1, evaluator=None)
+
+            self.assertTrue(media_directory.is_dir())
+
 
 class TestConditionTransform(unittest.TestCase):
     """The conditioning feature is stored in physical units; the transform is applied on the
@@ -417,7 +431,6 @@ class TestConditionTransform(unittest.TestCase):
         trainer = WyckoffTrainer.__new__(WyckoffTrainer)
         trainer.condition_feature = "energy_above_hull"
         trainer.condition_transform = condition_transform
-        trainer._condition_transform_fn = get_condition_transform(condition_transform)
         return trainer
 
     def test_unknown_transform_is_rejected(self):
@@ -455,7 +468,6 @@ class TestConditionTransform(unittest.TestCase):
         trainer = WyckoffTrainer.__new__(WyckoffTrainer)
         trainer.condition_feature = "energy_above_hull"
         trainer.condition_transform = "log1p"
-        trainer._condition_transform_fn = get_condition_transform("log1p")
         raw = torch.tensor([[0.1], [1.0]])
         transformed = trainer.transform_condition(raw)
         self.assertAlmostEqual(transformed[0].item(), 0.09531, places=4)
