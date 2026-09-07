@@ -1,10 +1,10 @@
 # Composition screening: estimating the floor under a chemical formula
 
-> **STATUS (2026-09-05): implemented, tested, and run once.** 80 tests pass. The
-> comparison below is a single run against the shallow-hull answer key, on a
-> formula-level split, with no hyperparameter search beyond the one sweep the
-> label-noise constant forced. Nothing has been submitted anywhere and no
-> displacement filter has been run at scale.
+> **STATUS (2026-09-07): implemented, tested, and measured once.** 103 tests
+> pass. This is the design; the measurements are in
+> [what was measured](composition_screening_results.md), and they are single runs
+> on one split. Nothing has been submitted anywhere and the displacement bound has
+> never been run at scale.
 
 ## The question
 
@@ -213,168 +213,15 @@ shortlist and not on 2.3M formulas, which is the right shape -- with only an
 eighth of hull-defining formulas experimentally backed, this can only ever be a
 post-filter.
 
-## Results, one run
+## Results
 
-Trained on the shallow world, scored on the 14,095 test formulas of the
-answer key. Prevalence -- the share that Alexandria later put below the shallow
-hull -- is 9.06%, so an enrichment of 1.0 is a coin flip.
-
-**Enrichment among the top *k*, ranked:**
-
-| model | @100 | @500 | @1000 | @5000 |
-|---|---|---|---|---|
-| g_D (MSE, all formulas) | **3.31** | **2.91** | 2.32 | 1.84 |
-| **censored** | 2.65 | 2.36 | **2.36** | **1.87** |
-| magpie + GBDT | 1.21 | 1.63 | 1.43 | 1.47 |
-| chemical-system mean | 0.99 | 0.40 | 0.40 | 0.95 |
-| g_C | 0.77 | 0.64 | 0.68 | 1.08 |
-| g_D - g_C | 0.44 | 0.71 | 0.53 | 0.36 |
-
-**Triage rules:**
-
-| model | rule | flagged | precision | recall | enrichment | MAE vs deep min |
-|---|---|---|---|---|---|---|
-| g_D | uncertainty-adjusted | 142 | 0.254 | 0.028 | **2.80** | 0.154 |
-| g_D | naive | 785 | 0.223 | 0.137 | 2.46 | 0.154 |
-| censored | uncertainty-adjusted | 1,037 | 0.214 | **0.174** | 2.36 | **0.151** |
-| censored | naive | 2,674 | 0.191 | 0.399 | 2.11 | 0.151 |
-| magpie + GBDT | naive | 1,362 | 0.136 | 0.145 | 1.50 | 0.184 |
-| g_C | naive | 8,270 | 0.105 | 0.679 | 1.16 | 0.299 |
-| chemical-system mean | naive | 3,410 | 0.074 | 0.199 | 0.82 | 0.429 |
-
-Expected calibration error of the censored ensemble's `P(f* < E_hull)`: **0.159**.
-
-Read it as three findings.
-
-**Neither likelihood dominates, and which is better depends on the budget.** g_D is
-sharper at the very top of the list (3.31 against 2.65 at a hundred candidates);
-the censored ensemble catches up by a thousand and stays ahead thereafter, with
-slightly better point accuracy (0.151 against 0.154 eV/atom). At comparable
-precision the difference is recall: the uncertainty-adjusted rule gives g_D 0.254
-precision on 142 formulas and the censored model 0.214 on 1,037 -- six times as
-many finds for four points of precision. For a campaign that can afford more than
-a hundred structure searches, that is the trade worth making.
-
-**Wren's uncertainty adjustment holds up.** It lifts g_D from 2.46 to 2.80 and the
-censored model from 2.11 to 2.36, in both cases by flagging far less.
-
-**The two-regression scheme does not work, and the failure is where the support
-argument said it would be.** `g_D - g_C` is the weakest thing tested -- below the
-training-free chemical-system lookup at three of four budgets -- and `g_C` is next
-weakest. `g_C` is fit on the 11.85% of shallow formulas whose observed structure
-is the archive's own minimum, and asked to extrapolate to formulas selected for
-being unlike them. The difference of two extrapolations carries no usable signal.
-
-### The label-noise constant is not a detail
-
-The first run of this comparison put the censored model at 1.10 enrichment, below
-Magpie. The cause was `noise = 0.01`, inherited from `censored.DEFAULT_NOISE`,
-which is right at the gene level where one source's energies are compared and
-wrong here. It enters as `t = (observed - location) / noise`, so against formation
-energies spanning several eV it makes `t` about 500 at initialisation; the model
-compensated by inflating the excess scale to 0.495 eV/atom and drove the floor
-below the data almost everywhere, flagging 77% of formulas. The sweep is recorded
-in `TrainConfig.noise`. At 0.10 the calibration error falls from 0.659 to 0.159.
-
-## The answer key is partly a search-policy detector
-
-Ranking formulas by **how many hull-defining entries their chemical system already
-holds** -- one integer per system, no model, no training -- scores 2.98 / 3.22 /
-3.06 / 2.36 at budgets of 100 / 500 / 1000 / 5000 on the answer key. That beats
-every model above from 500 candidates onward.
-
-It is worth nothing on real generated structures: 1.16 / 0.98 / 1.00 MetaSUN
-enrichment on the WyFormer runs below.
-
-The explanation is that Alexandria is a substitution campaign, so it expands
-around structures that already exist, and system density predicts **where it
-looked** rather than where low-energy structures are. This is the dataset-builder
-problem appearing in the *evaluation* rather than the training data. The
-enrichment figures in the previous section are therefore inflated by an unknown
-amount for the same reason, and the generated-structure test below -- whose
-outcome is an ORB relaxation rather than a campaign's choice -- is the primary
-instrument.
-
-## What screening buys a generation run
-
-`prefilter.py` scores a protocol run retrospectively: every gene is relaxed, and
-the question is whether the top slice by screener score is richer than the whole
-run. Restricted to **novel** formulas, which is what MetaSUN counts and where a
-structure-search budget should go. Over all genes the numbers look far better
-(2.6x metastable) but the top 500 are 100% compositions the archive already holds,
-and those are metastable 43.0% of the time against 16.3% for novel ones, so
-sorting on membership alone is worth 1.39x before any model runs.
-
-2,500 genes, 1,209 novel formulas, MetaSUN base 10.1%:
-
-| slice | MetaSUN enrichment |
-|---|---|
-| top 10% | **2.23 [1.58, 3.05]** |
-| top 25% | 1.64 [1.27, 2.10] |
-| top 50% | 1.26 [1.02, 1.55] |
-
-The 1,000-gene run from the finished checkpoint points the same way (1.53 at the
-top decile) but is not individually significant at 453 novel formulas. Stability
-and SUN cannot be measured at either size -- the novel subsets hold three stable
-structures each.
-
-Operationally: generation costs 22 s per 1,000 genes and relaxation ~10 minutes,
-so the move is to generate more and relax the top slice. Relaxing 1,000 novel
-genes at random yields about 101 MetaSUN; generating 10,000 and relaxing the best
-1,000 projects to about 220, for four extra minutes of sampling. The extrapolation
-to a sharper threshold on a larger pool is not itself measured.
-
-### Neighbourhood density: right idea, wrong head
-
-A system-level covariate is the obvious gap -- two thirds of formulas have one
-entry, so their own counts say almost nothing, and a never-computed composition
-has none at all. Arity has to be controlled combinatorially: a system of `a`
-elements holds exactly `C(a, k)` subsystems of size `k`, so a raw subsystem count
-correlates +0.72 with arity and the exact-system count -0.74, while dividing by
-`C(a, k)` brings both to -0.07 and +0.07.
-
-Controlled that way it works, and the uncontrolled version does not: ranking
-generated structures by entries-per-ternary-subsystem alone gives MetaSUN
-enrichment **2.39 [1.72, 3.23]**, matching the whole ten-model ensemble, where the
-exact-system count gives 1.00.
-
-Added to the excess-scale head it improves the likelihood -- validation NLL
-**-0.703 against -0.641** -- and changes screening by nothing at all: 2.23 / 1.61 /
-1.26 against 2.23 / 1.64 / 1.26, with the top decile and top half identical rather
-than merely close.
-
-The scale head's output never enters `score = location + sigma - hull`, so its
-only route to better ranking is indirectly freeing the location head. A third arm
-therefore let the four densities into the *location* head as well -- a scoped
-relaxation of the exclusion restriction, four named columns reaching the floor
-while the other ten stay invisible, enforced by a test.
-
-It changes nothing either. All three arms give MetaSUN **2.23** at the top decile
-of novel formulas, and sit inside each other's intervals everywhere else:
-
-| arm | val NLL | MetaSUN @10% / @25% / @50% |
-|---|---|---|
-| density nowhere | -0.641 | 2.23 / 1.64 / 1.26 |
-| density in the scale head | **-0.703** | 2.23 / 1.61 / 1.26 |
-| density in the location head | -0.586 | 2.23 / 1.64 / 1.23 |
-
-The reason is that the model already has the information. The **control** model,
-which never sees these features, produces a score correlating **-0.42** with
-entries-per-binary and -0.26 with entries-per-ternary on novel generated formulas
--- it infers neighbourhood density from element identities alone, which a learned
-element embedding over 2.3M formulas is well placed to do. Combining the two
-rankings directly does not help either: rank-averaging gives 1.90 and 2.06 on one
-run against 2.23 for the screener alone, and 1.83 against 1.53 on the other,
-flipping direction between runs.
-
-The standalone 2.39 for entries-per-ternary is best read as the maximum of four
-features tested across two runs; it falls to 1.37 on the smaller run. What
-survives is weak and consistent rather than strong: all eight Spearman
-correlations with the MetaSUN outcome are positive, +0.005 to +0.117.
-
-The conclusion is that neighbourhood density is real information which the
-chemistry encoder already extracts, and the exclusion restriction was not costing
-anything here. It stays.
+All measurements, and the three that had to be discarded and redone, are in
+[what was measured](composition_screening_results.md). In brief: screening
+roughly doubles the MetaSUN rate at fixed relaxation budget (2.23x in the top
+decile of novel formulas); the two-regression scheme this replaced is the weakest
+thing tested; the censored likelihood does not clearly beat plain MSE; and the
+shallow-hull answer key turns out to reward predicting where Alexandria looked, so
+the generated-structure test is the primary instrument.
 
 ## What exists
 
@@ -411,6 +258,8 @@ CUDA_VISIBLE_DEVICES="" uv run pytest src/wyckoff_transformer/formula_energy
 
 ## See also
 
+- [What was measured](composition_screening_results.md) -- the results log,
+  including the three measurement errors that had to be caught first.
 - [CSP mode](csp_mode.md) -- the gene-level censored regressor this generalises,
   and the consumer of a shortlist.
 - [Gene energy critic study](gene_energy_critic_study.md) -- "The exploration
