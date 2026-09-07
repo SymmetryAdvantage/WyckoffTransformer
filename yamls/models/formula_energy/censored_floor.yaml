@@ -1,0 +1,39 @@
+# Provenance-aware composition-floor model for the DFT fixed-hull screen.
+#
+# The location head estimates f*(X), the lowest PBE formation energy attainable
+# at a composition. The censored likelihood treats LeMat-Bulk's observed formula
+# minimum as an upper bound. Provenance enters the excess-scale head, but the
+# location head reads chemistry alone: location_features must remain empty for
+# the primary exclusion-restriction arm.
+
+table: data/formula_energy/formula_table.parquet
+out: runs/formula_energy/ensemble.pt
+models: 10
+
+train:
+  d_model: 256
+  n_layers: 3
+  n_heads: 4
+  dim_feedforward: 1024
+  dropout: 0.1
+  head_widths: [256, 256, 128, 64]
+  detach_scale_trunk: false
+
+  loss: censored
+  noise: 0.10
+  batch_size: 1024
+  learning_rate: 0.0003
+  weight_decay: 0.000001
+  epochs: 20
+  patience: 5
+  clip_grad_norm: 1.0
+
+  # Empty means all saved provenance channels remain available to the excess
+  # scale. Populate only for a deliberate provenance ablation.
+  drop_provenance: []
+  # Keep empty for the primary model. Only system-neighbourhood features can be
+  # supplied truthfully for a never-computed formula at screening time.
+  location_features: []
+
+  energy_scale: lemat_bulk_pbe
+  seed: 0

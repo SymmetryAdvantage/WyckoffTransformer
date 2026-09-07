@@ -68,6 +68,9 @@ def load_trainer(
     trainer = WyckoffTrainer.from_config(
         config, device=device, use_cached_tensors=load_datasets, run_path=run_path,
         load_datasets=load_datasets)
+    # Consumers that compare scalar predictions across energy conventions need
+    # the dataset identity even when loading without the dataset tensors.
+    trainer.training_dataset_name = str(config.get("dataset", "")) or None
     load_model_weights(trainer.model, trainer.run_path / "best_model_params.pt", device)
     return trainer
 

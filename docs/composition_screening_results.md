@@ -1,11 +1,13 @@
 # Composition screening: what was measured
 
-> **STATUS (2026-09-07): every number here was produced in one session and none
-> has been reproduced independently.** Model comparisons are single runs on one
-> split with no hyperparameter search beyond the one sweep the label-noise
-> constant forced. Nothing has been submitted to any leaderboard. The design and
-> the reasoning behind it are in [composition screening](composition_screening.md);
-> this is the results log.
+> **STATUS (2026-09-07): the generated-structure screening result is invalid and
+> must be rerun.** `formula_energy.screen.HullLookup` used pymatgen's absolute hull
+> energy as if it were formation energy for formulas absent from the table. The
+> helper now subtracts the elemental-reference contribution and is tested with
+> nonzero elemental energies. Formula-table model comparisons and descriptive
+> archive statistics below were not computed through that path; the novel-formula
+> MetaSUN enrichment was and must not be cited. Nothing has been submitted to a
+> leaderboard.
 
 The question was whether predicting, for a chemical formula, the lowest energy
 any structure with that formula can have -- `f*(X)` -- is accurate enough to
@@ -15,10 +17,10 @@ measurements saying so could be trusted.
 
 ## Summary
 
-**What worked.** Screening compositions before relaxing them roughly doubles the
-MetaSUN rate at a fixed relaxation budget: **2.23x [1.58, 3.05]** in the top
-decile of novel formulas. Generation is 30x cheaper than relaxation, so the move
-is to generate more and relax the top slice.
+**What remains plausible but unmeasured.** Screening compositions before relaxing
+them may improve MetaSUN at a fixed relaxation budget, but the reported **2.23x
+[1.58, 3.05]** top-decile result used the wrong hull-energy scale for novel
+formulas and is invalid. The campaign must be rescored or rerun.
 
 **What did not.** The two-regression scheme the work started from is the weakest
 thing tested. The censored likelihood, which replaced it, does not clearly beat
@@ -175,7 +177,11 @@ rather than the training data, and it means every enrichment figure in the table
 above is inflated by an unknown amount. The generated-structure test below is the
 primary instrument.
 
-## What screening buys a generation run
+## What screening appeared to buy a generation run — invalid pending rerun
+
+> The numbers in this section used absolute phase-diagram hull energies for novel
+> formulas while the model predicted formation energies. They are retained as an
+> audit trail, not as evidence.
 
 Sampling 1,000 genes from the finished `upi73i4k` checkpoint, relaxing all of them,
 then asking whether the top slice by screener score is richer than the whole run.
@@ -310,7 +316,8 @@ uv run python scripts/pull_mp_provenance.py                          # ~6 min, n
 uv run python -m wyckoff_transformer.formula_energy.dataset          # ~2 min
 uv run python -m wyckoff_transformer.formula_energy.answer_key --workers 24
 uv run python -m wyckoff_transformer.formula_energy.experiment       # the model comparison
-uv run python -m wyckoff_transformer.formula_energy.train --out runs/formula_energy/ensemble.pt
+uv run python -m wyckoff_transformer.formula_energy.train \
+    --config yamls/models/formula_energy/censored_floor.yaml --device cuda
 uv run python -m wyckoff_transformer.formula_energy.prefilter \
     generated/<run>/protocol/structures.csv --ensemble runs/formula_energy/ensemble.pt \
     --genes generated/<run>/wyckoff_genes.json.gz

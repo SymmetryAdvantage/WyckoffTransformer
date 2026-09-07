@@ -196,6 +196,25 @@ wylm-dcpp,8,Na4Lu4F16,-149.18192
 ### DFT relaxation
 We followed the [Materials Project protocol](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details), [`atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker`](https://materialsproject.github.io/atomate2/reference/atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker.html). There isn't much to add, as the rest of the details of running DFT, unfortunately, depend on the HPC setup, and VASP is not open source. [Here](https://github.com/kazeevn/NSCC-VASP-computer) is the code to run at ASPIRE2.
 
+### DFT fixed-hull screening
+
+`wyformer-dft-screen` ranks generated genes before an expensive DFT campaign. It
+combines the provenance-aware composition-floor ensemble with the gene attainable-
+energy critic, comparing both independently to the same immutable LeMat-Bulk PBE
+hull:
+
+```bash
+uv run wyformer-dft-screen generated/<run>/wyckoff_genes.json.gz \
+    --formula-ensemble runs/formula_energy/ensemble.pt \
+    --regressor-path runs/<gene-energy-run> \
+    --top 1000 --out generated/<run>/dft_screen.csv
+```
+
+This command uses no MLIP energies and performs no relaxation or active learning;
+the shortlist feeds the external DFT workflow. See the
+[DFT fixed-hull adversarial screening design](docs/dft_fixed_hull_attack.md) for
+the objective, estimator boundaries, ablations, and reporting protocol.
+
 ## Ranking model variants (`wyformer-protocol`)
 
 For comparing WyFormer variants during development, `wyformer-protocol` runs the

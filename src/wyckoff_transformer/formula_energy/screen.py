@@ -121,7 +121,21 @@ class HullLookup:
 
         composition = Composition(formula)
         elements = frozenset(str(element) for element in composition.elements)
-        return self.diagram(elements).get_hull_energy_per_atom(composition)
+        return formation_hull_energy_per_atom(self.diagram(elements), composition)
+
+
+def formation_hull_energy_per_atom(diagram, composition) -> float:
+    """Convert pymatgen's absolute hull energy to formation energy per atom.
+
+    ``PhaseDiagram.get_hull_energy_per_atom`` returns an absolute energy even
+    though the phase diagram also knows its elemental references. The screeners
+    predict formation energies, so comparing that value directly would mix scales.
+    """
+    elemental_reference = sum(
+        composition[element] * diagram.el_refs[element].energy_per_atom
+        for element in composition.elements
+    ) / composition.num_atoms
+    return diagram.get_hull_energy_per_atom(composition) - elemental_reference
 
 
 def hull_energy_per_atom(reference: pd.DataFrame, formula: str) -> float:
@@ -140,7 +154,7 @@ def hull_energy_per_atom(reference: pd.DataFrame, formula: str) -> float:
     if not entries:
         raise ValueError(f"No reference entries cover {formula}")
     diagram = _phase_diagram(entries)
-    return diagram.get_hull_energy_per_atom(composition)
+    return formation_hull_energy_per_atom(diagram, composition)
 
 
 def total_energy_for(diagram, composition, formation_energy_per_atom: float) -> float:
@@ -222,7 +236,7 @@ def displacement_bound(
     # once true, stays true. Bisect the boundary.
     if not displaces_anything(entries, composition, deepest, protected, tolerance):
         return float("-inf")
-    low, high = deepest, base.get_hull_energy_per_atom(composition)
+    low, high = deepest, formation_hull_energy_per_atom(base, composition)
     if displaces_anything(entries, composition, high, protected, tolerance):
         return high
     while high - low > precision:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -33,6 +33,8 @@ from wyckoff_transformer.formula_energy.encoder import FormulaEnergyModel
 from wyckoff_transformer.formula_energy.features import PROVENANCE_FEATURES, composition_tensors, provenance_tensor
 
 logger = logging.getLogger(__name__)
+
+LEMAT_BULK_PBE_ENERGY_SCALE = "lemat_bulk_pbe"
 
 
 @dataclass
@@ -87,7 +89,55 @@ class TrainConfig:
     #: exclusion restriction; naming the neighbourhood densities relaxes it for
     #: features argued to carry chemistry rather than selection.
     location_features: Sequence[str] = ()
+    #: Identity of the energy convention used by the labels. Legacy checkpoints
+    #: predate this field and load as unverified rather than being guessed.
+    energy_scale: Optional[str] = None
     seed: int = 0
+
+
+@dataclass
+class TrainingSpec:
+    """Serializable run-level settings surrounding :class:`TrainConfig`."""
+
+    table: Path = Path("data/formula_energy/formula_table.parquet")
+    out: Path = Path("runs/formula_energy/ensemble.pt")
+    models: int = 10
+    # The old CLI trained for 20 epochs even though TrainConfig's research default
+    # is 40. Preserve that command-line behaviour and stamp all new runs as PBE.
+    train: TrainConfig = field(default_factory=lambda: TrainConfig(
+        epochs=20,
+        energy_scale=LEMAT_BULK_PBE_ENERGY_SCALE,
+    ))
+
+
+def load_training_spec(path: Optional[Path] = None) -> TrainingSpec:
+    """Load a formula-training YAML, or return the historical CLI defaults."""
+    default = TrainingSpec()
+    if path is None:
+        return default
+
+    from omegaconf import OmegaConf  # noqa: PLC0415
+
+    payload = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Formula training config {path} must be a mapping")
+    unknown = {str(key) for key in payload} - {"table", "out", "models", "train"}
+    if unknown:
+        raise ValueError(f"Unknown formula training config keys: {sorted(unknown)}")
+    train_values = payload.get("train", {})
+    if not isinstance(train_values, dict):
+        raise ValueError("The formula training config's 'train' section must be a mapping")
+
+    train = replace(default.train, **train_values)
+    models = int(payload.get("models", default.models))
+    if models <= 0:
+        raise ValueError(f"The ensemble needs at least one model, got {models}")
+    return TrainingSpec(
+        table=Path(str(payload.get("table", default.table))),
+        out=Path(str(payload.get("out", default.out))),
+        models=models,
+        train=train,
+    )
 
 
 class MseOnLocation(nn.Module):
@@ -376,12 +426,14 @@ def main() -> None:
     import argparse  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("--table", type=Path, default=Path("data/formula_energy/formula_table.parquet"))
-    parser.add_argument("--out", type=Path, default=Path("runs/formula_energy/ensemble.pt"))
-    parser.add_argument("--models", type=int, default=10)
-    parser.add_argument("--epochs", type=int, default=20)
-    parser.add_argument("--noise", type=float, default=TrainConfig.noise)
-    parser.add_argument("--loss", choices=("censored", "mse"), default="censored")
+    parser.add_argument("--config", type=Path,
+                        help="YAML training specification; explicit CLI options override it")
+    parser.add_argument("--table", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--models", type=int, default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--noise", type=float, default=None)
+    parser.add_argument("--loss", choices=("censored", "mse"), default=None)
     parser.add_argument("--drop-provenance", nargs="*", default=None,
                         help="zero these provenance features; the ablation switch")
     parser.add_argument("--location-features", nargs="*", default=None,
@@ -393,12 +445,26 @@ def main() -> None:
 
     from wyckoff_transformer.csp import parse_formula  # noqa: PLC0415
 
-    table = pd.read_parquet(args.table)
+    spec = load_training_spec(args.config)
+    table_path = args.table or spec.table
+    out_path = args.out or spec.out
+    n_models = spec.models if args.models is None else args.models
+    if n_models <= 0:
+        raise ValueError(f"The ensemble needs at least one model, got {n_models}")
+    overrides = {}
+    for name in ("epochs", "noise", "loss"):
+        value = getattr(args, name)
+        if value is not None:
+            overrides[name] = value
+    if args.drop_provenance is not None:
+        overrides["drop_provenance"] = tuple(args.drop_provenance)
+    if args.location_features is not None:
+        overrides["location_features"] = tuple(args.location_features)
+    config = replace(spec.train, **overrides)
+
+    table = pd.read_parquet(table_path)
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     max_elements = max(len(parse_formula(formula)) for formula in table.index)
-    config = TrainConfig(loss=args.loss, noise=args.noise, epochs=args.epochs,
-                         drop_provenance=tuple(args.drop_provenance or ()),
-                         location_features=tuple(args.location_features or ()))
     train = prepare(table[table["split"] == "train"], max_elements=max_elements,
                     drop_provenance=config.drop_provenance).to(device)
     val = prepare(table[table["split"] == "val"], max_elements=max_elements,
@@ -406,9 +472,9 @@ def main() -> None:
     logger.info("train %d, val %d formulas, pad width %d, device %s",
                 len(train), len(val), max_elements, device)
 
-    models, _ = train_ensemble(train, val, config, device, n_models=args.models)
-    save_ensemble(models, args.out, config)
-    print(f"wrote {args.out} ({args.models} models, pad width {max_elements})")
+    models, _ = train_ensemble(train, val, config, device, n_models=n_models)
+    save_ensemble(models, out_path, config)
+    print(f"wrote {out_path} ({n_models} models, pad width {max_elements})")
 
 
 def load_ensemble(
