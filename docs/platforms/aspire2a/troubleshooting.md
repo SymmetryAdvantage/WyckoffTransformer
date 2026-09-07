@@ -28,27 +28,52 @@ command -v singularity || { source /etc/profile.d/modules.sh && module load sing
 
 ---
 
-## The ORB checkpoint will not download on a compute node
+## The ORB checkpoint downloads at a crawl
 
-`orb_conserv_inf` pulls `orb-v3-conservative-inf-omat-20250404.ckpt` from an AWS
-S3 bucket in `us-west-1` through `cached_path`. Measured from `asp2a-gpu002` on
-2026-09-08: **70 kB/s**, against 16 MB/s to HuggingFace from the same node. A
-cold `--stage relax` therefore hangs for hours, and every
-`--workers-per-device` worker serialises on the same `cached_path` file lock, so
-it looks like a deadlock rather than a download.
+`orb_conserv_inf` pulls `orb-v3-conservative-inf-omat-20250404.ckpt` (102 MB)
+from an S3 bucket in `us-west-1` through `cached_path`. Measured from
+`asp2a-gpu002`, 2026-09-08:
 
-Pre-fetch it once **from a login node**, in the container:
+| Path | Throughput |
+| --- | --- |
+| S3, direct, one connection | 32 kB/s |
+| S3, via `socks5h://asp2a-login-nus02:1081` | 24 kB/s |
+| S3, direct, 8 parallel ranges | 258 kB/s aggregate |
+| S3, direct, 16 parallel ranges | ~400 kB/s aggregate |
+| HuggingFace, direct | 16-24 MB/s |
+| HuggingFace, via the same proxy | 4.5 MB/s |
+
+Two things follow. **The throttle is per-connection, not per-host** — streams
+scale nearly linearly. And **tunnelling through a login node does not help**: the
+bucket is just as slow from there, and the proxy costs ~5x on everything else,
+so a login node is not a faster egress, it is the same egress. (The proxy itself
+is healthy; the HuggingFace row proves that.)
+
+Single-stream, the file takes ~53 min, and every `--workers-per-device` worker
+blocks on the one `cached_path` file lock while the first crawls through it —
+which is why a cold `--stage relax` looks like a deadlock rather than a
+download.
+
+The fix is parallel ranges, wrapped up in:
 
 ```bash
-bash scripts/run_in_singularity.sh python -c \
-  "from orb_models.forcefield import pretrained; pretrained.orb_v3_conservative_inf_omat(device='cpu')"
+scripts/platforms/aspire2a/prefetch_cached_path.sh <url> [streams]
 ```
 
-`~/.cache` is shared, so compute nodes then read it locally. Note this lands on
-the 50 GB **home** quota: `cached_path` ignores `XDG_CACHE_HOME`.
+It fetches with N range requests, re-fetches any short stream, verifies the
+result against the server's ETag, and writes the `cached_path` cache entry
+(`sha256(url).sha256(etag)` plus its JSON meta) so the next `cached_path(url)`
+is a hit. It is idempotent and works from a compute node.
 
-If a previous attempt left a partial download, `~/.cache/cached_path/*.tmp` and
-a stale `.lock` are what to clear.
+**The orb-v3 checkpoint is already installed** (2026-09-08, ETag-verified), so
+relax stages should no longer download anything. Re-run the script above for any
+other checkpoint.
+
+If an interrupted attempt left debris, it is `~/.cache/cached_path/*.tmp` plus a
+stale `.lock`; the cache entry itself is only written on success.
+
+Note this cache is on the 50 GB **home** quota — `cached_path` ignores
+`XDG_CACHE_HOME`.
 
 ---
 

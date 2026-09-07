@@ -120,6 +120,12 @@ under `scripts/platforms/aspire2a/` — they are still in `scripts/`:
 | `train_ehull_5x.pbs`, `train_ehull_ssops.pbs`, `train_formula_energy.pbs` | its single-purpose predecessors |
 | `protocol_relax.pbs` | self-chaining relax + score for one generated pool |
 
+One script *is* in the right place, because nothing running depends on its path:
+
+| Script | What |
+| --- | --- |
+| `scripts/platforms/aspire2a/prefetch_cached_path.sh` | parallel-range fetch of a checkpoint into the `cached_path` cache, ETag-verified |
+
 They cannot be moved while chains are in flight: a running link re-`qsub`s
 **itself** by absolute path, so renaming the file breaks the chain mid-run. Move
 them once no `wyf_*` job is queued or running, and update the `$REPO/scripts/...`
@@ -143,7 +149,8 @@ Confirmed on 2026-09-08 on `asp2a-gpu002`, branch `training-loss-fixes`:
 | the 6 failures | all `matminer` 0.8.0 vs new scipy/pymatgen — see [troubleshooting.md](troubleshooting.md#matminer-is-broken-against-the-resolved-scipy-and-pymatgen) |
 | W&B online from a compute node | works, `~/.netrc`, entity `kazeev` |
 | HuggingFace download | ~16 MB/s from a compute node |
-| ORB checkpoint S3 (`us-west-1`) | **70 kB/s** from a compute node — pre-fetch it, see [troubleshooting.md](troubleshooting.md#the-orb-checkpoint-will-not-download-on-a-compute-node) |
+| ORB checkpoint S3 (`us-west-1`) | 32 kB/s on one connection, ~400 kB/s on 16 — [troubleshooting.md](troubleshooting.md#the-orb-checkpoint-downloads-at-a-crawl) |
+| orb-v3 checkpoint (102 MB) | pre-fetched and ETag-verified into `~/.cache/cached_path` |
 | `ssh` compute -> login node | refused (`Connection closed`) |
 
 Four production chains (`wyf_ehull5x`, `wyf_ssops`, `wyf_gene_*`, `wyf_relax`)

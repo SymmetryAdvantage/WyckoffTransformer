@@ -180,5 +180,9 @@ generation and relaxation are unaffected; the CDVAE evaluation metrics and the
 on Lustre. `cached_path` is the notable exception. Home is 34.6 GB of a 50 GB
 quota, so check `myquota` before pulling another multi-GB checkpoint.
 
-`.venv`, `.uv-cache` and `.venv-requirements*.txt` are gitignored — except
-`.venv-requirements.relax*.txt`, which are not, and show up as untracked files.
+`.venv`, `.uv-cache` and all four `.venv-requirements*.txt` files are
+gitignored. The requirements files are generated — the base pair by
+`build_singularity_venv.sh`, the `relax` pair by `protocol_relax.pbs` — and are
+never authoritative: each is whatever PyPI resolved at the moment that script
+ran. Keep them on disk anyway, since they let you reinstall after a `.venv` wipe
+without repeating the network-bound `uv pip compile`.

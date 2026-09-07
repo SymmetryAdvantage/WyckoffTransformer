@@ -100,9 +100,11 @@ qsub -v POOL=generated/<run> scripts/protocol_relax.pbs
 `POOL` is a directory holding `wyckoff_genes.json.gz`; output lands in
 `POOL/protocol`. The link runs `--stage screen` if `screen.json` is missing and
 installs the `relax` extra if `orb_models` is absent, so one `qsub` is enough —
-but **pre-fetch the ORB checkpoint first**, or the first link will spend hours
-downloading at 70 kB/s. See
-[troubleshooting.md](troubleshooting.md#the-orb-checkpoint-will-not-download-on-a-compute-node).
+The orb-v3 checkpoint is already in `~/.cache/cached_path`, so relax stages
+start immediately. For any *other* checkpoint, pre-fetch it with
+`scripts/platforms/aspire2a/prefetch_cached_path.sh` rather than letting the job
+crawl through it one connection at a time — see
+[troubleshooting.md](troubleshooting.md#the-orb-checkpoint-downloads-at-a-crawl).
 
 Useful `-v` variables: `WORKERS` (relaxation processes sharing the one GPU,
 default 4), `MAX_ATTEMPTS` (default 6), `RELAX_TIMEOUT`.
