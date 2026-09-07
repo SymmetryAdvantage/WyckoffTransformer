@@ -134,6 +134,31 @@ Alexandria is mass substitution. A substitution campaign's minimum converges to
 the best structure *in its prototype library*, not to `f*`, so its excess does not
 vanish as `n` grows.
 
+### Gene-level energy screening
+
+The complementary screener works on a proposed Wyckoff gene rather than a
+composition. Its target is
+`g*(gene)`: the lowest PBE formation energy observed for that
+augmentation-invariant gene in `lemat_bulk_fmax1`. The initial model treats
+that observation as the true attainable energy and fits it with MSE rather than
+the censored likelihood.
+
+`max_force` is an input to this regression. It is the measured source-row value
+during training and exactly zero during inference, where no relaxation has yet
+been run. Screening then evaluates the candidate gene's formula on the
+reference hull and accepts a negative
+`predicted_formation_energy - hull_energy` score: a gene predicted below its
+composition's hull is likely to yield a below-hull structure after
+reconstruction and relaxation.
+
+```bash
+uv run python scripts/train.py \
+  yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1 cuda
+uv run wyformer-gene-screen generated/genes.json.gz \
+  --regressor-path runs/<gene-energy-run> \
+  --reference data/lemat-bulk/lemat_pbe_ehull.csv.gz --out gene_screen.csv
+```
+
 Ten models from different initialisations, which is Wren's protocol. A point
 estimate cannot be screened on: ranking millions of candidates by one selects the
 largest positive errors. The ensemble's disagreement about where the floor lies
@@ -238,6 +263,7 @@ the generated-structure test is the primary instrument.
 | `formula_energy/screen.py` | ranking, `P(below hull)`, `L(X)`, `HullLookup` |
 | `formula_energy/prefilter.py` | what screening buys a generation run |
 | `cli/screen.py` | `wyformer-screen` |
+| `gene_energy.py`, `cli/gene_screen.py` | observed gene minimum target and `wyformer-gene-screen` |
 | `scripts/pull_mp_provenance.py` | the ICSD flags LeMat-Bulk does not carry |
 
 Not built: no enumeration of novel formulas (`smact` is a dependency and would be

@@ -74,6 +74,45 @@ class TestBuildStartTokenDistribution(unittest.TestCase):
         self.assertEqual(vector_count_map[(0.0, 1.0, 0.0)], 2)
         self.assertEqual(vector_count_map[(0.0, 0.0, 1.0)], 1)
 
+
+class TestTrainerConfigDefaults(unittest.TestCase):
+    @patch.object(WyckoffTrainer, "__init__", return_value=None)
+    @patch("wyckoff_transformer.trainer.WyckoffProcessor")
+    @patch("wyckoff_transformer.trainer.CascadeTransformer.from_config_and_tokenisers")
+    @patch("wyckoff_transformer.trainer.load_tensors_and_tokenisers")
+    def test_missing_cascade_targets_default_to_false(
+            self, mock_load_tensors, mock_build_model, _mock_processor, mock_trainer_init):
+        mock_load_tensors.return_value = (
+            {"train": {}, "val": {}, "test": {}},
+            {"spacegroup_number": {"spacegroup": [1.0]}, "elements": {}},
+            {},
+        )
+        mock_model = MagicMock()
+        mock_model.start_type = "one_hot"
+        mock_build_model.return_value = mock_model
+        config = {
+            "dataset": "test",
+            "tokeniser": {"name": "test"},
+            "model": {
+                "start_token": "spacegroup_number",
+                "cascade": {
+                    "order": ["elements"],
+                    "embedding_size": {"elements": 1},
+                },
+                "WyckoffTrainer_args": {"target": "Scalar"},
+                "CascadeTransformer_args": {
+                    "start_type": "one_hot",
+                    "learned_positional_encoding_only_masked": True,
+                },
+            },
+            "optimisation": {},
+        }
+
+        WyckoffTrainer.from_config(config, torch.device("cpu"))
+
+        self.assertEqual(mock_trainer_init.call_args.args[6], {"elements": False})
+
+
 class TestWyckoffTrainerGeneration(unittest.TestCase):
     def setUp(self):
         self.trainer = WyckoffTrainer.__new__(WyckoffTrainer)

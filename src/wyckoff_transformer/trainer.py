@@ -1090,9 +1090,13 @@ class WyckoffTrainer():
             start_dtype = torch.float32
         else:
             raise ValueError(f"Unknown start type: {config.model.CascadeTransformer_args.start_type}")
+        cascade_is_target = config.model.cascade.get("is_target")
+        if cascade_is_target is None:
+            cascade_is_target = {field: False for field in config.model.cascade.order}
+
         return cls(
             model, train_data, val_data, tokenisers, token_engineers, config.model.cascade.order,
-            config.model.cascade.get("is_target", None),
+            cascade_is_target,
             config.model.cascade.get("augmented", None),
             config.model.start_token,
             optimisation_config=config.optimisation, device=device,

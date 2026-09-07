@@ -2,3 +2,5 @@
 lemat-bulk/
 # Derived tables; rebuilt by wyckoff_transformer.formula_energy.dataset
 formula_energy/
+# Rebuilt by scripts/build_lemat_bulk_fmax.py; ~1.2 GB of CIFs
+lemat_bulk_fmax1/
