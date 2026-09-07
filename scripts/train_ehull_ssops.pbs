@@ -191,6 +191,10 @@ elif [ -d "$RUN_DIR" ]; then
     rm -rf "$RUN_DIR"
 fi
 
+# The mark a crash below is judged against: the mtime of the checkpoint this attempt
+# starts from, or 0 when there is nothing to resume.
+CKPT_MTIME_BEFORE=$(stat -c %Y "$RUN_DIR/last_checkpoint.pt" 2>/dev/null || echo 0)
+
 # --- train -----------------------------------------------------------------
 set +e
 timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
@@ -209,11 +213,21 @@ if [ "$rc" -eq 0 ]; then
     exit 0
 fi
 
-# rc 124 = our timeout fired (expected once per ~24 h). Any other non-zero is a
-# crash: only chain past it if a checkpoint exists, to avoid a fast crash-loop.
-if [ "$rc" -ne 124 ] && [ ! -f "$RUN_DIR/last_checkpoint.pt" ]; then
-    echo "non-timeout failure with no checkpoint -> hard stop (see log above)" >&2
-    exit "$rc"
+# rc 124 = our timeout fired (expected once per ~24 h): the link had its whole slot,
+# so chain it. Any other non-zero is a crash, and what makes chaining a crash safe is
+# that the attempt got somewhere first -- the existence of a checkpoint does not say
+# that, because a resume that dies on its first line is still holding the one the
+# previous link wrote. Requiring a NEW checkpoint is what keeps a deterministic
+# failure from spending the whole attempt budget in a few minutes, which is how both
+# ehull chains ended: eight links, each dying in the same place on the resume.
+if [ "$rc" -ne 124 ]; then
+    ckpt_mtime_after=$(stat -c %Y "$RUN_DIR/last_checkpoint.pt" 2>/dev/null || echo 0)
+    if [ "$ckpt_mtime_after" -le "$CKPT_MTIME_BEFORE" ]; then
+        echo "crashed without writing a checkpoint -> hard stop (see log above)" >&2
+        echo "once the cause is fixed, 'qsub $PBS_SCRIPT' resumes $RUN_ID with a fresh budget" >&2
+        exit "$rc"
+    fi
+    echo "crashed, but this attempt wrote a checkpoint -> continuing from it"
 fi
 
 if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then

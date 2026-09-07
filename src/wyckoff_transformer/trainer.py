@@ -1191,7 +1191,8 @@ class WyckoffTrainer():
                 logger.warning("The checkpoint holds no %s loader state; reshuffling it.", name)
         random.setstate(checkpoint["rng"]["python"])
         torch.set_rng_state(checkpoint["rng"]["torch"].to(torch.uint8).cpu())
-        cuda_state = checkpoint["rng"]["cuda"]
+        # `map_location` has moved these onto the GPU; the setter takes CPU ByteTensors only.
+        cuda_state = [state.to(torch.uint8).cpu() for state in checkpoint["rng"]["cuda"]]
         if cuda_state and self.device.type == "cuda":
             if len(cuda_state) == torch.cuda.device_count():
                 torch.cuda.set_rng_state_all(cuda_state)

@@ -242,6 +242,35 @@ class TestCheckpointContents(_RunDirTestCase):
                         restored.optimizer.state_dict()["state"][key][name], tensor,
                         rtol=0, atol=0)
 
+    def test_the_cuda_rng_is_restored_as_a_cpu_byte_tensor(self):
+        """The checkpoint is read with `map_location=self.device`, so on a GPU run the CUDA
+        RNG snapshot comes back on the GPU -- and `set_rng_state_all` takes CPU ByteTensors
+        only. Every test here runs on the CPU, where that branch is skipped, so the mismatch
+        only ever showed up on the cluster: two chained runs spent their whole retry budget
+        crashing one line into the resume.
+        """
+        run_path = self.run_dir("run")
+        _run(_make_trainer(run_path, epochs=2))
+        path = run_path / CHECKPOINT_FILENAME
+        checkpoint = torch.load(path, weights_only=True)
+        # Stands in for what `map_location` hands back on a GPU host: not a CPU ByteTensor.
+        checkpoint["rng"]["cuda"] = [torch.arange(16, dtype=torch.int64)]
+        atomic_torch_save(checkpoint, path)
+
+        restored = _make_trainer(run_path, epochs=2, resume=True)
+        restored.device = torch.device("cuda")
+        real_load = torch.load
+        received = []
+        with patch("torch.load", lambda p, map_location=None, **kw: real_load(p, **kw)), \
+             patch("torch.cuda.device_count", return_value=1), \
+             patch("torch.cuda.set_rng_state_all", side_effect=received.append):
+            restored.load_training_checkpoint()
+
+        self.assertEqual(len(received), 1)
+        state, = received[0]
+        self.assertEqual(state.dtype, torch.uint8)
+        self.assertEqual(state.device.type, "cpu")
+
     def test_it_loads_without_executing_pickled_objects(self):
         """`weights_only=True` is the reason the RNG snapshot leaves numpy out."""
         run_path = self.run_dir("run")

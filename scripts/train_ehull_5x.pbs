@@ -1,0 +1,163 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Full training of yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml on one
+# GPU in the AI partition (aiq1, 24 h ceiling), with live W&B logging.
+#
+# The config is 40000 epochs / ~3.2M optimiser steps -- far more than 24 h -- so
+# this script CHAINS itself. Each link:
+#   * pins one W&B run id (persisted in runs/.ehull_5x.runid),
+#   * resumes from runs/<run-id>/last_checkpoint.pt (optimiser + scheduler +
+#     loader + RNG state),
+#   * runs train.py under `timeout` so it stops ~30 min before the wall, hands
+#     control back cleanly, and re-qsubs itself,
+#   * stops when train.py exits 0 (all epochs + the config's evaluation done) or
+#     the attempt cap is hit.
+# One `qsub scripts/train_ehull_5x.pbs` launches the whole run.
+#
+# Submit:
+#     cd /scratch/users/nus/kna/WyckoffTransformer
+#     mkdir -p logs
+#     qsub scripts/train_ehull_5x.pbs
+#
+# Start a fresh run (new W&B id) after a completed / abandoned one:
+#     rm -f runs/.ehull_5x.runid
+#
+# W&B: live to symmetry-advantage/WyckoffTransformer (entity/project pinned in
+# scripts/train.py). Auth is ~/.netrc, visible in the container via the automatic
+# $HOME bind. For offline + `wandb sync` instead, uncomment WANDB_MODE below.
+#
+# Queue: aiq1 is `from_route_only` -- you cannot `qsub -q aiq1` directly. Jobs
+# go to the `ai` routing queue, which dispatches by (ngpus, walltime):
+#   aiq1: ngpus=1          walltime in (02:00:01, 24:00:00]   <- this job
+#   aiq2: ngpus in [2,3]   aiq3: ngpus=4   aiq4: ngpus>=5      (same walltime band)
+#   aidev: walltime <= 2h  ailong: walltime > 24h
+# So `-q ai` + select=1:ngpus=1 + a walltime in that band is what lands in aiq1.
+# (g1, on the separate pbs101 server, is an equivalent <=24 h fallback --
+# `-q g1@pbs101` from a login node; not reachable from an AI-partition session.)
+# ---------------------------------------------------------------------------
+#PBS -N wyf_ehull5x
+#PBS -q ai
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=64gb
+#PBS -l walltime=23:59:59
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyckoffTransformer/logs/
+
+set -u
+
+# --- fixed paths ---------------------------------------------------------------
+REPO=/scratch/users/nus/kna/WyckoffTransformer
+SIF=/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif
+CONFIG=yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml
+DATASET=lemat_bulk_ehull
+PBS_SCRIPT="$REPO/scripts/train_ehull_5x.pbs"
+QSUB=/opt/pbs/bin/qsub
+
+MAX_ATTEMPTS=8               # hard stop on the resubmission chain
+ATTEMPT=${ATTEMPT:-1}        # bumped via `qsub -v` on each link
+# Stop training this far before the 23:59:59 wall so the last checkpoint flushes,
+# W&B uploads, and the next job is queued while we still own the node.
+TRAIN_TIMEOUT=${TRAIN_TIMEOUT:-84600}   # 23 h 30 m
+
+cd "$REPO"
+mkdir -p logs runs
+
+# --- persistent W&B run id ---------------------------------------------------
+RUNID_FILE="$REPO/runs/.ehull_5x.runid"
+if [ -n "${RUN_ID:-}" ]; then
+    :                                       # passed down the chain
+elif [ -f "$RUNID_FILE" ]; then
+    RUN_ID=$(cat "$RUNID_FILE")
+else
+    RUN_ID="ehull5x-$(date +%Y%m%d-%H%M%S)"
+    echo "$RUN_ID" > "$RUNID_FILE"
+fi
+RUN_DIR="$REPO/runs/$RUN_ID"
+
+echo "=========================================================="
+echo "attempt   : $ATTEMPT / $MAX_ATTEMPTS"
+echo "wandb id  : $RUN_ID"
+echo "run dir   : $RUN_DIR"
+echo "pbs job   : ${PBS_JOBID:-<interactive>}   node: $(hostname)"
+echo "start     : $(date -Is)"
+echo "=========================================================="
+nvidia-smi || true
+
+if [ -f "$RUN_DIR/COMPLETED" ]; then
+    echo "run already marked COMPLETED -- nothing to do"
+    exit 0
+fi
+
+# A run dir with no checkpoint is a crash before the first save: nothing to
+# resume, and train.py refuses to mkdir over an existing dir, so clear it.
+RESUME_ARGS=()
+if [ -f "$RUN_DIR/last_checkpoint.pt" ]; then
+    RESUME_ARGS=(--resume "$RUN_ID")
+    echo "resuming from $RUN_DIR/last_checkpoint.pt"
+elif [ -d "$RUN_DIR" ]; then
+    echo "run dir exists without a checkpoint -> removing and starting fresh"
+    rm -rf "$RUN_DIR"
+fi
+
+# --- environment for the container -----------------------------------------
+# Put singularity on PATH without relying on the module system in a batch shell.
+if ! command -v singularity >/dev/null 2>&1; then
+    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+fi
+command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
+singularity --version
+
+export SINGULARITYENV_WANDB_RUN_ID="$RUN_ID"
+export SINGULARITYENV_WANDB__SERVICE_WAIT=300
+export SINGULARITYENV_HF_HUB_OFFLINE=1
+export SINGULARITYENV_TOKENIZERS_PARALLELISM=false
+export SINGULARITYENV_OMP_NUM_THREADS=16
+# export SINGULARITYENV_WANDB_MODE=offline   # offline + `wandb sync <run-dir>` later
+
+# The mark a crash below is judged against: the mtime of the checkpoint this attempt
+# starts from, or 0 when there is nothing to resume.
+CKPT_MTIME_BEFORE=$(stat -c %Y "$RUN_DIR/last_checkpoint.pt" 2>/dev/null || echo 0)
+
+# --- train -----------------------------------------------------------------
+set +e
+timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
+    bash "$REPO/scripts/run_in_singularity.sh" \
+        python scripts/train.py "$CONFIG" "$DATASET" cuda \
+            --run-path "$REPO/runs" ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+rc=$?
+set -e
+
+echo "----------------------------------------------------------"
+echo "train.py exit code: $rc   ($(date -Is))"
+
+# --- completion / chaining -------------------------------------------------
+if [ "$rc" -eq 0 ]; then
+    touch "$RUN_DIR/COMPLETED"
+    echo "TRAINING COMPLETE for $RUN_ID"
+    exit 0
+fi
+
+# rc 124 = our timeout fired (expected once per ~24 h): the link had its whole slot,
+# so chain it. Any other non-zero is a crash, and what makes chaining a crash safe is
+# that the attempt got somewhere first -- the existence of a checkpoint does not say
+# that, because a resume that dies on its first line is still holding the one the
+# previous link wrote. Requiring a NEW checkpoint is what keeps a deterministic
+# failure from spending the whole attempt budget in a few minutes, which is how both
+# ehull chains ended: eight links, each dying in the same place on the resume.
+if [ "$rc" -ne 124 ]; then
+    ckpt_mtime_after=$(stat -c %Y "$RUN_DIR/last_checkpoint.pt" 2>/dev/null || echo 0)
+    if [ "$ckpt_mtime_after" -le "$CKPT_MTIME_BEFORE" ]; then
+        echo "crashed without writing a checkpoint -> hard stop (see log above)" >&2
+        echo "once the cause is fixed, 'qsub $PBS_SCRIPT' resumes $RUN_ID with a fresh budget" >&2
+        exit "$rc"
+    fi
+    echo "crashed, but this attempt wrote a checkpoint -> continuing from it"
+fi
+
+if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+    echo "attempt cap ($MAX_ATTEMPTS) reached -> stopping; 'qsub $PBS_SCRIPT' to continue" >&2
+    exit "$rc"
+fi
+
+echo "resubmitting to continue from checkpoint (attempt $((ATTEMPT + 1)))"
+"$QSUB" -v RUN_ID="$RUN_ID",ATTEMPT="$((ATTEMPT + 1))" "$PBS_SCRIPT"
