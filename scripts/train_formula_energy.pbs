@@ -1,0 +1,119 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Fit the censored composition-floor ensemble
+# (yamls/models/formula_energy/censored_floor.yaml) on one GPU in the AI
+# partition, writing runs/formula_energy/ensemble.pt.
+#
+# Submit:
+#     cd /scratch/users/nus/kna/WyckoffTransformer
+#     mkdir -p logs
+#     qsub scripts/train_formula_energy.pbs
+#
+# Override the config or the output without editing the file:
+#     qsub -v CONFIG=yamls/models/formula_energy/mse_floor.yaml scripts/train_formula_energy.pbs
+#     qsub -v OUT=runs/formula_energy/ablation.pt scripts/train_formula_energy.pbs
+#     qsub -v EXTRA_ARGS="--drop-provenance has_icsd" scripts/train_formula_energy.pbs
+#
+# WHY NOT `uv run`
+#
+# The requested command is `uv run python -m wyckoff_transformer.formula_energy.train`.
+# On this cluster the environment is $REPO/.venv, built by
+# scripts/build_singularity_venv.sh with --system-site-packages against the base
+# PyTorch image: Torch (and the CUDA stack under it) comes from the container,
+# not from the lockfile, and .venv/bin has no python of its own outside the
+# image. `uv run` would resolve the project's dependencies and reinstall a CPU
+# Torch over that arrangement, so the launch path here is
+# scripts/run_in_singularity.sh, which puts .venv/bin on PATH inside the image
+# and runs the same module. It is what `uv run --no-sync` would do, minus the
+# risk of a sync. Outside the container this is just
+# `uv run python -m wyckoff_transformer.formula_energy.train --config ... --device cuda`.
+#
+# WALLTIME
+#
+# The table is 2.33M formulas; the whole train split is moved to the GPU once
+# and the config is 10 members x 20 epochs (early stopping at patience 5), so
+# the fit is well under an hour. The 04:00:00 below is mostly headroom for the
+# single-threaded formula parsing in the setup phase -- and it is also what puts
+# the job in aiq1 rather than aidev: the `ai` routing queue dispatches
+# walltime <= 2h to aidev, and (02:00:01, 24:00:00] with ngpus=1 to aiq1.
+#
+# There is no chaining here, unlike scripts/train_ehull_5x.pbs: this trainer
+# writes no intermediate checkpoints, so a killed job has nothing to resume
+# from. It only has to fit inside one slot, and it does.
+# ---------------------------------------------------------------------------
+#PBS -N wyf_formula_energy
+#PBS -q ai
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=8:mem=64gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyckoffTransformer/logs/
+
+set -u
+
+REPO=/scratch/users/nus/kna/WyckoffTransformer
+SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
+CONFIG=${CONFIG:-yamls/models/formula_energy/censored_floor.yaml}
+OUT=${OUT:-}                      # empty -> the `out:` key of the config
+EXTRA_ARGS=${EXTRA_ARGS:-}        # extra flags for train.py, e.g. --models 3
+
+cd "$REPO"
+mkdir -p logs
+
+echo "=========================================================="
+echo "config    : $CONFIG"
+echo "pbs job   : ${PBS_JOBID:-<interactive>}   node: $(hostname)"
+echo "start     : $(date -Is)"
+echo "=========================================================="
+nvidia-smi || true
+
+[ -f "$CONFIG" ] || { echo "no such config: $CONFIG" >&2; exit 2; }
+
+# Where the ensemble lands: the CLI override if given, else the config's `out:`.
+# Read rather than assumed, because the backup below has to name the right file.
+if [ -n "$OUT" ]; then
+    OUT_PATH="$OUT"
+else
+    OUT_PATH=$(sed -n 's/^out:[[:space:]]*//p' "$CONFIG" | head -n1)
+fi
+[ -n "$OUT_PATH" ] || { echo "config has no 'out:' key and OUT is unset" >&2; exit 2; }
+mkdir -p "$(dirname "$OUT_PATH")"
+
+# save_ensemble overwrites in place, and a member of the ensemble is an hour of
+# GPU nobody wants to spend twice by accident.
+if [ -f "$OUT_PATH" ]; then
+    BACKUP="$OUT_PATH.$(date +%Y%m%d-%H%M%S).bak"
+    echo "existing $OUT_PATH -> $BACKUP"
+    mv "$OUT_PATH" "$BACKUP"
+fi
+
+# --- environment for the container -----------------------------------------
+# Put singularity on PATH without relying on the module system in a batch shell.
+if ! command -v singularity >/dev/null 2>&1; then
+    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+fi
+command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
+singularity --version
+
+export SIF
+export SINGULARITYENV_HF_HUB_OFFLINE=1
+export SINGULARITYENV_TOKENIZERS_PARALLELISM=false
+export SINGULARITYENV_OMP_NUM_THREADS=${NCPUS:-8}
+
+# --- train -----------------------------------------------------------------
+set +e
+bash "$REPO/scripts/run_in_singularity.sh" \
+    python -m wyckoff_transformer.formula_energy.train \
+        --config "$CONFIG" \
+        ${OUT:+--out "$OUT"} \
+        --device cuda \
+        $EXTRA_ARGS
+rc=$?
+set -e
+
+echo "----------------------------------------------------------"
+echo "train exit code: $rc   ($(date -Is))"
+if [ "$rc" -eq 0 ]; then
+    ls -l "$OUT_PATH"
+fi
+exit "$rc"

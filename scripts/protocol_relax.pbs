@@ -1,0 +1,131 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# The expensive half of docs/de_novo_ranking_protocol.md for one generated pool:
+# `--stage relax` over every unique gene, then `--stage score`.
+#
+# The relax stage is resumable -- it skips representatives already in
+# structures.csv -- so this script CHAINS itself the way scripts/train_ehull_5x.pbs
+# does: run under `timeout`, hand the node back cleanly, re-qsub, pick up where
+# structures.csv left off. `--stage score` runs once, in the link that finds
+# nothing left to relax.
+#
+# Submit:
+#     cd /scratch/users/nus/kna/WyckoffTransformer
+#     qsub -v POOL=generated/<run> scripts/protocol_relax.pbs
+#
+# POOL is a directory holding wyckoff_genes.json.gz; outputs land in POOL/protocol.
+# The cheap `--stage screen` is run here when its output is missing, and the venv's
+# `relax` extra is installed when orb-models is absent, so one qsub is enough.
+#
+# Queue: `-q ai` routes by (ngpus, walltime); ngpus=1 with a walltime in
+# (02:00:01, 24:00:00] lands in aiq1. See scripts/train_ehull_5x.pbs for the map.
+# ---------------------------------------------------------------------------
+#PBS -N wyf_relax
+#PBS -q ai
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
+#PBS -l walltime=23:59:59
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyckoffTransformer/logs/
+
+set -u
+
+REPO=/scratch/users/nus/kna/WyckoffTransformer
+PBS_SCRIPT="$REPO/scripts/protocol_relax.pbs"
+QSUB=/opt/pbs/bin/qsub
+
+POOL=${POOL:?set POOL to the directory holding wyckoff_genes.json.gz}
+WORKERS=${WORKERS:-4}                     # relaxation processes sharing the one GPU
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-6}
+ATTEMPT=${ATTEMPT:-1}
+# Stop this far before the wall so the score stage and the re-qsub still fit.
+RELAX_TIMEOUT=${RELAX_TIMEOUT:-82800}     # 23 h
+
+cd "$REPO"
+mkdir -p logs
+OUT="$REPO/$POOL/protocol"
+GENES="$REPO/$POOL/wyckoff_genes.json.gz"
+STRUCTURES="$OUT/structures.csv"
+[ -f "$GENES" ] || { echo "no genes at $GENES" >&2; exit 2; }
+
+echo "=========================================================="
+echo "attempt   : $ATTEMPT / $MAX_ATTEMPTS"
+echo "pool      : $POOL"
+echo "workers   : $WORKERS on one GPU"
+echo "pbs job   : ${PBS_JOBID:-<interactive>}   node: $(hostname)"
+echo "start     : $(date -Is)"
+echo "=========================================================="
+nvidia-smi || true
+
+if ! command -v singularity >/dev/null 2>&1; then
+    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+fi
+command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
+singularity --version
+
+# orb-models is in the `relax` extra, which scripts/build_singularity_venv.sh does
+# not install; a chained link inherits it from the first one.
+if [ ! -d "$REPO/.venv/lib/python3.12/site-packages/orb_models" ]; then
+    echo "installing the relax extra into the venv"
+    bash "$REPO/scripts/run_in_singularity.sh" bash -c "
+        export UV_CACHE_DIR=$REPO/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
+        cd $REPO
+        ~/.local/bin/uv pip compile --python /usr/bin/python3.12 --emit-index-url \
+            --no-annotate --no-header --extra relax -o .venv-requirements.relax.txt pyproject.toml
+        grep -viE '^(torch|nvidia-[a-z0-9-]+|pytorch-triton|triton|triton-[a-z]+)([[:space:]=<>!~;]|\$)' \
+            .venv-requirements.relax.txt > .venv-requirements.relax.no-torch.txt
+        ~/.local/bin/uv pip install --python .venv/bin/python --no-deps \
+            -r .venv-requirements.relax.no-torch.txt" || {
+        echo "could not install the relax extra" >&2; exit 3; }
+fi
+
+# The screen stage is cheap and its output is what --resume and --stage score read,
+# so a link that finds it missing just makes it.
+if [ ! -f "$OUT/screen.json" ]; then
+    echo "no screen.json -> running --stage screen"
+    bash "$REPO/scripts/run_in_singularity.sh" \
+        wyformer-protocol "$GENES" --output-dir "$OUT" --stage screen || exit 3
+fi
+
+# Rows already in structures.csv are what `--resume` skips, and also the mark a
+# stalled attempt is judged against below.
+rows_before=$(wc -l < "$STRUCTURES" 2>/dev/null || echo 0)
+echo "structures.csv rows before: $rows_before"
+
+set +e
+timeout --signal=TERM --kill-after=300 "$RELAX_TIMEOUT" \
+    bash "$REPO/scripts/run_in_singularity.sh" \
+        wyformer-protocol "$GENES" --output-dir "$OUT" --stage relax \
+            --devices cuda:0 --workers-per-device "$WORKERS" --resume
+rc=$?
+set -e
+echo "----------------------------------------------------------"
+echo "relax exit code: $rc   ($(date -Is))"
+
+rows_after=$(wc -l < "$STRUCTURES" 2>/dev/null || echo 0)
+echo "structures.csv rows after: $rows_after"
+
+if [ "$rc" -eq 0 ]; then
+    echo "relaxation complete -> scoring"
+    bash "$REPO/scripts/run_in_singularity.sh" \
+        wyformer-protocol "$GENES" --output-dir "$OUT" --stage score
+    score_rc=$?
+    echo "score exit code: $score_rc"
+    exit "$score_rc"
+fi
+
+# A link that relaxed nothing is a deterministic failure, not a slot that ran out:
+# chaining it would burn the whole budget in minutes, which is how the ehull chains
+# ended. rc 124 is our own timeout and is expected once per link.
+if [ "$rc" -ne 124 ] && [ "$rows_after" -le "$rows_before" ]; then
+    echo "crashed without relaxing anything -> hard stop (see log above)" >&2
+    exit "$rc"
+fi
+
+if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+    echo "attempt cap ($MAX_ATTEMPTS) reached -> stopping; re-qsub to continue" >&2
+    exit "$rc"
+fi
+
+echo "resubmitting to continue (attempt $((ATTEMPT + 1)))"
+"$QSUB" -v POOL="$POOL",WORKERS="$WORKERS",ATTEMPT="$((ATTEMPT + 1))",MAX_ATTEMPTS="$MAX_ATTEMPTS" "$PBS_SCRIPT"
