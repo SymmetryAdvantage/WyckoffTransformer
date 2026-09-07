@@ -11,8 +11,16 @@ improvising, and record anything host-specific you learn there rather than in
 the top-level `README.md` or `AGENTS.md`. Matching scripts live in
 `scripts/platforms/$(hostname -s)/`.
 
-If it does not exist, this host is undocumented. Set it up, then add the
-directory.
+On a **cluster**, the node name is not the platform name -- you get a different
+node every job. The directory is named after the cluster, and the mapping is:
+
+| Node name | Directory |
+| --- | --- |
+| `asp2a-*` (login or compute) | `aspire2a` |
+
+If neither the host name nor a cluster entry above matches, this host is
+undocumented. Set it up, then add the directory -- and a row here if it is a
+cluster.
 
 Do not read a sibling host's pages for guidance on this one. Nothing there
 transfers: driver versions, container runtimes, filesystem layout, schedulers
