@@ -8,12 +8,15 @@ into one versioned artifact.
 
     uv run wyformer-protocol-wandb <run-id> \\
         --output-dir generated/<run-id>/protocol \\
+        --condition energy_above_hull=0 \\
         --devices cuda:0,cuda:1 --workers-per-device 2
 
 The cohort is *generated*, not read: 1000 genes by default (``--n-genes``),
 sampled from the run's saved space-group distribution.  The gene file is written
 into ``--output-dir`` and shipped in the artifact, so the exact set a run was
-scored on stays recoverable.
+scored on stays recoverable.  A conditional run needs its target passed with
+``--condition NAME=VALUE`` (datasets are not loaded, so it cannot be sampled
+from training data); an unconditional run takes neither flag.
 
 Every key of ``funnel.json`` is flattened into ``run.summary`` under a
 ``protocol/`` prefix.  ``screen.json``, ``structures.csv``, ``funnel.json``,
@@ -34,6 +37,7 @@ from typing import Optional
 import torch
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.cli import describe_condition, resolve_condition_values
 from wyckoff_transformer.cli import protocol as protocol_cli
 from wyckoff_transformer.cli.csp import load_trainer
 from wyckoff_transformer.evaluation.hull_mlips import DEFAULT_HULL_MLIP, HULL_MLIPS
@@ -90,12 +94,19 @@ def generate_genes(
     oversample: float,
     device: torch.device,
     output_path: Path,
+    condition: Optional[list] = None,
+    condition_value: Optional[float] = None,
 ) -> int:
     """Generate a gene cohort from the run's checkpoint and write it to disk.
 
-    Mirrors ``wyformer-generate`` with no conditioning and no element
-    constraints: start tokens are sampled from the run's saved space-group
-    distribution, and the formally valid genes are truncated to *n_genes*.
+    Mirrors ``wyformer-generate`` with no element constraints: start tokens are
+    sampled from the run's saved space-group distribution, and the formally
+    valid genes are truncated to *n_genes*.
+
+    A conditional run needs its target passed explicitly via *condition*
+    (``["energy_above_hull=0"]``) or *condition_value*: datasets are not loaded
+    here, so the conditioning cannot be sampled from the training distribution
+    the way ``wyformer-generate --use-cached-tensors`` does.
 
     Returns:
         The number of genes written (always *n_genes* on success).
@@ -113,8 +124,25 @@ def generate_genes(
         load_datasets=False,
     )
     attempted = max(n_genes + 1, int(round(n_genes * oversample)))
+
+    condition_values = resolve_condition_values(trainer, condition, condition_value)
+    cond = None
+    if condition_values is not None:
+        cond = trainer.build_condition_from_values(
+            condition_values, attempted, device=device
+        )
+        logger.info("Conditioning generation on %s", describe_condition(condition_values))
+    elif trainer.condition_features:
+        raise ValueError(
+            f"Run {run_id} conditions on {list(trainer.condition_features)}; pass "
+            "--condition NAME=VALUE (e.g. --condition energy_above_hull=0). Datasets "
+            "are not loaded here, so the conditioning cannot be sampled from training data."
+        )
+
     logger.info("Generating %d genes (%d attempted) from run %s", n_genes, attempted, run_id)
-    generated = trainer.generate_structures(n_structures=attempted, calibrate=False)
+    generated = trainer.generate_structures(
+        n_structures=attempted, calibrate=False, cond=cond
+    )
     if len(generated) < n_genes:
         raise ValueError(
             f"Only {len(generated)} of {attempted} generated genes are formally "
@@ -236,6 +264,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Device for generation. Relaxation hardware is set separately below.")
     gen.add_argument("--skip-generate", action="store_true",
                      help="Reuse an existing gene file in --output-dir instead of generating.")
+    gen.add_argument("--condition", action="append", metavar="NAME=VALUE", default=None,
+                     help="Conditioning target for every generated gene, e.g. "
+                          "--condition energy_above_hull=0. Repeat once per feature. "
+                          "Required for a conditional run: datasets are not loaded here, "
+                          "so the conditioning cannot be sampled from training data.")
+    gen.add_argument("--condition-value", type=float, default=None,
+                     help="Shorthand for --condition <the one feature>=VALUE, for a "
+                          "single-channel conditional model.")
 
     hardware = parser.add_argument_group("relaxation hardware")
     hardware.add_argument("--cores", type=int, default=None,
@@ -291,6 +327,8 @@ def main() -> None:
             oversample=args.oversample,
             device=args.gen_device,
             output_path=gene_file,
+            condition=args.condition,
+            condition_value=args.condition_value,
         )
 
     stage_args = build_stage_args(args, gene_file)

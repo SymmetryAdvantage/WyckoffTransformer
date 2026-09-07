@@ -71,13 +71,21 @@ summary and every protocol output into one versioned artifact.
 ```bash
 uv run wyformer-protocol-wandb <run-id> \
     --output-dir generated/<run-id>/protocol \
+    --condition energy_above_hull=0 \
     --devices cuda:0,cuda:1 --workers-per-device 2
 ```
 
+Drop `--condition` for an unconditional run.
+
 - **Genes are generated, not read.** 1000 by default (`--n-genes`), sampled from
-  the run's saved space-group distribution exactly as `wyformer-generate` does
-  with no conditioning. The gene file is written to the output directory and
-  included in the artifact, so the cohort a run was scored on is recoverable.
+  the run's saved space-group distribution exactly as `wyformer-generate` does.
+  The gene file is written to the output directory and included in the artifact,
+  so the cohort a run was scored on is recoverable.
+- **A conditional run needs its target.** Datasets are not loaded here, so the
+  conditioning cannot be sampled from the training distribution — pass it with
+  `--condition energy_above_hull=0` (repeat once per feature, or
+  `--condition-value` for a single-channel model). An unconditional run takes
+  neither.
 - **The run's model files must be reachable.** `runs/<run-id>/` is used if it
   already holds `best_model_params.pt`, `wyckoff_processor.json` and
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.

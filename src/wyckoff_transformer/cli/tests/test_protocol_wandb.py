@@ -148,6 +148,7 @@ class TestGenerateGenes(unittest.TestCase):
 
     def test_truncates_to_n_genes(self):
         trainer = MagicMock()
+        trainer.condition_features = ()
         trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
         with patch.object(pw, "load_trainer", return_value=trainer), \
              patch.object(pw, "ensure_run_files"), \
@@ -157,11 +158,13 @@ class TestGenerateGenes(unittest.TestCase):
                 oversample=1.15, device="cpu", output_path=self.out,
             )
         self.assertEqual(n, 10)
+        self.assertIsNone(trainer.generate_structures.call_args.kwargs["cond"])
         with gzip.open(self.out, "rt") as handle:
             self.assertEqual(len(json.load(handle)), 10)
 
     def test_too_few_valid_raises(self):
         trainer = MagicMock()
+        trainer.condition_features = ()
         trainer.generate_structures.return_value = [{"i": 0}] * 3
         with patch.object(pw, "load_trainer", return_value=trainer), \
              patch.object(pw, "ensure_run_files"), \
@@ -171,6 +174,35 @@ class TestGenerateGenes(unittest.TestCase):
                     run_id="r", entity="e", project="p", n_genes=10,
                     oversample=1.15, device="cpu", output_path=self.out,
                 )
+
+    def test_conditional_run_needs_a_target(self):
+        trainer = MagicMock()
+        trainer.condition_features = ("energy_above_hull",)
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            with self.assertRaises(ValueError):
+                pw.generate_genes(
+                    run_id="r", entity="e", project="p", n_genes=10,
+                    oversample=1.15, device="cpu", output_path=self.out,
+                )
+
+    def test_condition_value_is_built_and_passed(self):
+        trainer = MagicMock()
+        trainer.condition_features = ("energy_above_hull",)
+        trainer.build_condition_from_values.return_value = "COND"
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+                condition=["energy_above_hull=0"],
+            )
+        values, n_rows = trainer.build_condition_from_values.call_args.args[:2]
+        self.assertEqual(values, {"energy_above_hull": 0.0})
+        self.assertEqual(trainer.generate_structures.call_args.kwargs["cond"], "COND")
 
 
 if __name__ == "__main__":
