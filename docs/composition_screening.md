@@ -1,10 +1,11 @@
 # Composition screening: estimating the floor under a chemical formula
 
-> **STATUS (2026-09-07): implemented, tested, and measured once.** 103 tests
-> pass. This is the design; the measurements are in
-> [what was measured](composition_screening_results.md), and they are single runs
-> on one split. Nothing has been submitted anywhere and the displacement bound has
-> never been run at scale.
+> **STATUS (2026-09-07): implemented; novel-formula campaign measurements need
+> rerunning.** A scale bug was found in the phase-diagram lookup: pymatgen returned
+> an absolute hull energy where the screener expected formation energy. The helper
+> is corrected and covered by nonzero-element-reference tests. Formula-table
+> experiments were unaffected, but generated formulas absent from the table used
+> the bad lookup. See [what was measured](composition_screening_results.md).
 
 ## The question
 
@@ -240,13 +241,13 @@ post-filter.
 
 ## Results
 
-All measurements, and the three that had to be discarded and redone, are in
-[what was measured](composition_screening_results.md). In brief: screening
-roughly doubles the MetaSUN rate at fixed relaxation budget (2.23x in the top
-decile of novel formulas); the two-regression scheme this replaced is the weakest
-thing tested; the censored likelihood does not clearly beat plain MSE; and the
-shallow-hull answer key turns out to reward predicting where Alexandria looked, so
-the generated-structure test is the primary instrument.
+All measurements are in [what was measured](composition_screening_results.md).
+The formula-table model comparisons remain valid, including the weak performance
+of the two-regression scheme and the search-policy confound in the shallow-world
+answer key. The generated-structure enrichment numbers do not: novel formulas
+required a phase-diagram lookup that mixed absolute hull energies with predicted
+formation energies. They must be rerun with the corrected helper before claiming
+a MetaSUN or SUN gain.
 
 ## What exists
 
@@ -255,7 +256,7 @@ the generated-structure test is the primary instrument.
 | `formula_energy/dataset.py` | formula table, provenance labelling, formula-level splits |
 | `formula_energy/features.py` | chemistry and provenance tensors, kept apart |
 | `formula_energy/encoder.py` | two-head CrabNet-shaped encoder |
-| `formula_energy/train.py` | training loop, deep ensemble, MSE variant for the baselines |
+| `formula_energy/train.py` | training loop, YAML loading, deep ensemble, MSE variant for the baselines |
 | `formula_energy/metrics.py` | precision, enrichment, calibration |
 | `formula_energy/baselines.py` | `g_C`, `g_D`, Magpie + GBDT, chemsys lookup |
 | `formula_energy/answer_key.py` | shallow world and the discovery key |
@@ -264,6 +265,8 @@ the generated-structure test is the primary instrument.
 | `formula_energy/prefilter.py` | what screening buys a generation run |
 | `cli/screen.py` | `wyformer-screen` |
 | `gene_energy.py`, `cli/gene_screen.py` | observed gene minimum target and `wyformer-gene-screen` |
+| `cli/dft_screen.py` | conservative composition-plus-gene ranking against one fixed PBE hull |
+| `yamls/models/formula_energy/censored_floor.yaml` | reproducible DFT composition-floor ensemble config |
 | `scripts/pull_mp_provenance.py` | the ICSD flags LeMat-Bulk does not carry |
 
 Not built: no enumeration of novel formulas (`smact` is a dependency and would be
@@ -278,7 +281,9 @@ uv run python scripts/pull_mp_provenance.py                        # ~6 min, nee
 uv run python -m wyckoff_transformer.formula_energy.dataset        # ~1 min
 uv run python -m wyckoff_transformer.formula_energy.answer_key --workers 24
 uv run python -m wyckoff_transformer.formula_energy.experiment --quick   # check the wiring
-uv run python -m wyckoff_transformer.formula_energy.experiment          # the real run
+uv run python -m wyckoff_transformer.formula_energy.experiment          # the model comparison
+uv run python -m wyckoff_transformer.formula_energy.train \
+  --config yamls/models/formula_energy/censored_floor.yaml --device cuda
 CUDA_VISIBLE_DEVICES="" uv run pytest src/wyckoff_transformer/formula_energy
 ```
 
@@ -291,3 +296,6 @@ CUDA_VISIBLE_DEVICES="" uv run pytest src/wyckoff_transformer/formula_energy
 - [Gene energy critic study](gene_energy_critic_study.md) -- "The exploration
   paradox", which asked for a formula policy allowed to disagree with database
   frequency. This is that policy.
+- [DFT fixed-hull adversarial screening](dft_fixed_hull_attack.md) -- the offline
+  composition-plus-gene shortlist that uses this floor without changing either
+  underlying estimator.

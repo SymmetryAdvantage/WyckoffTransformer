@@ -12,6 +12,20 @@ import pandas as pd
 from wyckoff_transformer.formula_energy import screen
 
 
+def _shifted_reference():
+    """The same formation hull as ``_reference`` with nonzero elemental energies."""
+    return pd.DataFrame(
+        {
+            "full_formula": ["Na1", "Cl1", "Na1 Cl1"],
+            # Elemental total energies are -1 and -2. NaCl is 2 eV below their
+            # sum, hence its formation energy remains -1 eV/atom.
+            "energy_corrected": [-1.0, -2.0, -5.0],
+            "chemsys": ["Na", "Cl", "Cl-Na"],
+        },
+        index=["na", "cl", "nacl"],
+    )
+
+
 def _reference():
     """A Na-Cl system whose hull is Na(0) - NaCl(-1 eV/atom) - Cl(0).
 
@@ -29,12 +43,32 @@ def _reference():
     )
 
 
+class TestFormationHullEnergy(unittest.TestCase):
+    def test_cached_lookup_returns_formation_not_absolute_energy(self):
+        lookup = screen.HullLookup(_shifted_reference())
+        self.assertAlmostEqual(lookup.hull_energy_per_atom("Na1Cl3"), -0.5)
+
+    def test_standalone_lookup_returns_formation_not_absolute_energy(self):
+        self.assertAlmostEqual(
+            screen.hull_energy_per_atom(_shifted_reference(), "Na1Cl3"),
+            -0.5,
+        )
+
+
 class TestDisplacementBound(unittest.TestCase):
     def test_the_bound_is_where_the_geometry_says_it_is(self):
         # A candidate at NaCl3 sits at x_Cl = 0.75. The tie-line from Na through
         # it passes x_Cl = 0.5 at (0.5/0.75) * h, so NaCl at -1 eV/atom comes off
         # the hull exactly when h < -1.5.
         bound = screen.displacement_bound(_reference(), "Na1Cl3", protected_ids=["nacl"])
+        self.assertAlmostEqual(bound, -1.5, delta=0.01)
+
+    def test_the_bound_is_invariant_to_elemental_reference_shifts(self):
+        bound = screen.displacement_bound(
+            _shifted_reference(),
+            "Na1Cl3",
+            protected_ids=["nacl"],
+        )
         self.assertAlmostEqual(bound, -1.5, delta=0.01)
 
     def test_a_candidate_above_the_bound_displaces_nothing(self):

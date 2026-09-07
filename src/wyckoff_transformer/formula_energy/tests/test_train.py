@@ -6,6 +6,7 @@ its estimate *under* the bounds, and must attribute the scatter to the search
 process that produced it rather than to the chemistry.
 """
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -62,6 +63,28 @@ def _synthetic(n_formulas=400, seed=0):
             "log1p_sys_hull_per_ternary": 0.0,
         })
     return pd.DataFrame(rows).set_index("formula")
+
+
+class TestShippedTrainingConfig(unittest.TestCase):
+    CONFIG = (
+        Path(__file__).resolve().parents[4]
+        / "yamls/models/formula_energy/censored_floor.yaml"
+    )
+
+    def test_it_defines_the_dft_censored_ensemble(self):
+        spec = T.load_training_spec(self.CONFIG)
+        self.assertEqual(spec.models, 10)
+        self.assertEqual(spec.train.loss, "censored")
+        self.assertEqual(spec.train.energy_scale, T.LEMAT_BULK_PBE_ENERGY_SCALE)
+        self.assertEqual(spec.train.location_features, [])
+        self.assertEqual(spec.train.drop_provenance, [])
+        self.assertEqual(spec.train.noise, 0.10)
+        self.assertEqual(spec.train.epochs, 20)
+
+    def test_historical_defaults_are_still_dft_identified(self):
+        spec = T.load_training_spec()
+        self.assertEqual(spec.train.energy_scale, T.LEMAT_BULK_PBE_ENERGY_SCALE)
+        self.assertEqual(spec.train.epochs, 20)
 
 
 class TestPrepare(unittest.TestCase):
