@@ -134,10 +134,12 @@ class TestHullProvenance(unittest.TestCase):
         self.assertEqual(hull.provenance["hull_type"], "orb_conserv_inf")
 
     def test_the_full_hull_covers_the_elements_the_training_labels_drop(self):
-        """Yb and the actinides are excluded from `scripts/compute_e_hull.py`.
+        """The training labels used to exclude Yb and everything past Po.
 
-        That exclusion belongs to the training labels, not here: a generated
-        structure containing Yb has to be scored, not silently dropped.
+        That exclusion never belonged here -- a generated structure containing
+        Yb has to be scored, not silently dropped -- and as of the 2026-09-07
+        relabelling it is gone from the training side too. This pins the
+        property that mattered on this side all along.
         """
         parquet = _cached_hull_parquet()
         if parquet is None:

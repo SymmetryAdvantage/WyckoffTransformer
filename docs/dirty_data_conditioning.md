@@ -43,10 +43,15 @@ experimentally grounded ones.
 
 Three filters beyond the force cut, each earning its place:
 
-**`e_hull` is not NaN** (−588,499 rows). `scripts/compute_e_hull.py` returns nothing for
+**`e_hull` is not NaN** (−588,499 rows). `scripts/compute_e_hull.py` returned nothing for
 any system containing Yb, anything past Po, or a chemsys of ten or more elements —
-of which the Po-and-beyond clause is 98% of the loss and the ten-element one has never
-fired ([what every `e_hull` in this repo means](e_hull_definitions.md)). The
+of which the Po-and-beyond clause was 98% of the loss and the ten-element one could never
+fire. **Those exclusions are gone as of 2026-09-07**: the archive was relabelled with
+`formula_energy/hull_table.py`, which applies none of them, so this filter now drops one
+row rather than 588,499, and the dataset gains half a million rows of Yb and actinide
+chemistry that no cache had ever contained ([what every `e_hull` in this repo
+means](e_hull_definitions.md)). The numbers in this document describe the dataset as
+built for `19qbxo6l`, before that. The
 model is conditioned on `energy_above_hull`, and nothing downstream masks a missing
 conditioning value, so these rows cannot be carried.
 
@@ -250,10 +255,14 @@ the original audit still lands on its historical path, so the five shell scripts
 ## Building it again
 
 ```
-python scripts/build_lemat_bulk_fmax.py --name lemat_bulk_fmax1 --max-force 1.0
+python -m wyckoff_transformer.formula_energy.hull_table --workers 16 \
+  --input-file data/lemat-bulk/lemat_pbe.csv.gz \
+  --output-file data/lemat-bulk/lemat_pbe_ehull.csv.gz
+python scripts/build_lemat_bulk_fmax.py --name lemat_bulk_fmax1 --max-force 1.0 --rebuild-labels
 python scripts/cache_a_dataset_reusing.py lemat_bulk_fmax1 \
-  --reuse cache/lemat_bulk_ehull/data.pkl.gz \
-  --scalar-columns energy_above_hull delta_e_polymorph max_force formation_energy_per_atom \
+  --reuse cache/lemat_bulk_fmax1/data.pkl.gz \
+  --scalar-columns energy_above_hull delta_e_polymorph max_force max_force_missing \
+      formation_energy_per_atom \
   --observed-gene-minimum-target \
   --max-sites 61 --n-jobs 16
 python scripts/tokenise_a_dataset.py lemat_bulk_fmax1 \
@@ -261,6 +270,13 @@ python scripts/tokenise_a_dataset.py lemat_bulk_fmax1 \
 CUDA_VISIBLE_DEVICES=0 python scripts/train.py \
   yamls/models/lemat_bulk_ehull/e_all_adamw_wsd.yaml lemat_bulk_fmax1 cuda
 ```
+
+The first line is new and takes 1 h 23 min on 16 workers: the hull table is no longer a
+given, because the labels of `19qbxo6l` were built before the element exclusions came out of
+it. Reuse the *fmax1* cache rather than the `lemat_bulk_ehull` one now — it overlaps the new
+dataset by 88% against the older cache's 78%, and `--reuse` takes several caches if you want
+both. `max_force_missing` has to be in `--scalar-columns` or the indicator is built and never
+reaches a tensor.
 
 The dataset and the tensor cache are unchanged between `wjwmgjag` and `19qbxo6l`; only the
 config differs, so a rerun needs neither rebuilt.

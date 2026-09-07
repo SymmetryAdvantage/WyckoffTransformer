@@ -43,7 +43,7 @@ from wyckoff_transformer.csp import parse_formula, reduce_formula
 
 logger = logging.getLogger(__name__)
 
-#: The energy table produced by ``scripts/compute_e_hull.py``.
+#: The energy table produced by :mod:`wyckoff_transformer.formula_energy.hull_table`.
 DEFAULT_ENERGY_CSV = Path("data/lemat-bulk/lemat_pbe_ehull.csv.gz")
 #: Written by ``scripts/pull_mp_provenance.py``.
 DEFAULT_PROVENANCE = Path("data/mp_provenance.csv.gz")
@@ -208,7 +208,7 @@ def load_rows(
             logger.warning("%d rows have an unreadable %s", unparseable, column)
         frame[column] = coerced
 
-    # e_form is NaN wherever compute_e_hull could not build a phase diagram --
+    # e_form is NaN wherever no phase diagram could be built for the row --
     # Yb, the polonium-and-beyond elements, and chemical systems of ten or more
     # elements. Without a formation energy the row cannot bound anything.
     frame = frame[frame["e_form"].notna() & frame["e_hull"].notna()]

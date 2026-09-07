@@ -57,7 +57,7 @@ def main():
     print("Computing E-hull (skipped)...")
     ehull_csv = base_dir / "lemat_pbe_ehull.csv.gz"
     # Need to specify correct columns as default ones might be different
-    # run_command(f".venv/bin/python scripts/compute_e_hull.py --workers 40 --input-file {processed_csv} --output-file {ehull_csv} --id-col immutable_id --formula-col full_formula --chemsys-col chemsys --energy-col energy_corrected")
+    # run_command(f".venv/bin/python -m wyckoff_transformer.formula_energy.hull_table --workers 16 --input-file {processed_csv} --output-file {ehull_csv}")
     
     # Step E & F: Filters
     print("Loading data for filtering...")

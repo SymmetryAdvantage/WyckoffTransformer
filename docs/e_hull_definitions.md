@@ -10,7 +10,7 @@ rules for keeping them apart.
 
 | # | name in code | what it is | energy source | reference set | sign |
 |---|---|---|---|---|---|
-| 1 | `e_hull`, `e_form` in `lemat_pbe_ehull.csv.gz` | distance above hull, eV/atom | PBE `energy_corrected` (MP2020-corrected) | the whole LeMat-Bulk PBE archive, self-referentially | ≥0, or NaN |
+| 1 | `e_hull`, `e_form` in `lemat_pbe_ehull.csv.gz` | distance above hull, eV/atom | PBE `energy_corrected` (MP2020-corrected) | the whole LeMat-Bulk PBE archive, self-referentially | any |
 | 2 | `energy_above_hull` in the training caches | (1) clipped at zero | as (1) | as (1) | ≥0 |
 | 3 | `e_hull_at_composition`, `hull_energy` | the hull's *formation energy* at a composition, eV/atom | as (1) | rows of (1) within 1 meV/atom of the hull | any |
 | 4 | `e_above_hull` in `protocol/structures.csv` | distance above hull, eV/atom | one MLIP's total energy | `LeMat-Bulk-MLIP-Hull`, that MLIP's own split | any, incl. negative |
@@ -19,15 +19,19 @@ rules for keeping them apart.
 
 Where each comes from:
 
-1. **`scripts/compute_e_hull.py`** — shuyayamazaki's, commit `e943883`
-   (2025-11-18). `PDEntry(full_formula, energy_corrected)` against one
-   `PhaseDiagram` per chemical system, built from the archive itself. Produces
-   `e_form` (formation energy per atom) and `e_hull` (distance) into
-   `data/lemat-bulk/lemat_pbe_ehull.csv.gz`.
+1. **`formula_energy/hull_table.py`** (`wyformer-hull-energies`).
+   `PDEntry(full_formula, energy_corrected)` against one `PhaseDiagram` per
+   chemical system, built from the archive itself. Produces `e_form` (formation
+   energy per atom) and `e_hull` (distance) into
+   `data/lemat-bulk/lemat_pbe_ehull.csv.gz`. Replaced
+   `scripts/compute_e_hull.py` — shuyayamazaki's, commit `e943883`
+   (2025-11-18) — on 2026-09-07; see [the exclusions](#the-exclusions-that-were-there-and-are-gone)
+   below for what changed and what did not.
 2. **`scripts/build_lemat_bulk_fmax.py`** — the conditioning label. `max(0,
-   e_hull)`, because pymatgen's non-negative return lands at −2.7e-15 on one
-   row and `log1p` will not take it. Rows with NaN `e_hull` cannot be carried at
-   all, which is where the exclusions below bite.
+   e_hull)`, because the distance lands at −2.7e-15 on one row and `log1p` will
+   not take it. Rows with NaN `e_hull` cannot be carried at all, which is where
+   the exclusions below used to bite — one row now, 589,250 before the
+   relabelling.
 3. **`formula_energy/dataset.py`** (`e_form − e_hull`, per formula) and
    **`formula_energy/screen.py:HullLookup`** (rebuilt from the near-hull subset,
    converted from pymatgen's absolute hull energy to a formation energy). Used
@@ -48,10 +52,12 @@ Where each comes from:
 
 **(1) and (5) are the same DFT hull.** Of the 144,127 entries in the `dft`
 split of `LeMat-Bulk-MLIP-Hull` — every LeMat-Bulk entry within 1 meV/atom of
-the PBE hull — 120,341 also carry an `e_hull` from `compute_e_hull.py`, and
-**all 120,341 of them are ≤ 0.001 eV/atom**, max 0.00100, median 0.00000. Two
-independent constructions, over the same archive, agreeing to the resolution of
-the threshold that defines the split.
+the PBE hull — 120,341 also carried an `e_hull` in the archive table before the
+relabelling (all 144,127 do now), and **all 120,341 of them are ≤ 0.001
+eV/atom**, max 0.00100, median 0.00000. Two independent constructions, over the
+same archive, agreeing to the resolution of the threshold that defines the
+split. The relabelling reproduced those 120,341 values exactly, so the agreement
+holds for the current table too.
 
 **The energy scales are identical.** LeMat's `true_energy` equals our
 `energy_corrected` for **100%** of those rows (`|Δ| < 1e-6` eV/atom). There is
@@ -90,21 +96,23 @@ elemental reference energies, which cancel in the difference. That identity is
 what lets a formation-energy screener and an MLIP-energy protocol talk about the
 same threshold; `tests/test_hull_conventions.py` pins it on a synthetic hull.
 
-**Below-hull rows: NaN in (1), negative in (4) — a real asymmetry.**
-`compute_e_hull.py` calls `PhaseDiagram.get_e_above_hull`, which *raises* for an
-entry below the hull, and the surrounding `except` turns that into
-`(None, None)` — losing `e_form` as well. (4) calls
-`get_decomp_and_e_above_hull(..., allow_negative=True)` and returns the negative
-value. It costs nothing today, because (1)'s reference is the target set itself,
-so nothing can be below it; it would bite the moment a *different* reference is
-passed with `--ref-file`. That case is the answer key, and
-`formula_energy/answer_key.py` already routes around it by comparing formation
-energies against the shallow hull's *level* (3) rather than reading a negative
-distance.
+**Below-hull rows: negative everywhere now.** `compute_e_hull.py` used to call
+`PhaseDiagram.get_e_above_hull`, which *raises* for an entry below the hull, and
+its bare `except` turned that into `(None, None)` — losing `e_form` with it.
+That cost nothing while the reference was the target set itself, since nothing
+can sit below the hull it defines, but it made the `--ref-file` case unusable —
+and that case is the answer key, whose whole question is which rows fall below a
+*shallower* world's hull. `hull_table.py` and (4) both call
+`get_decomp_and_e_above_hull(..., allow_negative=True)`. The answer key still
+compares formation energies against the shallow hull's *level* (3), which is the
+robust way to ask its question, but it no longer has to.
 
-**Element exclusions: (1) only.** `compute_e_hull.py` refuses three classes of
-system. Measured over all 5,335,299 archive rows, `e_hull` is NaN for 589,250
-(11.04%), and the cause decomposes as:
+### The exclusions that were there, and are gone
+
+**Element exclusions used to apply to (1), and to nothing else.**
+`compute_e_hull.py` refused three classes of system. Measured over all
+5,335,299 archive rows as it left them, `e_hull` was NaN for 589,250 (11.04%),
+and the cause decomposed as:
 
 | exclusion | stated reason (from the deleted comments of `e943883`) | rows lost |
 |---|---|---|
@@ -113,14 +121,27 @@ system. Measured over all 5,335,299 archive rows, `e_hull` is NaN for 589,250
 | chemsys with ≥ 10 elements | "Qhull … can have issues with high-dimensional systems" | **0** |
 | phase diagram genuinely failed | — | 1 |
 
-Three observations follow. The ≥10-element guard **never fires**: no row of
-LeMat-Bulk has ten or more elements. Yb costs 0.19%. And the Z ≥ 84 list is
-essentially the entire loss — 10.9% of the archive — for chemistry the reference
-hull covers perfectly well: the published hull splits carry Th, U, Np, Pu, Ac
-and Pa, each with its own elemental reference, and 1211 Yb entries. The
-exclusions also apply *only to the row being labelled*, not to the reference
-dictionary, so the hull geometry is unaffected — this is lost labels, not a
-distorted hull.
+Three observations followed. The ≥10-element guard **could never fire**: the
+widest chemical system in LeMat-Bulk has nine elements. Yb cost 0.19%. And the
+Z ≥ 84 list was essentially the entire loss — 10.9% of the archive — for
+chemistry the reference hull covers perfectly well: the published hull splits
+carry Th, U, Np, Pu, Ac and Pa, each with its own elemental reference, and 1211
+Yb entries. The exclusions applied *only to the row being labelled*, never to
+the reference dictionary, so the hull geometry was never distorted — these were
+lost labels, not a wrong hull.
+
+**They are gone as of 2026-09-07.** `hull_table.py` applies none of them, and
+the archive was relabelled with it: 673,174 phase diagrams, 1 h 23 min on 16
+workers. The result, verified row by row against the table it replaced:
+
+| | |
+|---|---|
+| rows | 5,335,299 → 5,335,299, same order, same columns |
+| pre-existing labels | 4,746,049 reproduced **bit for bit** (max abs Δ of both `e_form` and `e_hull` exactly 0) |
+| recovered | **589,249** of the 589,250 blanked rows now labelled, `e_hull` median 0.128 eV/atom |
+| still unlabelled | **1** — `oqmd-2969647`, which has an energy but no `full_formula` and no `chemsys`, so it has no composition to place |
+
+The old table is kept as `lemat_pbe_ehull.csv.gz.bak-20260907`.
 
 **One-hot encodings: never mix ours with the published matrices.**
 `evaluation/hull_energy.py` and `formula_energy/screen.py` both use 118 slots
@@ -148,12 +169,37 @@ therefore cannot be applied to those files either.
 5. **Do not use (6) for new work.** Its reference is not reproducible from this
    repository.
 
-## Open item
+## What the recovery changes downstream
 
-The Z ≥ 84 exclusion in `compute_e_hull.py` drops 579,217 rows — 10.9% of the
-archive — from every training label derived from it, on a stated concern about
-database support that the LeMat hull itself does not share. Recovering them
-means one rerun of `compute_e_hull.py` and a rebuild of the conditioning caches,
-and would also make the actinide chemistry of the archive available to the
-conditioned models. The `Yb` and `≥ 10 elements` clauses can go at the same
-time: the first has no stated reason, the second has never once fired.
+The 589,249 recovered rows are Yb and Z ≥ 84 chemistry, which no conditioning
+cache had ever contained, so they are not a cosmetic addition. Rebuilt on
+2026-09-07 (`docs/dirty_data_conditioning.md` has the commands):
+
+| artifact | before | after |
+|---|---|---|
+| `formula_table.parquet` | 2,329,360 formulas | 2,754,290 — 0 lost, every shared `e_form_min` and `e_hull_at_composition` **unchanged exactly** |
+| `answer_key.parquet` | 286,348 formulas, 26,068 discovered | 306,497, 30,283; of the shared formulas 99.98% keep their verdict |
+| `lemat_bulk_fmax1` | 4,709,425 rows | 5,333,114 |
+| `cache/lemat_bulk_fmax1` | 4,502,341 / 99,985 / 99,987 | 5,127,874 / 99,985 / 99,987 |
+
+Two consequences worth knowing before training on it:
+
+- **The tokeniser vocabulary grew.** `elements` went from 85 to 92 — Ac, Np, Pa,
+  Pu, Th, U, Yb — and `site_symmetries` from 80 to 81 (`42.2`, which only occurs
+  in the recovered rows). Nothing was removed, and `spacegroup_number` and
+  `sites_enumeration` are untouched. A checkpoint trained before this has
+  embedding tables of the old shape, so it cannot be resumed as-is: either
+  retrain, or pad the two tables and accept that the new rows start from
+  untrained embeddings.
+- **The recovered rows are train-only.** 589,089 of them (11.49% of train) carry
+  Yb or Z ≥ 84 chemistry, and val and test contain **none**, because
+  `assign_split` inherits those id lists from `split_ids.json`. The validation
+  loss therefore stays comparable with the `19qbxo6l` baselines by construction,
+  and equally cannot say whether the new chemistry was learned. A separate
+  held-out slice of the recovered ids answers that without forfeiting the
+  comparison; reshuffling val/test does not.
+
+`oracle_reconstruction.py` also samples LeMat-Bulk rows with `e_hull <= 0.1` from
+this table, so its sampling pool grows, and the screeners can now price chemistry
+they used to refuse outright — UO₂, ThSi₂ and Yb₂O₃ all had zero near-hull
+reference rows before and raised `No reference entries cover [...]`.

@@ -4,9 +4,11 @@ This is definition (1) of :doc:`../../../docs/e_hull_definitions.md`: PBE
 ``energy_corrected`` against phase diagrams built from the archive itself,
 producing ``e_form`` (formation energy, eV/atom) and ``e_hull`` (distance above
 the hull, eV/atom).  It replaces ``scripts/compute_e_hull.py``, which produced
-every training label in this repository and which this reproduces to machine
-precision -- max ``|Δe_form|`` 4.4e-16 over the 146 Ba-Ti-O and 541 Li-Fe-P-O
-rows of the archive -- while differing from it in four ways, all deliberate:
+every training label in this repository until 2026-09-07, and which this
+reproduces **exactly**: relabelling the whole archive returned bit-identical
+``e_form`` and ``e_hull`` for all 4,746,049 rows the old script had managed to
+label (max ``|Δ|`` 0.0 for both).  It differs from it in four ways, all
+deliberate:
 
 *No element exclusions.*  The script refused any system containing Yb, anything
 with Z >= 84, or ten or more elements, and returned nothing for those rows.
@@ -24,8 +26,11 @@ exactly the answer key's use.  Here it is a negative number.
 
 *Failures are counted, not swallowed.*  The script wrapped every row in a bare
 ``except``, which made an excluded element indistinguishable from a chemical
-system with no elemental reference.  Exactly one row of the archive fails for a
-real reason; that number is worth knowing rather than hiding.
+system with no elemental reference.  Of the whole archive, exactly one row fails
+for a real reason: ``oqmd-2969647`` carries an energy (-17.7176 eV) but no
+``full_formula`` and no ``chemsys``, so there is no composition to build a
+``PDEntry`` from and no chemical system to gather references for.  That is worth
+reporting rather than hiding.
 
 *The heavy columns are streamed.*  The script read the whole input CSV --
 including the ~1 GB of CIF text -- into one frame.  Only four columns matter to
