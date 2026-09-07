@@ -9,6 +9,8 @@ runs
 log
 catboost_info
 rolos_workflow_data
+generated/
+!generated/datasets.yaml
 generated/WyckoffTransformer_mp_20_CHGNet_relax_fix-symmetry_vs_removal
 generated/WyckoffTransformer_mp_20_CHGNet_relax_no_symmetry
 generated/WyckoffTransformer_mp_20_DiffCSPPP_tol0.1_nosymconstrain
