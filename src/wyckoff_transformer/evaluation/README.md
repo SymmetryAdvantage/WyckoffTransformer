@@ -6,7 +6,9 @@ than 24 different data storage formats.
 ## The de novo ranking protocol
 
 `protocol.py` and `wyckoff_transformer.cli.protocol` implement the cascade from
-sampled Wyckoff genes to MetaSUN used to rank model variants. See
+sampled Wyckoff genes to MetaSUN used to rank model variants.
+`wyckoff_transformer.cli.protocol_wandb` (`wyformer-protocol-wandb`) drives it
+end to end from a W&B run id and logs the funnel metrics and outputs back. See
 [docs/de_novo_ranking_protocol.md](../../../docs/de_novo_ranking_protocol.md).
 
 The modules below exist so that scoring needs no LeMat-GenBench install —
