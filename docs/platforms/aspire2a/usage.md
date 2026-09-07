@@ -107,7 +107,18 @@ crawl through it one connection at a time — see
 [troubleshooting.md](troubleshooting.md#the-orb-checkpoint-downloads-at-a-crawl).
 
 Useful `-v` variables: `WORKERS` (relaxation processes sharing the one GPU,
-default 4), `MAX_ATTEMPTS` (default 6), `RELAX_TIMEOUT`.
+default 4), `MAX_ATTEMPTS` (default 6), `RELAX_TIMEOUT`, and `POST` — a command
+run inside the container once `--stage score` succeeds, with `POOL` appended, so
+whatever the pool was relaxed *for* does not wait for someone to notice the job
+finished:
+
+```bash
+qsub -v "POOL=generated/<run>,POST=python scripts/analyse_dft_screen_uplift.py" \
+     scripts/protocol_relax.pbs
+```
+
+Quote the whole `-v` list when `POST` has spaces in it; PBS splits it on commas
+only.
 
 ---
 

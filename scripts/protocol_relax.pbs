@@ -17,6 +17,10 @@
 # The cheap `--stage screen` is run here when its output is missing, and the venv's
 # `relax` extra is installed when orb-models is absent, so one qsub is enough.
 #
+# `-v POST=<command>` runs that command inside the container once the score stage
+# succeeds, with POOL appended, e.g.
+# POST='python scripts/analyse_dft_screen_uplift.py'.
+#
 # Queue: `-q ai` routes by (ngpus, walltime); ngpus=1 with a walltime in
 # (02:00:01, 24:00:00] lands in aiq1. See scripts/train_ehull_5x.pbs for the map.
 # ---------------------------------------------------------------------------
@@ -40,6 +44,10 @@ MAX_ATTEMPTS=${MAX_ATTEMPTS:-6}
 ATTEMPT=${ATTEMPT:-1}
 # Stop this far before the wall so the score stage and the re-qsub still fit.
 RELAX_TIMEOUT=${RELAX_TIMEOUT:-82800}     # 23 h
+# Run inside the container after a successful score, with $POOL appended. For
+# whatever analysis the pool was relaxed for, so the answer does not wait for a
+# human to notice the job finished.
+POST=${POST:-}
 
 cd "$REPO"
 mkdir -p logs
@@ -111,6 +119,12 @@ if [ "$rc" -eq 0 ]; then
         wyformer-protocol "$GENES" --output-dir "$OUT" --stage score
     score_rc=$?
     echo "score exit code: $score_rc"
+    if [ "$score_rc" -eq 0 ] && [ -n "$POST" ]; then
+        echo "----------------------------------------------------------"
+        echo "post: $POST $POOL"
+        bash "$REPO/scripts/run_in_singularity.sh" $POST "$POOL"
+        echo "post exit code: $?"
+    fi
     exit "$score_rc"
 fi
 
@@ -128,4 +142,6 @@ if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
 fi
 
 echo "resubmitting to continue (attempt $((ATTEMPT + 1)))"
-"$QSUB" -v POOL="$POOL",WORKERS="$WORKERS",ATTEMPT="$((ATTEMPT + 1))",MAX_ATTEMPTS="$MAX_ATTEMPTS" "$PBS_SCRIPT"
+# One quoted argument: POST may contain spaces, and PBS splits -v on commas only.
+"$QSUB" -v "POOL=$POOL,WORKERS=$WORKERS,ATTEMPT=$((ATTEMPT + 1)),MAX_ATTEMPTS=$MAX_ATTEMPTS,POST=$POST" \
+    "$PBS_SCRIPT"

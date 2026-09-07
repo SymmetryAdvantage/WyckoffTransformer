@@ -183,6 +183,29 @@ Report all three denominators:
 This distinguishes a useful relaxation-budget screen from a generator that has
 itself learned a higher unfiltered SUN rate.
 
+### Measuring it against the MLIP protocol first
+
+The DFT relaxations are the point, but the same selection question can be asked
+much sooner against the [de novo ranking
+protocol](de_novo_ranking_protocol.md), whose relaxations are MLIP. Score one
+pool with `wyformer-dft-screen`, relax the *whole* pool with `wyformer-protocol`
+so every arm draws from the same measured candidates, then:
+
+```bash
+python scripts/analyse_dft_screen_uplift.py generated/<run>
+```
+
+which reads `dft_screen.csv` and `protocol/structures.csv` and reports each
+arm's MetaSUN and SUN rate at a fixed budget against a random draw of the same
+size. `scripts/protocol_relax.pbs` runs the relaxation half as a self-chaining
+PBS job (`qsub -v POOL=generated/<run> scripts/protocol_relax.pbs`).
+
+This is a proxy and not the claim: the screen's estimators and its hull are PBE,
+while the protocol's energies and hull are ORB, so a candidate can clear one and
+miss the other. What it does test cheaply is whether the ranking carries any
+signal about relaxed stability at all, which is a precondition for the DFT
+version being worth its budget.
+
 ## Assumptions and exclusions
 
 1. The LeMat-Bulk PBE reference and its elemental references are immutable across

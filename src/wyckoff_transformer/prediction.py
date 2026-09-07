@@ -10,6 +10,52 @@ import torch
 logger = logging.getLogger(__name__)
 
 
+def tokeniser_key(token, tokeniser):
+    """The key ``tokeniser`` holds ``token`` under, or None if it holds none.
+
+    A vocabulary is keyed by whatever objects the training cache held, and
+    ``elements`` there are pymatgen ``Element``. Saving a processor to JSON turns
+    those keys into their symbols, so a record built by
+    ``pyxtal_notation_to_sites`` -- which yields ``Element`` -- matches nothing in
+    a vocabulary restored by ``WyckoffProcessor.from_pretrained``, and a record
+    carrying symbols matches nothing in one loaded from the cache. Both
+    conventions, plus the ``"Element Fe"`` repr form that older caches used, are
+    resolved here rather than at each of the four places a token is looked up.
+    """
+    for candidate in (token, str(token), repr(token), _as_element(token)):
+        if candidate is None:
+            continue
+        try:
+            if candidate in tokeniser:
+                return candidate
+        except TypeError:
+            continue
+    return None
+
+
+def _as_element(token):
+    """``token`` as a pymatgen ``Element``, or None when it does not name one."""
+    from pymatgen.core import Element  # noqa: PLC0415
+
+    if not isinstance(token, str):
+        return None
+    try:
+        return Element(token)
+    except ValueError:
+        return None
+
+
+def _as_keys(sequence, tokeniser) -> List:
+    """``sequence`` rewritten in the vocabulary's own key convention."""
+    keys = []
+    for token in sequence:
+        key = tokeniser_key(token, tokeniser)
+        if key is None:
+            raise KeyError(f"{token!r} is not in the model's vocabulary")
+        keys.append(key)
+    return keys
+
+
 def filter_supported_tokens(df: pd.DataFrame, trainer) -> Tuple[pd.DataFrame, List]:
     """Split records into vocabulary-supported rows and rows a model cannot read."""
     token_config = trainer.tokeniser_config
@@ -26,7 +72,8 @@ def filter_supported_tokens(df: pd.DataFrame, trainer) -> Tuple[pd.DataFrame, Li
             if sequence is None:
                 unsupported = True
                 break
-            if any(token not in trainer.tokenisers[field] for token in sequence):
+            if any(tokeniser_key(token, trainer.tokenisers[field]) is None
+                   for token in sequence):
                 logger.warning(
                     "Dropping structure %s: field '%s' contains tokens outside the vocabulary.",
                     idx,
@@ -39,7 +86,7 @@ def filter_supported_tokens(df: pd.DataFrame, trainer) -> Tuple[pd.DataFrame, Li
             continue
         for field in space_group_fields:
             space_group = row[field]
-            if space_group not in trainer.tokenisers[field]:
+            if tokeniser_key(space_group, trainer.tokenisers[field]) is None:
                 logger.warning(
                     "Dropping structure %s: space group '%s' not in the vocabulary.",
                     idx,
@@ -53,7 +100,8 @@ def filter_supported_tokens(df: pd.DataFrame, trainer) -> Tuple[pd.DataFrame, Li
         for field in augmented_fields:
             variants = row.get(f"{field}_augmented", [])
             for variant in variants:
-                if any(token not in trainer.tokenisers[field] for token in variant):
+                if any(tokeniser_key(token, trainer.tokenisers[field]) is None
+                       for token in variant):
                     logger.warning(
                         "Dropping structure %s: augmented field '%s' contains tokens outside "
                         "the vocabulary.",
@@ -96,9 +144,10 @@ def build_tokenised_prediction_tensors(
     data_dict: Dict[str, object] = {}
 
     for field in pure_fields:
+        tokeniser = trainer.tokenisers[field]
         sequences = [
-            trainer.tokenisers[field].tokenise_sequence(
-                seq, original_max_len=max_len, dtype=dtype)
+            tokeniser.tokenise_sequence(
+                _as_keys(seq, tokeniser), original_max_len=max_len, dtype=dtype)
             for seq in df[field]
         ]
         data_dict[field] = torch.stack(sequences)
@@ -149,7 +198,8 @@ def build_tokenised_prediction_tensors(
                     continue
                 value_tokens = [
                     trainer.tokenisers[tokeniser_field].tokenise_single(element, dtype=dtype)
-                    for element in composition.keys()
+                    for element in _as_keys(
+                        composition.keys(), trainer.tokenisers[tokeniser_field])
                 ]
                 tokenised_values.append(torch.stack(value_tokens))
                 counts.append(torch.tensor(tuple(composition.values()), dtype=dtype))
@@ -168,7 +218,7 @@ def build_tokenised_prediction_tensors(
                 use_variants = variants if variants else [df[field].iloc[idx]]
                 augmented_variants.append([
                     trainer.tokenisers[field].tokenise_sequence(
-                        variant,
+                        _as_keys(variant, trainer.tokenisers[field]),
                         original_max_len=max_len,
                         dtype=dtype,
                     )
