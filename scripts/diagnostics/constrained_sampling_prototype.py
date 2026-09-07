@@ -13,6 +13,7 @@ import torch
 from omegaconf import OmegaConf
 
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
+from wyckoff_transformer.cli import single_channel_condition
 from wyckoff_transformer.tokenization import get_wp_index
 
 logging.basicConfig(level=logging.ERROR)
@@ -67,9 +68,8 @@ else:
 
 cond = None
 if trainer.condition_feature is not None:
-    cd = getattr(trainer.model, "condition_dim", None) or 1
     v = 0.0 if COND is None else COND
-    cond = trainer.transform_condition(torch.full((N, cd), v, dtype=torch.float32))
+    cond = trainer.transform_condition(single_channel_condition(trainer, v, N))
 
 MAXLEN = trainer.max_sequence_length
 NEG = float("-inf")

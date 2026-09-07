@@ -6,6 +6,7 @@ import numpy as np, torch
 from omegaconf import OmegaConf
 logging.basicConfig(level=logging.CRITICAL); warnings.filterwarnings("ignore")
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
+from wyckoff_transformer.cli import single_channel_condition
 
 R = 24
 _freq_cache = {}
@@ -37,8 +38,7 @@ def measure(run: Path):
     B = len(rep)
     cond = None
     if tr.condition_feature is not None:
-        cd = getattr(model, "condition_dim", None) or 1
-        cond = tr.transform_condition(torch.zeros(B, cd))
+        cond = tr.transform_condition(single_channel_condition(tr, 0.0, B))
     legal = torch.zeros(B, n_ss, dtype=torch.bool)
     for r, s in enumerate(rep):
         for ss in lfse[s]:

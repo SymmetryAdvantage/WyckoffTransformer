@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np, torch
 from omegaconf import OmegaConf
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
+from wyckoff_transformer.cli import single_channel_condition
 logging.basicConfig(level=logging.ERROR)
 RUN = Path(sys.argv[1]); DATA = sys.argv[2]; COND = float(sys.argv[3]) if len(sys.argv) > 3 else None
 cfg = OmegaConf.load(RUN / "config.yaml")
@@ -35,8 +36,8 @@ start = sgtok.encode_spacegroups(sgs_rep, dtype=torch.float32, device="cpu") \
 B = len(sgs_rep)
 cond = None
 if tr.condition_feature is not None:
-    cd = getattr(model, "condition_dim", None) or 1
-    cond = tr.transform_condition(torch.full((B, cd), 0.0 if COND is None else COND))
+    cond = tr.transform_condition(
+        single_channel_condition(tr, 0.0 if COND is None else COND, B))
 legal = torch.zeros(B, n_ss, dtype=torch.bool)
 for r, s in enumerate(sgs_rep):
     for ss in lfse[s]:

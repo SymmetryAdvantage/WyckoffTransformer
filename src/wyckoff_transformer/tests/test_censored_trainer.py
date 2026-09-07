@@ -20,7 +20,7 @@ PAD, STOP, MASK = 5, 6, 7
 SEQUENCE_LENGTH = 4
 
 
-def _model(outputs):
+def _model(outputs, condition_dim=None):
     return CascadeTransformer(
         # An embedded integer start token, standing in for the space group.
         start_type="categorial",
@@ -40,7 +40,8 @@ def _model(outputs):
         TransformerEncoderLayer_args={"nhead": 2, "dim_feedforward": 16, "dropout": 0.0},
         TransformerEncoder_args={"num_layers": 1, "enable_nested_tensor": False},
         learned_positional_encoding_max_size=0,
-        learned_positional_encoding_only_masked=True)
+        learned_positional_encoding_only_masked=True,
+        condition_dim=condition_dim)
 
 
 def _dataset(genes, energies):
@@ -131,6 +132,41 @@ class TestScalarPathAcceptsTheCensoredLoss(unittest.TestCase):
                             dataset.padding_mask, None)
         self.assertEqual(raw.shape, (3, 2))
         self.assertTrue(torch.allclose(mean, raw[:, 0], atol=1e-5))
+
+    def test_predict_scalars_accepts_physical_condition_values(self):
+        """The zero-force inference path reaches a condition-aware scalar head."""
+        torch.manual_seed(0)
+        dataset = _dataset([(0, 1), (1, 2), (2, 0)], [1.0, 2.0, 3.0])
+        trainer = _trainer(_model(1, condition_dim=1), dataset, "mse")
+        trainer.condition_feature = "max_force"
+        trainer.condition_transform = None
+        data = {"field": dataset.data["field"], "spacegroup": dataset.start_tokens}
+
+        prediction, samples = trainer.predict_scalars(
+            data,
+            cond=torch.zeros(3, 1),
+        )
+
+        self.assertEqual(prediction.shape, (3,))
+        self.assertEqual(samples.shape, (1, 3))
+        with self.assertRaisesRegex(ValueError, "2 rows"):
+            trainer.predict_scalars(data, cond=torch.zeros(2, 1))
+
+    def test_conditioned_prediction_does_not_need_the_training_dataset(self):
+        """A saved critic can screen genes without loading its multi-million-row cache."""
+        torch.manual_seed(0)
+        dataset = _dataset([(0, 1), (1, 2)], [1.0, 2.0])
+        trainer = _trainer(_model(1, condition_dim=1), dataset, "mse")
+        trainer.condition_feature = "max_force"
+        trainer.condition_transform = None
+        trainer.train_dataset = None
+
+        prediction, _ = trainer.predict_scalars(
+            {"field": dataset.data["field"], "spacegroup": dataset.start_tokens},
+            cond=torch.zeros(2, 1),
+        )
+
+        self.assertEqual(prediction.shape, (2,))
 
 
 class TestEndToEndRecoversTheFloor(unittest.TestCase):

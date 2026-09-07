@@ -1097,13 +1097,12 @@ def rank_by_predicted_minimum(
     combinatorics: SpaceGroupCombinatorics,
     augmentation_samples: int = 1,
 ) -> List[CSPCandidate]:
-    """Order candidates by a censored regressor's estimate of ``min(E | gene)``.
+    """Order candidates by a gene-energy regressor's attainable-energy estimate.
 
-    This is the selection step of CSP mode.  The regressor must have been fitted
-    with ``scalar_loss="censored"``: an MSE-fitted one predicts ``E[E | gene]``,
-    which ranks genes by the average structure on their manifold rather than by
-    the best, and so systematically prefers genes with little positional freedom
-    -- exactly the ones whose average and best coincide.
+    This is the selection step of CSP mode. A censored regressor estimates the
+    minimum directly. The simpler MSE critic is also valid when it was trained
+    on ``gene_min_formation_energy_per_atom``: all rows sharing a gene then
+    carry its observed minimum rather than their own structural energy.
 
     Returns a new list, lowest predicted energy first, with `predicted_energy`
     filled in.  The input order (model likelihood) is not consulted; blend the
@@ -1113,8 +1112,8 @@ def rank_by_predicted_minimum(
         return []
     if getattr(trainer, "scalar_loss", "mse") != "censored":
         logger.warning(
-            "Ranking with a %s regressor: it estimates the mean energy of the gene's "
-            "structures, not the minimum, which biases selection towards low-dof genes.",
+            "Ranking with a %s regressor. Its target must be an observed per-gene minimum, "
+            "not a raw per-structure energy, to estimate attainable energy.",
             getattr(trainer, "scalar_loss", "mse"))
     include_stop = True
     if trainer.tokeniser_config is not None:
@@ -1125,7 +1124,18 @@ def rank_by_predicted_minimum(
         augmented_fields=trainer.augmented_fields, include_stop=include_stop,
         sequence_length=trainer.max_sequence_length, device=trainer.device)
     data[trainer.start_name] = data.pop("start")
-    predictions, _ = trainer.predict_scalars(data, augmentation_samples=augmentation_samples)
+    from wyckoff_transformer.gene_energy import build_clean_relaxation_condition  # noqa: PLC0415
+
+    cond = build_clean_relaxation_condition(
+        trainer,
+        len(candidates),
+        device=trainer.device,
+    )
+    predictions, _ = trainer.predict_scalars(
+        data,
+        augmentation_samples=augmentation_samples,
+        cond=cond,
+    )
     ranked = []
     for candidate, energy in zip(candidates, predictions.reshape(-1).tolist()):
         ranked.append(CSPCandidate(

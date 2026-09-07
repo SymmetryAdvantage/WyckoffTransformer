@@ -21,12 +21,13 @@ import logging
 import time
 from collections import Counter
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import torch
 from omegaconf import OmegaConf
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.cli import resolve_condition_values
 from wyckoff_transformer.composition import composition_vector, describe
 from wyckoff_transformer.csp import (
     CompositionRatio,
@@ -110,11 +111,11 @@ def build_condition_vector(
     alone and one vector serves every cell size.
     """
     parts = []
-    if backbone.condition_feature is not None:
+    if backbone.condition_features:
         if scalar_cond is None:
             raise ValueError(
-                f"The backbone is conditioned on {backbone.condition_feature!r}; "
-                "pass --condition-value.")
+                f"The backbone is conditioned on {list(backbone.condition_features)}; "
+                "pass --condition NAME=VALUE for each.")
         parts.append(scalar_cond)
     if backbone.composition_conditioning:
         counts = ratio.counts_at(z if z is not None else 1)
@@ -163,7 +164,7 @@ def run_csp(
     strategy: str,
     beam_width: Optional[int],
     temperature: float,
-    condition_value: Optional[float],
+    condition_values: Optional[Dict[str, float]],
     device: torch.device,
     seed: Optional[int] = None,
     deduplicate: bool = True,
@@ -193,9 +194,9 @@ def run_csp(
         device=device)
 
     scalar_cond = None
-    if condition_value is not None:
+    if condition_values is not None:
         scalar_cond = backbone.transform_condition(
-            torch.full((1, 1), condition_value, dtype=torch.float32, device=device))
+            backbone.build_condition_from_values(condition_values, 1, device=device))
 
     ratio = CompositionRatio.for_formula(formula, backbone.tokenisers["elements"])
     generator = torch.Generator(device="cpu").manual_seed(seed) if seed is not None else None
@@ -272,10 +273,9 @@ def main():
     regressor_source = parser.add_mutually_exclusive_group()
     regressor_source.add_argument(
         "--regressor-path", type=Path,
-        help="Directory of the energy regressor. Train it with scalar_loss=censored "
-             "(yamls/models/base_sg_energy_censored.yaml): an MSE regressor predicts the "
-             "mean energy of a gene's structures, not the minimum, and ranking by it "
-             "favours genes with little positional freedom.")
+        help="Directory of the energy regressor. A censored regressor estimates the "
+             "minimum directly; the initial MSE critic must use "
+             "gene_min_formation_energy_per_atom as its target.")
     regressor_source.add_argument("--regressor-wandb-run", type=str,
                                   help="W&B run holding the energy regressor.")
 
@@ -303,10 +303,12 @@ def main():
     parser.add_argument("--beam-width", type=int, default=None,
                         help="Paths kept per cascade field under --strategy beam.")
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--condition", action="append", metavar="NAME=VALUE", default=None,
+                        help="Conditioning value for one channel of a conditional backbone, "
+                             "e.g. --condition delta_e_polymorph=0. Repeat once per feature.")
     parser.add_argument("--condition-value", type=float, default=None,
-                        help="Conditioning value for a conditional backbone: 0 for "
-                             "Delta_E_polymorph, or the formation energy that puts the "
-                             "composition on the hull.")
+                        help="Shorthand for --condition <the one feature>=VALUE. Refused for "
+                             "a backbone with more than one conditioning feature.")
     parser.add_argument("--keep-duplicates", action="store_true",
                         help="Keep repeated genes. By default identical genes are collapsed, "
                              "since a repeat costs a relaxation and buys no structure.")
@@ -326,10 +328,15 @@ def main():
         device=args.device, model_path=args.model_path, wandb_run=args.wandb_run,
         hf_model=args.hf_model, wandb_entity=args.wandb_entity,
         wandb_project=args.wandb_project)
-    if args.condition_value is None and backbone.condition_feature is not None:
+    try:
+        condition_values = resolve_condition_values(
+            backbone, args.condition, args.condition_value)
+    except ValueError as error:
+        parser.error(str(error))
+    if condition_values is None and backbone.condition_features:
         parser.error(
-            f"The backbone is conditioned on {backbone.condition_feature!r}; pass "
-            "--condition-value (0 for Delta_E_polymorph).")
+            f"The backbone is conditioned on {list(backbone.condition_features)}; pass "
+            "--condition NAME=VALUE for each (0 for delta_e_polymorph).")
     if backbone.composition_conditioning:
         print("--- Backbone is conditioned on the composition; the formula is an input, "
               "not only a decoding constraint ---")
@@ -346,7 +353,9 @@ def main():
             device=args.device, model_path=args.regressor_path,
             wandb_run=args.regressor_wandb_run, wandb_entity=args.wandb_entity,
             wandb_project=args.wandb_project)
-        if getattr(regressor, "scalar_loss", "mse") != "censored":
+        if (getattr(regressor, "scalar_loss", "mse") != "censored"
+                and getattr(regressor, "target_name", None)
+                != "gene_min_formation_energy_per_atom"):
             logger.warning(
                 "The regressor was fitted with scalar_loss=%r, so it estimates the mean "
                 "energy of each gene's structures rather than the minimum. Ranking will "
@@ -359,7 +368,7 @@ def main():
         backbone=backbone, regressor=regressor, formula=args.formula, z_values=args.z,
         space_groups=candidate_space_groups(backbone, args.space_groups), max_z=args.max_z,
         n_candidates=args.n_candidates, strategy=args.strategy, beam_width=args.beam_width,
-        temperature=args.temperature, condition_value=args.condition_value,
+        temperature=args.temperature, condition_values=condition_values,
         device=args.device, seed=args.seed, deduplicate=not args.keep_duplicates)
     if args.top is not None:
         structures = structures[:args.top]

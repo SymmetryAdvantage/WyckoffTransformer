@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np, torch
 from omegaconf import OmegaConf
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
+from wyckoff_transformer.cli import single_channel_condition
 from wyckoff_transformer.generator import WyckoffGenerator
 logging.basicConfig(level=logging.ERROR)
 torch.manual_seed(0)
@@ -16,8 +17,8 @@ load_model_weights(tr.model, RUN / "best_model_params.pt", torch.device("cpu"))
 start = tr._sample_start_tokens_from_distribution(N)
 cond = None
 if tr.condition_feature is not None:
-    cd = getattr(tr.model, "condition_dim", None) or 1
-    cond = tr.transform_condition(torch.full((N, cd), 0.0 if COND is None else COND))
+    cond = tr.transform_condition(
+        single_channel_condition(tr, 0.0 if COND is None else COND, N))
 g = WyckoffGenerator(tr.model, tr.cascade_order, tr.cascade_is_target, tr.token_engineers,
                      tr.masks_dict, tr.max_sequence_length)
 T = g.generate_tensors(start, cond=cond)

@@ -49,6 +49,7 @@ wyformer-cryspr   = "wyckoff_transformer.cli.relax:main"
 wyformer-protocol = "wyckoff_transformer.cli.protocol:main"
 wyformer-csp      = "wyckoff_transformer.cli.csp:main"
 wyformer-screen   = "wyckoff_transformer.cli.screen:main"
+wyformer-gene-screen = "wyckoff_transformer.cli.gene_screen:main"
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]

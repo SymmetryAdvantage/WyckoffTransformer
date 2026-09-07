@@ -4,7 +4,7 @@ from collections import Counter
 from functools import partial
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 import logging
 import warnings
 
@@ -107,16 +107,32 @@ def structure_to_sites(
     tol: float = 0.1,
     a_tol: float = 5.0,
     max_wp: Optional[int] = None,
+    sort_by_letter: Optional[bool] = None,
 ) -> dict:
-    """Convert a structure to a symmetry-site record."""
+    """Convert a structure to a symmetry-site record.
+
+    `max_wp` truncates to that many sites, which silently changes the composition; it is
+    a way of bounding sequence length, not of rejecting a structure. Truncating has only
+    ever been done after sorting by Wyckoff letter, so that the sites kept are the
+    high-symmetry ones rather than whichever order pyxtal happened to return.
+
+    `sort_by_letter` separates that ordering from the truncation, and defaults to
+    whatever `max_wp` implies so existing callers are unaffected. Sorting without
+    truncating is what reproduces the site order of the caches already on disk -- which
+    matters when records from one of them are copied into another instead of recomputed.
+    """
     pyxtal_structure = kick_pyxtal_until_it_works(structure, tol=tol, a_tol=a_tol)
     if len(pyxtal_structure.atom_sites) == 0:
         raise ValueError("pyxtal failed to convert the structure to symmetry sites.")
 
-    if max_wp is None:
-        atom_sites = pyxtal_structure.atom_sites
+    if sort_by_letter is None:
+        sort_by_letter = max_wp is not None
+    if sort_by_letter:
+        atom_sites = sorted(pyxtal_structure.atom_sites, key=lambda x: x.wp.letter)
     else:
-        atom_sites = sorted(pyxtal_structure.atom_sites, key=lambda x: x.wp.letter)[:max_wp]
+        atom_sites = list(pyxtal_structure.atom_sites)
+    if max_wp is not None:
+        atom_sites = atom_sites[:max_wp]
     elements = []
     wyckoffs = []
     site_symmetries = []
@@ -217,14 +233,36 @@ def get_composition(structure: Structure) -> dict[Element, float]:
     return {Element(k): v for k, v in str_dict.items()}
 
 
+#: Scalar columns carried from a source CSV into the cache without being asked for. These
+#: predate `scalar_columns` and stay for the datasets already built on them; anything new
+#: should be named explicitly instead of added here.
+LEGACY_SCALAR_COLUMNS = (
+    "formation_energy_per_atom",
+    "energy_above_hull",
+    "band_gap",
+    "log_klat",
+    "klat",
+)
+
+
 def compute_symmetry_sites(
     datasets_pd: dict[str, pd.DataFrame],
     n_jobs: Optional[int] = None,
     symmetry_precision: float = 0.1,
     symmetry_a_tol: float = 5.0,
     max_wp: Optional[int] = None,
+    scalar_columns: Optional[Sequence[str]] = None,
+    sort_by_letter: Optional[bool] = None,
 ) -> dict[str, pd.DataFrame]:
-    """Compute symmetry-site records for one or more structure datasets."""
+    """Compute symmetry-site records for one or more structure datasets.
+
+    `scalar_columns` names per-structure scalars to carry through to the cache alongside
+    the symmetry records -- conditioning labels, mostly. They are copied verbatim, so a
+    column must already hold what the model should see. Unlike LEGACY_SCALAR_COLUMNS,
+    which are copied when present and skipped when not, a column named here and missing
+    is an error: it is the difference between "this dataset happens to have band gaps"
+    and "this run is conditioned on max_force".
+    """
     wychoffs_enumerated_by_ss = load_wyckoff_mappings().enum_from_ss_letter
 
     structure_to_sites_with_args = partial(
@@ -234,6 +272,7 @@ def compute_symmetry_sites(
         tol=symmetry_precision,
         a_tol=symmetry_a_tol,
         max_wp=max_wp,
+        sort_by_letter=sort_by_letter,
     )
     result = {}
     for dataset_name, dataset in datasets_pd.items():
@@ -243,16 +282,15 @@ def compute_symmetry_sites(
         symmetry_dataset["composition"] = symmetry_dataset.apply(
             get_composition_from_symmetry_sites, axis=1
         )
-        if "formation_energy_per_atom" in dataset.columns:
-            symmetry_dataset["formation_energy_per_atom"] = dataset["formation_energy_per_atom"]
-        if "energy_above_hull" in dataset.columns:
-            symmetry_dataset["energy_above_hull"] = dataset["energy_above_hull"]
-        if "band_gap" in dataset.columns:
-            symmetry_dataset["band_gap"] = dataset["band_gap"]
-        if "log_klat" in dataset.columns:
-            symmetry_dataset["log_klat"] = dataset["log_klat"]
-        if "klat" in dataset.columns:
-            symmetry_dataset["klat"] = dataset["klat"]
+        for column in LEGACY_SCALAR_COLUMNS:
+            if column in dataset.columns:
+                symmetry_dataset[column] = dataset[column]
+        for column in scalar_columns or ():
+            if column not in dataset.columns:
+                raise KeyError(
+                    f"Split {dataset_name!r} has no column {column!r}; it holds "
+                    f"{sorted(dataset.columns)}")
+            symmetry_dataset[column] = dataset[column]
         result[dataset_name] = symmetry_dataset
     return result
 
@@ -263,6 +301,8 @@ def read_all_MP_csv(
     symmetry_precision: float = 0.1,
     symmetry_a_tol: float = 5.0,
     max_wp: Optional[int] = None,
+    scalar_columns: Optional[Sequence[str]] = None,
+    sort_by_letter: Optional[bool] = None,
 ) -> tuple[dict[str, pd.DataFrame], int]:
     """Read all split CSVs for a dataset and convert them to symmetry-site records."""
     datasets_pd = {}
@@ -279,5 +319,7 @@ def read_all_MP_csv(
         symmetry_precision=symmetry_precision,
         symmetry_a_tol=symmetry_a_tol,
         max_wp=max_wp,
+        scalar_columns=scalar_columns,
+        sort_by_letter=sort_by_letter,
     )
     return symmetry_datasets

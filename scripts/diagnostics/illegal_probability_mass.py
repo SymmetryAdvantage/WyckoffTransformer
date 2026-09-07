@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np, torch
 from omegaconf import OmegaConf
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
+from wyckoff_transformer.cli import single_channel_condition
 from wyckoff_transformer.tokenization import get_wp_index
 logging.basicConfig(level=logging.ERROR); torch.manual_seed(0)
 RUN = Path(sys.argv[1]); N = int(sys.argv[2]); COND = float(sys.argv[3]) if len(sys.argv) > 3 else None
@@ -30,8 +31,8 @@ else:
     _m = {tuple(r.tolist()): sg for r, sg in zip(_r, _s)}; sg_of = [_m[tuple(r.tolist())] for r in start.cpu()]
 cond = None
 if tr.condition_feature is not None:
-    cd = getattr(model, "condition_dim", None) or 1
-    cond = tr.transform_condition(torch.full((N, cd), 0.0 if COND is None else COND))
+    cond = tr.transform_condition(
+        single_channel_condition(tr, 0.0 if COND is None else COND, N))
 
 in_sg = torch.zeros(N, n_ss, dtype=torch.bool)      # site symmetry exists in this group
 enum_in_sg = [defaultdict(set) for _ in range(N)]   # (ss_id) -> legal enum ids

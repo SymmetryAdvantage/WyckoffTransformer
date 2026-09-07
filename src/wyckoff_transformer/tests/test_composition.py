@@ -151,12 +151,10 @@ class TestTrainerConditioningAssembly(unittest.TestCase):
     """`build_cond` is the single place the scalar and the composition are joined."""
 
     def _trainer(self, condition_feature, composition_conditioning):
-        from wyckoff_transformer.trainer import WyckoffTrainer, get_condition_transform
+        from wyckoff_transformer.trainer import WyckoffTrainer
         trainer = WyckoffTrainer.__new__(WyckoffTrainer)
         trainer.condition_feature = condition_feature
         trainer.condition_transform = "log1p" if condition_feature else None
-        trainer._condition_transform_fn = get_condition_transform(
-            "log1p" if condition_feature else None)
         trainer.composition_conditioning = composition_conditioning
         trainer.n_elements = N_ELEMENTS
         return trainer
