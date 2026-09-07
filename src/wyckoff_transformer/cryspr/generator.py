@@ -47,6 +47,35 @@ _DEFAULT_IADM = Tol_matrix(prototype="atomic", factor=1.3)
 # (verified to sit comfortably below this floor).
 _CLASH_IADM = Tol_matrix(prototype="atomic", factor=1.1)
 
+#: Top-level package of the MACE ASE calculators, used to recognise a MACE
+#: calculator without importing MACE (an optional dependency, and the backend
+#: environments are mutually exclusive -- see
+#: :mod:`wyckoff_transformer.cryspr.mlips`).
+_MACE_PACKAGE = "mace"
+
+
+def is_mace_calculator(calculator: Calculator) -> bool:
+    """Return ``True`` if *calculator* is backed by MACE.
+
+    Matched on the calculator's class hierarchy rather than on a model name,
+    which is a free-form label, and rather than by importing MACE, which need
+    not be installed in the environment running a different backend.  The MRO
+    is walked because :func:`~wyckoff_transformer.cryspr.calculator.build_mace_calculator`
+    hands back a local subclass of ``MACECalculator``, so the concrete class is
+    defined in this project, not in MACE.
+
+    Args:
+        calculator: The ASE calculator used for relaxation.
+
+    Returns:
+        ``True`` if any class in the MRO comes from the ``mace`` package.
+    """
+    for klass in type(calculator).__mro__:
+        module = getattr(klass, "__module__", "") or ""
+        if module == _MACE_PACKAGE or module.startswith(_MACE_PACKAGE + "."):
+            return True
+    return False
+
 
 def has_atomic_clash(atoms: Atoms, iadm: Tol_matrix = _CLASH_IADM) -> bool:
     """Return ``True`` if any pair of atoms is closer than the tolerance.
@@ -61,6 +90,10 @@ def has_atomic_clash(atoms: Atoms, iadm: Tol_matrix = _CLASH_IADM) -> bool:
     permissive than the generation tolerance (:data:`_DEFAULT_IADM`, factor 1.3)
     so that real structures whose contacts graze the generation floor are not
     falsely discarded.
+
+    The collapse this guards against is a MACE pathology, so :func:`func_run`
+    engages the guard only for MACE calculators; this function itself is
+    potential-agnostic and can be called on any structure.
 
     Args:
         atoms: Structure to check.
@@ -156,6 +189,7 @@ def func_run(
         rattle_stdev: float = RATTLE_STDEV,
         strain_stdev: float = RATTLE_STRAIN_STDEV,
         rattle_accept: float = RATTLE_ACCEPT_EV_PER_ATOM,
+        clash_guard: Optional[bool] = None,
         fmax: float = 0.01,
         optimizer: type[Optimizer] = BFGS,
 ) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float], Optional[str]]:
@@ -181,6 +215,10 @@ def func_run(
         rattle_stdev: Per-atom displacement of the perturbation, Å.
         strain_stdev: Cell strain of the perturbation, dimensionless.
         rattle_accept: Energy the rattle must win to be kept, eV/atom.
+        clash_guard: Discard a relaxed trial whose atoms have collapsed into
+            each other (:func:`has_atomic_clash`).  ``None``, the default,
+            engages the guard for MACE calculators only, which is where the
+            collapse comes from; ``True`` or ``False`` forces it either way.
         fmax: Force convergence criterion in eV/Å.
         optimizer: ASE local optimisation algorithm class.
 
@@ -193,6 +231,17 @@ def func_run(
     output_dir = Path(output_dir)
     gene_dir = output_dir / str(id_gene)
     gene_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolved once: the calculator is shared across trials, and an unguarded
+    # run should say so in the log rather than be inferred from its absence.
+    if clash_guard is None:
+        clash_guard = is_mace_calculator(calculator)
+        logger.debug(
+            "[%s-%s] Clash guard %s (auto: calculator %s MACE-backed)",
+            model_name, id_gene,
+            "on" if clash_guard else "off",
+            "is" if clash_guard else "is not",
+        )
 
     atoms_by_trial: dict[str, Atoms] = {}
     energy_by_trial: dict[str, float] = {}
@@ -228,7 +277,7 @@ def func_run(
                 logfile_postfix="relax",
             )
             energy = atoms_relaxed.get_potential_energy()
-            if has_atomic_clash(atoms_relaxed):
+            if clash_guard and has_atomic_clash(atoms_relaxed):
                 logger.warning(
                     "[%s-%s %s] Relaxed structure has atomic clashes "
                     "(E = %.5f eV); discarding as unphysical.",
