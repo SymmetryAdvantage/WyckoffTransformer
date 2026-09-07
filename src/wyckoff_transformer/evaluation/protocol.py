@@ -3,7 +3,7 @@
 The cascade is::
 
     sampled -> valid gene -> unique gene (keep counts)
-            -> PyXtal + 1 trial x 2-stage CrySPR
+            -> PyXtal + 1-3 trials x 4-stage CrySPR (2 symmetric, free, rattle)
             -> valid structure -> unique structure -> novel structure
             -> e_hull <= 0.1 -> e_hull <= 0
 
@@ -15,9 +15,14 @@ structures -- so the gene screen produces *candidates* for the matcher rather
 than a decision, and a gene already present in LeMat-Bulk can still relax into
 a novel structure.
 
-What keeps this cheap is the relaxation budget: one PyXtal trial and two
-relaxation stages rather than three trials and three stages -- 4.5x less work
-per gene for about 30% more genes at equal statistical power.
+What keeps this cheap is the relaxation budget.  Trials are allotted by the
+gene's positional degrees of freedom -- one where PyXtal has no free coordinate
+to draw and a second trial provably cannot help, up to three where the draw has
+room to miss -- and the stages are the two symmetry-constrained ones, an
+unconstrained one, and the rattle, which is the only stage that can leave the
+symmetric stationary point the others converge to.  See
+:data:`DEFAULT_TRIAL_SCHEDULE` and
+:func:`~wyckoff_transformer.cryspr.relaxer.stepwise_relax`.
 
 Uniqueness is applied by *deduplicating* genes but *keeping their counts*, so
 every rate stays per sampled gene.  A duplicate belongs once in the numerator
@@ -64,6 +69,30 @@ DEFAULT_REFERENCE_SPLITS = ("train", "val", "test")
 #: threshold LeMat-GenBench uses for MetaSUN; 0 is SUN.
 METASTABLE_THRESHOLD = 0.1
 STABLE_THRESHOLD = 0.0
+
+#: PyXtal trials per gene, as ``<inclusive upper bound on positional DoF>:<trials>``
+#: pairs with ``*`` for the last bin.
+#:
+#: Trials are worth what the random draw of the free coordinates costs, so the
+#: budget belongs where those coordinates are.  ``p(e_hull <= 0.1)`` at 1, 2 and
+#: 3 trials, over the 2423 genes of run ``upi73i4k`` with all three trials
+#: surviving, paired per gene against the ORB ``e_above_hull`` of the same run::
+#:
+#:     positional DoF  share   1 trial  2 trials  3 trials
+#:     0               0.202     0.410     0.410     0.410
+#:     1-2             0.226     0.305     0.365     0.381
+#:     3-5             0.283     0.215     0.336     0.374
+#:     6-10            0.178     0.144     0.260     0.305
+#:     >10             0.111     0.126     0.215     0.256
+#:
+#: At zero positional DoF a second trial changes *nothing* -- the only freedom
+#: left is the cell, which stages 1 and 2 relax anyway, and 97.6% of those genes
+#: have every trial agree to within 1 meV/atom.  One trial for a fifth of the
+#: cohort is therefore free of consequence, and the trials it saves pay for the
+#: extra trials above it.  Beyond 2 DoF a third trial still earns 3.8-4.4 points,
+#: so the default takes it: 2.37 trials per gene reach 99% of a flat three-trial
+#: budget's p at 0.8x its cost.
+DEFAULT_TRIAL_SCHEDULE = "0:1,2:2,*:3"
 
 
 @dataclass
@@ -213,6 +242,102 @@ def load_reference_fingerprints(
     return fingerprints
 
 
+def parse_trial_schedule(spec: str) -> tuple[tuple[float, int], ...]:
+    """Parse a trial schedule into ``(dof_upper_bound, trials)`` pairs.
+
+    Args:
+        spec: Comma-separated ``dof:trials`` pairs, ordered by increasing DoF,
+            e.g. ``"0:1,2:2,*:3"``.  Each bound is inclusive, and ``*`` (or
+            ``inf``) stands for everything above the previous one.  A bare
+            integer is accepted as a constant schedule.
+
+    Returns:
+        The pairs, with the last bound as ``inf``.
+
+    Raises:
+        ValueError: If the spec is malformed, unordered, or does not end in a
+            bin that catches every remaining DoF.
+    """
+    spec = str(spec).strip()
+    if not spec:
+        raise ValueError("empty trial schedule")
+    if spec.isdigit():  # "3" means three trials for every gene
+        return ((float("inf"), _positive_trials(spec)),)
+
+    pairs: list[tuple[float, int]] = []
+    for part in spec.split(","):
+        bound, separator, trials = part.partition(":")
+        if not separator:
+            raise ValueError(f"{part!r} is not a 'dof:trials' pair")
+        bound = bound.strip()
+        limit = (
+            float("inf") if bound in ("*", "inf")
+            else float(int(bound))  # reject 2.5 as a DoF bound
+        )
+        pairs.append((limit, _positive_trials(trials)))
+
+    bounds = [limit for limit, _ in pairs]
+    if bounds != sorted(bounds) or len(set(bounds)) != len(bounds):
+        raise ValueError(f"trial schedule {spec!r} is not in increasing DoF order")
+    if bounds[-1] != float("inf"):
+        raise ValueError(
+            f"trial schedule {spec!r} does not end in a '*' bin, so genes with "
+            f"more than {bounds[-1]:.0f} positional DoF would get no trials"
+        )
+    return tuple(pairs)
+
+
+def _positive_trials(value: str) -> int:
+    trials = int(value)
+    if trials < 1:
+        raise ValueError(f"a gene needs at least one trial, got {trials}")
+    return trials
+
+
+def trials_for_dof(dof: int, schedule: Sequence[tuple[float, int]]) -> int:
+    """Trials the *schedule* allots to a gene with *dof* positional DoF."""
+    for limit, trials in schedule:
+        if dof <= limit:
+            return trials
+    raise ValueError(f"schedule {schedule} has no bin for {dof} DoF")
+
+
+def positional_dof(gene: dict) -> int:
+    """Free continuous coordinates PyXtal has to draw for this gene.
+
+    The sum over the gene's Wyckoff orbits of each orbit's degrees of freedom:
+    the size of the space a trial samples from, and therefore what decides how
+    much a second trial is worth.  Lattice parameters are deliberately excluded
+    -- the fix-cell warm-up and the cell relaxation that follows it recover
+    those regardless of where the draw started, which is why genes with zero
+    positional DoF but a free cell show no trial-to-trial spread at all.
+
+    Args:
+        gene: A PyXtal-notation gene; ``group`` and ``sites`` are read.
+
+    Returns:
+        The number of free internal coordinates.
+
+    Raises:
+        Exception: Whatever PyXtal raises for an illegal (group, letter) pair.
+    """
+    from pyxtal.symmetry import Group
+
+    number = int(gene["group"])
+    group = _GROUPS.get(number)
+    if group is None:
+        group = _GROUPS[number] = Group(number)
+    return sum(
+        int(group[str(site)[-1]].get_dof())
+        for species_sites in gene["sites"]
+        for site in species_sites
+    )
+
+
+#: PyXtal ``Group`` objects are expensive to build and immutable once built.
+_GROUPS: dict[int, object] = {}
+
+
 class GeneFingerprinter:
     """Converts PyXtal-notation genes to augmented Wyckoff fingerprints.
 
@@ -355,11 +480,16 @@ def funnel(
         # also survived uniqueness and novelty.
         result["metasun_per_sampled_gene"] = result["metastable_per_sampled_gene"]
         result["sun_per_sampled_gene"] = result["stable_per_sampled_gene"]
+        # A structure the hull cannot reach -- a composition whose subspace is
+        # empty, or a phase diagram that will not build -- fails both
+        # thresholds, which is the conservative answer but not a visible one.
+        result["no_hull_energy"] = int((surviving & energies.isna()).sum())
     else:
         for key in (
             "metastable", "metastable_per_sampled_gene",
             "stable", "stable_per_sampled_gene",
             "metasun_per_sampled_gene", "sun_per_sampled_gene",
+            "no_hull_energy",
         ):
             result[key] = None
 

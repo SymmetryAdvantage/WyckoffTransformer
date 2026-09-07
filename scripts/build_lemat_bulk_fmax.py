@@ -30,7 +30,27 @@ Three conditioning labels come out, all per structure, all in physical units:
 ``max_force``
     eV/A, the largest force component on any atom. The convergence covariate: at
     generation time, asking for ``max_force = 0`` asks for the relaxed mode of the
-    distribution rather than its unconverged tail.
+    distribution rather than its unconverged tail. Note that *exactly* zero -- 27.4% of
+    Alexandria and 39.3% of OQMD rows -- carries no information about relaxation. Where
+    every site sits on a Wyckoff position with no free coordinate, the site symmetry
+    leaves no invariant vector, so the force vanishes identically at any geometry and
+    VASP's symmetrisation writes it out as 0.0 before a single ionic step has run. In a
+    sample of 150 such rows, 150 had zero free positional parameters, against 0 of 150
+    rows above 5 meV/A; 96% of them still report a stress above 1 kB, so what they do
+    not report is any statement about the cell. Conditioning at 0 selects structures
+    whose Wyckoff positions are fully determined, not structures that relaxed well.
+
+``max_force_missing``
+    1.0 where the archive reports no forces at all, 0.0 elsewhere. 30,679 rows -- 22.1%
+    of Materials Project, and nothing from Alexandria or OQMD -- carry an empty ``forces``
+    array (and an empty ``stress_tensor``), because the MP task chosen to represent the
+    bulk material did not report them. A ``max_force <= X`` filter drops those rows for
+    any X, since NaN fails every comparison: the same accidental provenance filter as the
+    0.02 cut, one layer down, and it survived loosening the cut to 1. They are kept here,
+    with ``max_force`` imputed as the median over the rows of *their own source database*
+    that do have forces (0.0417 for MP, against 0.0034 for Alexandria) and the indicator
+    saying the value is imputed. Imputing zero instead would have filed them under the
+    symmetry-locked mode above, which is precisely what they are not known to be.
 
 ``formation_energy_per_atom``
     The PBE formation energy from the same phase-diagram calculation that supplies
@@ -87,8 +107,22 @@ OUTPUT_COLUMNS = [
     "energy_above_hull",
     "delta_e_polymorph",
     "max_force",
+    "max_force_missing",
     "formation_energy_per_atom",
 ]
+
+
+def _source(ids: pd.Series) -> pd.Series:
+    """Source database of each row, read off the ``immutable_id`` prefix.
+
+    The three archives converged their relaxations to different criteria, so "how
+    converged is a row that reports no forces" has a different answer in each.
+    """
+    text = ids.astype(str)
+    return pd.Series(
+        np.where(text.str.startswith("mp-"), "mp",
+                 np.where(text.str.startswith("agm"), "alexandria", "oqmd")),
+        index=ids.index)
 
 
 def build_labels(structure_csv: Path, energy_csv: Path, out: Path) -> pd.DataFrame:
@@ -116,11 +150,15 @@ def build_labels(structure_csv: Path, energy_csv: Path, out: Path) -> pd.DataFra
 
 
 def label_rows(labels: pd.DataFrame, max_force: float) -> pd.DataFrame:
-    """Filter to the trainable rows and attach the three conditioning labels."""
+    """Filter to the trainable rows and attach the conditioning labels."""
     kept = labels
     logger.info("rows                      : %9d", len(kept))
-    kept = kept[kept["max_force"] <= max_force]
+    # NaN fails every comparison, so `max_force <= X` would silently take the rows with
+    # no forces reported out with the unconverged ones. They are a different thing and
+    # are kept, flagged by `max_force_missing`.
+    kept = kept[kept["max_force"].isna() | (kept["max_force"] <= max_force)]
     logger.info("max_force <= %-12g: %9d", max_force, len(kept))
+    logger.info("  of which force is absent: %9d", int(kept["max_force"].isna().sum()))
     kept = kept[kept["e_hull"].notna()]
     logger.info("  & e_hull is not NaN     : %9d", len(kept))
     kept = kept[kept["e_form"].abs() <= MAX_ABS_E_FORM]
@@ -135,6 +173,14 @@ def label_rows(labels: pd.DataFrame, max_force: float) -> pd.DataFrame:
     # get_e_above_hull is non-negative by construction; the clip is against float noise,
     # not against the physics. log1p rejects the -2.7e-15 row otherwise.
     kept["energy_above_hull"] = kept["e_hull"].clip(lower=0.0)
+    kept["max_force_missing"] = kept["max_force"].isna().astype(float)
+    # Per source, because the archives differ by an order of magnitude in residual force
+    # and every row missing forces is from Materials Project, the loosest of the three.
+    # `median` skips NaN; a source with no measured row at all falls back to the global
+    # median, which cannot happen with the current archive but costs one call to rule out.
+    by_source = kept.groupby(_source(kept["immutable_id"]), sort=False)["max_force"]
+    kept["max_force"] = kept["max_force"].fillna(by_source.transform("median")).fillna(
+        kept["max_force"].median())
     # ``e_form`` is the formation energy per atom against the same elemental
     # references that define ``e_hull``. Preserve it so cache construction can
     # assign every equivalent Wyckoff gene its observed minimum.
@@ -240,6 +286,7 @@ def main():
                     "energy_above_hull",
                     "delta_e_polymorph",
                     "max_force",
+                    "max_force_missing",
                     "formation_energy_per_atom",
                 ]
             ])

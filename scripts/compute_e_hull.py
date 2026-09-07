@@ -6,6 +6,17 @@ Calculates formation energy and energy above the convex hull (E-hull) for a list
 of materials using pymatgen.
 
 Optimized with a global dictionary and PhaseDiagram caching for O(1) lookups.
+
+This is definition (1) of `docs/e_hull_definitions.md`: PBE `energy_corrected`
+against the archive's own phase diagrams, producing `e_form` (formation energy
+per atom) and `e_hull` (distance above the hull, non-negative -- `get_e_above_hull`
+raises for an entry below the hull and the `except` below turns that into NaN).
+It is the source of every training label, and it is *not* comparable with the
+MLIP hull energies the de novo protocol reports.
+
+The element exclusions in `get_ef_ehull` cost 589,250 of the archive's 5,335,299
+rows their labels; the breakdown by clause, and what the reference hull actually
+supports, are in that document.
 """
 
 import argparse

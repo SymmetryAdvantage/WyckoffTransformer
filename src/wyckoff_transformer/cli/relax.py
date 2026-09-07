@@ -44,6 +44,7 @@ def _worker(
     model_name: str,
     n_trials: int,
     fmax: float,
+    rattle: bool,
 ) -> dict:
     """Build a per-process calculator and run func_run; returns a result dict."""
     # Belt-and-suspenders: env vars are already inherited from the parent (spawn),
@@ -66,6 +67,7 @@ def _worker(
         model_name=model_name,
         n_trials=n_trials,
         fmax=fmax,
+        rattle=rattle,
     )
     # Hand cached-but-unused GPU blocks back to the driver. Each worker is a
     # separate process, so memory one worker has cached is unavailable to its
@@ -191,6 +193,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--rattle",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Run the rattle stage after the relaxation: perturb positions and "
+            "cell, relax again unconstrained, and keep the result only if it "
+            "wins 1 meV/atom. It is the only stage that can leave a symmetric "
+            "stationary point, where the symmetry-breaking forces vanish "
+            "identically."
+        ),
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable DEBUG-level logging.",
@@ -254,6 +268,7 @@ def main() -> None:
                     model_name,
                     args.n_trials,
                     args.fmax,
+                    args.rattle,
                 )
                 futures_to_id[fut] = i
 
@@ -309,6 +324,7 @@ def main() -> None:
                 model_name=model_name,
                 n_trials=args.n_trials,
                 fmax=args.fmax,
+                rattle=args.rattle,
             )
             results.append({
                 "model": model_name,
