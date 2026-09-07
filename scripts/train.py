@@ -32,6 +32,13 @@ def main():
                         help="Continue the W&B run with this id from the last checkpoint in its "
                              "run directory, instead of starting a new one. The config given "
                              "must be the one that run started with.")
+    parser.add_argument("--reschedule", action="store_true",
+                        help="Allow a resumed run to change its learning-rate horizon: the "
+                             "epoch count and the scheduler's own settings may differ from the "
+                             "ones the run started with, and the run's config.yaml is rewritten "
+                             "to the new schedule. Every other config difference is still "
+                             "refused. Use it to land a run on a deadline -- bringing the decay "
+                             "forward -- not to change what is being trained.")
     parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
                         help="W&B entity to log under. Pinned by default so a run's home does not "
                              "depend on the shell's W&B configuration.")
@@ -96,9 +103,9 @@ def main():
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume))
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule)
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume))
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule)
 
 
 if __name__ == '__main__':

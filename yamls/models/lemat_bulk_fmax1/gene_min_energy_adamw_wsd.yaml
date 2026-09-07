@@ -26,9 +26,16 @@ model:
     condition_feature: max_force
     condition_transform: log1p
     condition_scale: 0.05
-    train_batch_size: 50000
-    val_batch_size: 50000
-    test_batch_size: 50000
+    # 50000 OOMs this model on an A100-40GB: the scalar head aggregates after the
+    # encoder, and the first forward asks for a (3, 63, 50000, 40) fp32 activation
+    # buffer on top of 38.3 GiB already held -- ~39.7 GiB against a 39.5 GiB card
+    # (job 16156893, 2026-09-07). The ehull configs run 50000 on the same hardware and
+    # the same sequence length, but they are NextToken heads with
+    # aggregate_after_encoder false, so their batch size does not carry over here.
+    # Memory is near-linear in the batch, so half of it peaks around 20-22 GiB.
+    train_batch_size: 25000
+    val_batch_size: 25000
+    test_batch_size: 25000
     compile_model: true
   CascadeTransformer_args:
     start_type: one_hot
@@ -64,13 +71,35 @@ optimisation:
     name: warmup_stable_decay
     config:
       warmup_fraction: 0.002
-      decay_fraction: 0.2
+      # 0.2130 of 2859 epochs puts the decay start at epoch 2250 -- see `epochs` below.
+      decay_fraction: 0.2130
       final_lr_fraction: 0.0
       decay_shape: 1-sqrt
   validation_period: 250
   early_stopping_patience_epochs: 1000000
   clip_grad_norm: 10.0
-  epochs: 20000
+  # PROOF OF CONCEPT HORIZON, set mid-run. This was launched at 20000 epochs, which measured
+  # out at 35.44 s/epoch (180 steps of batch 25000 over 4.51M genes) = 197 h, i.e. ten days of
+  # chained 24 h jobs. That is a schedule for a production critic, not for finding out whether
+  # this one works, so the horizon was cut to land the run one link after the first.
+  #
+  # The arithmetic, and why the two numbers are what they are:
+  #   * the first link gets 23.5 h of its 24 h wall, which is ~2385 epochs;
+  #   * checkpoint_period defaults to validation_period, 250, so the checkpoint the second
+  #     link resumes from is the one at epoch 2250, not wherever the timeout landed;
+  #   * decay_fraction 0.2130 x 2859 = 609 decay epochs, so the decay begins at exactly 2250 --
+  #     the second link starts decaying on its first step rather than finishing a stable phase;
+  #   * 609 epochs x 35.44 s = 6.0 h, so the run ends about six hours after the re-chain.
+  # The tolerance is one checkpoint period: if the first link gets past epoch 2500 the second
+  # is 3.5 h, if it falls short of 2250 it is 8.5 h.
+  #
+  # Changing the horizon of a run in flight is refused by default -- a resumed run carries its
+  # optimiser and schedule forward, and the schedule is laid out as fractions of a horizon that
+  # was fixed when the run started. `train.py --reschedule` is the deliberate exception: it
+  # permits `optimisation.epochs` and the scheduler's own settings to differ from the config
+  # the run started with, rewrites the run's config.yaml to match, and still refuses every
+  # other difference. The chain passes it through the job spec's TRAIN_EXTRA.
+  epochs: 2859
 tokeniser:
   name: lemat_bulk_fmax1_sg_multiplicity
 evaluation:

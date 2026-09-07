@@ -24,6 +24,9 @@ from wyckoff_transformer.schedules import warmup_stable_decay
 from wyckoff_transformer.trainer import (
     CHECKPOINT_FILENAME, CHECKPOINT_FORMAT_VERSION, WyckoffTrainer, atomic_torch_save,
     check_resume_config, train_from_config)
+# The module logs under logging.getLogger(__file__), so its name is a path rather than
+# "wyckoff_transformer.trainer"; assertLogs takes the object and spares the test the detail.
+from wyckoff_transformer.trainer import logger as trainer_logger
 
 MAX_SEQ = 6
 N_CLASSES = 8
@@ -63,7 +66,8 @@ def _make_dataset(batch_size):
 
 def _make_trainer(run_path: Path, epochs: int, resume: bool = False,
                   optimiser: str = "adamw", scheduled: bool = True,
-                  checkpoint_period: int = 1, validation_period: int = 1) -> WyckoffTrainer:
+                  checkpoint_period: int = 1, validation_period: int = 1,
+                  decay_fraction: float = 0.1, reschedule: bool = False) -> WyckoffTrainer:
     """A trainer whose whole state is small enough to compare exactly, seeded reproducibly.
 
     Seeding here rather than in the tests is what makes two separately built trainers start
@@ -101,7 +105,8 @@ def _make_trainer(run_path: Path, epochs: int, resume: bool = False,
         raise ValueError(optimiser)
     if scheduled:
         total_steps = epochs * trainer.train_loader.batches_per_epoch
-        trainer.scheduler = warmup_stable_decay(trainer.optimizer, total_steps=total_steps)
+        trainer.scheduler = warmup_stable_decay(
+            trainer.optimizer, total_steps=total_steps, decay_fraction=decay_fraction)
         trainer.scheduler_steps_per_batch = True
         trainer.scheduler_total_steps = total_steps
     else:
@@ -115,6 +120,7 @@ def _make_trainer(run_path: Path, epochs: int, resume: bool = False,
     trainer.production_training = False
     trainer.run_path = run_path
     trainer.resume = resume
+    trainer.reschedule = reschedule
     # Bypasses the dataset scan; the file it writes plays no part in resuming.
     trainer.start_token_distribution = {"start_name": "spacegroup", "start_type": "categorial",
                                         "max_sequence_length": MAX_SEQ, "counts": [1, 1, 1]}
@@ -464,6 +470,152 @@ class TestTrainFromConfigResumeBranch(_RunDirTestCase):
         with self.assertRaises(FileExistsError):
             self._call(resume=False)
 
+
+
+class TestRescheduleOntoANewHorizon(_RunDirTestCase):
+    """`--reschedule`: moving a running run's horizon on purpose.
+
+    The schedule is a pure function of (step, horizon), so handing a resumed run a new horizon
+    is well defined -- the weights, the optimiser moments and the step counter are still its
+    own, and only the curve the rate follows changes. That is what lands a run on a deadline:
+    cut the horizon and the decay, where the improvement is, starts at the resume instead of
+    days out. It is off by default, because the same machinery pointed at `lr` or
+    `train_batch_size` would silently produce a run that is neither the one on disk nor the
+    one on the command line.
+    """
+
+    PEAK_LR = 0.05          # _make_trainer's optimiser lr
+
+    def _crashed_run(self, epochs=8, completed=2) -> Path:
+        """A run of `epochs` that got `completed` epochs in and left a checkpoint."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=epochs)
+        _crash_after(trainer, completed)
+        with self.assertRaises(_Crash):
+            _run(trainer)
+        return run_path
+
+    def test_a_different_horizon_is_accepted_when_rescheduling(self):
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=4, resume=True, reschedule=True)
+        self.assertEqual(resumed.load_training_checkpoint()["epoch"], 2)
+
+    def test_a_different_horizon_is_still_refused_without_it(self):
+        """The default has to stay the refusal; this is the guard the opt-in is carved out of."""
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=4, resume=True)
+        with self.assertRaisesRegex(ValueError, "8-epoch run"):
+            resumed.load_training_checkpoint()
+
+    def test_the_rate_follows_the_new_horizon_from_the_step_it_resumes_at(self):
+        """The point of the whole thing: same step counter, new curve.
+
+        Two epochs into an 8-epoch run the rate is still at its peak and would stay there for
+        another five. Resumed onto a 4-epoch horizon whose decay covers the last three, the
+        same step is a third of the way down that decay, and the run anneals from there.
+        """
+        run_path = self._crashed_run(epochs=8, completed=2)
+
+        unchanged = _make_trainer(run_path, epochs=8, resume=True)
+        unchanged.load_training_checkpoint()
+        unchanged.scheduler.step()
+        self.assertAlmostEqual(unchanged.optimizer.param_groups[0]["lr"], self.PEAK_LR,
+                               msg="the original horizon should still be in its stable phase")
+
+        rescheduled = _make_trainer(run_path, epochs=4, resume=True, reschedule=True,
+                                    decay_fraction=0.75)
+        rescheduled.load_training_checkpoint()
+        batches = rescheduled.train_loader.batches_per_epoch
+        self.assertEqual(rescheduled.scheduler.last_epoch, 2 * batches,
+                         "the step counter is the run's own and must carry over untouched")
+        rescheduled.scheduler.step()
+        # The decay covers the last 3 of the 4 epochs, so the step after the resume sits
+        # (2*batches + 1 - batches) / (3*batches) of the way through it, decaying linearly.
+        expected = self.PEAK_LR * (1.0 - (2 * batches + 1 - batches) / (3 * batches))
+        self.assertAlmostEqual(rescheduled.optimizer.param_groups[0]["lr"], expected, places=6)
+        self.assertLess(rescheduled.optimizer.param_groups[0]["lr"], self.PEAK_LR)
+
+    def test_a_step_budget_that_moved_is_accepted_loudly(self):
+        """Rescheduling is not silent: the horizon it walked past goes into the log."""
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=8, resume=True, reschedule=True)
+        resumed.scheduler_total_steps += 1
+        with self.assertLogs(trainer_logger, level="WARNING") as logs:
+            resumed.load_training_checkpoint()
+        self.assertIn("RESCHEDULING", "\n".join(logs.output))
+
+
+class TestRescheduleConfigCheck(_RunDirTestCase):
+    BASE = {"dataset": "mp_20",
+            "model": {"WyckoffTrainer_args": {"train_batch_size": 100}},
+            "optimisation": {"optimiser": {"config": {"lr": 0.1}},
+                             "scheduler": {"config": {"decay_fraction": 0.2}},
+                             "epochs": 10}}
+
+    def _saved(self) -> Path:
+        path = self.tmp_path / "config.yaml"
+        OmegaConf.save(OmegaConf.create(self.BASE), path)
+        return path
+
+    def _changed(self, **overrides):
+        config = OmegaConf.create(OmegaConf.to_container(OmegaConf.create(self.BASE)))
+        for dotted, value in overrides.items():
+            OmegaConf.update(config, dotted.replace("__", "."), value)
+        return config
+
+    def test_the_horizon_and_the_schedule_shape_may_change(self):
+        changed = self._changed(optimisation__epochs=4,
+                                optimisation__scheduler__config__decay_fraction=0.75)
+        reported = check_resume_config(changed, self._saved(), reschedule=True)
+        self.assertEqual(len(reported), 2, reported)
+        self.assertTrue(any("optimisation.epochs" in line for line in reported))
+
+    def test_nothing_else_may(self):
+        """The keys that change what is being trained, rather than for how long."""
+        for dotted, value in (("optimisation__optimiser__config__lr", 0.2),
+                              ("model__WyckoffTrainer_args__train_batch_size", 50),
+                              ("dataset", "mp_20_something_else")):
+            with self.subTest(key=dotted):
+                with self.assertRaises(ValueError) as caught:
+                    check_resume_config(self._changed(**{dotted: value}),
+                                        self._saved(), reschedule=True)
+                self.assertIn(dotted.replace("__", "."), str(caught.exception))
+
+    def test_an_unchanged_config_reports_nothing_to_reschedule(self):
+        self.assertEqual(check_resume_config(OmegaConf.create(self.BASE),
+                                             self._saved(), reschedule=True), [])
+
+
+class TestRescheduleRewritesTheRunConfig(_RunDirTestCase):
+    """Whatever the run is actually on has to be what its own config.yaml says.
+
+    Otherwise the link after this one diffs against a horizon nothing is following any more,
+    and needs `--reschedule` to get past a change that already happened.
+    """
+
+    RUN_ID = "abcd1234"
+
+    def test_the_saved_config_becomes_the_new_schedule(self):
+        runs = self.tmp_path / "runs"
+        this_run = runs / self.RUN_ID
+        this_run.mkdir(parents=True)
+        (this_run / CHECKPOINT_FILENAME).touch()
+        saved = OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 8},
+                                  "model": {"WyckoffTrainer_args": {"target": "Scalar"}},
+                                  "evaluation": {"n_structures_to_generate": 0}})
+        OmegaConf.save(saved, this_run / "config.yaml")
+        wanted = OmegaConf.create(OmegaConf.to_container(saved))
+        wanted.optimisation.epochs = 4
+
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock, \
+             patch.object(WyckoffTrainer, "from_config") as from_config:
+            wandb_mock.run.id = self.RUN_ID
+            wandb_mock.run.summary = {}
+            train_from_config(wanted, torch.device("cpu"), run_path=runs,
+                              resume=True, reschedule=True)
+            from_config.assert_called_once()
+            self.assertIs(from_config.call_args.kwargs["reschedule"], True)
+        self.assertEqual(OmegaConf.load(this_run / "config.yaml").optimisation.epochs, 4)
 
 if __name__ == "__main__":
     unittest.main()

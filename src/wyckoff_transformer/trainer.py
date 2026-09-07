@@ -286,6 +286,11 @@ class WyckoffTrainer():
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
     resume = False
 
+    #: Set by `--reschedule`: a resumed run is allowed to carry a different learning-rate
+    #: horizon than the checkpoint was written under. A class default for the same reason as
+    #: `resume`, and False so the horizon guards below hold unless something asks for them not to.
+    reschedule = False
+
     #: How often, in epochs, train() writes that checkpoint. Class defaults for the same
     #: reason as the two above: trainers built by tests via __new__ skip __init__.
     checkpoint_period = 1
@@ -330,6 +335,7 @@ class WyckoffTrainer():
         composition_conditioning: bool = False,
         condition_on_cell_size: bool = True,
         resume: bool = False,
+        reschedule: bool = False,
     ):
         """
         Initializes the WyckoffTrainer.
@@ -678,6 +684,7 @@ class WyckoffTrainer():
         self.cascade_order = cascade_order
         self.epochs = optimisation_config.epochs
         self.resume = resume
+        self.reschedule = reschedule
         if resume and weights_path is not None:
             # Both write the model's weights, and the checkpoint also carries the optimiser
             # state that goes with them. Applying weights_path afterwards would leave an
@@ -1021,7 +1028,8 @@ class WyckoffTrainer():
                     load_datasets: bool = True,
                     production_training: bool = False,
                     no_test: bool = False,
-                    resume: bool = False):
+                    resume: bool = False,
+                    reschedule: bool = False):
         config = OmegaConf.create(config_dict)
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
@@ -1146,6 +1154,7 @@ class WyckoffTrainer():
             tokeniser_config=config.tokeniser,
             production_training=production_training,
             resume=resume,
+            reschedule=reschedule,
             **config.model.WyckoffTrainer_args)
 
 
@@ -1658,15 +1667,21 @@ class WyckoffTrainer():
                 f"{path} is a format {version} checkpoint; this version of the trainer writes "
                 f"and reads format {CHECKPOINT_FORMAT_VERSION}. It cannot be resumed.")
         if checkpoint["epochs"] != self.epochs:
-            raise ValueError(
+            message = (
                 f"{path} was written by a {checkpoint['epochs']}-epoch run, but this one is "
                 f"configured for {self.epochs}. Resuming would place the schedule and the "
                 f"early-stopping budget on a horizon neither run has.")
+            if not self.reschedule:
+                raise ValueError(message)
+            logger.warning("RESCHEDULING: %s Continuing anyway, as asked.", message)
         if checkpoint["scheduler_total_steps"] != self.scheduler_total_steps:
-            raise ValueError(
+            message = (
                 f"{path} was written under a schedule of {checkpoint['scheduler_total_steps']} "
                 f"optimiser steps; this run's is {self.scheduler_total_steps}. The step budget "
                 f"is usually the dataset changing size under a run.")
+            if not self.reschedule:
+                raise ValueError(message)
+            logger.warning("RESCHEDULING: %s Continuing anyway, as asked.", message)
         self.model.load_state_dict(_match_compile_prefix(checkpoint["model"], self.model))
         # Absent from checkpoints written before the criterion could carry state, and empty
         # for every criterion that carries none, so a missing key is not an error.
@@ -2132,7 +2147,24 @@ def flatten_config(config: Any, prefix: str = "") -> Dict[str, Any]:
     return {prefix: config}
 
 
-def check_resume_config(config_dict: dict|DictConfig, saved_config_path: Path) -> None:
+#: The only keys `--reschedule` may change under a resumed run: the horizon the
+#: learning-rate schedule is laid out on, and the shape it lays out there. They are safe to
+#: change mid-run in a way `lr` or `train_batch_size` are not, because the schedule is a pure
+#: function of (step, horizon) -- give it a new horizon and the next step follows the new
+#: curve, with the optimiser state, the weights and the step counter all still the run's own.
+#: Everything else stays refused: a resumed run that changed them would be neither the run on
+#: disk nor the one on the command line.
+RESCHEDULABLE_CONFIG_KEYS = ("optimisation.epochs", "optimisation.scheduler.config.")
+
+
+def _is_reschedulable(key: str) -> bool:
+    return any(key == k or key.startswith(k) for k in RESCHEDULABLE_CONFIG_KEYS)
+
+
+def check_resume_config(
+    config_dict: dict|DictConfig,
+    saved_config_path: Path,
+    reschedule: bool = False) -> list[str]:
     """Refuse to resume a run under a config other than the one it started under.
 
     A resumed run carries the optimiser, the schedule and its horizon forward from the
@@ -2141,8 +2173,16 @@ def check_resume_config(config_dict: dict|DictConfig, saved_config_path: Path) -
     logs into would claim to be the former. `load_training_checkpoint` catches the epoch count
     and the step budget; this catches everything else, before any training happens.
 
+    Args:
+        reschedule: Permit differences in RESCHEDULABLE_CONFIG_KEYS -- deliberately moving the
+            run's horizon, e.g. to bring the decay forward and land the run on a deadline.
+            Every other key is still refused.
+
+    Returns:
+        The reschedulable keys that differ, as human-readable lines. Empty unless `reschedule`.
+
     Raises:
-        ValueError: The configs differ, listing the keys that do.
+        ValueError: The configs differ outside what `reschedule` allows, listing the keys.
     """
     if not saved_config_path.exists():
         raise FileNotFoundError(
@@ -2150,15 +2190,20 @@ def check_resume_config(config_dict: dict|DictConfig, saved_config_path: Path) -
     saved = flatten_config(OmegaConf.to_container(OmegaConf.load(saved_config_path), resolve=True))
     current = flatten_config(OmegaConf.to_container(OmegaConf.create(config_dict), resolve=True))
     differences = []
+    rescheduled = []
     for key in sorted(set(saved) | set(current)):
         if saved.get(key, _MISSING) != current.get(key, _MISSING):
-            differences.append(
-                f"  {key}: {saved.get(key, '<absent>')!r} (saved) != "
-                f"{current.get(key, '<absent>')!r} (given)")
+            line = (f"  {key}: {saved.get(key, '<absent>')!r} (saved) != "
+                    f"{current.get(key, '<absent>')!r} (given)")
+            if reschedule and _is_reschedulable(key):
+                rescheduled.append(line)
+            else:
+                differences.append(line)
     if differences:
         raise ValueError(
             f"The config given differs from the one {saved_config_path} recorded for this run, "
             f"so it cannot be resumed:\n" + "\n".join(differences))
+    return rescheduled
 
 
 def train_from_config(
@@ -2167,7 +2212,8 @@ def train_from_config(
     run_path: Path = Path(__file__).resolve().parent.parent / "runs",
     production_training: bool = False,
     no_test: bool = False,
-    resume: bool = False):
+    resume: bool = False,
+    reschedule: bool = False):
 
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
@@ -2178,11 +2224,22 @@ def train_from_config(
             raise FileNotFoundError(
                 f"Asked to resume run {wandb.run.id}, but it has no checkpoint at "
                 f"{checkpoint_path}. A run that died before writing one has to be started over.")
-        check_resume_config(config_dict, this_run_path / "config.yaml")
+        rescheduled = check_resume_config(
+            config_dict, this_run_path / "config.yaml", reschedule=reschedule)
         logger.info("Resuming run %s from %s", wandb.run.id, checkpoint_path)
+        if rescheduled:
+            # The run's own config.yaml is what every later link is held to, so it has to
+            # become the schedule the run is actually on -- otherwise the next resume diffs
+            # against a horizon nothing is following any more and needs --reschedule to get
+            # past a change that already happened.
+            logger.warning(
+                "RESCHEDULING run %s onto a new horizon:\n%s",
+                wandb.run.id, "\n".join(rescheduled))
+            OmegaConf.save(config_dict, this_run_path / "config.yaml")
+            wandb.run.summary["rescheduled_at_epoch"] = wandb.run.summary.get("epoch")
     else:
         this_run_path.mkdir(parents=True, exist_ok=False)
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume)
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule)
     if not resume:
         # A resumed run wrote all of these on its first attempt, and their W&B artifacts with
         # them; the config one is what check_resume_config just held it to.
