@@ -63,6 +63,17 @@ research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "
 # source, identically from 0.5.1 through 0.7.0, so the floor is enough to fix
 # the checkpoint that LeMat-Bulk's orb_conserv_inf hull was built with.
 relax = ["mace-torch >=0.3", "ase >=3.23", "orb-models >=0.5.1"]
+# `torch.compile` needs triton, which torch itself declares -- but only in the
+# GPU wheels: the official PyPI torch carries `triton==3.6.0; platform_system
+# == "Linux"`, while the CPU wheels from download.pytorch.org/whl/cpu carry no
+# such pin. That is the behaviour we want, so triton must NOT be a base
+# dependency: a CPU-only or non-Linux install would then drag in a 640 MB
+# GPU compiler it can never use.
+# The gap is a torch built from source, which omits the pin the release process
+# adds. Such an environment gets `TritonMissing` from every config with
+# `compile_model: true`, and opts back in with this extra. Keep the floor in
+# step with torch: 3.6 is the series that matches torch 2.11.
+compile = ["triton >=3.6"]
 cuequivariance-cu13 = ["cuequivariance-torch >=0.9", "triton >=3", "cuequivariance-ops-torch-cu13 >=0.9"]
 mp = [
     "mp-api>=0.46.5",
