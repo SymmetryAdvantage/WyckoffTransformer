@@ -1,4 +1,5 @@
 """ASE-based structure relaxation with optional symmetry and cell constraints."""
+import json
 import logging
 import os
 from pathlib import Path
@@ -6,6 +7,7 @@ from typing import Optional
 
 os.environ.setdefault("SPGLIB_OLD_ERROR_HANDLING", "0")
 
+import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.constraints import FixAtoms, FixSymmetry
@@ -17,21 +19,29 @@ import spglib
 
 logger = logging.getLogger(__name__)
 
-#: Label of the final, symmetry-free stage of :func:`stepwise_relax`.
-FINAL_CIF_LABEL = "3_no-sym_cell+pos"
-#: Filename suffix of the CIF that stage writes; :mod:`wyckoff_transformer.cryspr.generator`
-#: globs for it to pick up each trial's relaxed structure.
-FINAL_CIF_SUFFIX = f"_{FINAL_CIF_LABEL}.cif"
-
-#: Label of the symmetry-constrained cell+positions stage, which becomes the
-#: last one when ``release_symmetry=False``.
+#: Stage labels, which name the CIF each stage writes.  Which of them holds the
+#: structure a trial *kept* is decided on energy by the rattle stage, so
+#: :mod:`wyckoff_transformer.cryspr.generator` writes that one out separately
+#: rather than globbing for a stage.
+WARMUP_CIF_LABEL = "1_fix-cell"
 SYMMETRIC_CIF_LABEL = "2_sym_cell+pos"
-SYMMETRIC_CIF_SUFFIX = f"_{SYMMETRIC_CIF_LABEL}.cif"
+FINAL_CIF_LABEL = "3_no-sym_cell+pos"
+RATTLE_CIF_LABEL = "4_rattle_no-sym"
 
+#: Stage-4 perturbation, as measured in the reconstruction study
+#: (docs/cryspr_reconstruction_report.md): per-atom displacement in A, and the
+#: standard deviation of the symmetrised cell strain, which is dimensionless.
+RATTLE_STDEV = 0.05
+RATTLE_STRAIN_STDEV = 0.01
 
-def final_cif_suffix(release_symmetry: bool = True) -> str:
-    """Suffix of the CIF written by the last stage :func:`stepwise_relax` runs."""
-    return FINAL_CIF_SUFFIX if release_symmetry else SYMMETRIC_CIF_SUFFIX
+#: Per-trial record of what the rattle stage did, written next to its CIF.
+RATTLE_VERDICT_FILE = "rattle.json"
+
+#: Energy the rattle has to win, eV/atom, before its structure replaces the
+#: symmetric one.  Without a margin the stage would trade a converged symmetric
+#: minimum for numerical noise; with it, 33.1% of trials in the study accepted,
+#: by a median of 186 meV/atom.
+RATTLE_ACCEPT_EV_PER_ATOM = 1e-3
 
 
 def _get_spacegroup_info(atoms: Atoms, symprec: float) -> tuple[str, int]:
@@ -138,12 +148,61 @@ def run_ase_relaxer(
     return atoms
 
 
+def perturb(
+        atoms_in: Atoms,
+        rattle_stdev: float = RATTLE_STDEV,
+        strain_stdev: float = RATTLE_STRAIN_STDEV,
+        seed: Optional[int] = None,
+) -> Atoms:
+    """A copy of *atoms_in* with the atoms rattled and the cell strained.
+
+    Both perturbations are needed and neither substitutes for the other: the
+    rattle breaks site symmetry, the strain breaks the symmetry of the lattice
+    itself, and a Wyckoff gene fixes both.
+
+    Constraints are cleared before the displacement is applied, not afterwards:
+    :meth:`ase.Atoms.set_positions` enforces the attached constraints, so a
+    :class:`~ase.constraints.FixSymmetry` carried over from the previous stage
+    would symmetrise the rattle away and leave the structure exactly where it
+    was.
+
+    Args:
+        atoms_in: Structure to perturb; not modified in place.
+        rattle_stdev: Standard deviation of the per-atom Cartesian
+            displacement, Å.
+        strain_stdev: Standard deviation of the cell strain, dimensionless.
+            The drawn matrix is symmetrised, so the perturbation is a strain
+            rather than a rotation.
+        seed: Seed for the perturbation.  Passing one makes the stage
+            reproducible, which matters because it can change the kept
+            structure.
+
+    Returns:
+        The perturbed copy, with no constraints and no calculator.
+    """
+    atoms = atoms_in.copy()
+    atoms.set_constraint([])
+    atoms.calc = None
+
+    rng = np.random.default_rng(seed)
+    drawn = rng.normal(0.0, strain_stdev, size=(3, 3))
+    strain = 0.5 * (drawn + drawn.T)
+    atoms.set_cell(atoms.cell @ (np.eye(3) + strain), scale_atoms=True)
+    atoms.rattle(stdev=rattle_stdev, seed=int(rng.integers(1, 2 ** 31 - 1)))
+    return atoms
+
+
 def stepwise_relax(
         atoms_in: Atoms,
         calculator: Calculator,
         optimizer: type[Optimizer] = BFGS,
         fix_symmetry: bool = True,
         release_symmetry: bool = True,
+        rattle: bool = True,
+        rattle_stdev: float = RATTLE_STDEV,
+        strain_stdev: float = RATTLE_STRAIN_STDEV,
+        rattle_accept: float = RATTLE_ACCEPT_EV_PER_ATOM,
+        seed: Optional[int] = None,
         hydrostatic_strain: bool = False,
         symprec: float = 1e-3,
         fmax: float = 0.05,
@@ -152,7 +211,7 @@ def stepwise_relax(
         logfile_prefix: str = "",
         logfile_postfix: str = "",
 ) -> Atoms:
-    """Relax under symmetry constraints first, then release them.
+    """Relax under symmetry constraints, then release them, then rattle.
 
     The schedule is:
 
@@ -161,14 +220,21 @@ def stepwise_relax(
        :class:`~ase.constraints.FixSymmetry` constraint.  Skipped, apart from
        the warm-up, when *fix_symmetry* is ``False``.
     2. Unconstrained: cell + positions with no symmetry constraint, so the
-       structure can relax into a lower-symmetry minimum if one is nearby.
+       structure can relax into a lower-symmetry minimum if one is nearby, and
+       so that the rattle has a converged, unconstrained baseline to be
+       perturbed away from and compared against.
+    3. Rattle: a finite perturbation of positions and cell, then another
+       unconstrained relaxation, kept only if it wins *rattle_accept*.
 
-    Note that a structure converged to a symmetric stationary point in step 1
-    stays there in step 2 unless something breaks the symmetry — the force and
-    stress components along symmetry-breaking modes vanish exactly for an
-    invariant potential, and only the MLIP's numerical asymmetry seeds a
-    descent.  Step 2 mainly matters when step 1 hit *steps_limit* or when the
-    symmetric point is unstable enough for that noise to grow.
+    Stage 2 cannot do stage 3's job, which is why the rattle is on by default.
+    A structure converged to a symmetric stationary point in stage 1 stays
+    there under gradient descent: for a symmetry-invariant potential the force
+    and stress components along symmetry-breaking modes vanish identically, so
+    only the MLIP's own numerical asymmetry can seed a descent.  Measured over
+    9990 trials of the reconstruction study, the unconstrained stage took *zero*
+    optimiser steps in 78.2% of them.  A finite perturbation is what leaves the
+    stationary point; it lowered the energy in 33.1% of trials, by a median of
+    186 meV/atom, and recovered 99 further ground-state matches.
 
     Args:
         atoms_in: Input structure.
@@ -176,14 +242,22 @@ def stepwise_relax(
         optimizer: Optimisation algorithm class.
         fix_symmetry: Run the symmetry-constrained step.  When ``False`` only
             the warm-up and the unconstrained step run.
-        release_symmetry: Run the final unconstrained step.  Setting this to
-            ``False`` gives the two-stage schedule, which costs a third less
-            per trial.  Measured on 7387 trials of run ``upi73i4k``, the step
-            it drops moves the energy by more than 1 meV/atom in 0.4% of trials
-            and leaves the spglib space group unchanged in 398 of 398 sampled
-            genes, so it is close to free of consequence for both energy and
-            the space-group-dependent Wyckoff fingerprint.  It does still guard
-            against structures that hit *steps_limit* under constraint.
+        release_symmetry: Run the unconstrained step before the rattle.  On by
+            default, and it earns its place as the rattle's *baseline* rather
+            than as a relaxation of its own: the perturbation then starts from a
+            structure already at an unconstrained minimum, so the acceptance
+            test asks whether the rattle found a better basin, not whether it
+            finished work the constrained stages had left undone.  On its own it
+            moves the energy by more than 1 meV/atom in 0.4% of 7387
+            ``upi73i4k`` trials and leaves the spglib space group unchanged in
+            398 of 398 sampled genes, and it takes zero optimiser steps in
+            78.2% of trials -- which is what makes keeping it cheap.
+        rattle: Run the rattle stage.
+        rattle_stdev: Per-atom displacement of the perturbation, Å.
+        strain_stdev: Cell strain of the perturbation, dimensionless.
+        rattle_accept: Energy the rattled structure must win over the
+            unperturbed one, eV/atom, before it replaces it.  Positive.
+        seed: Seed for the perturbation; see :func:`perturb`.
         hydrostatic_strain: Restrict cell relaxation to isotropic strain.
         symprec: Symmetry tolerance in Å.
         fmax: Force convergence criterion in eV/Å.
@@ -193,16 +267,18 @@ def stepwise_relax(
         logfile_postfix: Postfix for log file names.
 
     Returns:
-        Relaxed :class:`~ase.Atoms` after the last stage that ran.
+        The kept :class:`~ase.Atoms`: the rattled structure when it won,
+        otherwise the last relaxation stage that ran.
 
     Raises:
-        ValueError: If both *fix_symmetry* and *release_symmetry* are ``False``,
-            which would leave only the fix-cell warm-up.
+        ValueError: If no stage that relaxes the cell would run, i.e. all of
+            *fix_symmetry*, *release_symmetry* and *rattle* are ``False``,
+            leaving only the fix-cell warm-up.
     """
-    if not fix_symmetry and not release_symmetry:
+    if not fix_symmetry and not release_symmetry and not rattle:
         raise ValueError(
-            "fix_symmetry=False and release_symmetry=False leaves only the "
-            "fix-cell warm-up, which never relaxes the cell."
+            "fix_symmetry=False, release_symmetry=False and rattle=False leaves "
+            "only the fix-cell warm-up, which never relaxes the cell."
         )
     wdir = Path(wdir)
     wdir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +312,7 @@ def stepwise_relax(
         atoms_in=atoms,
         fix_symmetry=fix_symmetry,
         cell_filter=None,
-        label="1_fix-cell",
+        label=WARMUP_CIF_LABEL,
         logfile=logfile_for("fix-cell"),
         **shared,
     )
@@ -250,7 +326,9 @@ def stepwise_relax(
             **shared,
         )
 
-    # Step 2: no symmetry constraint, so the structure may lower its symmetry.
+    # Step 2: no symmetry constraint, so the structure may lower its symmetry --
+    # and so that the rattle below is perturbing a converged, unconstrained
+    # structure rather than a constrained one.
     if release_symmetry:
         atoms = run_ase_relaxer(
             atoms_in=atoms,
@@ -261,4 +339,72 @@ def stepwise_relax(
             **shared,
         )
 
+    # Step 3: leave the stationary point by force, and keep the result only if
+    # it is genuinely lower.  The margin is what makes this safe to run always:
+    # a converged structure cannot be traded away for noise.
+    if rattle:
+        atoms = _rattle_stage(
+            atoms,
+            rattle_stdev=rattle_stdev,
+            strain_stdev=strain_stdev,
+            rattle_accept=rattle_accept,
+            seed=seed,
+            logfile=logfile_for("rattle_no-sym"),
+            **shared,
+        )
+
     return atoms
+
+
+def _rattle_stage(
+        atoms: Atoms,
+        rattle_stdev: float,
+        strain_stdev: float,
+        rattle_accept: float,
+        seed: Optional[int],
+        logfile: Path,
+        **shared,
+) -> Atoms:
+    """Perturb, re-relax, and return whichever structure has the lower energy."""
+    if rattle_accept < 0:
+        raise ValueError(f"rattle_accept must be non-negative, got {rattle_accept}")
+
+    atoms.calc = shared["calculator"]
+    energy_before = atoms.get_potential_energy()
+
+    rattled = run_ase_relaxer(
+        atoms_in=perturb(
+            atoms,
+            rattle_stdev=rattle_stdev,
+            strain_stdev=strain_stdev,
+            seed=seed,
+        ),
+        fix_symmetry=False,
+        cell_filter=CellFilter,
+        label=RATTLE_CIF_LABEL,
+        logfile=logfile,
+        **shared,
+    )
+    delta = (rattled.get_potential_energy() - energy_before) / len(atoms)
+    accepted = delta < -rattle_accept
+    logger.info(
+        "Rattle stage: dE = %+.6f eV/atom, %s",
+        delta, "accepted" if accepted else "rejected",
+    )
+    # Recorded per trial, not just logged: pool workers do not configure
+    # logging, and how often the rattle wins -- and by how much -- is the
+    # measurement that sets the trial schedule and justifies the stage.
+    (shared["wdir"] / RATTLE_VERDICT_FILE).write_text(
+        json.dumps(
+            {
+                "delta_ev_per_atom": delta,
+                "accepted": accepted,
+                "accept_threshold_ev_per_atom": rattle_accept,
+                "rattle_stdev": rattle_stdev,
+                "strain_stdev": strain_stdev,
+                "seed": seed,
+            }
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return rattled if accepted else atoms

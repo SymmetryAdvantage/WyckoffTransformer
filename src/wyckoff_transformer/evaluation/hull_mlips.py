@@ -205,6 +205,30 @@ def build_hull_calculator(name: str, device: str = "cpu"):
 #: HuggingFace dataset holding the published per-model energies and hulls.
 HULL_REPO_ID = "LeMaterial/LeMat-Bulk-MLIP-Hull"
 
+#: What each split of that dataset is: every LeMat-Bulk entry within this much
+#: of *that model's own* hull, in eV/atom.  It is the only filter the reference
+#: carries, it is LeMaterial's, and it is lossless for the phase diagram --
+#: a hull vertex sits at exactly 0, so no vertex can be cut by a positive
+#: threshold.  What it drops is entries strictly inside the hull, which
+#: ``PhaseDiagram`` would ignore anyway.  Do not confuse this reference with the
+#: training-side hull labels from ``scripts/compute_e_hull.py``, which exclude
+#: Yb, everything past Po and any chemistry of ten or more elements.
+HULL_THRESHOLD_EV_PER_ATOM = 0.001
+
+#: Rows in each published split, as of dataset revision
+#: 70d505bb294c16658a9551e2b81ace69a28d9790.  Pinned so that a reference swapped
+#: for a subset -- a filtered training cache, a partial download -- is loud
+#: rather than silent: it would change every e_above_hull in a run without
+#: changing anything else in the manifest.
+PUBLISHED_HULL_ENTRIES: dict[str, int] = {
+    "dft": 144127,
+    "mace_mp": 204976,
+    "mace_omat": 168458,
+    "orb_conserv_inf": 194240,
+    "orb_direct_20": 163735,
+    "uma": 173441,
+}
+
 #: Local LeMat-Bulk export carrying ``immutable_id`` and ``cif``.  The hull
 #: parquet has no geometry, so verification needs structures from here.
 DEFAULT_LEMAT_CIF_CSV = Path("data/lemat-bulk/lemat_pbe.csv.gz")

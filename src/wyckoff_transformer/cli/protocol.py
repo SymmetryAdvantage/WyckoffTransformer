@@ -38,12 +38,16 @@ from wyckoff_transformer.evaluation.hull_mlips import (
 from wyckoff_transformer.evaluation.protocol import (
     DEFAULT_REFERENCE_CACHE,
     DEFAULT_REFERENCE_SPLITS,
+    DEFAULT_TRIAL_SCHEDULE,
     GeneFingerprinter,
     funnel,
     load_genes,
     load_reference_fingerprints,
+    parse_trial_schedule,
+    positional_dof,
     read_screen,
     screen_genes,
+    trials_for_dof,
     write_screen,
 )
 
@@ -166,8 +170,10 @@ def _relax_one(
     output_dir: str,
     mlip: str,
     n_trials: int,
+    dof: Optional[int],
     fmax: float,
     release_symmetry: bool,
+    rattle: bool,
 ) -> dict:
     """Relax one gene in a pool worker.  Returns a row for the structures CSV."""
     from wyckoff_transformer.cryspr.generator import func_run
@@ -181,6 +187,7 @@ def _relax_one(
         model_name=mlip,
         n_trials=n_trials,
         release_symmetry=release_symmetry,
+        rattle=rattle,
         fmax=fmax,
     )
     return {
@@ -191,6 +198,10 @@ def _relax_one(
         "n_atoms": len(atoms) if atoms is not None else None,
         "has_structure": atoms is not None,
         "cif": cif,
+        # Kept per gene, not just in the manifest: the trial schedule is set
+        # from these two columns of earlier runs.
+        "dof_positional": dof,
+        "n_trials": n_trials,
         "device": _WORKER_DEVICE,
         "seconds": round(time.time() - started, 2),
     }
@@ -214,6 +225,25 @@ def stage_screen(args) -> None:
         f"still has to rule on; "
         f"{len(screen.valid) - screen.n_unique} duplicates skipped)."
     )
+
+
+def _budget(gene: dict, schedule) -> tuple[Optional[int], int]:
+    """The gene's positional DoF and the trials the schedule allots it.
+
+    A gene whose DoF cannot be determined gets the largest allotment in the
+    schedule: an unreadable gene is not evidence that it is easy to reconstruct,
+    and this path is rare enough that being generous costs nothing.
+    """
+    try:
+        dof = positional_dof(gene)
+    except Exception as exc:
+        largest = max(trials for _, trials in schedule)
+        logger.warning(
+            "No positional DoF for gene %s (%s); giving it %d trial(s)",
+            gene.get("group"), exc, largest,
+        )
+        return None, largest
+    return dof, trials_for_dof(dof, schedule)
 
 
 def _already_relaxed(output_dir: Path) -> set[int]:
@@ -242,6 +272,7 @@ def stage_relax(args) -> None:
     screen = read_screen(args.output_dir / SCREEN_FILE)
     spec = resolve_hull_mlip(args.mlip)
     slots = resolve_devices(args.cores, args.devices, args.workers_per_device)
+    schedule = parse_trial_schedule(args.n_trials)
 
     todo = sorted(
         i for i in screen.counts if args.limit is None or i < args.limit
@@ -250,10 +281,21 @@ def stage_relax(args) -> None:
     if already:
         todo = [i for i in todo if i not in already]
         logger.info("Resuming: %d representatives already have a row", len(already))
+
+    budget = {index: _budget(genes[index], schedule) for index in todo}
+    trials = [n for _, n in budget.values()]
     logger.info(
         "Relaxing %d representatives with %s on %d worker(s): %s",
         len(todo), args.mlip, len(slots), ", ".join(sorted(set(slots))),
     )
+    if trials:
+        logger.info(
+            "Trial schedule %r: %d trials over %d genes, %.2f per gene (%s)",
+            args.n_trials, sum(trials), len(trials), sum(trials) / len(trials),
+            ", ".join(
+                f"{n} trial(s): {trials.count(n)}" for n in sorted(set(trials))
+            ),
+        )
 
     cif_dir = args.output_dir / CIF_DIR
     cif_dir.mkdir(parents=True, exist_ok=True)
@@ -285,9 +327,11 @@ def stage_relax(args) -> None:
                 genes[index],
                 str(args.output_dir / "cryspr"),
                 args.mlip,
-                args.n_trials,
+                budget[index][1],
+                budget[index][0],
                 args.fmax,
                 args.release_symmetry,
+                args.rattle,
             ): index
             for index in todo
         }
@@ -313,7 +357,7 @@ def stage_relax(args) -> None:
         frame = frame[~frame.index.duplicated(keep="last")]
     frame = frame.sort_index()
     frame.to_csv(args.output_dir / STRUCTURES_FILE)
-    _write_manifest(args, spec, slots, n_relaxed=len(frame))
+    _write_manifest(args, spec, slots, n_relaxed=len(frame), budget=budget)
     print(
         f"{int(frame['has_structure'].fillna(False).sum())}/{len(frame)} genes "
         f"produced a structure -> {args.output_dir / STRUCTURES_FILE}"
@@ -412,6 +456,7 @@ def stage_score(args) -> None:
     frame.drop(columns=["structure"], errors="ignore").to_csv(
         args.output_dir / STRUCTURES_FILE
     )
+    _record_hull_provenance(args.output_dir / MANIFEST_FILE, hull.provenance)
     report = funnel(screen, frame)
     (args.output_dir / FUNNEL_FILE).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -419,21 +464,43 @@ def stage_score(args) -> None:
     print(json.dumps(report, indent=2))
 
 
-def _write_manifest(args, spec, slots: list[str], n_relaxed: int) -> None:
+def _record_hull_provenance(manifest_path: Path, provenance: dict) -> None:
+    """Add the hull's identity to the manifest the relax stage wrote.
+
+    Which hull the energies were referenced to is not recoverable from the
+    numbers afterwards, and the score stage is the only one that knows it.
+    """
+    manifest = {}
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.warning("Unreadable manifest at %s (%s)", manifest_path, exc)
+    manifest["hull"] = provenance
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_manifest(
+    args, spec, slots: list[str], n_relaxed: int, budget: dict
+) -> None:
     """Record exactly what produced these numbers.
 
     The MLIP identity matters more than usual here: e_above_hull is only
     meaningful against the hull built with the same potential, and at least one
     of the published hulls (mace_mp) cannot be tied to a checkpoint from source.
     """
+    trials = [n for _, n in budget.values()]
     manifest = {
         "input": str(args.input),
         "mlip": args.mlip,
         "hull_type": spec.hull_type,
         "checkpoint": spec.checkpoint,
         "mlip_note": spec.note or None,
-        "n_trials": args.n_trials,
+        "trial_schedule": args.n_trials,
+        "trials_total": sum(trials),
+        "trials_per_gene": round(sum(trials) / len(trials), 3) if trials else None,
         "release_symmetry": args.release_symmetry,
+        "rattle": args.rattle,
         "fmax": args.fmax,
         "n_relaxed": n_relaxed,
         "workers": len(slots),
@@ -490,17 +557,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     relax = parser.add_argument_group("relaxation")
     relax.add_argument(
-        "--n-trials", type=int, default=1,
-        help="PyXtal trials per gene. The protocol's default is 1.",
+        "--n-trials", type=str, default=DEFAULT_TRIAL_SCHEDULE,
+        help=(
+            "PyXtal trials per gene, as 'dof:trials' pairs over the gene's "
+            "positional degrees of freedom, ending in a '*' bin. A bare integer "
+            "gives every gene the same number. The default spends one trial on "
+            "the fifth of genes with no free coordinates, where a second one "
+            "provably changes nothing, and two on the rest."
+        ),
     )
     relax.add_argument(
         "--fmax", type=float, default=0.05, help="Force convergence in eV/A.",
     )
     relax.add_argument(
-        "--release-symmetry", action=argparse.BooleanOptionalAction, default=False,
+        "--release-symmetry", action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "Run the final symmetry-free relaxation stage. Off by default, "
-            "giving the 2-stage schedule the protocol calls for."
+            "Run a symmetry-free relaxation stage before the rattle. On by "
+            "default: it is what the rattle is perturbed away from and what its "
+            "energy is compared against, so the acceptance test asks whether "
+            "the perturbation found a better basin rather than whether it "
+            "finished a relaxation the constrained stages had not. It is nearly "
+            "free -- zero optimiser steps in 78%% of trials, because gradient "
+            "descent cannot leave a symmetric stationary point."
+        ),
+    )
+    relax.add_argument(
+        "--rattle", action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "Run the rattle stage: perturb positions and cell, relax again "
+            "unconstrained, and keep the result only if it wins 1 meV/atom. "
+            "On by default -- it is the only stage that can break the symmetry "
+            "PyXtal imposed, and it recovered 99 further ground states in the "
+            "reconstruction study."
         ),
     )
     relax.add_argument(

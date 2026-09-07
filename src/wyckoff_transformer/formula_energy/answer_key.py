@@ -18,9 +18,9 @@ for 36.3% of the formulas Materials Project and OQMD had already computed.
 The hull has to be genuinely recomputed, not filtered. ``e_hull`` in the archive
 is measured against the deep hull, and it is clipped at zero, so a structure that
 sits *below* the shallow hull -- exactly the case of interest -- cannot be
-recognised by subsetting rows. ``scripts/compute_e_hull.py`` rebuilds phase
-diagrams from a reference set, which is what :func:`compute_shallow_energies`
-drives.
+recognised by subsetting rows.
+:mod:`wyckoff_transformer.formula_energy.hull_table` rebuilds phase diagrams from
+a reference set, which is what :func:`compute_shallow_energies` drives.
 
 The two worlds also have to be put on one energy scale before they can be
 compared. A formation energy is measured against elemental references, and those
@@ -41,8 +41,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import subprocess
-import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -50,6 +48,7 @@ import numpy as np
 import pandas as pd
 
 from wyckoff_transformer.formula_energy import dataset as ds
+from wyckoff_transformer.formula_energy import hull_table as ht
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +58,16 @@ logger = logging.getLogger(__name__)
 SHALLOW_SOURCES: Sequence[str] = ("mp_icsd", "mp_theoretical", "oqmd")
 
 DEFAULT_DIR = Path("data/formula_energy")
-#: The shallow subset, in the shape ``scripts/compute_e_hull.py`` consumes.
+#: The shallow subset, in the shape :mod:`hull_table` consumes.
 SHALLOW_ROWS = DEFAULT_DIR / "shallow_rows.csv.gz"
 #: The same rows with ``e_form`` and ``e_hull`` recomputed against themselves.
 SHALLOW_ENERGIES = DEFAULT_DIR / "shallow_pbe_ehull.csv.gz"
 SHALLOW_TABLE = DEFAULT_DIR / "shallow_table.parquet"
 ANSWER_KEY = DEFAULT_DIR / "answer_key.parquet"
 
-#: Columns ``compute_e_hull.py`` needs. ``energy_corrected`` is the total energy
-#: the phase diagram is built from, and is not carried in the formula table.
-SHALLOW_COLUMNS = ("immutable_id", "full_formula", "chemsys", "energy_corrected")
+#: Columns the phase diagram needs. ``energy_corrected`` is the total energy it
+#: is built from, and is not carried in the formula table.
+SHALLOW_COLUMNS = ht.LIGHT_COLUMNS
 
 
 def extract_shallow_rows(
@@ -100,24 +99,19 @@ def compute_shallow_energies(
 ) -> Path:
     """Rebuild formation energies and hull distances against the shallow set alone.
 
-    Shells out to ``scripts/compute_e_hull.py`` rather than importing it: that
-    module keeps its phase-diagram cache in module-level globals and initialises
-    ``pandarallel`` at import, both of which are fine in a process of its own and
-    awkward in ours.
+    The shallow set is its own reference, so ``e_hull`` here is a distance within
+    the shallow world; what the key compares against it is the *deep* minimum,
+    translated into the shallow frame by :func:`frame_shift`.
+
+    Args:
+        rows_csv: The shallow rows, from :func:`extract_shallow_rows`.
+        out_csv: Destination, with ``e_form`` and ``e_hull`` appended.
+        workers: Processes for the phase diagrams.
+
+    Returns:
+        *out_csv*.
     """
-    command = [
-        sys.executable, "scripts/compute_e_hull.py",
-        "--input-file", str(rows_csv),
-        "--output-file", str(out_csv),
-        "--id-col", "immutable_id",
-        "--formula-col", "full_formula",
-        "--chemsys-col", "chemsys",
-        "--energy-col", "energy_corrected",
-        "--workers", str(workers),
-    ]
-    logger.info("running %s", " ".join(command))
-    subprocess.run(command, check=True)
-    return out_csv
+    return ht.annotate_csv(rows_csv, out_csv, workers=workers)
 
 
 def elemental_references(

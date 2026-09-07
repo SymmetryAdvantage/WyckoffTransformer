@@ -170,7 +170,7 @@ Output layout is identical to the CHGNet variant below. Key options:
 - `--device auto|cpu|cuda` — PyTorch device selection (default: auto)
 - `--workers W` — number of parallel worker processes; each worker builds its own calculator (default 1)
 
-Each PyXtal trial is relaxed in two steps: first with a `FixSymmetry` constraint (a fix-cell warm-up, then cell + positions), and then without it, so the structure can settle into a lower-symmetry minimum if one is nearby. Per-trial CIFs are numbered by stage; `${reduced_formula}_${full_formula}_3_no-sym_cell+pos.cif` is the final structure, and `min_e_strc.cif` links to it for the lowest-energy trial.
+Each PyXtal trial is relaxed in stages: first with a `FixSymmetry` constraint (a fix-cell warm-up, then cell + positions), then without it, and finally a *rattle* — positions and cell perturbed by a finite amount and relaxed again unconstrained, kept only if it wins 1 meV/atom. The rattle is what lets a structure leave a symmetric stationary point at all: the forces along symmetry-breaking modes vanish identically there, so gradient descent alone cannot, and the unconstrained stage took zero steps in 78% of trials. Per-trial CIFs are numbered by stage; `${full_formula}_kept.cif` is the structure the trial kept, `rattle.json` records what the rattle did, and `min_e_strc.cif` links to the kept CIF of the lowest-energy trial.
 
 ### CHGNet relaxation
 The structures from all models can be optionally relaxed with CHGNet.
@@ -241,7 +241,10 @@ package at runtime.
 
 See [the de novo ranking protocol](docs/de_novo_ranking_protocol.md) for the
 measurement rationale, the sample sizes it can resolve, required reference data,
-and known limitations.
+and known limitations, and [every `e_hull` in this
+repository](docs/e_hull_definitions.md) before comparing a hull energy from one
+part of the codebase with one from another — six things carry that name, and
+they differ in reference set, energy source and sign convention.
 ## Generated Data Analysis
 ### Storage
 #### Public Figshare

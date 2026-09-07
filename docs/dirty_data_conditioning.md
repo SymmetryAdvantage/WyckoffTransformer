@@ -44,7 +44,9 @@ experimentally grounded ones.
 Three filters beyond the force cut, each earning its place:
 
 **`e_hull` is not NaN** (−588,499 rows). `scripts/compute_e_hull.py` returns nothing for
-any system containing Yb, anything past Po, or a chemsys of ten or more elements. The
+any system containing Yb, anything past Po, or a chemsys of ten or more elements —
+of which the Po-and-beyond clause is 98% of the loss and the ten-element one has never
+fired ([what every `e_hull` in this repo means](e_hull_definitions.md)). The
 model is conditioned on `energy_above_hull`, and nothing downstream masks a missing
 conditioning value, so these rows cannot be carried.
 

@@ -19,7 +19,7 @@ import logging
 import math
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -299,8 +299,13 @@ def train_one(
     config: TrainConfig,
     device: torch.device,
     seed: Optional[int] = None,
+    on_epoch: Optional[Callable[[Dict[str, float]], None]] = None,
 ) -> Tuple[FormulaEnergyModel, List[Dict[str, float]]]:
-    """Fit one member of the ensemble, early-stopping on validation NLL."""
+    """Fit one member of the ensemble, early-stopping on validation NLL.
+
+    ``on_epoch`` is called with each epoch's metrics dict as it is measured, for
+    live logging; it must not mutate what it is handed.
+    """
     torch.manual_seed(config.seed if seed is None else seed)
     model = FormulaEnergyModel(
         n_provenance=len(PROVENANCE_FEATURES), d_model=config.d_model, n_layers=config.n_layers,
@@ -337,6 +342,8 @@ def train_one(
         history.append(measured)
         logger.info("epoch %d train %.4f val %.4f excess %.4f violation %.4f",
                     epoch, measured["train_nll"], measured["nll"], measured["excess"], measured["violation"])
+        if on_epoch is not None:
+            on_epoch(measured)
 
         if measured["nll"] < best_nll - 1e-5:
             best_nll, since_best = measured["nll"], 0
@@ -358,12 +365,22 @@ def train_ensemble(
     config: TrainConfig,
     device: torch.device,
     n_models: int = 10,
+    on_epoch: Optional[Callable[[int, Dict[str, float]], None]] = None,
 ) -> Tuple[List[FormulaEnergyModel], List[List[Dict[str, float]]]]:
-    """Wren's deep ensemble: the same fit from ``n_models`` different starts."""
+    """Wren's deep ensemble: the same fit from ``n_models`` different starts.
+
+    ``on_epoch`` is forwarded to :func:`train_one` with the member index prepended,
+    so a caller can stream every member's curve to a tracker.
+    """
     models, histories = [], []
     for member in range(n_models):
         logger.info("=== ensemble member %d of %d ===", member + 1, n_models)
-        model, history = train_one(train, val, config, device, seed=config.seed + member)
+        member_callback = (
+            None if on_epoch is None
+            else lambda measured, member=member: on_epoch(member, measured)
+        )
+        model, history = train_one(train, val, config, device, seed=config.seed + member,
+                                   on_epoch=member_callback)
         models.append(model)
         histories.append(history)
     return models, histories
@@ -440,6 +457,12 @@ def main() -> None:
                         help="let the floor read these provenance features too; "
                              "relaxes the exclusion restriction, see TrainConfig")
     parser.add_argument("--device", type=torch.device, default=None)
+    from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: PLC0415
+
+    parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY)
+    parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT)
+    parser.add_argument("--no-wandb", dest="wandb", action="store_false",
+                        help="do not log this run to Weights & Biases")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
@@ -472,9 +495,58 @@ def main() -> None:
     logger.info("train %d, val %d formulas, pad width %d, device %s",
                 len(train), len(val), max_elements, device)
 
-    models, _ = train_ensemble(train, val, config, device, n_models=n_models)
+    run = None
+    on_epoch = None
+    if args.wandb:
+        import wandb  # noqa: PLC0415
+
+        run = wandb.init(
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            job_type="formula-energy-train",
+            config={
+                **config.__dict__,
+                "models": n_models,
+                "table": str(table_path),
+                "out": str(out_path),
+                "max_elements": max_elements,
+                "n_train": len(train),
+                "n_val": len(val),
+                "device": str(device),
+            },
+        )
+        # Plot every member's curve against its own epoch, so the ten overlay on
+        # the same axes instead of running end to end along the wall-clock step.
+        wandb.define_metric("epoch")
+        wandb.define_metric("member_*", step_metric="epoch")
+
+        def on_epoch(member: int, measured: Dict[str, float]) -> None:
+            wandb.log({
+                "member": member,
+                "epoch": measured["epoch"],
+                f"member_{member}/train_nll": measured["train_nll"],
+                f"member_{member}/nll": measured["nll"],
+                f"member_{member}/excess": measured["excess"],
+                f"member_{member}/mae_vs_bound": measured["mae_vs_bound"],
+                f"member_{member}/violation": measured["violation"],
+            })
+
+    models, histories = train_ensemble(train, val, config, device, n_models=n_models,
+                                       on_epoch=on_epoch)
     save_ensemble(models, out_path, config)
     print(f"wrote {out_path} ({n_models} models, pad width {max_elements})")
+
+    if run is not None:
+        best = [min(epoch["nll"] for epoch in history) for history in histories]
+        run.summary["val_nll.best.mean"] = float(np.mean(best))
+        run.summary["val_nll.best.max"] = float(np.max(best))
+        final = [history[-1] for history in histories]
+        run.summary["excess.final.mean"] = float(np.mean([e["excess"] for e in final]))
+        run.summary["violation.final.mean"] = float(np.mean([e["violation"] for e in final]))
+        artifact = wandb.Artifact(name=f"formula_energy_ensemble_{run.id}", type="model")
+        artifact.add_file(str(out_path))
+        run.log_artifact(artifact)
+        run.finish()
 
 
 def load_ensemble(

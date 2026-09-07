@@ -1,4 +1,5 @@
 """Crystal structure generation and relaxation orchestration."""
+import hashlib
 import logging
 import os
 from pathlib import Path
@@ -6,16 +7,51 @@ from typing import Optional
 
 from ase import Atoms
 from ase.calculators.calculator import Calculator
+from ase.io import write
 from ase.optimize import BFGS
 from ase.optimize.optimize import Optimizer
 from pyxtal import pyxtal
 from pyxtal.tolerance import Tol_matrix
 
-from wyckoff_transformer.cryspr.relaxer import final_cif_suffix, stepwise_relax
+from wyckoff_transformer.cryspr.relaxer import (
+    RATTLE_ACCEPT_EV_PER_ATOM,
+    RATTLE_STDEV,
+    RATTLE_STRAIN_STDEV,
+    stepwise_relax,
+)
 
 logger = logging.getLogger(__name__)
 
+#: PyXtal's inter-atomic distance tolerances, scaled by 1.3.
+#:
+#: The factor is a *floor* on how close two atoms may start, as a multiple of
+#: the covalent-radius sum, and 1.3 rather than PyXtal's 1.0 is what the oracle
+#: studies support for a *free* lattice, which is how genes are sampled here:
+#: it draws a loose cell (median 1.68x the target volume) that the variable-cell
+#: relaxation then contracts to 1.34x, and that compressive annealing gives
+#: 50.8% recovery at 5 trials with only 1.2% generation failures
+#: (docs/cryspr_oracle_relaxed_cell_report.md).  The 39.8% generation choking
+#: that motivated trying 1.0 appears only when the cell is pinned to the
+#: ground-truth lattice, and 1.0 in that setup jams the atoms instead: 19.0%
+#: recovery against the loose baseline's 50.8%.  It is also what every
+#: measurement the ranking protocol rests on used, so changing it would
+#: invalidate the trial schedule those numbers set.
 _DEFAULT_IADM = Tol_matrix(prototype="atomic", factor=1.3)
+
+#: Suffix of the CIF holding the structure a trial actually kept.  The rattle
+#: stage is accepted on energy, so which stage's CIF is the final one is not
+#: known until it has run; this one always is.
+KEPT_CIF_SUFFIX = "_kept.cif"
+
+
+def _trial_seed(id_gene: int | str, i_trial: int) -> int:
+    """A stable seed per (gene, trial), so a rerun rattles the same way.
+
+    Hashed rather than derived arithmetically: the rattle of gene 1 trial 2 and
+    that of gene 2 trial 1 should be independent draws.
+    """
+    digest = hashlib.sha256(f"{id_gene}_{i_trial}".encode()).hexdigest()
+    return int(digest[:8], 16)
 
 
 def single_pyxtal(
@@ -72,12 +108,16 @@ def func_run(
         n_trials: int = 6,
         fix_symmetry: bool = True,
         release_symmetry: bool = True,
+        rattle: bool = True,
+        rattle_stdev: float = RATTLE_STDEV,
+        strain_stdev: float = RATTLE_STRAIN_STDEV,
+        rattle_accept: float = RATTLE_ACCEPT_EV_PER_ATOM,
         fmax: float = 0.01,
         optimizer: type[Optimizer] = BFGS,
 ) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float], Optional[str]]:
     """Generate and relax crystal structures for one Wyckoff gene.
 
-    Runs *n_trials* independent PyXtal generation + MACE relaxation cycles.
+    Runs *n_trials* independent PyXtal generation + MLIP relaxation cycles.
     The trial with the lowest final energy is returned.  All trial directories
     and output CIF files are written under ``output_dir / str(id_gene) /``.
 
@@ -89,15 +129,21 @@ def func_run(
         model_name: Label used in log messages and output filenames.
         n_trials: Number of random generation + relaxation trials.
         fix_symmetry: Run the symmetry-constrained step of the relaxation.
-        release_symmetry: Run the final unconstrained step.  ``False`` gives the
-            two-stage schedule; see :func:`~wyckoff_transformer.cryspr.relaxer.stepwise_relax`.
+        release_symmetry: Run the unconstrained step before the rattle.
+            ``False`` drops it; see
+            :func:`~wyckoff_transformer.cryspr.relaxer.stepwise_relax`.
+        rattle: Run the rattle stage, which is the only one that can leave a
+            symmetric stationary point.
+        rattle_stdev: Per-atom displacement of the perturbation, Å.
+        strain_stdev: Cell strain of the perturbation, dimensionless.
+        rattle_accept: Energy the rattle must win to be kept, eV/atom.
         fmax: Force convergence criterion in eV/Å.
         optimizer: ASE local optimisation algorithm class.
 
     Returns:
         Tuple ``(atoms, formula, energy, energy_per_atom, cif)`` for the
-        lowest-energy successful trial, where *cif* is the text of that trial's
-        final, symmetry-free relaxation stage.
+        lowest-energy successful trial, where *cif* is the text of the
+        structure that trial kept.
         Returns ``(None, None, None, None, None)`` when all trials fail.
     """
     output_dir = Path(output_dir)
@@ -127,6 +173,11 @@ def func_run(
                 optimizer=optimizer,
                 fix_symmetry=fix_symmetry,
                 release_symmetry=release_symmetry,
+                rattle=rattle,
+                rattle_stdev=rattle_stdev,
+                strain_stdev=strain_stdev,
+                rattle_accept=rattle_accept,
+                seed=_trial_seed(id_gene, i_trial),
                 fmax=fmax,
                 wdir=trial_dir,
                 logfile_prefix=formula,
@@ -134,6 +185,12 @@ def func_run(
             )
             atoms_by_trial[trial_key] = atoms_relaxed
             energy_by_trial[trial_key] = atoms_relaxed.get_potential_energy()
+            # The kept structure, whichever stage produced it.
+            write(
+                filename=str(trial_dir / f"{formula}{KEPT_CIF_SUFFIX}"),
+                images=atoms_relaxed,
+                format="cif",
+            )
             logger.info(
                 "[%s-%s %s] Done, E = %.5f eV",
                 model_name, id_gene, trial_key, energy_by_trial[trial_key],
@@ -155,9 +212,9 @@ def func_run(
         os.symlink(lowest_key, symlink_lowest, target_is_directory=True)
 
     lowest_dir = gene_dir / lowest_key
-    # The final relaxation stage; earlier stages write CIFs of their own into
-    # the same directory, so match its suffix rather than any "*_cell+pos.cif".
-    final_cifs = sorted(lowest_dir.glob(f"*{final_cif_suffix(release_symmetry)}"))
+    # The kept CIF, not a stage CIF: with the rattle stage the last stage to
+    # run is not necessarily the one whose structure was kept.
+    final_cifs = sorted(lowest_dir.glob(f"*{KEPT_CIF_SUFFIX}"))
     if final_cifs:
         symlink_cif = gene_dir / "min_e_strc.cif"
         if not symlink_cif.exists():

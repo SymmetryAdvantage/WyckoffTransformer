@@ -15,6 +15,18 @@ benchmark's own implementation.
 The hull is *self-consistent*: each MLIP's energies are referenced to a hull
 built from that same MLIP.  Mixing them is what
 :mod:`wyckoff_transformer.evaluation.hull_mlips` exists to prevent.
+
+The reference is the *whole* published hull, and deliberately so.  Two other
+hulls exist in this repository and neither belongs here: the training labels
+from ``scripts/compute_e_hull.py``, which drop Yb, everything past Po and any
+chemistry of ten or more elements (588,499 rows of LeMat-Bulk, and the reason
+the conditioning dataset is smaller than the archive); and the deliberately
+shallow hull of ``formula_energy.answer_key``, rebuilt from a subset to create
+discoveries to find.  Scoring generated structures against either would put the
+numerator and the threshold on different footings.  The published splits are
+LeMaterial's own ``e_above_hull <= 1 meV/atom`` slice of LeMat-Bulk, which
+removes only entries a phase diagram ignores; anything less than the full split
+is logged as a warning rather than passed over.
 """
 from __future__ import annotations
 
@@ -28,7 +40,12 @@ import pandas as pd
 from pymatgen.analysis.phase_diagram import PDEntry, PhaseDiagram
 from pymatgen.core import Composition, Element
 
-from wyckoff_transformer.evaluation.hull_mlips import HULL_REPO_ID, resolve_hull_mlip
+from wyckoff_transformer.evaluation.hull_mlips import (
+    HULL_REPO_ID,
+    HULL_THRESHOLD_EV_PER_ATOM,
+    PUBLISHED_HULL_ENTRIES,
+    resolve_hull_mlip,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +78,9 @@ class HullEnergyCalculator:
 
     def __init__(self, mlip: str, parquet: Optional[Path] = None) -> None:
         self.spec = resolve_hull_mlip(mlip)
-        self.entries = self._load(self.spec.hull_type, parquet)
+        self.source = self._resolve_parquet(self.spec.hull_type, parquet)
+        self.entries = self._load(self.source)
+        self.provenance = self._check_provenance()
         # Row i is the indicator of the elements present in entry i.  A hull
         # entry is usable for a query only if it introduces no element the
         # query lacks, i.e. its indicator has no overlap with the complement of
@@ -70,22 +89,88 @@ class HullEnergyCalculator:
         self._composition_matrix = np.stack(
             [_one_hot(species) for species in self.entries["species_at_sites"]]
         )
-        logger.info(
-            "Loaded %d %s hull entries", len(self.entries), self.spec.hull_type
-        )
 
     @staticmethod
-    def _load(hull_type: str, parquet: Optional[Path]) -> pd.DataFrame:
-        if parquet is None:
-            from huggingface_hub import hf_hub_download
+    def _resolve_parquet(hull_type: str, parquet: Optional[Path]) -> Path:
+        """The reference table to use, downloading the published one by default.
 
-            parquet = hf_hub_download(
+        Args:
+            hull_type: Split of :data:`HULL_REPO_ID` to fetch.
+            parquet: An override.  Anything but the published split makes
+                ``e_above_hull`` incomparable with every other run and with the
+                leaderboard, so taking one is logged as a warning.
+
+        Returns:
+            Path to the parquet on disk.
+        """
+        if parquet is not None:
+            logger.warning(
+                "Using %s as the %s hull instead of the published "
+                "%s split. e_above_hull from it is comparable only with runs "
+                "that used the same file.",
+                parquet, hull_type, HULL_REPO_ID,
+            )
+            return Path(parquet)
+
+        from huggingface_hub import hf_hub_download
+
+        return Path(
+            hf_hub_download(
                 repo_id=HULL_REPO_ID,
                 filename=f"data/{hull_type}-00000-of-00001.parquet",
                 repo_type="dataset",
             )
+        )
+
+    @staticmethod
+    def _load(parquet: Path) -> pd.DataFrame:
         frame = pd.read_parquet(parquet, columns=["species_at_sites", "energy"])
+        # A no-op on every published split, all of which are complete; kept
+        # because an entry with no energy cannot enter a phase diagram.
         return frame.dropna(subset=["energy"]).reset_index(drop=True)
+
+    def _check_provenance(self) -> dict:
+        """Describe the loaded reference, and complain if it is not the full one.
+
+        The whole reference is the point of item 4 of the protocol: the hull has
+        to be LeMat's, not the training-side table with its element exclusions,
+        and not a subset of it.  The published splits are already the
+        ``e_above_hull <= 1 meV/atom`` slice of LeMat-Bulk, which is lossless
+        for the phase diagram, so any *further* shortfall is a real one.
+        """
+        expected = PUBLISHED_HULL_ENTRIES.get(self.spec.hull_type)
+        provenance = {
+            "hull_repo": HULL_REPO_ID,
+            "hull_type": self.spec.hull_type,
+            "source": str(self.source),
+            # hf_hub_download resolves through .../snapshots/<commit>/...
+            "revision": next(
+                (
+                    part
+                    for previous, part in zip(
+                        self.source.parts, self.source.parts[1:]
+                    )
+                    if previous == "snapshots"
+                ),
+                None,
+            ),
+            "entries": len(self.entries),
+            "expected_entries": expected,
+            "threshold_ev_per_atom": HULL_THRESHOLD_EV_PER_ATOM,
+        }
+        if expected is not None and len(self.entries) != expected:
+            logger.warning(
+                "The %s hull has %d entries, not the %d published: this is not "
+                "the full LeMat-Bulk reference, and e_above_hull from it is not "
+                "comparable with runs that used the full one.",
+                self.spec.hull_type, len(self.entries), expected,
+            )
+        else:
+            logger.info(
+                "Loaded %d %s hull entries from %s",
+                len(self.entries), self.spec.hull_type, self.source,
+            )
+        return provenance
 
     def subspace(self, composition: Composition) -> pd.DataFrame:
         """Hull entries whose elements are all present in *composition*."""
