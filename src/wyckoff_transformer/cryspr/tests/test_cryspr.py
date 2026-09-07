@@ -159,6 +159,126 @@ class TestFuncRunAllFailed(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# is_mace_calculator
+# ---------------------------------------------------------------------------
+
+def _calculator_from_module(module: str):
+    """An object whose class claims to be defined in *module*."""
+    klass = type("FakeCalculator", (), {"__module__": module})
+    return klass()
+
+
+class TestIsMaceCalculator(unittest.TestCase):
+    def test_mace_calculator_module_is_recognised(self):
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        self.assertTrue(is_mace_calculator(_calculator_from_module("mace.calculators.mace")))
+
+    def test_bare_mace_package_is_recognised(self):
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        self.assertTrue(is_mace_calculator(_calculator_from_module("mace")))
+
+    def test_subclass_defined_outside_mace_is_recognised(self):
+        """build_mace_calculator returns a local subclass, so the MRO must be walked."""
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        base = type("MACECalculator", (), {"__module__": "mace.calculators.mace"})
+        derived = type("_IsolatedMACECalculator", (base,), {
+            "__module__": "wyckoff_transformer.cryspr.calculator",
+        })
+        self.assertTrue(is_mace_calculator(derived()))
+
+    def test_other_backends_are_not_recognised(self):
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        for module in ("tace.interface.ase.calculator", "upet.calculator",
+                       "tensorpotential.calculator", "ase.calculators.emt"):
+            with self.subTest(module=module):
+                self.assertFalse(is_mace_calculator(_calculator_from_module(module)))
+
+    def test_a_package_merely_starting_with_mace_is_not_recognised(self):
+        """mace-torch is the only 'mace'; mace_layer or macetools are not it."""
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        for module in ("mace_extras.calculator", "macelike"):
+            with self.subTest(module=module):
+                self.assertFalse(is_mace_calculator(_calculator_from_module(module)))
+
+    def test_mock_calculator_is_not_recognised(self):
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        self.assertFalse(is_mace_calculator(MagicMock()))
+
+    def test_the_real_mace_calculator_class_is_recognised(self):
+        from wyckoff_transformer.cryspr.generator import is_mace_calculator
+        try:
+            from mace.calculators import MACECalculator
+        except ImportError:
+            self.skipTest("mace-torch is not installed")
+        # Instantiating MACECalculator needs a checkpoint; the detector only
+        # reads the class hierarchy, so an uninitialised instance is enough.
+        self.assertTrue(is_mace_calculator(MACECalculator.__new__(MACECalculator)))
+
+
+# ---------------------------------------------------------------------------
+# func_run — the clash guard is MACE-only
+# ---------------------------------------------------------------------------
+
+class TestFuncRunClashGuard(unittest.TestCase):
+    """The guard exists for MACE's short-range collapse, so it engages only there.
+
+    ``has_atomic_clash`` is patched to report a clash unconditionally: what is
+    under test is whether func_run consults it and discards the trial, not the
+    geometric criterion itself.
+    """
+
+    def _run(self, calculator, **kwargs):
+        from ase import Atoms
+        from ase.calculators.singlepoint import SinglePointCalculator
+        from wyckoff_transformer.cryspr.generator import func_run
+
+        relaxed = Atoms("Na2", positions=[[0, 0, 0], [2.8, 0, 0]],
+                        cell=[5.6, 5.6, 5.6], pbc=True)
+        relaxed.calc = SinglePointCalculator(relaxed, energy=-7.0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("wyckoff_transformer.cryspr.generator.single_pyxtal",
+                       return_value=relaxed.copy()), \
+                 patch("wyckoff_transformer.cryspr.generator.stepwise_relax",
+                       return_value=relaxed), \
+                 patch("wyckoff_transformer.cryspr.generator.has_atomic_clash",
+                       return_value=True) as mock_clash:
+                result = func_run(
+                    id_gene=0,
+                    wyckoffgene=NACL_GENE,
+                    calculator=calculator,
+                    output_dir=Path(tmp),
+                    n_trials=1,
+                    **kwargs,
+                )
+        return result, mock_clash
+
+    def test_non_mace_calculator_skips_the_guard(self):
+        result, mock_clash = self._run(_calculator_from_module("upet.calculator"))
+        mock_clash.assert_not_called()
+        self.assertIsNotNone(result[0], "the trial should have been kept")
+        self.assertEqual(result[2], -7.0)
+
+    def test_mace_calculator_engages_the_guard(self):
+        result, mock_clash = self._run(_calculator_from_module("mace.calculators.mace"))
+        mock_clash.assert_called_once()
+        self.assertEqual(result, (None, None, None, None, None),
+                         "the only trial clashed, so no structure survives")
+
+    def test_clash_guard_true_forces_the_guard_on_a_non_mace_calculator(self):
+        result, mock_clash = self._run(_calculator_from_module("upet.calculator"),
+                                       clash_guard=True)
+        mock_clash.assert_called_once()
+        self.assertEqual(result, (None, None, None, None, None))
+
+    def test_clash_guard_false_forces_the_guard_off_for_mace(self):
+        result, mock_clash = self._run(_calculator_from_module("mace.calculators.mace"),
+                                       clash_guard=False)
+        mock_clash.assert_not_called()
+        self.assertIsNotNone(result[0])
+
+
+# ---------------------------------------------------------------------------
 # Integration test — requires --run-relax and network access
 # ---------------------------------------------------------------------------
 

@@ -5,9 +5,11 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.io import write
+from ase.neighborlist import neighbor_list
 from ase.optimize import BFGS
 from ase.optimize.optimize import Optimizer
 from pyxtal import pyxtal
@@ -37,6 +39,81 @@ logger = logging.getLogger(__name__)
 #: measurement the ranking protocol rests on used, so changing it would
 #: invalidate the trial schedule those numbers set.
 _DEFAULT_IADM = Tol_matrix(prototype="atomic", factor=1.3)
+
+# Slightly more permissive tolerance used to *reject* collapsed structures after
+# relaxation.  Set below the generation factor (1.3) so that the few real
+# materials whose short metallic contacts graze the generation floor are not
+# discarded, while still catching the energy-lowering MACE collapse artifacts
+# (verified to sit comfortably below this floor).
+_CLASH_IADM = Tol_matrix(prototype="atomic", factor=1.1)
+
+#: Top-level package of the MACE ASE calculators, used to recognise a MACE
+#: calculator without importing MACE (an optional dependency, and the backend
+#: environments are mutually exclusive -- see
+#: :mod:`wyckoff_transformer.cryspr.mlips`).
+_MACE_PACKAGE = "mace"
+
+
+def is_mace_calculator(calculator: Calculator) -> bool:
+    """Return ``True`` if *calculator* is backed by MACE.
+
+    Matched on the calculator's class hierarchy rather than on a model name,
+    which is a free-form label, and rather than by importing MACE, which need
+    not be installed in the environment running a different backend.  The MRO
+    is walked because :func:`~wyckoff_transformer.cryspr.calculator.build_mace_calculator`
+    hands back a local subclass of ``MACECalculator``, so the concrete class is
+    defined in this project, not in MACE.
+
+    Args:
+        calculator: The ASE calculator used for relaxation.
+
+    Returns:
+        ``True`` if any class in the MRO comes from the ``mace`` package.
+    """
+    for klass in type(calculator).__mro__:
+        module = getattr(klass, "__module__", "") or ""
+        if module == _MACE_PACKAGE or module.startswith(_MACE_PACKAGE + "."):
+            return True
+    return False
+
+
+def has_atomic_clash(atoms: Atoms, iadm: Tol_matrix = _CLASH_IADM) -> bool:
+    """Return ``True`` if any pair of atoms is closer than the tolerance.
+
+    Each interatomic distance (including periodic images) is compared against
+    the species-pair minimum from *iadm*.  A relaxed structure that has
+    collapsed into overlapping atoms (a known artifact of MACE-MP-0's spurious
+    short-range energy basins, which produce unphysically low energies) is thus
+    rejected on a purely physical, geometry-based criterion.
+
+    The default *iadm* (:data:`_CLASH_IADM`, factor 1.1) is marginally more
+    permissive than the generation tolerance (:data:`_DEFAULT_IADM`, factor 1.3)
+    so that real structures whose contacts graze the generation floor are not
+    falsely discarded.
+
+    The collapse this guards against is a MACE pathology, so :func:`func_run`
+    engages the guard only for MACE calculators; this function itself is
+    potential-agnostic and can be called on any structure.
+
+    Args:
+        atoms: Structure to check.
+        iadm: PyXtal tolerance matrix defining per-species-pair minimum distances.
+
+    Returns:
+        ``True`` if at least one interatomic distance is below tolerance.
+    """
+    numbers = atoms.numbers
+    if len(numbers) == 0:
+        return False
+    unique = sorted({int(n) for n in numbers})
+    cutoff = max(iadm.get_tol(a, b) for a in unique for b in unique)
+    if cutoff <= 0:
+        return False
+    i_idx, j_idx, dists = neighbor_list("ijd", atoms, cutoff)
+    tols = np.array([iadm.get_tol(int(numbers[i]), int(numbers[j]))
+                     for i, j in zip(i_idx, j_idx)])
+    return bool(np.any(dists < tols))
+
 
 #: Suffix of the CIF holding the structure a trial actually kept.  The rattle
 #: stage is accepted on energy, so which stage's CIF is the final one is not
@@ -112,6 +189,7 @@ def func_run(
         rattle_stdev: float = RATTLE_STDEV,
         strain_stdev: float = RATTLE_STRAIN_STDEV,
         rattle_accept: float = RATTLE_ACCEPT_EV_PER_ATOM,
+        clash_guard: Optional[bool] = None,
         fmax: float = 0.01,
         optimizer: type[Optimizer] = BFGS,
 ) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float], Optional[str]]:
@@ -137,6 +215,10 @@ def func_run(
         rattle_stdev: Per-atom displacement of the perturbation, Å.
         strain_stdev: Cell strain of the perturbation, dimensionless.
         rattle_accept: Energy the rattle must win to be kept, eV/atom.
+        clash_guard: Discard a relaxed trial whose atoms have collapsed into
+            each other (:func:`has_atomic_clash`).  ``None``, the default,
+            engages the guard for MACE calculators only, which is where the
+            collapse comes from; ``True`` or ``False`` forces it either way.
         fmax: Force convergence criterion in eV/Å.
         optimizer: ASE local optimisation algorithm class.
 
@@ -149,6 +231,17 @@ def func_run(
     output_dir = Path(output_dir)
     gene_dir = output_dir / str(id_gene)
     gene_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolved once: the calculator is shared across trials, and an unguarded
+    # run should say so in the log rather than be inferred from its absence.
+    if clash_guard is None:
+        clash_guard = is_mace_calculator(calculator)
+        logger.debug(
+            "[%s-%s] Clash guard %s (auto: calculator %s MACE-backed)",
+            model_name, id_gene,
+            "on" if clash_guard else "off",
+            "is" if clash_guard else "is not",
+        )
 
     atoms_by_trial: dict[str, Atoms] = {}
     energy_by_trial: dict[str, float] = {}
@@ -183,8 +276,16 @@ def func_run(
                 logfile_prefix=formula,
                 logfile_postfix="relax",
             )
+            energy = atoms_relaxed.get_potential_energy()
+            if clash_guard and has_atomic_clash(atoms_relaxed):
+                logger.warning(
+                    "[%s-%s %s] Relaxed structure has atomic clashes "
+                    "(E = %.5f eV); discarding as unphysical.",
+                    model_name, id_gene, trial_key, energy,
+                )
+                continue
             atoms_by_trial[trial_key] = atoms_relaxed
-            energy_by_trial[trial_key] = atoms_relaxed.get_potential_energy()
+            energy_by_trial[trial_key] = energy
             # The kept structure, whichever stage produced it.
             write(
                 filename=str(trial_dir / f"{formula}{KEPT_CIF_SUFFIX}"),

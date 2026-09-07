@@ -211,8 +211,9 @@ HULL_REPO_ID = "LeMaterial/LeMat-Bulk-MLIP-Hull"
 #: a hull vertex sits at exactly 0, so no vertex can be cut by a positive
 #: threshold.  What it drops is entries strictly inside the hull, which
 #: ``PhaseDiagram`` would ignore anyway.  Do not confuse this reference with the
-#: training-side hull labels from ``scripts/compute_e_hull.py``, which exclude
-#: Yb, everything past Po and any chemistry of ten or more elements.
+#: training-side hull labels from
+#: :mod:`wyckoff_transformer.formula_energy.hull_table`, which are PBE energies
+#: against the whole archive; see docs/e_hull_definitions.md.
 HULL_THRESHOLD_EV_PER_ATOM = 0.001
 
 #: Rows in each published split, as of dataset revision

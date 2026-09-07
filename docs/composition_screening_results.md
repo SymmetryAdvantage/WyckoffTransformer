@@ -78,7 +78,7 @@ be used to falsify.
 `max_force <= 0.02`, inherited from the existing pipeline, keeps **95.6%** of
 Alexandria rows and **35.5%** of the ICSD-backed ones, because Materials Project
 reports forces from a different protocol and its median is 0.028. It is also
-inconsistent with the hull it would be measured against: `compute_e_hull.py`
+inconsistent with the hull it would be measured against: the hull table
 applies no such filter, so **17.9%** of the entries defining the deep hull and
 **52.2%** of the shallow one are above the cut.
 

@@ -65,7 +65,7 @@ protocol and its median is 0.028 -- so it is a provenance filter wearing a
 convergence costume, and provenance is the scarcest signal here.
 
 It is also inconsistent with the hull it would be measured against.
-`scripts/compute_e_hull.py` applies no force filter, so **17.9% of the entries
+The hull table applies no force filter, so **17.9% of the entries
 defining the deep hull, and 52.2% of those defining the shallow one, are above
 0.02** -- the shallow hull is dominated by Materials Project, which is where the
 high forces are. Filtering the training rows while comparing them to an unfiltered
@@ -178,7 +178,7 @@ It is Matbench Discovery's temporal logic without needing dates.
 The hull has to be genuinely recomputed rather than filtered: `e_hull` in the
 archive is measured against the deep hull *and clipped at zero*, so a structure
 below the shallow hull -- the case of interest -- cannot be recognised by
-subsetting rows. `scripts/compute_e_hull.py` rebuilds the phase diagrams.
+subsetting rows. `formula_energy/hull_table.py` rebuilds the phase diagrams.
 
 The two worlds also have to be put on one energy scale, and this is not a
 formality. A formation energy is measured against elemental references, and those

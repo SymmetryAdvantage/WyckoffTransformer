@@ -13,7 +13,7 @@ asked to pretend they are all equal.
 Three conditioning labels come out, all per structure, all in physical units:
 
 ``energy_above_hull``
-    ``e_hull`` from ``scripts/compute_e_hull.py``, eV/atom, against the archive's own
+    ``e_hull`` from ``formula_energy.hull_table``, eV/atom, against the archive's own
     phase diagram. Clipped at zero -- pymatgen's ``get_e_above_hull`` is already
     non-negative up to float noise, and one row lands at -2.7e-15.
 

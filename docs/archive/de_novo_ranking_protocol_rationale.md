@@ -269,11 +269,11 @@ elements are present, each with an elemental reference entry, and no entry has
 ten or more elements. Ra, Rn, At, Po, Am and Cm are absent because LeMat-Bulk
 has no such structures, not because anything filtered them.
 
-## Where the exclusions in the *other* hull come from
+## Where the exclusions in the *other* hull came from
 
-There are element exclusions in this repository's hull code, and they are **not**
-on this path and **not** from `lemat-genbench`. `scripts/compute_e_hull.py`
-refuses three classes of system outright:
+There *were* element exclusions in this repository's hull code — not on this
+path, and not from `lemat-genbench`. `scripts/compute_e_hull.py` refused three
+classes of system outright:
 
 ```python
 if "Yb" in chemsys_in_set:                      return None, None
@@ -301,21 +301,23 @@ argument of `get_energy_above_hull`, which is the same published slice described
 above, plus a `missing reference energies` error path for formation energies of
 elements with no chemical potential.
 
-What those exclusions do affect is the **training labels**: `e_hull` from
-`compute_e_hull.py` is what the conditioning datasets carry, and requiring it to
-be non-NaN drops 589,250 of 5,335,299 LeMat-Bulk rows — 579,217 of them for the
-Z ≥ 84 clause alone, while the ten-element clause has never once fired ([what
-every `e_hull` in this repo means](../e_hull_definitions.md), [dirty-data
-conditioning](../dirty_data_conditioning.md)). They never touch a generated
+What those exclusions affected was the **training labels**: `e_hull` is what the
+conditioning datasets carry, and requiring it to be non-NaN dropped 589,250 of
+5,335,299 LeMat-Bulk rows — 579,217 of them for the Z ≥ 84 clause alone, while
+the ten-element clause could never fire. The script was replaced by
+`formula_energy/hull_table.py` and the archive relabelled without the exclusions
+on 2026-09-07, recovering 589,249 of those rows while reproducing every
+pre-existing label bit for bit ([what every `e_hull` in this repo
+means](../e_hull_definitions.md), [dirty-data
+conditioning](../dirty_data_conditioning.md)). They never touched a generated
 structure's score — the published ORB hull scores Yb, U, Th and Pa compositions
 without complaint (1211 Yb entries in it), and `funnel.json` now reports
 `no_hull_energy`, the count of surviving structures the hull could not reach at
 all, so a silent exclusion on this side would be visible.
 
-Whether the training-side exclusions should stay is a separate question from
-this protocol, and worth revisiting — the labels are measured against LeMat-Bulk,
-which contains Yb and the actinides, and half a million rows is a lot to drop for
-a reason nobody wrote down.
+The provenance is recorded here because it was worth knowing where a filter with
+no stated reason came from, and because the same question is worth asking of the
+next one.
 
 ## Why the scoring half is reimplemented, not imported
 

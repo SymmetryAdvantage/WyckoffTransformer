@@ -17,12 +17,11 @@ built from that same MLIP.  Mixing them is what
 :mod:`wyckoff_transformer.evaluation.hull_mlips` exists to prevent.
 
 The reference is the *whole* published hull, and deliberately so.  Two other
-hulls exist in this repository and neither belongs here: the training labels
-from ``scripts/compute_e_hull.py``, which drop Yb, everything past Po and any
-chemistry of ten or more elements (588,499 rows of LeMat-Bulk, and the reason
-the conditioning dataset is smaller than the archive); and the deliberately
-shallow hull of ``formula_energy.answer_key``, rebuilt from a subset to create
-discoveries to find.  Scoring generated structures against either would put the
+hulls exist in this repository and neither belongs here: the PBE training labels
+from :mod:`wyckoff_transformer.formula_energy.hull_table`, which are DFT
+energies against the archive's own phase diagrams rather than an MLIP's; and the
+deliberately shallow hull of ``formula_energy.answer_key``, rebuilt from a
+subset to create discoveries to find.  Scoring generated structures against either would put the
 numerator and the threshold on different footings.  The published splits are
 LeMaterial's own ``e_above_hull <= 1 meV/atom`` slice of LeMat-Bulk, which
 removes only entries a phase diagram ignores; anything less than the full split
@@ -132,9 +131,8 @@ class HullEnergyCalculator:
     def _check_provenance(self) -> dict:
         """Describe the loaded reference, and complain if it is not the full one.
 
-        The whole reference is the point of item 4 of the protocol: the hull has
-        to be LeMat's, not the training-side table with its element exclusions,
-        and not a subset of it.  The published splits are already the
+        The whole reference is the point: the hull has to be LeMat's published
+        one, not the PBE training table, and not a subset of either.  The published splits are already the
         ``e_above_hull <= 1 meV/atom`` slice of LeMat-Bulk, which is lossless
         for the phase diagram, so any *further* shortfall is a real one.
         """
