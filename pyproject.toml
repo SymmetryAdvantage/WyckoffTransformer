@@ -52,6 +52,7 @@ wyformer-csp      = "wyckoff_transformer.cli.csp:main"
 wyformer-screen   = "wyckoff_transformer.cli.screen:main"
 wyformer-gene-screen = "wyckoff_transformer.cli.gene_screen:main"
 wyformer-dft-screen = "wyckoff_transformer.cli.dft_screen:main"
+wyformer-gene-novelty = "wyckoff_transformer.cli.gene_novelty:main"
 wyformer-hull-energies = "wyckoff_transformer.formula_energy.hull_table:main"
 
 [project.optional-dependencies]

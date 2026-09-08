@@ -215,6 +215,25 @@ the shortlist feeds the external DFT workflow. See the
 [DFT fixed-hull adversarial screening design](docs/dft_fixed_hull_attack.md) for
 the objective, estimator boundaries, ablations, and reporting protocol.
 
+### Generative novelty screening
+
+The energy screen trades novelty for stability, so it pairs with a second lever
+read off the generator itself. `wyformer-gene-novelty` scores each gene by
+`-log p(gene)` under the model that produced it -- a continuous novelty estimator
+that needs no reference set (AUC 0.93 against the fingerprint lookup, 0.81
+against post-relaxation structure novelty):
+
+```bash
+uv run wyformer-gene-novelty generated/<run>/wyckoff_genes.json.gz \
+    --model-path runs/<run> --condition energy_above_hull=0 \
+    --permutation-samples 64 --device cuda \
+    --out generated/<run>/gene_novelty.csv
+```
+
+Score the pool at the condition it was generated at. See
+[generative novelty screening](docs/generative_novelty_screen.md) for what the
+density is, how the two levers combine, and what the combination is worth.
+
 ## Ranking model variants (`wyformer-protocol`)
 
 For comparing WyFormer variants during development, `wyformer-protocol` runs the

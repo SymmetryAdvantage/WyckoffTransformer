@@ -227,6 +227,11 @@ Two results from it shape how the screen should be used:
   relaxed-structure novelty scores 2.75x at B=250 against the free lookup's
   2.78x, so there is no headroom. The alternatives that fail (epistemic sigma,
   composition provenance, a soft score penalty) are recorded in the report.
+- The generator's own likelihood is a second lever over the same pool, and it is
+  not a novelty predictor competing with that lookup: after the lookup has
+  settled novelty, the *least* surprising of the novel genes are the ones that
+  relax somewhere useful, and screening on that reaches **2.93x at B=250**. See
+  [generative novelty screening](generative_novelty_screen.md).
 
 ## Assumptions and exclusions
 
