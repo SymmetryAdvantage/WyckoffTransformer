@@ -37,6 +37,64 @@ not an evaluation of the generator.
 - **Analysis**: `scripts/analyse_dft_screen_uplift.py`, writing
   `generated/e9ywwsie_dft_attack/dft_screen_uplift.json`.
 
+## Headline: two axes
+
+Selection down the rows -- rank the whole pool, or deduplicate genes against
+the training set first -- and budget accounting across the columns, a gene
+against a relaxation. The two denominators differ because the trial schedule
+spends more relaxations on the high-DoF genes selection prefers, so the
+per-gene column flatters every ranked arm and the per-relaxation column is the
+one a compute objection is entitled to.
+
+Unfiltered pool: **MetaSUN 0.2892/gene, 121.9 per 1k relaxations**;
+**SUN 0.0102/gene, 4.3 per 1k relaxations**. Ranking is by
+`joint_score_adjusted` throughout; uplift is against those pool rates.
+
+### MetaSUN
+
+| budget | arm | hits | per gene | per relaxation | x gene | x relax | p |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 250 | naive: rank whole pool | 75 | 0.3000 | 0.1456 | 1.04 | 1.19 | 0.37 |
+| 250 | **smart: dedup, then rank** | 201 | **0.8040** | **0.3059** | **2.78** | **2.51** | 1.9e-67 |
+| 500 | naive: rank whole pool | 170 | 0.3400 | 0.1565 | 1.18 | 1.28 | 0.0053 |
+| 500 | **smart: dedup, then rank** | 378 | 0.7560 | 0.2836 | 2.61 | 2.33 | 2e-116 |
+| 1000 | naive: rank whole pool | 403 | 0.4030 | 0.1812 | 1.39 | 1.49 | 2.9e-18 |
+| 1000 | **smart: dedup, then rank** | 664 | 0.6640 | 0.2476 | 2.30 | 2.03 | 1.2e-172 |
+| 2000 | naive: rank whole pool | 811 | 0.4055 | 0.1763 | 1.40 | 1.45 | 3.4e-49 |
+| 2000 | **smart: dedup, then rank** | 1034 | 0.5170 | 0.1932 | 1.79 | 1.58 | 1.2e-185 |
+
+### SUN
+
+| budget | arm | hits | per gene | per relaxation | x gene | x relax | p |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 250 | naive: rank whole pool | 4 | 0.0160 | 0.0078 | 1.57 | 1.80 | 0.25 |
+| 250 | **smart: dedup, then rank** | 13 | **0.0520** | **0.0198** | **5.09** | **4.59** | 7.9e-07 |
+| 500 | naive: rank whole pool | 13 | 0.0260 | 0.0120 | 2.54 | 2.78 | 0.0012 |
+| 500 | **smart: dedup, then rank** | 16 | 0.0320 | 0.0120 | 3.13 | 2.79 | 2.1e-05 |
+| 1000 | naive: rank whole pool | 17 | 0.0170 | 0.0076 | 1.66 | 1.77 | 0.018 |
+| 1000 | **smart: dedup, then rank** | 26 | 0.0260 | 0.0097 | 2.54 | 2.25 | 7.3e-07 |
+| 2000 | naive: rank whole pool | 32 | 0.0160 | 0.0070 | 1.57 | 1.61 | 0.00085 |
+| 2000 | **smart: dedup, then rank** | 35 | 0.0175 | 0.0065 | 1.71 | 1.52 | 3.2e-05 |
+
+Reading it:
+
+- **Selection is worth far more than the accounting choice costs.** Moving
+  from naive to smart is 2.7x at B=250; moving from per-gene to per-relaxation
+  costs 10%. Conceding the stricter denominator does not endanger the claim.
+- **The naive arm is where the per-relaxation number is kinder**, not harsher
+  (1.19x against 1.04x at B=250): ranking the raw pool picks *low*-DoF genes,
+  2.06 trials each against the pool's 2.372. Deduplication reverses that
+  (2.63), which is why the smart arm is the one that gives 0.27x back.
+- **Dedup rescues SUN.** On the raw pool SUN is 1.57x at B=250 and not
+  significant (p=0.25, 4 hits). After dedup it is 5.09x per gene and 4.59x per
+  relaxation on 13 hits, p=8e-07 -- the largest uplift in either table, since
+  the pool's SUN base rate is so low that any real enrichment shows as a big
+  multiple. Thirteen hits is still thirteen hits; the multiplier is not precise,
+  but it is no longer consistent with chance.
+- **Both metrics decay with budget** and for the same reason: at B=2000 the arm
+  has taken 58% of the 3,439 gene-novel genes and is converging on that
+  subset's base rate. Selection buys the most where the budget is scarcest.
+
 ## Pool baseline
 
 | stage | count | per sampled gene |
@@ -246,15 +304,18 @@ because the formula-level variant does.
 | `composition_score_naive` | 2.35x | 1.96x | 2.35x | 1.66x |
 | `gene_score` | 2.35x | 2.74x | 1.96x | 1.42x |
 
-SUN uplift is positive everywhere but the pool holds only 51 stable structures,
-so every small-budget cell rests on 4-10 hits and the individual multipliers are
-not separable from each other. The defensible statement is the B=2000 column,
-where all five arms land in 1.4-1.7x with p < 0.01. The novelty pre-filter does
-**not** help SUN (1.57x at B=250, 0.64x at B=2000) — stable *and* novel is rare
-enough here that this pool cannot resolve it. Answering the SUN question
-properly needs a larger pool or a generator with a higher stable rate. This is
-the one place where the deduplication step cannot be defended on results,
-because it has none to show.
+On the raw pool the SUN column is positive everywhere but rests on 4-17 hits
+per cell, and the individual multipliers are not separable from each other. The
+defensible statement for the unfiltered arms is the B=2000 row, where all five
+land in 1.4-1.7x with p < 0.01.
+
+Deduplication changes that: gene-novel + `joint_score_adjusted` reaches 5.09x
+per gene at B=250 on 13 hits, p=8e-07 (headline table above). An earlier read
+of this pool, using the *formula*-level filter, concluded that pre-filtering
+does not help SUN; that was a property of the formula filter, which discards
+too many novel structures sitting on known compositions, not of deduplication.
+The pool still holds only 51 stable structures in total, so the size of the
+effect remains poorly determined even though its existence no longer is.
 
 ## Verdict
 
@@ -264,9 +325,9 @@ matter more than the headline number:
 1. Used as a ranker on the raw pool it delivers ~1.4x MetaSUN at large budget
    and nothing at small budget. Ranked *after* deduplicating the genes against
    the training set -- the free fingerprint lookup the protocol already
-   performs -- it delivers **2.78x at B=250** on a per-gene budget and 2.51x
-   once normalised by relaxations spent. Report both denominators and describe
-   the step as training-set deduplication, which is what it is.
+   performs -- it delivers **2.78x MetaSUN and 5.09x SUN at B=250** per gene,
+   or 2.51x and 4.59x per relaxation spent. Report both denominators and
+   describe the step as training-set deduplication, which is what it is.
 2. It is not usable as a *filter* in its intended conservative form. Only 8 of
    5,000 genes clear `joint_score_adjusted <= 0` and 35 clear
    `composition_score_adjusted <= 0`; the `max` fusion has essentially no pass

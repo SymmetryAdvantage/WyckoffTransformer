@@ -33,6 +33,8 @@ SCORES = (
 #: The score the per-bin funnel is cut on: the conservative joint score is the
 #: screen's headline ranking, so its bins are the ones worth reading.
 DECILE_SCORE = "joint_score_adjusted"
+#: The arm the headline table reports; the others stay available as ablations.
+RANK_BY = "joint_score_adjusted"
 METASTABLE_THRESHOLD = 0.1
 STABLE_THRESHOLD = 0.0
 
@@ -303,7 +305,40 @@ def main() -> None:
                           f"({arm['uplift_vs_pool']:.2f}x gene, "
                           f"{arm['uplift_per_relaxation']:.2f}x relax, "
                           f"p={arm['p_value_vs_rest']:.3g})")
+    _print_headline(report)
     print(f"\nwritten: {out}")
+
+
+def _print_headline(report: dict) -> None:
+    """The comparison the write-up leads with, on both denominators.
+
+    Two axes: selection (rank the whole pool, or deduplicate against the
+    training set first) against budget accounting (a gene, or a relaxation --
+    which differ because the trial schedule spends more on the high-DoF genes
+    selection prefers).
+    """
+    pool = report["pool_rate"]
+    print("\n" + "=" * 78)
+    print("HEADLINE: naive ranking vs training-set dedup, per gene and per relaxation")
+    print("=" * 78)
+    for metric in ("metasun", "sun"):
+        base = pool[metric]
+        print(f"\n{metric.upper()}  unfiltered pool: {base['per_submitted']:.4f}/gene, "
+              f"{1000 * base['per_relaxation']:.1f} per 1k relaxations")
+        print(f"  {'budget':>6} {'arm':<24} {'hits':>5} {'/gene':>8} {'/relax':>8} "
+              f"{'x gene':>7} {'x relax':>8} {'p':>10}")
+        for budget, entry in report["budgets"].items():
+            arms = entry[metric]
+            rows = (("naive: rank whole pool", arms.get(RANK_BY)),
+                    ("smart: dedup, then rank",
+                     arms.get("gene_novel_only", {}).get(RANK_BY)))
+            for label, arm in rows:
+                if arm is None:
+                    continue
+                print(f"  {budget:>6} {label:<24} {arm['hits']:>5} "
+                      f"{arm['per_submitted']:>8.4f} {arm['per_relaxation']:>8.4f} "
+                      f"{arm['uplift_vs_pool']:>7.2f} {arm['uplift_per_relaxation']:>8.2f} "
+                      f"{arm['p_value_vs_rest']:>10.2g}")
 
 
 if __name__ == "__main__":
