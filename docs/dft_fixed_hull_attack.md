@@ -216,12 +216,17 @@ Two results from it shape how the screen should be used:
   `joint_score_adjusted <= 0`.
 - Stability and novelty are anti-correlated under the screen -- its best decile
   is 83% already-known formulas -- so ranking the raw pool nets only ~1.4x
-  MetaSUN. Ranking after dropping the formulas the composition ensemble was
-  *trained* on gives 2.14x at B=250. Report it as deduplication against
-  training data, restricted to the training split, so nothing the novelty
-  metric could hold out is consulted; the report section "What the novelty
-  filter is actually using" has the alternatives that were tried and the two
-  that do not work.
+  MetaSUN. Ranking *after* deduplicating genes against the training set, using
+  the fingerprint lookup `wyformer-protocol --stage screen` already writes to
+  `screen.json`, gives **2.78x at B=250** (2.51x per relaxation spent). Novelty
+  is scored against the training set by convention, so this is deduplication
+  against training data, not a novelty filter -- report it as such, and report
+  both denominators, because the ranked slices are higher-DoF and the trial
+  schedule spends 11% more relaxations on them.
+- A learned "is this gene known" model is not worth training: an oracle on
+  relaxed-structure novelty scores 2.75x at B=250 against the free lookup's
+  2.78x, so there is no headroom. The alternatives that fail (epistemic sigma,
+  composition provenance, a soft score penalty) are recorded in the report.
 
 ## Assumptions and exclusions
 

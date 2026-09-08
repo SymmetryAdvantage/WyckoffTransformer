@@ -65,18 +65,31 @@ def outcomes(protocol_dir: Path) -> pd.DataFrame:
     # A representative stands for every sampled gene with its fingerprint, so a
     # per-sampled-gene rate weights it by that count.
     result["sampled"] = pd.Series(counts).reindex(result.index).fillna(1).astype(int)
+    # A gene is not one relaxation: the trial schedule spends more of them on
+    # high-DoF genes, and selection correlates with DoF, so a per-gene budget
+    # quietly hands the ranked arms more compute than the random one.
+    result["n_trials"] = frame["n_trials"].reindex(result.index).fillna(1).astype(int)
+    # The protocol already fingerprints every gene against the reference set --
+    # the same set novelty is scored against, per the MatterGen convention.
+    # That lookup is free and needs no model.
+    result["gene_novel"] = result.index.isin([int(i) for i in screen.get("novel", [])])
     return result
 
 
 def _rate(selected: pd.DataFrame, column: str, n_sampled_total: int) -> dict:
     """One arm's hit rate against both denominators."""
     hits = selected[column]
+    trials = int(selected["n_trials"].sum())
     return {
         "n_submitted": int(len(selected)),
         "hits": int(hits.sum()),
         "per_submitted": float(hits.mean()) if len(selected) else float("nan"),
         "per_sampled_gene": float(
             (selected.loc[hits, "sampled"].sum()) / n_sampled_total),
+        "n_trials": trials,
+        "trials_per_gene": float(selected["n_trials"].mean()) if len(selected) else float("nan"),
+        # The denominator a compute-cost objection actually asks for.
+        "per_relaxation": float(hits.sum() / trials) if trials else float("nan"),
     }
 
 
@@ -175,9 +188,10 @@ def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict
     # reference set already holds, so ranking the raw pool spends its skill on
     # genes novelty will reject. Ranking inside the novel-formula subset is the
     # same screen with that overlap removed.
-    novel_only = frame[~frame["formula_known"]] if "formula_known" in frame else None
-    if novel_only is not None:
-        report["n_novel_formula"] = int(len(novel_only))
+    subsets = {"gene_novel": frame[frame["gene_novel"]]}
+    if "formula_known" in frame:
+        subsets["formula_absent"] = frame[~frame["formula_known"]]
+    report["subset_sizes"] = {name: int(len(sub)) for name, sub in subsets.items()}
 
     for budget in budgets:
         if budget > len(frame):
@@ -193,29 +207,39 @@ def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict
                 arm["uplift_vs_pool"] = (
                     arm["per_submitted"] / frame[metric].mean()
                     if frame[metric].mean() else float("nan"))
+                arm["uplift_per_relaxation"] = (
+                    arm["per_relaxation"]
+                    / (frame[metric].sum() / frame["n_trials"].sum()))
                 arm["p_value_vs_rest"] = _p_value(
                     arm["hits"], len(selected),
                     int(rest[metric].sum()), len(rest))
                 arms[score] = arm
-            if novel_only is not None:
+            pool_rate = frame[metric].mean()
+            pool_per_relaxation = frame[metric].sum() / frame["n_trials"].sum()
+            for name, subset in subsets.items():
                 restricted = {}
                 for score in SCORES:
-                    selected = novel_only.nsmallest(budget, score, keep="first")
+                    selected = subset.nsmallest(budget, score, keep="first")
                     if len(selected) < budget:
                         continue
                     rest = frame.drop(index=selected.index)
                     arm = _rate(selected, metric, n_sampled_total)
                     arm["uplift_vs_pool"] = (
-                        arm["per_submitted"] / frame[metric].mean()
-                        if frame[metric].mean() else float("nan"))
+                        arm["per_submitted"] / pool_rate if pool_rate else float("nan"))
+                    # The same arm judged on relaxations rather than genes. It is
+                    # the smaller number, because the ranked slices are higher-DoF
+                    # and the trial schedule pays for that.
+                    arm["uplift_per_relaxation"] = (
+                        arm["per_relaxation"] / pool_per_relaxation
+                        if pool_per_relaxation else float("nan"))
                     arm["p_value_vs_rest"] = _p_value(
                         arm["hits"], len(selected),
                         int(rest[metric].sum()), len(rest))
                     # Flags the point where the budget has eaten the subset and
                     # the arm has decayed into that subset's base rate.
-                    arm["fraction_of_subset"] = float(budget / len(novel_only))
+                    arm["fraction_of_subset"] = float(budget / len(subset))
                     restricted[score] = arm
-                arms["novel_formula_only"] = restricted
+                arms[f"{name}_only"] = restricted
             entry[metric] = arms
         report["budgets"][budget] = entry
     return report
@@ -263,18 +287,22 @@ def main() -> None:
             print(f"\n--- {metric} at budget {budget} (per submitted) ---")
             for name, arm in arms.items():
                 if name == "random":
-                    print(f"  {name:28s} {arm['per_submitted']:.4f} "
+                    print(f"  {name:38s} {arm['per_submitted']:.4f} "
                           f"[{arm['per_submitted_p5']:.4f}, {arm['per_submitted_p95']:.4f}]")
-                elif name == "novel_formula_only":
+                elif name.endswith("_only"):
+                    tag = name[:-len("_only")]
                     for score, restricted in arm.items():
-                        print(f"  {'novel-only ' + score:28s} "
+                        print(f"  {tag + ' + ' + score:38s} "
                               f"{restricted['per_submitted']:.4f} "
-                              f"({restricted['uplift_vs_pool']:.2f}x, "
+                              f"({restricted['uplift_vs_pool']:.2f}x gene, "
+                              f"{restricted['uplift_per_relaxation']:.2f}x relax, "
                               f"p={restricted['p_value_vs_rest']:.3g}, "
                               f"{restricted['fraction_of_subset']:.0%} of subset)")
                 else:
-                    print(f"  {name:28s} {arm['per_submitted']:.4f} "
-                          f"({arm['uplift_vs_pool']:.2f}x, p={arm['p_value_vs_rest']:.3g})")
+                    print(f"  {name:38s} {arm['per_submitted']:.4f} "
+                          f"({arm['uplift_vs_pool']:.2f}x gene, "
+                          f"{arm['uplift_per_relaxation']:.2f}x relax, "
+                          f"p={arm['p_value_vs_rest']:.3g})")
     print(f"\nwritten: {out}")
 
 
