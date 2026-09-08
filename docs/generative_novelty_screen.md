@@ -83,144 +83,61 @@ pool, exactly as `scripts/analyse_dft_screen_uplift.py` does.
 
 ## What it is worth
 
-Measured on `generated/e9ywwsie_dft_attack`: 4989 relaxed representatives,
-68.9% novel by fingerprint, pool MetaSUN 0.289 and SUN 0.0102.
+Measured on `generated/e9ywwsie_dft_attack` -- 4,989 relaxed representatives,
+68.9% novel by fingerprint, pool MetaSUN 0.289 and SUN 0.0102. The full study,
+with the convergence check, the band surface, the split-half validation and the
+per-column breakdown of what actually gets submitted, is
+[the `e9ywwsie` generative novelty report](archive/e9ywwsie_generative_novelty_report.md).
+Four results shape how the lever should be used.
 
-### It is a novelty estimator
+**It is a novelty estimator, and it loses to the free lookup.** AUC 0.926 against
+gene novelty and 0.807 against post-relaxation structure novelty, against the
+fingerprint lookup's 1.000 and 0.834. It is a proxy for something already
+computed exactly; its value is needing no reference set. `surprisal_per_site` is
+not an estimator at all (AUC 0.467) -- do not "normalise for length".
 
-| AUC against | `surprisal` | fingerprint lookup |
-| --- | --- | --- |
-| gene novelty (the lookup itself) | **0.926** | 1.000 |
-| structure novelty, after relaxation | 0.807 | **0.834** |
+**It prices novelty in stability.** Spearman +0.472 against `e_above_hull`. The
+most typical decile is 82.6% metastable and 7.4% novel; the most surprising is
+20.0% metastable and 100% novel; MetaSUN peaks in the *fourth* decile at 40.5%.
+Maximising novelty is not the objective.
 
-It does not beat the lookup, and it was never going to: gene novelty is exactly
-what the lookup computes, and the surprisal is a 0.93-AUC proxy for it. What it
-has instead is that it needs no reference set -- which is what makes it usable on
-a model whose training archive is not to hand, or on a pool being triaged against
-a reference nobody has fingerprinted.
+**Lookup-free, the two estimators need each other.** At B=250 the energy critic
+alone is worth 1.04x MetaSUN and the likelihood alone 1.32x (its best band, spent
+at random inside it -- ranking on it in either direction is worse than random).
+Together, keeping a surprisal band and ranking it by energy gives **2.48x**, well
+above the 1.37x their product implies, and holds **2.41x** split-half. That is
+about 87% of the lookup's 2.78x with no reference set at all. The band surface is
+a plateau, so the setting needs no tuning; soft rank fusion is worse everywhere.
 
-`surprisal_per_site` is not a novelty estimator at all: 0.467 against gene
-novelty, which is no signal. The properly normalised log-density is the quantity
-that works, and dividing it by the site count destroys it. Both are computed so
-that this stays checkable rather than assumed.
+**With the lookup, the lever flips sign and beats it.** Once novelty is
+guaranteed, low surprisal predicts MetaSUN inside the novel subset (AUC 0.657),
+and the mechanism is stability rather than more novelty (0.658 against
+metastability, 0.533 against structure novelty). Fingerprint-novel, least
+surprising 30%, then energy: **2.93x MetaSUN and 5.87x SUN at B=250**, against
+the lookup's 2.78x and 5.09x. Novel *and* surprising is the worst arm on the
+board.
 
-### It prices novelty in stability
+## Caveats
 
-Spearman(`surprisal`, `e_above_hull`) = **+0.472**: the more surprising the gene,
-the worse it relaxes. The funnel is the operating-point chart --
-
-| decile | median e_hull | gene novel | metastable | MetaSUN |
-| --- | --- | --- | --- | --- |
-| 0 (most typical) | 0.024 | 7.4% | 82.6% | 9.6% |
-| 3 | 0.078 | 59.5% | 58.1% | **40.5%** |
-| 6 | 0.127 | 95.0% | 38.7% | 34.9% |
-| 9 (most surprising) | 0.184 | 100.0% | 20.0% | 17.2% |
-
--- and it says plainly that maximising novelty is not the objective. MetaSUN
-peaks in the fourth decile, where the gene is more likely novel than not and
-still relaxes somewhere.
-
-### As a screen, at a 250-gene budget
-
-| arm | MetaSUN | x pool | SUN | x pool |
-| --- | --- | --- | --- | --- |
-| random | 0.289 | 1.00 | 0.010 | 1.00 |
-| energy only | 0.300 | 1.04 | 0.016 | 1.57 |
-| likelihood only (best band, random inside) | 0.381 | 1.32 | -- | -- |
-| surprisal band (drop 40% typical, 20% extreme) -> energy | 0.716 | 2.48 | -- | -- |
-| fingerprint-novel -> energy | 0.804 | 2.78 | 0.052 | 5.09 |
-| **fingerprint-novel, least-surprising 30% -> energy** | **0.848** | **2.93** | **0.060** | **5.87** |
-
-Two things to read off this, and the second is the one that is not obvious.
-
-**Without the reference set, the two estimators together recover most of the
-lookup's gain -- and neither is worth much alone.** At B=250:
-
-| lookup-free arm | MetaSUN | x pool |
-| --- | --- | --- |
-| random | 0.289 | 1.00 |
-| energy only | 0.300 | 1.04 |
-| likelihood only, rank most surprising | 0.160 | 0.55 |
-| likelihood only, rank least surprising | 0.092 | 0.32 |
-| likelihood only, best band, drawn at random inside it | 0.381 | 1.32 |
-| **both: band, then rank by energy** | **0.716** | **2.48** |
-
-Ranking on the likelihood in *either* direction is worse than random, because its
-useful signal is a band and not a direction -- the most typical genes are the ones
-the archive already holds and the most surprising ones relax nowhere. The fair
-single-lever arm is therefore the best band spent at random inside itself, since
-the likelihood offers no ordering within a band: 1.32x, and 1.30x held out.
-
-The combination is worth far more than either, and more than their product
-(1.04 x 1.32 = 1.37 against an observed 2.48). That is the first lever's problem
-being solved rather than two independent gains stacking: the energy ranking on
-its own spends itself on the low-lying genes the archive already has -- its best
-decile is 83% known formulas -- and the band removes exactly those before the
-ranking runs, so the ranking's skill lands on candidates novelty will not reject.
-Each lever supplies what the other lacks: the band has no ordering inside it, and
-the ranking has no idea what is already known.
-
-The funnel says what shape the band should have: the most typical genes
-are the ones already in the archive, and the most surprising ones relax nowhere,
-so the filter is a *band* rather than a threshold. Keeping a surprisal quantile
-band and then ranking that by energy, at a 250-gene budget:
-
-| drop bottom \ keep up to | 0.70 | 0.80 | 0.90 | 1.00 |
-| --- | --- | --- | --- | --- |
-| 0.00 | 1.04 | 1.05 | 1.05 | 1.04 |
-| 0.20 | 2.17 | 2.12 | 2.05 | 2.01 |
-| 0.30 | 2.41 | 2.45 | 2.42 | 2.39 |
-| 0.40 | 2.35 | **2.48** | 2.48 | 2.45 |
-| 0.60 | -- | 2.03 | 2.25 | 2.20 |
-
-The surface is a plateau, not a peak: everything in `drop 0.3-0.5` x `keep to
-0.7-1.0` is 2.3-2.5x, so the setting does not need tuning to work. Dropping the
-most typical third or so is what does the work; cutting the surprising tail as
-well adds about 0.05x. Choosing the band on half the pool and spending the budget
-on the other half gives **2.41x** held out over 40 splits (2.18x at B=500, 1.96x
-at B=1000), against 2.48x in sample -- so almost none of the grid maximum is
-selection bias.
-
-The soft alternative -- rank by a weighted sum of the two scores' percentile
-ranks, excluding nothing -- peaks at a novelty weight near 0.3 and is worse
-everywhere: 2.31x at B=250, 2.14x at B=500. A low-energy but utterly typical gene
-can buy its way back in under fusion, and it is exactly the gene the archive
-already has.
-
-So the lookup-free screen reaches about 87% of the fingerprint filter's uplift
-(2.41x against 2.78x at B=250) using nothing but the generator and the energy
-critic.
-
-**With the reference set, the estimator flips sign and beats it.** Once novelty
-is *guaranteed* by the lookup, the surprisal stops being a novelty estimator and
-becomes a plausibility one. Inside the novel subset (3439 genes, MetaSUN 0.368),
-low surprisal predicts MetaSUN at AUC 0.657 -- and the mechanism is stability,
-not more novelty: 0.658 against metastability against only 0.533 against
-structure novelty. Dropping the 70% the model finds most improbable and ranking
-the rest by energy beats the lookup alone -- 0.848 against 0.804 MetaSUN, 2.72x
-against 2.51x per relaxation, and SUN 5.87x against 5.09x.
-
-Stacking the two in the intuitive direction -- novel *and* surprising -- is the
-worst combination on the board (2.13x). Novelty and plausibility are the two
-things being traded, and the fingerprint lookup already bought the novelty.
-
-This does not contradict the earlier finding that a learned "is this gene known"
-model has no headroom -- an oracle on relaxed-structure novelty scores 2.75x
-against the lookup's 2.78x. The gain here is not from predicting novelty better.
-It is from a quantity the novelty question does not contain: how ordinary the
-gene is, which is what survives once novelty is settled.
-
-### Caveats
-
-* The `least-surprising` gain is a small-budget effect. At a 1000-gene budget the
-  same arm gives 2.16x against the lookup's 2.30x: the novel-and-plausible subset
-  has been exhausted and the filter is only removing candidates. Choose the keep
+* **MetaSUN is not a discovery rate.** The lookup-free arm's headline 71.6%
+  MetaSUN at B=250 is "within 0.1 eV/atom of the ORB hull, valid, unique and
+  novel". Its *stable* fraction is 1.6%, below the pool's own 2.8%, and its SUN
+  rate is 1.2% against a pool 1.0% -- essentially no gain. The band discards the
+  most typical genes, and that is where the archive-like, genuinely stable
+  structures live. Validity and uniqueness are ~99% and are not the binding
+  constraint; the "Meta" is.
+* **The gains decay with budget.** The `least-surprising` arm is 2.93x at B=250
+  and 2.16x at B=1000, below the lookup's own 2.30x there. Choose the keep
   fraction against the budget, not once and for all.
-* SUN rests on 51 stable structures in the whole pool, so every SUN multiplier
-  here is a handful of hits. MetaSUN is the number to argue from.
-* The hull behind `e_above_hull` is ORB's, and the energy screen's is PBE. This
-  measures whether the rankings carry signal, not a DFT claim.
-* The pool was generated by `e9ywwsie` and scored by `e9ywwsie`. The surprisal is
-  then the sampler's own density, which is the right quantity for triaging that
-  sampler's output; scoring one model's pool with another model is a different
+* **SUN is unresolved.** 51 stable structures in the whole pool, 15 found by the
+  best arm at B=250 and 3 by the lookup-free one. No SUN multiplier here rests on
+  enough hits to argue from.
+* **The hull is ORB and the energy screen's is PBE**, so this measures whether
+  the rankings carry signal, not a DFT claim.
+* **A gene is not a relaxation.** 250 selected genes cost 680 relaxations against
+  the pool average of 2.37 per gene, because selection prefers high-DoF genes.
+  Every arm is reported on both denominators.
+* **The pool was generated by `e9ywwsie` and scored by `e9ywwsie`**, so the
+  surprisal is the sampler's own density -- the right quantity for triaging that
+  sampler's output. Scoring one model's pool with another model is a different
   and untested question.

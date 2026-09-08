@@ -343,6 +343,17 @@ Pass-set sizes at the `score <= 0` threshold, for reference:
 | `gene_score` | 207 |
 | `composition_score_naive` | 309 |
 
+## Follow-up
+
+The second lever over this same pool -- the generator's own likelihood as a
+novelty estimator -- is measured in
+[the `e9ywwsie` generative novelty report](e9ywwsie_generative_novelty_report.md).
+It does not overturn anything here. It does qualify one conclusion: a learned
+novelty *predictor* has no headroom against the free lookup, as found below, but
+the likelihood used the other way round -- as a plausibility prior over the genes
+the lookup has already called novel -- raises MetaSUN from 2.78x to 2.93x at
+B=250.
+
 ## Reproduction
 
 ```

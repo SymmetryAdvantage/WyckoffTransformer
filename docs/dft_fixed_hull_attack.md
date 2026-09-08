@@ -230,8 +230,10 @@ Two results from it shape how the screen should be used:
 - The generator's own likelihood is a second lever over the same pool, and it is
   not a novelty predictor competing with that lookup: after the lookup has
   settled novelty, the *least* surprising of the novel genes are the ones that
-  relax somewhere useful, and screening on that reaches **2.93x at B=250**. See
-  [generative novelty screening](generative_novelty_screen.md).
+  relax somewhere useful, and screening on that reaches **2.93x at B=250**. With
+  no lookup at all, energy plus likelihood reach 2.41x. See
+  [generative novelty screening](generative_novelty_screen.md) and its
+  [measurement report](archive/e9ywwsie_generative_novelty_report.md).
 
 ## Assumptions and exclusions
 
