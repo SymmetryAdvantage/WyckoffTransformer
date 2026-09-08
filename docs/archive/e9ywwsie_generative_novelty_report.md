@@ -24,16 +24,23 @@ do the job with no reference lookup at all.
 - **Generator / scorer**: wandb run `e9ywwsie`, checkpoint `runs/e9ywwsie`. The
   likelihood is read from the same model that produced the pool, so it is the
   sampler's own density.
-- **Conditioning**: scored at `energy_above_hull=0`. The generation command was
-  not logged and the two surviving records disagree -- the first report says
-  "sampled unconditionally", the working notes say `--condition-value 0`. The
-  likelihood decides it: mean log p over 600 genes is maximised at the boundary
-  and falls monotonically away from it (-18.78 at 0, -19.96 at 0.1, -24.56 at
-  0.5, -27.76 at 1.0), which is what a sample drawn at zero looks like. Note
-  that `wyformer-generate` can only sample the conditioning from training data
-  when `--use-cached-tensors` or `--calibrate` is passed, so the unconditional
-  reading also requires a flag nobody recorded. Scoring at zero is therefore at
-  minimum the best-fitting conditional, which is what the ranking needs.
+- **Conditioning**: scored at `energy_above_hull=0`, which is what "sampled
+  unconditionally" means for a conditional WyFormer, and why the first report and
+  the working notes describe this pool both ways. Every model in the screen
+  conditions on some quality channel -- `energy_above_hull` for the generators
+  here, `max_force` for the gene critic, a formation-energy delta for other
+  variants -- and untargeted sampling asks for the clean limit of whatever those
+  channels are, all at zero, rather than dropping the conditioning. It is the
+  same convention `build_clean_relaxation_condition` already applies on the
+  critic side, where a generated gene is scored at `max_force = 0` because it has
+  not been relaxed yet. `e9ywwsie` carries the single `energy_above_hull`
+  channel, so its clean limit is one number.
+
+  The likelihood agrees the pool sits there: mean log p over 600 genes is highest
+  at zero and falls monotonically away from it (-18.78 at 0, -19.96 at 0.1,
+  -24.56 at 0.5, -27.76 at 1.0). Since the channels differ by checkpoint, a pool
+  scored with a model trained on a different conditioning has to be given that
+  model's clean limit, not this one.
 - **Novelty scoring** (`wyformer-gene-novelty`): 64 representation draws per
   gene, seed 0, one A100. 5,000 of 5,000 genes scored, ~6 minutes.
 - **Outcomes**: `generated/e9ywwsie_dft_attack/protocol/structures.csv`, from the

@@ -11,6 +11,13 @@ worth a relaxation slot in a campaign whose objective is *new* stable matter.
 Score it at the condition the pool was generated at.  The density a sample came
 from is the conditional one, and a novelty number read off a different
 conditioning is a number about a different generator.
+
+For an untargeted pool that is the model's *clean limit*, not the absence of
+conditioning: a conditional WyFormer has no unconditional mode, and sampling
+"unconditionally" means asking for the ideal value of every quality channel the
+checkpoint was trained on -- ``energy_above_hull=0`` for the e-hull generators,
+``max_force=0`` elsewhere.  The channels differ by checkpoint, so check
+``trainer.condition_features``.
 """
 from __future__ import annotations
 
@@ -54,10 +61,13 @@ def score_genes(
     cond = None
     if trainer.condition_features:
         if condition_values is None:
+            names = list(trainer.condition_features)
             raise ValueError(
-                f"This generator is conditioned on {list(trainer.condition_features)}. "
-                "Pass --condition NAME=VALUE at the value the pool was generated at: an "
-                "unconditional score would be a density the pool was not drawn from.")
+                f"This generator is conditioned on {names}. Pass --condition NAME=VALUE "
+                "at the value the pool was generated at; there is no unconditional "
+                "density to fall back on. An untargeted pool was generated at this "
+                "model's clean limit, so that is "
+                + " ".join(f"--condition {name}=0" for name in names) + ".")
         cond = trainer.build_condition_from_values(
             condition_values, len(records), device=trainer.device)
     scored = score_gene_likelihood(

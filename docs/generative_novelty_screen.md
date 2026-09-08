@@ -66,6 +66,17 @@ stable from 32 draws (Spearman 0.988 between 16 and 32, 0.996 between 32 and 64)
 came from is the conditional one, and a novelty number read off a different
 conditioning is a number about a different generator.
 
+For an untargeted pool that means the model's **clean limit**, not the absence of
+conditioning. A conditional WyFormer has no unconditional mode: "sample
+unconditionally" is implemented as asking for the ideal values of whatever
+quality channels the checkpoint was trained on -- `energy_above_hull=0` for the
+generators here, and elsewhere `max_force=0` or a formation-energy delta of zero,
+each at zero together. The channels differ by checkpoint, so read
+`trainer.condition_features` rather than assuming this run's single channel;
+`build_clean_relaxation_condition` applies the same convention on the critic
+side, where a generated gene is scored at zero force because it has not been
+relaxed yet.
+
 ## Running it
 
 ```bash
