@@ -216,9 +216,12 @@ Two results from it shape how the screen should be used:
   `joint_score_adjusted <= 0`.
 - Stability and novelty are anti-correlated under the screen -- its best decile
   is 83% already-known formulas -- so ranking the raw pool nets only ~1.4x
-  MetaSUN. Filtering on gene novelty *before* ranking gives 2.1-2.4x at the
-  small budgets where a screen earns its keep. Rank within the novel subset,
-  not across the pool.
+  MetaSUN. Ranking after dropping the formulas the composition ensemble was
+  *trained* on gives 2.14x at B=250. Report it as deduplication against
+  training data, restricted to the training split, so nothing the novelty
+  metric could hold out is consulted; the report section "What the novelty
+  filter is actually using" has the alternatives that were tried and the two
+  that do not work.
 
 ## Assumptions and exclusions
 

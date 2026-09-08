@@ -143,6 +143,65 @@ novelty-filtered pool, never rank the raw pool.** Both signals are individually
 strong and their composition is where the value is; used alone the screen spends
 most of its ranking power re-finding known chemistry.
 
+## What the novelty filter is actually using
+
+The filter above drops genes whose reduced formula appears in
+`data/formula_energy/formula_table.parquet`, which is the composition
+ensemble's own training table and is derived from LeMat-Bulk -- the same
+reference LeMat-GenBench scores novelty against. That coupling deserves stating
+plainly, because "filter on novelty, then report a novelty-dependent metric"
+reads as circular whether or not it is.
+
+Three alternatives were tested on this pool. Only the third is worth using.
+
+**Model-internal uncertainty does not substitute.** The obvious
+reference-free proxy is the ensemble's epistemic sigma: unfamiliar chemistry
+should carry high variance. It does, weakly -- Spearman +0.086 against
+`novel_structure`, and the mean sigma is 0.064 for absent formulas against
+0.046 for known ones. But sigma also correlates +0.388 with the achieved
+`e_above_hull`, so ranking optimistically (`f_hat - lambda*sigma - h`, the
+sign-flipped winner's-curse term) buys novelty by buying instability. Sweeping
+lambda from +1 to -3 moves the selected slice from 38% to 59% novel and peaks
+at **1.31x** MetaSUN at B=250, against 2.39x for the explicit filter. There is
+no free reference-free proxy hiding in this screen.
+
+**Composition provenance is a real but much weaker signal.** Ranking only
+within compositions carrying at most two entries in the table -- an
+under-explored-chemistry criterion rather than a membership test -- gives 1.33x
+at B=250 and 1.57x at B=500.
+
+**Restricting to the training split keeps most of the effect and is
+defensible.** The table carries a formula-hashed `split`. Of the 4,989
+representatives, 2,563 have a formula in `train`, 260 in `val`/`test`, and
+2,166 are absent. Dropping only the 2,563 the model was actually fitted on is
+training-set deduplication, not novelty filtering: it consults nothing the
+evaluation could be holding out, and it is what any real campaign does rather
+than spend relaxation budget re-deriving its own training data.
+
+| arm at B=250 | MetaSUN | uplift | novel |
+|---|---:|---:|---:|
+| raw pool | 0.300 | 1.04x | 38% |
+| drop formulas in any split | 0.692 | 2.39x | 96% |
+| **drop only trained-on formulas** | **0.620** | **2.14x** | 80% |
+| optimistic sigma ranking, best lambda | 0.380 | 1.31x | 56% |
+| under-explored compositions only | 0.384 | 1.33x | 48% |
+
+The 260 val/test-formula genes left in the pool are novel at 53.8%, the same
+rate as the trained-on ones (53.6%), so keeping them neither helps nor hurts
+beyond their small share -- which is the point: they are judged on their merits.
+
+A soft variant -- adding a fixed penalty to trained-on formulas instead of
+dropping them -- was also tried and is **not** worth using. At +0.15 eV/atom it
+selects exactly the same 250 genes as the hard drop (2.14x, identical p-value),
+because the penalty exceeds the score spread at the top of the ranking. It uses
+the same information, produces the same decision, and only makes the mechanism
+harder to see. If the training-set restriction is defensible it should be
+declared, and if it is not, hiding it in a score does not fix it.
+
+The structural fix, untested here because it needs a retrain, is to move the
+effect into the generator so no selection step consults any table: a decoder
+that emits fewer training-set formulas needs no filter downstream.
+
 ## SUN
 
 | arm | B=250 | B=500 | B=1000 | B=2000 |
@@ -167,8 +226,11 @@ Yes, the fixed-hull screen achieves (M)SUN uplift, with two qualifications that
 matter more than the headline number:
 
 1. Used as a ranker on the raw pool it delivers ~1.4x MetaSUN at large budget
-   and nothing at small budget. Used after a novelty filter it delivers
-   2.1-2.4x at the small budgets where a screen is actually worth running.
+   and nothing at small budget. Ranked after dropping the formulas the
+   composition model was trained on it delivers 2.14x at B=250, and 2.39x if
+   the whole reference table is excluded rather than the training split alone.
+   The reported configuration should be the training-split one, disclosed as
+   deduplication against training data.
 2. It is not usable as a *filter* in its intended conservative form. Only 8 of
    5,000 genes clear `joint_score_adjusted <= 0` and 35 clear
    `composition_score_adjusted <= 0`; the `max` fusion has essentially no pass
