@@ -206,6 +206,20 @@ miss the other. What it does test cheaply is whether the ranking carries any
 signal about relaxed stability at all, which is a precondition for the DFT
 version being worth its budget.
 
+The first such measurement, over 5,000 `e9ywwsie` genes, is in
+[`docs/archive/e9ywwsie_dft_screen_uplift_report.md`](archive/e9ywwsie_dft_screen_uplift_report.md).
+Two results from it shape how the screen should be used:
+
+- The ranking is strong (Spearman +0.59 against ORB-relaxed `e_above_hull`, an
+  8x spread in metastable rate between the best and worst decile) but the
+  conservative joint score is not usable as a *filter*: 8 genes of 5,000 clear
+  `joint_score_adjusted <= 0`.
+- Stability and novelty are anti-correlated under the screen -- its best decile
+  is 83% already-known formulas -- so ranking the raw pool nets only ~1.4x
+  MetaSUN. Filtering on gene novelty *before* ranking gives 2.1-2.4x at the
+  small budgets where a screen earns its keep. Rank within the novel subset,
+  not across the pool.
+
 ## Assumptions and exclusions
 
 1. The LeMat-Bulk PBE reference and its elemental references are immutable across
