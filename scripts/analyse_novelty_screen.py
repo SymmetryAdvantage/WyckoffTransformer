@@ -196,6 +196,89 @@ def _band(frame: pd.DataFrame, novelty: str, low: float, high: float) -> pd.Data
     return usable[(quantile > low) & (quantile <= high)]
 
 
+def single_lever_ablation(frame: pd.DataFrame, budgets: tuple[int, ...],
+                         n_sampled_total: int, novelty: str = "surprisal",
+                         draws: int = 2000, splits: int = 40,
+                         seed: int = 0) -> dict:
+    """What each estimator is worth on its own, before they are combined.
+
+    The likelihood needs care here. Its useful signal is a band, not a direction:
+    ranking by it takes one extreme tail or the other, and both are bad. So the
+    fair single-lever arm is to pick the best band and then draw at random inside
+    it, because within a band the likelihood offers no further ordering. That is
+    also the arm the combination has to beat to have earned the energy critic.
+    """
+    rng = np.random.default_rng(seed)
+    usable = frame[frame[novelty].notna() & frame[ENERGY_SCORE].notna()]
+    pool_rate = frame["metasun"].mean()
+    report: dict = {}
+
+    for budget in budgets:
+        if budget > len(usable):
+            continue
+        entry: dict = {}
+        entry["energy_only"] = _arm(
+            usable.nsmallest(budget, ENERGY_SCORE, keep="first"), frame, "metasun",
+            n_sampled_total)
+        entry["likelihood_only_most_surprising"] = _arm(
+            usable.nlargest(budget, novelty, keep="first"), frame, "metasun",
+            n_sampled_total)
+        entry["likelihood_only_least_surprising"] = _arm(
+            usable.nsmallest(budget, novelty, keep="first"), frame, "metasun",
+            n_sampled_total)
+
+        # The band, spent at random inside itself. Averaged over draws, because a
+        # 250-of-2000 draw has real spread and one draw would not be a rate.
+        best = None
+        for low in BAND_LOW:
+            for high in BAND_HIGH:
+                if high - low < 0.15:
+                    continue
+                band = _band(usable, novelty, low, high)
+                if len(band) < budget:
+                    continue
+                values = band["metasun"].to_numpy(dtype=bool)
+                picks = rng.integers(0, len(values), size=(draws, budget))
+                rate = float(values[picks].mean())
+                if best is None or rate > best["per_submitted"]:
+                    best = {"per_submitted": rate, "low": low, "high": high,
+                            "n_in_band": int(len(band)),
+                            "uplift_vs_pool": rate / pool_rate if pool_rate else float("nan")}
+        entry["likelihood_only_best_band_random"] = best
+
+        # Split-half for the band arm, on the same footing as the combined one.
+        half_budget = max(1, budget // 2)
+        held_out = []
+        for _ in range(splits):
+            shuffled = rng.permutation(usable.index.to_numpy())
+            first = usable.loc[shuffled[: len(shuffled) // 2]]
+            second = usable.loc[shuffled[len(shuffled) // 2:]]
+            candidates = []
+            for low in BAND_LOW:
+                for high in BAND_HIGH:
+                    if high - low < 0.15:
+                        continue
+                    band = _band(first, novelty, low, high)
+                    if len(band) < half_budget:
+                        continue
+                    candidates.append((float(band["metasun"].mean()), low, high))
+            if not candidates:
+                continue
+            _, low, high = max(candidates)
+            band = _band(second, novelty, low, high)
+            if len(band) < half_budget:
+                continue
+            held_out.append(float(band["metasun"].mean()))
+        if held_out:
+            entry["likelihood_only_best_band_held_out"] = {
+                "per_submitted": float(np.mean(held_out)),
+                "uplift_vs_pool": float(np.mean(held_out)) / pool_rate if pool_rate
+                                  else float("nan"),
+                "n_splits": len(held_out)}
+        report[budget] = entry
+    return report
+
+
 def lookup_free_sweep(frame: pd.DataFrame, budgets: tuple[int, ...],
                       n_sampled_total: int, novelty: str = "surprisal",
                       splits: int = 40, seed: int = 0) -> dict:
@@ -214,7 +297,12 @@ def lookup_free_sweep(frame: pd.DataFrame, budgets: tuple[int, ...],
     """
     rng = np.random.default_rng(seed)
     usable = frame[frame[novelty].notna() & frame[ENERGY_SCORE].notna()]
-    report: dict = {"novelty_score": novelty, "budgets": {}}
+    report: dict = {
+        "novelty_score": novelty,
+        "single_lever": single_lever_ablation(
+            frame, budgets, n_sampled_total, novelty=novelty, seed=seed),
+        "budgets": {},
+    }
 
     for budget in budgets:
         grid = []
@@ -390,6 +478,22 @@ def _print_sweep(report: dict) -> None:
     print("LOOKUP-FREE: energy + likelihood only, surprisal quantile band swept")
     print("=" * 78)
     for budget, entry in sweep["budgets"].items():
+        single = sweep["single_lever"].get(budget, {})
+        if single:
+            print(f"\nOne lever at a time, budget {budget}:")
+            for name in ("energy_only", "likelihood_only_most_surprising",
+                         "likelihood_only_least_surprising"):
+                arm = single[name]
+                print(f"  {name:38s} {arm['per_submitted']:.4f}  "
+                      f"{arm['uplift_vs_pool']:.2f}x")
+            band = single["likelihood_only_best_band_random"]
+            print(f"  {'likelihood_only_best_band (random in)':38s} "
+                  f"{band['per_submitted']:.4f}  {band['uplift_vs_pool']:.2f}x  "
+                  f"band ({band['low']:.2f}, {band['high']:.2f}), {band['n_in_band']} genes")
+            out = single.get("likelihood_only_best_band_held_out")
+            if out:
+                print(f"  {'  ...same, split-half held out':38s} "
+                      f"{out['per_submitted']:.4f}  {out['uplift_vs_pool']:.2f}x")
         grid = entry["grid"]
         highs = sorted({row["high"] for row in grid})
         lows = sorted({row["low"] for row in grid})

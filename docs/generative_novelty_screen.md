@@ -126,7 +126,7 @@ still relaxes somewhere.
 | --- | --- | --- | --- | --- |
 | random | 0.289 | 1.00 | 0.010 | 1.00 |
 | energy only | 0.300 | 1.04 | 0.016 | 1.57 |
-| surprisal alone | 0.160 | 0.55 | 0.000 | 0.00 |
+| likelihood only (best band, random inside) | 0.381 | 1.32 | -- | -- |
 | surprisal band (drop 40% typical, 20% extreme) -> energy | 0.716 | 2.48 | -- | -- |
 | fingerprint-novel -> energy | 0.804 | 2.78 | 0.052 | 5.09 |
 | **fingerprint-novel, least-surprising 30% -> energy** | **0.848** | **2.93** | **0.060** | **5.87** |
@@ -134,8 +134,33 @@ still relaxes somewhere.
 Two things to read off this, and the second is the one that is not obvious.
 
 **Without the reference set, the two estimators together recover most of the
-lookup's gain.** This is the arm to use when there is no archive to deduplicate
-against, and the funnel says what shape it should have: the most typical genes
+lookup's gain -- and neither is worth much alone.** At B=250:
+
+| lookup-free arm | MetaSUN | x pool |
+| --- | --- | --- |
+| random | 0.289 | 1.00 |
+| energy only | 0.300 | 1.04 |
+| likelihood only, rank most surprising | 0.160 | 0.55 |
+| likelihood only, rank least surprising | 0.092 | 0.32 |
+| likelihood only, best band, drawn at random inside it | 0.381 | 1.32 |
+| **both: band, then rank by energy** | **0.716** | **2.48** |
+
+Ranking on the likelihood in *either* direction is worse than random, because its
+useful signal is a band and not a direction -- the most typical genes are the ones
+the archive already holds and the most surprising ones relax nowhere. The fair
+single-lever arm is therefore the best band spent at random inside itself, since
+the likelihood offers no ordering within a band: 1.32x, and 1.30x held out.
+
+The combination is worth far more than either, and more than their product
+(1.04 x 1.32 = 1.37 against an observed 2.48). That is the first lever's problem
+being solved rather than two independent gains stacking: the energy ranking on
+its own spends itself on the low-lying genes the archive already has -- its best
+decile is 83% known formulas -- and the band removes exactly those before the
+ranking runs, so the ranking's skill lands on candidates novelty will not reject.
+Each lever supplies what the other lacks: the band has no ordering inside it, and
+the ranking has no idea what is already known.
+
+The funnel says what shape the band should have: the most typical genes
 are the ones already in the archive, and the most surprising ones relax nowhere,
 so the filter is a *band* rather than a threshold. Keeping a surprisal quantile
 band and then ranking that by energy, at a 250-gene budget:
