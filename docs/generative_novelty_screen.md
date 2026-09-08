@@ -127,16 +127,44 @@ still relaxes somewhere.
 | random | 0.289 | 1.00 | 0.010 | 1.00 |
 | energy only | 0.300 | 1.04 | 0.016 | 1.57 |
 | surprisal alone | 0.160 | 0.55 | 0.000 | 0.00 |
-| most-surprising 70% -> energy | 0.692 | 2.39 | 0.012 | 1.17 |
+| surprisal band (drop 40% typical, 20% extreme) -> energy | 0.716 | 2.48 | -- | -- |
 | fingerprint-novel -> energy | 0.804 | 2.78 | 0.052 | 5.09 |
 | **fingerprint-novel, least-surprising 30% -> energy** | **0.848** | **2.93** | **0.060** | **5.87** |
 
 Two things to read off this, and the second is the one that is not obvious.
 
-**Without the reference set, the estimator recovers most of the lookup's gain.**
-Thresholding on surprisal alone gives 2.39x MetaSUN, against 2.78x for the free
-fingerprint filter. That is the arm to use when there is no reference set to
-deduplicate against.
+**Without the reference set, the two estimators together recover most of the
+lookup's gain.** This is the arm to use when there is no archive to deduplicate
+against, and the funnel says what shape it should have: the most typical genes
+are the ones already in the archive, and the most surprising ones relax nowhere,
+so the filter is a *band* rather than a threshold. Keeping a surprisal quantile
+band and then ranking that by energy, at a 250-gene budget:
+
+| drop bottom \ keep up to | 0.70 | 0.80 | 0.90 | 1.00 |
+| --- | --- | --- | --- | --- |
+| 0.00 | 1.04 | 1.05 | 1.05 | 1.04 |
+| 0.20 | 2.17 | 2.12 | 2.05 | 2.01 |
+| 0.30 | 2.41 | 2.45 | 2.42 | 2.39 |
+| 0.40 | 2.35 | **2.48** | 2.48 | 2.45 |
+| 0.60 | -- | 2.03 | 2.25 | 2.20 |
+
+The surface is a plateau, not a peak: everything in `drop 0.3-0.5` x `keep to
+0.7-1.0` is 2.3-2.5x, so the setting does not need tuning to work. Dropping the
+most typical third or so is what does the work; cutting the surprising tail as
+well adds about 0.05x. Choosing the band on half the pool and spending the budget
+on the other half gives **2.41x** held out over 40 splits (2.18x at B=500, 1.96x
+at B=1000), against 2.48x in sample -- so almost none of the grid maximum is
+selection bias.
+
+The soft alternative -- rank by a weighted sum of the two scores' percentile
+ranks, excluding nothing -- peaks at a novelty weight near 0.3 and is worse
+everywhere: 2.31x at B=250, 2.14x at B=500. A low-energy but utterly typical gene
+can buy its way back in under fusion, and it is exactly the gene the archive
+already has.
+
+So the lookup-free screen reaches about 87% of the fingerprint filter's uplift
+(2.41x against 2.78x at B=250) using nothing but the generator and the energy
+critic.
 
 **With the reference set, the estimator flips sign and beats it.** Once novelty
 is *guaranteed* by the lookup, the surprisal stops being a novelty estimator and

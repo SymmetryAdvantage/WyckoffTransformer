@@ -178,6 +178,111 @@ def _rank_fused(frame: pd.DataFrame, novelty: str, weight: float,
     return usable.loc[fused.nsmallest(budget, keep="first").index]
 
 
+#: Quantile bands of `surprisal` the lookup-free sweep keeps before ranking by
+#: energy. `(0.0, 1.0)` is the energy screen alone; a band with `hi < 1` drops the
+#: genes the model finds most improbable, which the funnel says relax nowhere.
+BAND_LOW = (0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6)
+BAND_HIGH = (0.7, 0.8, 0.9, 1.0)
+#: Weights on the novelty rank in the soft alternative to the band. The hard
+#: filter excludes; this only reweights, so a very low-energy gene can still buy
+#: its way in on stability alone.
+FUSE_WEIGHTS = (0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5)
+
+
+def _band(frame: pd.DataFrame, novelty: str, low: float, high: float) -> pd.DataFrame:
+    """The genes whose surprisal falls in the quantile band [low, high]."""
+    usable = frame[frame[novelty].notna()]
+    quantile = usable[novelty].rank(pct=True)
+    return usable[(quantile > low) & (quantile <= high)]
+
+
+def lookup_free_sweep(frame: pd.DataFrame, budgets: tuple[int, ...],
+                      n_sampled_total: int, novelty: str = "surprisal",
+                      splits: int = 40, seed: int = 0) -> dict:
+    """The two-estimator screen on its own: energy and likelihood, no reference set.
+
+    This is the arm that matters when there is no archive to deduplicate against,
+    and it is swept properly rather than at a few round numbers, because the
+    funnel implies the optimum is a *band*: the most typical genes are the ones
+    already in the archive, and the most surprising ones relax nowhere, so both
+    tails should go.
+
+    Reporting the best cell of a swept grid on the same pool it was chosen on is
+    a selection bias, so each budget also carries a split-half estimate: the band
+    is chosen on one random half and scored on the other, over `splits` draws.
+    The gap between the two is how much of the grid maximum is real.
+    """
+    rng = np.random.default_rng(seed)
+    usable = frame[frame[novelty].notna() & frame[ENERGY_SCORE].notna()]
+    report: dict = {"novelty_score": novelty, "budgets": {}}
+
+    for budget in budgets:
+        grid = []
+        for low in BAND_LOW:
+            for high in BAND_HIGH:
+                if high - low < 0.15:
+                    continue
+                selected = _band(usable, novelty, low, high)
+                if len(selected) < budget:
+                    continue
+                picked = selected.nsmallest(budget, ENERGY_SCORE, keep="first")
+                arm = _arm(picked, frame, "metasun", n_sampled_total)
+                arm.update({"low": low, "high": high})
+                grid.append(arm)
+        if not grid:
+            continue
+        best = max(grid, key=lambda row: row["per_submitted"])
+
+        # Split-half: choose the band on one half, spend the budget on the other.
+        half_budget = max(1, budget // 2)
+        held_out, chosen = [], []
+        for _ in range(splits):
+            shuffled = rng.permutation(usable.index.to_numpy())
+            first = usable.loc[shuffled[: len(shuffled) // 2]]
+            second = usable.loc[shuffled[len(shuffled) // 2:]]
+            candidates = []
+            for low in BAND_LOW:
+                for high in BAND_HIGH:
+                    if high - low < 0.15:
+                        continue
+                    picked = _band(first, novelty, low, high)
+                    if len(picked) < half_budget:
+                        continue
+                    rate = picked.nsmallest(half_budget, ENERGY_SCORE, keep="first")[
+                        "metasun"].mean()
+                    candidates.append((rate, low, high))
+            if not candidates:
+                continue
+            _, low, high = max(candidates)
+            picked = _band(second, novelty, low, high)
+            if len(picked) < half_budget:
+                continue
+            held_out.append(float(picked.nsmallest(
+                half_budget, ENERGY_SCORE, keep="first")["metasun"].mean()))
+            chosen.append((low, high))
+        pool_rate = frame["metasun"].mean()
+        fused = []
+        for weight in FUSE_WEIGHTS:
+            arm = _arm(_rank_fused(usable, novelty, weight, budget), frame, "metasun",
+                       n_sampled_total)
+            arm["weight"] = weight
+            fused.append(arm)
+        report["budgets"][budget] = {
+            "grid": grid,
+            "rank_fusion": fused,
+            "best_in_sample": best,
+            "held_out": {
+                "n_splits": len(held_out),
+                "per_submitted": float(np.mean(held_out)) if held_out else float("nan"),
+                "per_submitted_p5": float(np.quantile(held_out, 0.05)) if held_out else float("nan"),
+                "uplift_vs_pool": (float(np.mean(held_out)) / pool_rate) if held_out and pool_rate
+                                  else float("nan"),
+                "modal_band": max(set(chosen), key=chosen.count) if chosen else None,
+            },
+        }
+    return report
+
+
 def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict:
     screen = pd.read_csv(pool / "dft_screen.csv", index_col="index")
     novelty = load_novelty(pool)
@@ -198,6 +303,8 @@ def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict
             metric: _rate(frame, metric, n_sampled_total) for metric in ("metasun", "sun")},
         "gene_novel_rate": float(frame["gene_novel"].mean()),
         "estimator_quality": estimator_quality(frame[scorable]),
+        "lookup_free_sweep": lookup_free_sweep(
+            frame[scorable], budgets, n_sampled_total, seed=seed),
         "budgets": {},
     }
 
@@ -275,6 +382,39 @@ def _print_quality(report: dict) -> None:
                   f"{row['metasun']:>8.1%} {row['sun']:>7.1%}")
 
 
+def _print_sweep(report: dict) -> None:
+    """The no-reference-set arm: what the two estimators are worth by themselves."""
+    sweep = report["lookup_free_sweep"]
+    pool_rate = report["pool_rate"]["metasun"]["per_submitted"]
+    print("\n" + "=" * 78)
+    print("LOOKUP-FREE: energy + likelihood only, surprisal quantile band swept")
+    print("=" * 78)
+    for budget, entry in sweep["budgets"].items():
+        grid = entry["grid"]
+        highs = sorted({row["high"] for row in grid})
+        lows = sorted({row["low"] for row in grid})
+        print(f"\nMetaSUN uplift at budget {budget} "
+              f"(rows: drop this bottom fraction; cols: keep up to this quantile)")
+        print("        " + "".join(f"{high:>8.2f}" for high in highs))
+        for low in lows:
+            cells = []
+            for high in highs:
+                match = [r for r in grid if r["low"] == low and r["high"] == high]
+                cells.append(f"{match[0]['uplift_vs_pool']:>8.2f}" if match else f"{'-':>8}")
+            print(f"  {low:>5.2f} " + "".join(cells))
+        best = entry["best_in_sample"]
+        out = entry["held_out"]
+        print(f"  best in sample   band ({best['low']:.2f}, {best['high']:.2f})  "
+              f"{best['per_submitted']:.4f}  {best['uplift_vs_pool']:.2f}x")
+        print(f"  split-half held out  {out['per_submitted']:.4f}  "
+              f"{out['uplift_vs_pool']:.2f}x over {out['n_splits']} splits, "
+              f"modal band {out['modal_band']}")
+        fused = " ".join(
+            f"w={row['weight']:g}:{row['uplift_vs_pool']:.2f}x" for row in entry["rank_fusion"])
+        print(f"  soft rank fusion  {fused}")
+    print(f"\n  (pool MetaSUN {pool_rate:.4f})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -299,6 +439,7 @@ def main() -> None:
     print(f"pool MetaSUN {pool_rates['metasun']['per_submitted']:.4f} "
           f"| SUN {pool_rates['sun']['per_submitted']:.4f}")
     _print_quality(report)
+    _print_sweep(report)
 
     for budget, entry in report["budgets"].items():
         for metric, arms in entry.items():
