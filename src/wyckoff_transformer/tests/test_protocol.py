@@ -13,6 +13,7 @@ from wyckoff_transformer.cli.protocol import (
     PYXTAL_COLUMNS,
     RELAXATION_COLUMNS,
     RowLog,
+    TEMPLATE_TRIAL,
     Timeout,
     LOGM_ROUNDOFF,
     _init_relax_worker,
@@ -509,6 +510,32 @@ class TestCliDefaults(unittest.TestCase):
                 ["genes.json", "--output-dir", "out", "--stage", stage]
             )
             self.assertEqual(args.stage, stage)
+
+    def test_the_template_stage_is_runnable_but_not_part_of_all(self):
+        from wyckoff_transformer.cli.protocol import STAGES
+
+        args = build_parser().parse_args(
+            ["genes.json", "--output-dir", "out", "--stage", "template"]
+        )
+        self.assertEqual(args.stage, "template")
+        # `--stage all` runs STAGES, so leaving `template` out of it is what
+        # keeps the default protocol a random-start protocol.
+        self.assertNotIn("template", STAGES)
+
+    def test_the_template_trial_cannot_collide_with_a_scheduled_one(self):
+        """The template start shares pyxtal.csv with the random draws.
+
+        A schedule that ever allotted TEMPLATE_TRIAL+1 trials to a gene would
+        make (index, trial) ambiguous, and `--resume` would then treat a random
+        trial as already done because the template one is.
+        """
+        schedule = parse_trial_schedule(DEFAULT_TRIAL_SCHEDULE)
+        self.assertLess(max(trials for _, trials in schedule), TEMPLATE_TRIAL)
+
+    def test_template_candidate_default_leaves_room_for_a_retry(self):
+        args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
+        self.assertGreater(args.template_candidates, 1)
+        self.assertIsNone(args.template_index)  # built from the reference cache
 
     def test_generation_and_relaxation_have_their_own_timeouts(self):
         """Neither stage may be held hostage by one gene it cannot finish."""

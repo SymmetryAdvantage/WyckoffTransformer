@@ -3,6 +3,11 @@ CRySPR experiments/improvements
 1. Rattling to break symmetry (confirmed via a study, TBD)
 2. Fix volume inflation (confusing - cryspr won't converge without factor=1.3)
 3. Conditioning audit - new robust protocol on converged model
+4. Template-matched starts instead of random PyXtal draws - implemented as
+   `wyformer-protocol --stage template`, off by default. 81.5% recovery from one
+   start on the 400-gene oracle cohort against 60.8% for ten random ones, but on
+   e9ywwsie only MetaSUN 0.281 -> 0.293 for 17% more compute: what it recovers is
+   mostly already in LeMat-Bulk (docs/cryspr_template_starts.md)
 
 Backbone
 1. Train the models longer with the low LR

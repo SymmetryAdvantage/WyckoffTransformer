@@ -321,6 +321,11 @@ uv run python scripts/diagnostics/pyxtal_generation_audit.py rescue \
   comes back at all, those decide whether it is the right one
 - [The pair-tolerance bug](pyxtal_pair_tolerance_bug.md) — the one fix that is
   implemented, and the reason the arms here start from `tol`
+- [Template-matched starts](cryspr_template_starts.md) — the one thing on this
+  page's neighbouring list that is now implemented: a training structure's
+  geometry instead of a random draw, which removes the guessing rather than
+  making it cheaper. It wins the reconstruction benchmark outright and barely
+  moves MetaSUN, because what it recovers is what novelty subtracts
 - [What else should WyFormer learn to take the guesswork out of PyXtal?](archive/pyxtal_dof_reduction_study.md)
   — the lattice head, the distogram solve, prototype retrieval, and the oracle
   bounds on each
