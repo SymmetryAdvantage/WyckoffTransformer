@@ -58,11 +58,19 @@ import torch, wyckoff_transformer
 from wyckoff_transformer.trainer import train_from_config  # noqa: F401
 import wandb, datasets, schedulefree, pyxtal, smact, matminer, omegaconf  # noqa: F401
 import pymatgen.core, triton  # noqa: F401
+import inspect
+from pyxtal.crystal import random_crystal
+# The pinned fork from [tool.uv.sources]; stock PyXtal hands check_wp a single
+# tolerance. A resolution that silently fell back to PyPI is a wrong-science
+# environment, not a cosmetic difference, so fail the build over it.
+assert "pair_tol" in inspect.getsource(random_crystal.check_wp), \
+    "pyxtal is not the patched fork -- see [tool.uv.sources] in pyproject.toml"
 print("torch          :", torch.__version__, torch.version.cuda, "cuda_ok=", torch.cuda.is_available())
 print("torch from     :", torch.__file__)
 print("triton from    :", triton.__file__)
 print("wyckoff_transf :", wyckoff_transformer.__file__, version("wyckoff-transformer"))
 print("pymatgen       :", version("pymatgen"))
+print("pyxtal         :", version("pyxtal"), "(patched fork)")
 print("import chain OK")
 PY
 

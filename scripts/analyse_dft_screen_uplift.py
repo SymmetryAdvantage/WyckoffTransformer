@@ -30,6 +30,11 @@ SCORES = (
     "composition_score_naive",
     "gene_score",
 )
+#: The score the per-bin funnel is cut on: the conservative joint score is the
+#: screen's headline ranking, so its bins are the ones worth reading.
+DECILE_SCORE = "joint_score_adjusted"
+#: The arm the headline table reports; the others stay available as ablations.
+RANK_BY = "joint_score_adjusted"
 METASTABLE_THRESHOLD = 0.1
 STABLE_THRESHOLD = 0.0
 
@@ -49,24 +54,44 @@ def outcomes(protocol_dir: Path) -> pd.DataFrame:
 
     energy = frame["e_above_hull"]
     result = pd.DataFrame(index=frame.index)
-    result["metasun"] = surviving & energy.notna() & (energy <= METASTABLE_THRESHOLD)
-    result["sun"] = surviving & energy.notna() & (energy <= STABLE_THRESHOLD)
+    result["metastable"] = energy.notna() & (energy <= METASTABLE_THRESHOLD)
+    result["stable"] = energy.notna() & (energy <= STABLE_THRESHOLD)
+    result["metasun"] = surviving & result["metastable"]
+    result["sun"] = surviving & result["stable"]
     result["e_above_hull"] = energy
+    # Kept unfused as well: (M)SUN is a product of stability and novelty, and the
+    # two move in opposite directions under this screen, so a bare uplift number
+    # cannot say which term a ranking is winning or losing on.
+    for column in ("valid_structure", "novel_structure"):
+        result[column] = frame[column].fillna(False).astype(bool)
     # A representative stands for every sampled gene with its fingerprint, so a
     # per-sampled-gene rate weights it by that count.
     result["sampled"] = pd.Series(counts).reindex(result.index).fillna(1).astype(int)
+    # A gene is not one relaxation: the trial schedule spends more of them on
+    # high-DoF genes, and selection correlates with DoF, so a per-gene budget
+    # quietly hands the ranked arms more compute than the random one.
+    result["n_trials"] = frame["n_trials"].reindex(result.index).fillna(1).astype(int)
+    # The protocol already fingerprints every gene against the reference set --
+    # the same set novelty is scored against, per the MatterGen convention.
+    # That lookup is free and needs no model.
+    result["gene_novel"] = result.index.isin([int(i) for i in screen.get("novel", [])])
     return result
 
 
 def _rate(selected: pd.DataFrame, column: str, n_sampled_total: int) -> dict:
     """One arm's hit rate against both denominators."""
     hits = selected[column]
+    trials = int(selected["n_trials"].sum())
     return {
         "n_submitted": int(len(selected)),
         "hits": int(hits.sum()),
         "per_submitted": float(hits.mean()) if len(selected) else float("nan"),
         "per_sampled_gene": float(
             (selected.loc[hits, "sampled"].sum()) / n_sampled_total),
+        "n_trials": trials,
+        "trials_per_gene": float(selected["n_trials"].mean()) if len(selected) else float("nan"),
+        # The denominator a compute-cost objection actually asks for.
+        "per_relaxation": float(hits.sum() / trials) if trials else float("nan"),
     }
 
 
@@ -97,6 +122,43 @@ def _p_value(selected_hits: int, selected_n: int, rest_hits: int, rest_n: int) -
     return float(fisher_exact(table, alternative="greater")[1])
 
 
+def rank_quality(frame: pd.DataFrame, bins: int = 10) -> dict:
+    """How well each score orders the pool, before any budget is imposed.
+
+    A top-N uplift conflates the screen's skill with where the budget happens to
+    fall. The rank correlation against the achieved hull distance is the skill on
+    its own, and the per-bin funnel shows what the ranking costs elsewhere.
+    """
+    from scipy.stats import spearmanr  # noqa: PLC0415
+
+    scored = frame[frame["valid_structure"] & frame["e_above_hull"].notna()]
+    correlations = {}
+    for score in SCORES:
+        rho, p_value = spearmanr(scored[score], scored["e_above_hull"])
+        correlations[score] = {"spearman_rho": float(rho), "p_value": float(p_value),
+                               "n": int(len(scored))}
+
+    ranked = frame.copy()
+    ranked["bin"] = pd.qcut(ranked[DECILE_SCORE], bins, labels=False)
+    grouped = ranked.groupby("bin")
+    bin_rows = [
+        {
+            "bin": int(index),
+            "n": int(len(group)),
+            "median_e_above_hull": float(group["e_above_hull"].median()),
+            "valid_structure": float(group["valid_structure"].mean()),
+            "novel_structure": float(group["novel_structure"].mean()),
+            "metastable": float(group["metastable"].mean()),
+            "metasun": float(group["metasun"].mean()),
+            "sun": float(group["sun"].mean()),
+            "formula_known": float(group["formula_known"].mean()),
+        }
+        for index, group in grouped
+    ]
+    return {"spearman_vs_e_above_hull": correlations,
+            "binned_by": DECILE_SCORE, "bins": bin_rows}
+
+
 def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict:
     screen = pd.read_csv(pool / "dft_screen.csv", index_col="index")
     result = outcomes(pool / "protocol")
@@ -104,7 +166,10 @@ def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict
 
     # Only genes with a relaxation outcome can be scored, and the screen ranks the
     # sampled pool including duplicates; join on the representatives.
-    frame = result.join(screen[list(SCORES)], how="inner")
+    columns = list(SCORES) + (["formula_known"] if "formula_known" in screen else [])
+    frame = result.join(screen[columns], how="inner")
+    if "formula_known" in frame:
+        frame["formula_known"] = frame["formula_known"].fillna(False).astype(bool)
     missing = [c for c in SCORES if frame[c].isna().all()]
     if missing:
         raise ValueError(f"the screen has no values for {missing}")
@@ -118,8 +183,17 @@ def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict
             metric: _rate(frame, metric, n_sampled_total)
             for metric in ("metasun", "sun")
         },
+        "rank_quality": rank_quality(frame),
         "budgets": {},
     }
+    # The screen finds low-lying structures partly by finding compositions the
+    # reference set already holds, so ranking the raw pool spends its skill on
+    # genes novelty will reject. Ranking inside the novel-formula subset is the
+    # same screen with that overlap removed.
+    subsets = {"gene_novel": frame[frame["gene_novel"]]}
+    if "formula_known" in frame:
+        subsets["formula_absent"] = frame[~frame["formula_known"]]
+    report["subset_sizes"] = {name: int(len(sub)) for name, sub in subsets.items()}
 
     for budget in budgets:
         if budget > len(frame):
@@ -135,10 +209,39 @@ def analyse(pool: Path, budgets: tuple[int, ...], draws: int, seed: int) -> dict
                 arm["uplift_vs_pool"] = (
                     arm["per_submitted"] / frame[metric].mean()
                     if frame[metric].mean() else float("nan"))
+                arm["uplift_per_relaxation"] = (
+                    arm["per_relaxation"]
+                    / (frame[metric].sum() / frame["n_trials"].sum()))
                 arm["p_value_vs_rest"] = _p_value(
                     arm["hits"], len(selected),
                     int(rest[metric].sum()), len(rest))
                 arms[score] = arm
+            pool_rate = frame[metric].mean()
+            pool_per_relaxation = frame[metric].sum() / frame["n_trials"].sum()
+            for name, subset in subsets.items():
+                restricted = {}
+                for score in SCORES:
+                    selected = subset.nsmallest(budget, score, keep="first")
+                    if len(selected) < budget:
+                        continue
+                    rest = frame.drop(index=selected.index)
+                    arm = _rate(selected, metric, n_sampled_total)
+                    arm["uplift_vs_pool"] = (
+                        arm["per_submitted"] / pool_rate if pool_rate else float("nan"))
+                    # The same arm judged on relaxations rather than genes. It is
+                    # the smaller number, because the ranked slices are higher-DoF
+                    # and the trial schedule pays for that.
+                    arm["uplift_per_relaxation"] = (
+                        arm["per_relaxation"] / pool_per_relaxation
+                        if pool_per_relaxation else float("nan"))
+                    arm["p_value_vs_rest"] = _p_value(
+                        arm["hits"], len(selected),
+                        int(rest[metric].sum()), len(rest))
+                    # Flags the point where the budget has eaten the subset and
+                    # the arm has decayed into that subset's base rate.
+                    arm["fraction_of_subset"] = float(budget / len(subset))
+                    restricted[score] = arm
+                arms[f"{name}_only"] = restricted
             entry[metric] = arms
         report["budgets"][budget] = entry
     return report
@@ -167,17 +270,75 @@ def main() -> None:
           f"{report['n_sampled_genes']} sampled genes")
     print(f"pool MetaSUN {pool_rates['metasun']['per_submitted']:.4f} "
           f"| SUN {pool_rates['sun']['per_submitted']:.4f}")
+
+    quality = report["rank_quality"]
+    print("\n--- Spearman(score, e_above_hull), lower score should mean lower hull ---")
+    for name, stats in quality["spearman_vs_e_above_hull"].items():
+        print(f"  {name:28s} rho={stats['spearman_rho']:+.4f}  p={stats['p_value']:.3g}")
+    print(f"\n--- funnel by {quality['binned_by']} bin (0 = best score) ---")
+    print(f"  {'bin':>3} {'med e_hull':>11} {'valid':>7} {'novel':>7} "
+          f"{'metastab':>9} {'MetaSUN':>8} {'known f.':>9}")
+    for row in quality["bins"]:
+        print(f"  {row['bin']:>3} {row['median_e_above_hull']:>11.3f} "
+              f"{row['valid_structure']:>7.1%} {row['novel_structure']:>7.1%} "
+              f"{row['metastable']:>9.1%} {row['metasun']:>8.1%} "
+              f"{row['formula_known']:>9.1%}")
+
     for budget, entry in report["budgets"].items():
         for metric, arms in entry.items():
             print(f"\n--- {metric} at budget {budget} (per submitted) ---")
             for name, arm in arms.items():
                 if name == "random":
-                    print(f"  {name:28s} {arm['per_submitted']:.4f} "
+                    print(f"  {name:38s} {arm['per_submitted']:.4f} "
                           f"[{arm['per_submitted_p5']:.4f}, {arm['per_submitted_p95']:.4f}]")
+                elif name.endswith("_only"):
+                    tag = name[:-len("_only")]
+                    for score, restricted in arm.items():
+                        print(f"  {tag + ' + ' + score:38s} "
+                              f"{restricted['per_submitted']:.4f} "
+                              f"({restricted['uplift_vs_pool']:.2f}x gene, "
+                              f"{restricted['uplift_per_relaxation']:.2f}x relax, "
+                              f"p={restricted['p_value_vs_rest']:.3g}, "
+                              f"{restricted['fraction_of_subset']:.0%} of subset)")
                 else:
-                    print(f"  {name:28s} {arm['per_submitted']:.4f} "
-                          f"({arm['uplift_vs_pool']:.2f}x, p={arm['p_value_vs_rest']:.3g})")
+                    print(f"  {name:38s} {arm['per_submitted']:.4f} "
+                          f"({arm['uplift_vs_pool']:.2f}x gene, "
+                          f"{arm['uplift_per_relaxation']:.2f}x relax, "
+                          f"p={arm['p_value_vs_rest']:.3g})")
+    _print_headline(report)
     print(f"\nwritten: {out}")
+
+
+def _print_headline(report: dict) -> None:
+    """The comparison the write-up leads with, on both denominators.
+
+    Two axes: selection (rank the whole pool, or deduplicate against the
+    training set first) against budget accounting (a gene, or a relaxation --
+    which differ because the trial schedule spends more on the high-DoF genes
+    selection prefers).
+    """
+    pool = report["pool_rate"]
+    print("\n" + "=" * 78)
+    print("HEADLINE: naive ranking vs training-set dedup, per gene and per relaxation")
+    print("=" * 78)
+    for metric in ("metasun", "sun"):
+        base = pool[metric]
+        print(f"\n{metric.upper()}  unfiltered pool: {base['per_submitted']:.4f}/gene, "
+              f"{1000 * base['per_relaxation']:.1f} per 1k relaxations")
+        print(f"  {'budget':>6} {'arm':<24} {'hits':>5} {'/gene':>8} {'/relax':>8} "
+              f"{'x gene':>7} {'x relax':>8} {'p':>10}")
+        for budget, entry in report["budgets"].items():
+            arms = entry[metric]
+            rows = (("naive: rank whole pool", arms.get(RANK_BY)),
+                    ("smart: dedup, then rank",
+                     arms.get("gene_novel_only", {}).get(RANK_BY)))
+            for label, arm in rows:
+                if arm is None:
+                    continue
+                print(f"  {budget:>6} {label:<24} {arm['hits']:>5} "
+                      f"{arm['per_submitted']:>8.4f} {arm['per_relaxation']:>8.4f} "
+                      f"{arm['uplift_vs_pool']:>7.2f} {arm['uplift_per_relaxation']:>8.2f} "
+                      f"{arm['p_value_vs_rest']:>10.2g}")
 
 
 if __name__ == "__main__":

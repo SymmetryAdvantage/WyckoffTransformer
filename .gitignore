@@ -8,6 +8,8 @@ __pycache__
 # ...and by scripts/protocol_relax.pbs, for the `relax` extra
 .venv-requirements.relax.txt
 .venv-requirements.relax.no-torch.txt
+# ...and by the single-pin upgrade in docs/platforms/aspire2a/environment.md
+.venv-requirements.pyxtal.txt
 wandb
 checkpoints
 *.pkl.gz

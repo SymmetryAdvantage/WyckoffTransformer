@@ -27,6 +27,10 @@ import torch
 from omegaconf import OmegaConf
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.chemical_system import (
+    chemical_system_vector,
+    describe as describe_chemical_system,
+)
 from wyckoff_transformer.cli import resolve_condition_values
 from wyckoff_transformer.composition import composition_vector, describe
 from wyckoff_transformer.csp import (
@@ -109,9 +113,14 @@ def build_condition_vector(
     """Assemble what the backbone's AdaLN expects, for one target composition.
 
     Mirrors `WyckoffTrainer.build_cond`, which does the same job from a dataset:
-    the scalar first, then the composition. `z` is needed only when the model was
+    the scalar first, then the formula block. `z` is needed only when the model was
     trained with the cell-size channel; without it the conditioning is the ratio
     alone and one vector serves every cell size.
+
+    A chemical-system backbone is usable here too, and weaker in exactly one place:
+    it is told which elements the target is built from and not in what proportion,
+    so the stoichiometry reaches the decoder as a constraint only. The vector is the
+    ratio's element set either way, so it does not depend on `z`.
     """
     parts = []
     if backbone.condition_features:
@@ -127,6 +136,11 @@ def build_condition_vector(
             condition_on_cell_size=backbone.condition_on_cell_size).unsqueeze(0))
         logger.debug("Conditioning on %s: %s", ratio,
                      ", ".join(describe(parts[-1][0], backbone.tokenisers["elements"])))
+    elif backbone.chemical_system_conditioning:
+        parts.append(chemical_system_vector(
+            ratio.element_tokens, backbone.n_elements, device=device).unsqueeze(0))
+        logger.debug("Conditioning on the chemical system of %s: %s", ratio,
+                     describe_chemical_system(parts[-1][0], backbone.tokenisers["elements"]))
     if not parts:
         return None
     total = torch.cat(parts, dim=-1)
@@ -346,6 +360,10 @@ def main():
         if backbone.condition_on_cell_size:
             print("--- It was trained with the cell-size channel, so z is decoded one "
                   "value at a time rather than in a single pass ---")
+    elif backbone.chemical_system_conditioning:
+        print("--- Backbone is conditioned on the chemical system; it is told which "
+              "elements the target uses, and the stoichiometry enters as a decoding "
+              "constraint only ---")
     else:
         print("--- Backbone is not composition-conditioned; the formula enters as a "
               "decoding constraint only ---")

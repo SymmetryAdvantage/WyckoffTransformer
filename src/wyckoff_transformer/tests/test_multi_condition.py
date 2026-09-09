@@ -376,9 +376,11 @@ class TestShippedConfigs(unittest.TestCase):
             model_args = config.get("model", {}).get("CascadeTransformer_args")
             if trainer_args is None or model_args is None:
                 continue
-            # The composition block's width depends on the element vocabulary, which needs a
-            # cache to size; those configs are covered by from_config instead.
-            if trainer_args.get("composition_conditioning", False):
+            # The formula block's width -- the composition's or the chemical system's --
+            # depends on the element vocabulary, which needs a cache to size; those
+            # configs are covered by from_config instead.
+            if (trainer_args.get("composition_conditioning", False)
+                    or trainer_args.get("chemical_system_conditioning", False)):
                 continue
             features = normalise_condition_features(trainer_args.get("condition_feature"))
             declared = model_args.get("condition_dim")

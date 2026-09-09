@@ -5,6 +5,10 @@ on novelty. CSP fixes the formula and asks which structure it adopts, where
 there is a right answer and novelty is beside the point. This document describes
 what that mode is, what is implemented, and what has not been measured.
 
+For the relaxed variant -- name the allowed elements and let the model choose
+the stoichiometry -- see
+[chemical_system_mode.md](chemical_system_mode.md).
+
 Three pieces:
 
 1. a backbone conditioned on the composition and on how far the structure sits

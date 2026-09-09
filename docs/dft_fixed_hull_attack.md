@@ -206,6 +206,35 @@ miss the other. What it does test cheaply is whether the ranking carries any
 signal about relaxed stability at all, which is a precondition for the DFT
 version being worth its budget.
 
+The first such measurement, over 5,000 `e9ywwsie` genes, is in
+[`docs/archive/e9ywwsie_dft_screen_uplift_report.md`](archive/e9ywwsie_dft_screen_uplift_report.md).
+Two results from it shape how the screen should be used:
+
+- The ranking is strong (Spearman +0.59 against ORB-relaxed `e_above_hull`, an
+  8x spread in metastable rate between the best and worst decile) but the
+  conservative joint score is not usable as a *filter*: 8 genes of 5,000 clear
+  `joint_score_adjusted <= 0`.
+- Stability and novelty are anti-correlated under the screen -- its best decile
+  is 83% already-known formulas -- so ranking the raw pool nets only ~1.4x
+  MetaSUN. Ranking *after* deduplicating genes against the training set, using
+  the fingerprint lookup `wyformer-protocol --stage screen` already writes to
+  `screen.json`, gives **2.78x at B=250** (2.51x per relaxation spent). Novelty
+  is scored against the training set by convention, so this is deduplication
+  against training data, not a novelty filter -- report it as such, and report
+  both denominators, because the ranked slices are higher-DoF and the trial
+  schedule spends 11% more relaxations on them.
+- A learned "is this gene known" model is not worth training: an oracle on
+  relaxed-structure novelty scores 2.75x at B=250 against the free lookup's
+  2.78x, so there is no headroom. The alternatives that fail (epistemic sigma,
+  composition provenance, a soft score penalty) are recorded in the report.
+- The generator's own likelihood is a second lever over the same pool, and it is
+  not a novelty predictor competing with that lookup: after the lookup has
+  settled novelty, the *least* surprising of the novel genes are the ones that
+  relax somewhere useful, and screening on that reaches **2.93x at B=250**. With
+  no lookup at all, energy plus likelihood reach 2.41x. See
+  [generative novelty screening](generative_novelty_screen.md) and its
+  [measurement report](archive/e9ywwsie_generative_novelty_report.md).
+
 ## Assumptions and exclusions
 
 1. The LeMat-Bulk PBE reference and its elemental references are immutable across

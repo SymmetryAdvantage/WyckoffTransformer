@@ -378,8 +378,41 @@ def _build_orb(spec: HullMlipSpec, device: str):
     # this keeps working if the API moves again.
     if isinstance(loaded, tuple):
         model, atoms_adapter = loaded
-        return ORBCalculator(model.eval(), atoms_adapter, device=device)
-    return ORBCalculator(loaded.eval(), device=device)
+        calculator = ORBCalculator(model.eval(), atoms_adapter, device=device)
+    else:
+        calculator = ORBCalculator(loaded.eval(), device=device)
+    return _use_cpu_orb_neighbors_when_needed(calculator, device)
+
+
+def _use_cpu_orb_neighbors_when_needed(calculator, device: str):
+    """Keep ORB inference on CUDA when the installed Warp exposes only CPU."""
+    if not device.startswith("cuda"):
+        return calculator
+
+    import warp
+
+    if any(str(warp_device).startswith("cuda") for warp_device in warp.get_devices()):
+        return calculator
+
+    from ase.calculators.calculator import Calculator
+
+    def calculate(atoms=None, properties=None, system_changes=None):
+        Calculator.calculate(calculator, atoms)
+        batch = calculator.adapter.from_ase_atoms(
+            atoms=atoms,
+            max_num_neighbors=calculator.max_num_neighbors,
+            edge_method=calculator.edge_method,
+            half_supercell=calculator.half_supercell,
+            device="cpu",
+        )
+        output = calculator.model.predict(batch.to(calculator.device))
+        calculator._update_results(output)
+
+    logger.info(
+        "Warp has no CUDA device; using CPU neighbor construction with CUDA ORB inference"
+    )
+    calculator.calculate = calculate
+    return calculator
 
 
 def _build_mace(spec: HullMlipSpec, device: str):

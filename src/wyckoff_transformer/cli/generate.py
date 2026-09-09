@@ -13,7 +13,12 @@ import wandb
 from omegaconf import OmegaConf
 
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.chemical_system import (
+    chemical_system_vector,
+    parse_chemical_system,
+)
 from wyckoff_transformer.cli import describe_condition, resolve_condition_values
+from wyckoff_transformer.system_prior import SystemDraws, SystemSpaceGroupPrior
 from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, load_tensor_cache
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.wyckoff_processor import WyckoffProcessor
@@ -143,6 +148,114 @@ def prepare_start_tensor_from_cache(
     raise ValueError(f"Unsupported start type '{trainer.model.start_type}' for custom sg distribution.")
 
 
+def chemical_system_vector_for_generation(
+    system: str,
+    elements_tokeniser,
+    n_rows: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """One chemical-system row, repeated over the batch.
+
+    Every structure in a run is asked for the same system, so the block is built once
+    and expanded rather than assembled per row.
+    """
+    _, tokens = parse_chemical_system(system, elements_tokeniser)
+    row = chemical_system_vector(tokens, len(elements_tokeniser), device=device)
+    return row.unsqueeze(0).expand(n_rows, -1).contiguous()
+
+
+def prepare_start_tensor_for_space_groups(
+    trainer: WyckoffTrainer,
+    space_groups: list[int],
+    n_samples: int,
+) -> torch.Tensor:
+    """Start tokens drawn uniformly from the space groups the caller named.
+
+    The space group is this architecture's start token, so it is a conditioning input
+    like any other -- the difference is only that it enters as the sequence's first
+    element rather than through AdaLN. Naming one pins every generated structure to it;
+    naming several spreads the batch evenly over them, which is what a chemical-system
+    sweep over candidate settings wants. Saying nothing leaves the choice to the
+    training distribution, which is the default and the right thing when the question
+    is "what does this system crystallise as".
+    """
+    tokeniser = trainer.tokenisers[trainer.start_name]
+    unknown = [sg for sg in space_groups if sg not in tokeniser]
+    if unknown:
+        raise ValueError(
+            f"Space groups {unknown} are not in the model's vocabulary; it was trained on "
+            f"{len(tokeniser)} of them.")
+    picks = [space_groups[index] for index in
+             torch.randint(0, len(space_groups), (n_samples,)).tolist()]
+    if trainer.model.start_type == "categorial":
+        return torch.tensor([tokeniser[sg] for sg in picks],
+                            dtype=torch.int64, device=trainer.device)
+    if trainer.model.start_type == "one_hot":
+        return tokeniser.encode_spacegroups(
+            picks, dtype=torch.float32, device=trainer.device)
+    raise ValueError(f"Unsupported start type '{trainer.model.start_type}'.")
+
+
+def plan_output_path(output: Path) -> Path:
+    """`out.json.gz` -> `out.plan.json`, so a run keeps what it asked for next to what it got."""
+    name = output.name
+    for suffix in (".json.gz", ".json"):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return output.with_name(f"{name}.plan.json")
+
+
+def build_draws(args, vocabulary: list, n_structures: int) -> SystemDraws:
+    """The per-structure (chemical system, space group) requests, drawn or read.
+
+    A plan read from disk fixes the batch size to its own: it names a system and a
+    space group for each structure, so asking for a different number of structures
+    would mean either dropping requests or inventing them.
+    """
+    if args.system_plan is not None:
+        with open(args.system_plan, "rt") as plan_file:
+            manifest = json.load(plan_file)
+        draws = SystemDraws.from_manifest(manifest, vocabulary)
+        if args.initial_n_samples != len(draws):
+            print(f"--- Plan holds {len(draws)} structures; generating that many rather "
+                  f"than --initial-n-samples {args.initial_n_samples} ---")
+        return draws
+    prior = SystemSpaceGroupPrior.load(args.system_prior)
+    if list(prior.element_symbols) != vocabulary:
+        raise ValueError(
+            f"The prior at {args.system_prior} was built over {prior.n_elements} element "
+            f"tokens and the model knows {len(vocabulary)}; they have to come from the "
+            "same dataset, or a system would decode into different elements.")
+    return prior.sample(
+        n_structures,
+        required=args.required_elements,
+        allowed=args.allowed_elements,
+        novel_fraction=args.novel_fraction,
+        rng=args.sampler_seed)
+
+
+def keep_required_elements(generated_wp: list, required: str | None) -> list:
+    """Drop structures that left a required element out, and say how many.
+
+    Nothing forces a required element in when the batch is drawn from a plan, and
+    that is deliberate: the mask is the row's own chemical system, and the argmax
+    forcing that `required_element_set` applies would place an element at whatever
+    Wyckoff position happened to be next rather than where the model wanted it.
+    Rejection after the fact costs a few percent of the batch and distorts nothing --
+    it conditions on the event instead of editing the sample.
+    """
+    if not required:
+        return generated_wp
+    wanted = {part for part in required.split("-") if part}
+    kept = [structure for structure in generated_wp
+            if wanted.issubset(set(structure["species"]))]
+    if len(kept) != len(generated_wp):
+        print(f"--- {len(kept)} of {len(generated_wp)} generated structures contain "
+              f"{'-'.join(sorted(wanted))}; the rest answered with a subsystem ---")
+    return kept
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate structures using a Wyckoff transformer.")
     parser.add_argument("output", type=Path, help="The output file.")
@@ -175,6 +288,34 @@ def main():
     parser.add_argument("--allowed-elements", "--a", type=str, default=None,
                         help="Allowed elements for constrained generation: 'fix' (restrict to --required-elements), "
                              "or a custom set (e.g., 'Li-S-P-O'). Defaults to all elements when omitted.")
+    parser.add_argument("--chemical-system", type=str, default=None, metavar="Ba-Ti-O",
+                        help="Generate within this set of elements, for a model trained "
+                             "with chemical_system_conditioning. The set is both an input "
+                             "to the model and a mask on the sampler, so every structure "
+                             "is built from these elements and nothing else. Use "
+                             "--allowed-elements instead to mask an unconditioned model.")
+    parser.add_argument("--system-prior", type=Path, default=None, metavar="PRIOR.npz",
+                        help="Draw a chemical system and a space group per structure from "
+                             "this prior, inside --required-elements and --allowed-elements, "
+                             "instead of naming one system for the whole batch. Built by "
+                             "`wyformer-system-prior build`; see "
+                             "docs/chemical_system_sampler.md.")
+    parser.add_argument("--system-plan", type=Path, default=None, metavar="PLAN.json",
+                        help="A plan already drawn by `wyformer-system-prior sample`. Fixes "
+                             "the batch size to the plan's, and makes the campaign exactly "
+                             "reproducible without carrying the prior around.")
+    parser.add_argument("--novel-fraction", type=float, default=None,
+                        help="With --system-prior: the share of structures asked for a "
+                             "chemical system the training data does not contain. Defaults "
+                             "to the novelty rate measured when the prior was built. Pass "
+                             "--system-plan for the rest of the sampler's knobs.")
+    parser.add_argument("--sampler-seed", type=int, default=None,
+                        help="Seed for --system-prior, so the same plan can be redrawn.")
+    parser.add_argument("--space-group", type=str, default=None, metavar="N[,M...]",
+                        help="Generate only in these space groups, by number, spread "
+                             "evenly over them. The space group is this model's start "
+                             "token, so it is a conditioning input; omit it to sample "
+                             "from the training distribution.")
     parser.add_argument("--sg-dist", type=str, default=None,
                         help="Override the initial space group distribution using tensors cached under cache/<dataset>.")
     parser.add_argument("--condition", action="append", metavar="NAME=VALUE", default=None,
@@ -194,6 +335,29 @@ def main():
         raise ValueError("Output file must be a .json.gz file.")
     if args.update_wandb and not args.wandb_run:
         parser.error("--update-wandb requires --wandb-run.")
+    if args.space_group is not None and args.sg_dist is not None:
+        parser.error("--space-group and --sg-dist both set the start tokens; use one.")
+    if args.system_prior is not None and args.system_plan is not None:
+        parser.error("--system-prior draws a plan and --system-plan reads one; use one.")
+    plan_requested = args.system_prior is not None or args.system_plan is not None
+    if plan_requested:
+        # A plan supplies the conditioning vector and the start token of every row, so
+        # anything else that sets either of them is saying something the plan already says.
+        for flag, value in (("--chemical-system", args.chemical_system),
+                            ("--space-group", args.space_group),
+                            ("--sg-dist", args.sg_dist)):
+            if value is not None:
+                parser.error(
+                    f"{flag} and the system plan both set what each structure is asked "
+                    "for; use one.")
+    space_groups = None
+    if args.space_group is not None:
+        try:
+            space_groups = [int(part) for part in args.space_group.split(",") if part.strip()]
+        except ValueError:
+            parser.error(f"--space-group takes space group numbers, got {args.space_group!r}")
+        if not space_groups:
+            parser.error("--space-group is empty")
 
     generation_start_time = time.time()
     if args.hf_model:
@@ -234,6 +398,16 @@ def main():
             dataset_name=args.sg_dist,
             n_samples=args.initial_n_samples,
         )
+    elif space_groups is not None:
+        try:
+            start_tensor_override = prepare_start_tensor_for_space_groups(
+                trainer=trainer,
+                space_groups=space_groups,
+                n_samples=args.initial_n_samples,
+            )
+        except ValueError as error:
+            parser.error(str(error))
+        print(f"--- Space group fixed to {args.space_group} ---")
 
     cond = None
     try:
@@ -252,22 +426,90 @@ def main():
         print(f"--- Conditional model ({', '.join(trainer.condition_features)}); "
               "sampling condition from training data ---")
 
-    use_element_constraints = args.required_elements is not None or args.allowed_elements is not None
-    if use_element_constraints:
+    system_cond = None
+    allowed_elements = args.allowed_elements
+    if args.chemical_system is not None:
+        if not trainer.chemical_system_conditioning:
+            parser.error(
+                "--chemical-system needs a model trained with "
+                "chemical_system_conditioning; this one is not. To restrict the sampler "
+                "without conditioning on the set, pass --allowed-elements.")
+        elements_tokeniser = trainer.tokenisers["elements"]
+        try:
+            symbols, _ = parse_chemical_system(args.chemical_system, elements_tokeniser)
+            system_cond = chemical_system_vector_for_generation(
+                args.chemical_system, elements_tokeniser, args.initial_n_samples, args.device)
+        except (KeyError, ValueError) as error:
+            parser.error(str(error))
+        # The mask is what makes the set a guarantee rather than a preference: the
+        # conditioning says which elements the structure is made of, and the model is
+        # free to disagree. Unless the caller has narrowed or widened the pool by hand,
+        # the sampler sees exactly the system asked for.
+        if allowed_elements is None:
+            allowed_elements = "-".join(symbols)
+        print(f"--- Conditioning on the chemical system {'-'.join(symbols)}; "
+              f"the sampler is restricted to {allowed_elements} ---")
+    elif trainer.chemical_system_conditioning and not plan_requested:
+        print("--- Chemical-system-conditioned model; sampling the system from the "
+              "training distribution (pass --chemical-system to ask for one) ---")
+
+    element_mask = None
+    draws = None
+    n_structures = args.initial_n_samples
+    if plan_requested:
+        if not trainer.chemical_system_conditioning:
+            parser.error(
+                "A system plan needs a model trained with chemical_system_conditioning; "
+                "this one is not. Use --allowed-elements to mask an unconditioned model.")
+        elements_tokeniser = trainer.tokenisers["elements"]
+        vocabulary = [str(symbol) for symbol in elements_tokeniser.to_token]
+        try:
+            draws = build_draws(args, vocabulary, n_structures)
+        except (KeyError, ValueError) as error:
+            parser.error(str(error))
+        n_structures = len(draws)
+        system_cond = draws.conditioning_block(len(elements_tokeniser), device=args.device)
+        start_tensor_override = draws.start_tensor(
+            trainer.tokenisers[trainer.start_name], trainer.model.start_type,
+            device=args.device)
+        # Per row, and the row's own system rather than the palette: a single allowed set
+        # for the batch would let every structure back into the whole palette and undo the
+        # sampling that chose the systems.
+        element_mask = draws.element_mask(
+            len(elements_tokeniser), stop_token=elements_tokeniser.stop_token,
+            device=args.device)
+        allowed_elements = None
+        source = "Plan" if args.system_plan is not None else "Sampled plan"
+        print(f"--- {source}: {draws.summary(top=5)} ---")
+        plan_path = plan_output_path(args.output)
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(plan_path, "wt") as plan_file:
+            json.dump(draws.manifest(), plan_file, indent=1)
+        print(f"--- Plan written to {plan_path} ---")
+
+    use_element_constraints = (not plan_requested) and (
+        args.required_elements is not None or allowed_elements is not None)
+    if plan_requested:
+        print("--- Running in per-row chemical system generation mode ---")
+    elif use_element_constraints:
         print("--- Running in constrained element generation mode ---")
     else:
         print("--- Running in default generation mode ---")
     generated_wp = trainer.generate_structures(
-        n_structures=args.initial_n_samples,
+        n_structures=n_structures,
         calibrate=args.calibrate,
         start_tensor=start_tensor_override,
         cond=cond,
-        required_element_set=args.required_elements if args.required_elements is not None else (set() if use_element_constraints else None),
-        allowed_element_set=args.allowed_elements if args.allowed_elements is not None else "all",
+        composition_cond=system_cond,
+        required_element_set=args.required_elements if use_element_constraints else None,
+        allowed_element_set=allowed_elements if allowed_elements is not None else "all",
+        allowed_element_mask=element_mask,
     )
 
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")
+    if draws is not None:
+        generated_wp = keep_required_elements(generated_wp, draws.query.get("required"))
     if args.firm_n_samples is not None:
         if len(generated_wp) >= args.firm_n_samples:
             generated_wp = generated_wp[:args.firm_n_samples]

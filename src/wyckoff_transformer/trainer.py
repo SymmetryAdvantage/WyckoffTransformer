@@ -26,6 +26,11 @@ import wyckoff_transformer
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.censored import CensoredMinDiagnostics, CensoredMinLoss
+from wyckoff_transformer.chemical_system import (
+    CHEMICAL_SYSTEM_FIELD,
+    attach_chemical_system_vector,
+    chemical_system_conditioning_dim,
+)
 from wyckoff_transformer.composition import (
     COMPOSITION_FIELD,
     attach_composition_vector,
@@ -83,6 +88,39 @@ def normalise_condition_features(condition_feature) -> Tuple[str, ...]:
         raise ValueError(
             f"condition_feature repeats {duplicates}; each feature owns exactly one column")
     return features
+
+
+def formula_conditioning_width(
+    n_elements: Optional[int],
+    composition_conditioning: bool,
+    chemical_system_conditioning: bool,
+    condition_on_cell_size: bool = True,
+) -> int:
+    """Columns the formula block adds to the conditioning vector, or 0 for neither.
+
+    The two modes are alternatives, not layers: a composition already names the
+    elements, so conditioning on both would give the element vocabulary two blocks of
+    columns saying overlapping things and would double the width for nothing. They are
+    refused together here rather than at three later call sites.
+
+    `from_config` and `WyckoffTrainer.condition_dim` both need this number -- one from a
+    raw config, one from a built trainer -- and a width that disagreed between them is
+    exactly the failure `condition_dim` is checked against.
+    """
+    if composition_conditioning and chemical_system_conditioning:
+        raise ValueError(
+            "composition_conditioning and chemical_system_conditioning are alternatives: "
+            "the composition already names the elements, so conditioning on both gives "
+            "the element vocabulary two blocks of columns. Pick the constraint you mean "
+            "-- exact formula, or the set of allowed elements.")
+    if not (composition_conditioning or chemical_system_conditioning):
+        return 0
+    if n_elements is None:
+        raise ValueError(
+            "Conditioning on the formula needs an 'elements' tokeniser to size the vector")
+    if composition_conditioning:
+        return composition_conditioning_dim(n_elements, condition_on_cell_size)
+    return chemical_system_conditioning_dim(n_elements)
 
 
 def normalise_condition_scales(condition_scale, features: Tuple[str, ...]) -> Tuple[float, ...]:
@@ -283,6 +321,11 @@ class WyckoffTrainer():
     condition_on_cell_size = True
     n_elements = None
 
+    #: The relaxed variant of the above: the *set* of allowed elements, with the counts
+    #: dropped. Mutually exclusive with composition_conditioning; see
+    #: `formula_conditioning_width` and wyckoff_transformer.chemical_system.
+    chemical_system_conditioning = False
+
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
     resume = False
 
@@ -333,6 +376,7 @@ class WyckoffTrainer():
         scalar_loss: str = "mse",
         censored_loss_args: Optional[dict] = None,
         composition_conditioning: bool = False,
+        chemical_system_conditioning: bool = False,
         condition_on_cell_size: bool = True,
         resume: bool = False,
         reschedule: bool = False,
@@ -405,6 +449,15 @@ class WyckoffTrainer():
                 ('counters: {composition: elements}' under sequence_fields) and
                 CascadeTransformer_args.condition_dim to equal `self.condition_dim`, which
                 this constructor checks. See wyckoff_transformer.composition.
+            chemical_system_conditioning: Condition on the *set* of elements the structure
+                is made of, as an indicator vector over the element vocabulary appended to
+                whatever `condition_feature` supplies. The relaxed variant of
+                `composition_conditioning`: which elements, not how many, so the model
+                still chooses the stoichiometry and the cell size. Reads the same
+                composition counters from the tokeniser -- only their keys -- so the two
+                modes share a tensor cache. Mutually exclusive with
+                `composition_conditioning`. See wyckoff_transformer.chemical_system and
+                docs/chemical_system_mode.md.
             condition_on_cell_size: Also feed the model log1p of the cell's atom count,
                 as one more column of that vector. An input, not a prediction: the model
                 is *told* the size, so every sampling call has to commit to one. Leave it
@@ -453,19 +506,25 @@ class WyckoffTrainer():
         self.scalar_loss = scalar_loss
         self.censored_diagnostics = None
         self.composition_conditioning = composition_conditioning
+        self.chemical_system_conditioning = chemical_system_conditioning
         self.condition_on_cell_size = condition_on_cell_size
         self.n_elements = len(tokenisers["elements"]) if "elements" in tokenisers else None
-        if composition_conditioning:
-            if self.n_elements is None:
-                raise ValueError(
-                    "composition_conditioning needs an 'elements' tokeniser to size the vector")
+        # Raises on the two modes together, and on either without an element vocabulary.
+        formula_conditioning_width(
+            self.n_elements, composition_conditioning, chemical_system_conditioning,
+            condition_on_cell_size)
+        if self.formula_conditioning_field is not None:
             # Densify before the datasets are built: they keep only cascade_order and
             # extra_fields, and the ragged counters the tokeniser stores are neither.
             for raw in (train_dataset, val_dataset, test_dataset):
-                if raw is not None:
+                if raw is None:
+                    continue
+                if composition_conditioning:
                     attach_composition_vector(
                         raw, self.n_elements, condition_on_cell_size=condition_on_cell_size)
-            extra_fields = (extra_fields or []) + [COMPOSITION_FIELD]
+                else:
+                    attach_chemical_system_vector(raw, self.n_elements)
+            extra_fields = (extra_fields or []) + [self.formula_conditioning_field]
 
         if target == TargetClass.NextToken:
             # Sequences have difference lengths, so we need to make sure that
@@ -660,11 +719,12 @@ class WyckoffTrainer():
                 # Stored in physical units; the transform is applied on the way into the model.
                 # Validate once here rather than per step, which would force a device sync.
                 self._validate_condition_column(name, transform, cond_tensor)
-        if self.composition_conditioning:
+        formula_field = self.formula_conditioning_field
+        if formula_field is not None:
             for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
                 if ds is None:
                     continue
-                ds.data[COMPOSITION_FIELD] = ds.data[COMPOSITION_FIELD].to(
+                ds.data[formula_field] = ds.data[formula_field].to(
                     self.device, dtype=torch.float32)
         # Unconditionally, not only for composition_conditioning: a config declaring a
         # condition_dim wider than what build_cond produces used to pass every check here
@@ -802,6 +862,31 @@ class WyckoffTrainer():
             and len(set(self.condition_scales)) == 1)
 
 
+    @property
+    def formula_conditioning_field(self) -> Optional[str]:
+        """Which precomputed block joins the scalars, or None when only scalars do.
+
+        The composition and the chemical system occupy the same slot in the conditioning
+        vector -- after the scalars, one dense block per structure, built once and stored
+        ready to use -- and are mutually exclusive, so every path that assembles or moves
+        that block asks for it by this name rather than branching on the two flags.
+        """
+        if self.composition_conditioning:
+            return COMPOSITION_FIELD
+        if self.chemical_system_conditioning:
+            return CHEMICAL_SYSTEM_FIELD
+        return None
+
+
+    def _formula_conditioning_name(self) -> str:
+        """Which of the two formula modes is on, by its config key, for a message."""
+        if self.composition_conditioning:
+            return "composition_conditioning"
+        if self.chemical_system_conditioning:
+            return "chemical_system_conditioning"
+        return "no formula conditioning"
+
+
     def describe_condition_layout(self) -> str:
         """The conditioning vector's columns, in order, for an error message."""
         parts = list(self.condition_features)
@@ -809,6 +894,10 @@ class WyckoffTrainer():
             parts.append(
                 f"{composition_conditioning_dim(self.n_elements, self.condition_on_cell_size)} "
                 f"columns for the composition over {self.n_elements} element tokens")
+        elif self.chemical_system_conditioning:
+            parts.append(
+                f"{chemical_system_conditioning_dim(self.n_elements)} columns for the "
+                f"chemical system over {self.n_elements} element tokens")
         return ", ".join(parts) if parts else "nothing"
 
 
@@ -869,13 +958,12 @@ class WyckoffTrainer():
         """Width of the vector this run feeds to AdaLN, or None when unconditional.
 
         Each `condition_feature` occupies one column, in the order they are configured,
-        and the composition the rest. `CascadeTransformer_args.condition_dim` has to
-        agree.
+        and the composition -- or the chemical system -- the rest.
+        `CascadeTransformer_args.condition_dim` has to agree.
         """
-        width = len(self.condition_features)
-        if self.composition_conditioning:
-            width += composition_conditioning_dim(
-                self.n_elements, self.condition_on_cell_size)
+        width = len(self.condition_features) + formula_conditioning_width(
+            self.n_elements, self.composition_conditioning,
+            self.chemical_system_conditioning, self.condition_on_cell_size)
         return width or None
 
 
@@ -884,17 +972,18 @@ class WyckoffTrainer():
         """Assemble the conditioning vector for a batch, in the model's units.
 
         One place, because the scalars are stored in physical units and transformed on
-        the way in while the composition is stored ready to use, and getting that
-        order wrong in one of three call sites would be invisible until the
-        conditioning quietly stopped meaning anything.
+        the way in while the formula block -- the composition, or the chemical system --
+        is stored ready to use, and getting that order wrong in one of three call sites
+        would be invisible until the conditioning quietly stopped meaning anything.
         """
         parts = []
         if self.condition_features:
             columns = [dataset.data[name][batch_selection] for name in self.condition_features]
             block = columns[0] if len(columns) == 1 else torch.cat(columns, dim=-1)
             parts.append(self.transform_condition(block))
-        if self.composition_conditioning:
-            parts.append(dataset.data[COMPOSITION_FIELD][batch_selection])
+        formula_field = self.formula_conditioning_field
+        if formula_field is not None:
+            parts.append(dataset.data[formula_field][batch_selection])
         if not parts:
             return None
         return parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
@@ -1101,11 +1190,13 @@ class WyckoffTrainer():
         # config hardcode a number that silently rots when either changes.
         trainer_args = config.model.WyckoffTrainer_args
         condition_features = normalise_condition_features(trainer_args.get("condition_feature"))
-        derived = len(condition_features)
-        if trainer_args.get("composition_conditioning", False):
-            derived += composition_conditioning_dim(
-                len(tokenisers["elements"]),
-                trainer_args.get("condition_on_cell_size", True))
+        composition_conditioning = trainer_args.get("composition_conditioning", False)
+        chemical_system_conditioning = trainer_args.get("chemical_system_conditioning", False)
+        derived = len(condition_features) + formula_conditioning_width(
+            len(tokenisers["elements"]) if "elements" in tokenisers else None,
+            composition_conditioning,
+            chemical_system_conditioning,
+            trainer_args.get("condition_on_cell_size", True))
         declared = config.model.CascadeTransformer_args.get("condition_dim")
         if derived:
             if declared is None:
@@ -1115,14 +1206,14 @@ class WyckoffTrainer():
                 raise ValueError(
                     f"condition_dim is {declared} in the config, but conditioning on "
                     f"{list(condition_features)}"
-                    + (" plus the composition" if trainer_args.get("composition_conditioning", False)
-                       else "")
+                    + (" plus the composition" if composition_conditioning else "")
+                    + (" plus the chemical system" if chemical_system_conditioning else "")
                     + f" makes it {derived}. Remove it and let it be derived, or fix it.")
         elif declared is not None:
             raise ValueError(
                 f"condition_dim is {declared} in the config, but nothing conditions this "
-                "model: set condition_feature and/or composition_conditioning, or remove "
-                "condition_dim.")
+                "model: set condition_feature, composition_conditioning or "
+                "chemical_system_conditioning, or remove condition_dim.")
         model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
         # model.to(torch.float32)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
@@ -1858,6 +1949,7 @@ class WyckoffTrainer():
             temperature: float = 1.0,
             cond: Optional[torch.Tensor] = None,
             composition_cond: Optional[torch.Tensor] = None,
+            allowed_element_mask: Optional[torch.Tensor] = None,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -1880,9 +1972,20 @@ class WyckoffTrainer():
                 units (any condition_transform is applied here, not by the caller).
                 `WyckoffTrainer.build_condition_from_values` builds it from one value per
                 named feature.
-            composition_cond: Optional tensor of shape [n_structures, composition width]
-                for a model with composition_conditioning, as
-                wyckoff_transformer.composition builds it. Concatenated after `cond`.
+            composition_cond: Optional tensor of shape [n_structures, formula-block width]
+                for a model conditioned on the formula: the composition vector
+                wyckoff_transformer.composition builds, or -- for a model with
+                chemical_system_conditioning -- the indicator vector
+                wyckoff_transformer.chemical_system builds. One slot, because the two
+                modes are alternatives. Concatenated after `cond`.
+            allowed_element_mask: Optional [n_structures, element vocabulary] boolean mask,
+                one row per structure, saying which elements that structure may be built
+                from. This is the per-row form of `allowed_element_set`, and what a batch
+                drawn from wyckoff_transformer.system_prior needs: each row was asked for a
+                different chemical system, so a single set for the batch would re-admit the
+                rest of the palette. `SystemDraws.element_mask` builds it. Activates
+                element-constrained generation on its own; `required_element_set` stays
+                optional and is the only thing that forces an element in.
         """
         # `stops` must be passed: without it the generator cannot tell a finished sequence
         # from a live one, and `compute_validity_per_known_sequence_length` then scores STOP
@@ -1914,17 +2017,17 @@ class WyckoffTrainer():
                     "`cond` was given, but this model has no scalar conditioning features.")
             self._validate_condition_values(cond)
             cond = self.transform_condition(cond)
-            if self.composition_conditioning:
+            if self.formula_conditioning_field is not None:
                 if composition_cond is None:
                     raise ValueError(
-                        "composition_conditioning is on, so a caller supplying `cond` must "
-                        "also supply `composition_cond`; otherwise the model is handed a "
-                        "conditioning vector of the wrong width.")
+                        f"{self._formula_conditioning_name()} is on, so a caller supplying "
+                        "`cond` must also supply `composition_cond`; otherwise the model is "
+                        "handed a conditioning vector of the wrong width.")
                 cond = torch.cat([cond, composition_cond.to(cond.device, torch.float32)], dim=-1)
         elif composition_cond is not None:
-            if not self.composition_conditioning:
+            if self.formula_conditioning_field is None:
                 raise ValueError("composition_cond was given, but this model is not "
-                                 "conditioned on the composition.")
+                                 "conditioned on the composition or the chemical system.")
             cond = composition_cond.to(self.device, torch.float32)
             if condition_features:
                 raise ValueError(
@@ -1938,6 +2041,8 @@ class WyckoffTrainer():
                 wanted = [repr(name) for name in condition_features]
                 if self.composition_conditioning:
                     wanted.append("the target composition")
+                elif self.chemical_system_conditioning:
+                    wanted.append("the target chemical system")
                 raise ValueError(
                     f"This model is conditioned on {' and '.join(wanted)}, but no `cond` "
                     "was provided and no train_dataset is available to sample one from.")
@@ -1945,7 +2050,11 @@ class WyckoffTrainer():
                 0, self.train_dataset.num_examples, (n_structures,), device=self.device)
             cond = self.build_cond(self.train_dataset, random_indices)
 
-        if required_element_set is not None:
+        if allowed_element_mask is not None and allowed_element_mask.size(0) != n_structures:
+            raise ValueError(
+                f"allowed_element_mask has {allowed_element_mask.size(0)} rows against "
+                f"{n_structures} structures requested; it is one mask per structure.")
+        if required_element_set is not None or allowed_element_mask is not None:
             if 'elements' not in self.tokenisers:
                 raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
             generated_tensors = generator.generate_tensors(
@@ -1954,7 +2063,8 @@ class WyckoffTrainer():
                 allowed_element_set=allowed_element_set,
                 temperature=temperature,
                 elements_vocab=self.tokenisers['elements'],
-                cond=cond
+                cond=cond,
+                allowed_element_mask=allowed_element_mask,
             )
         elif compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(

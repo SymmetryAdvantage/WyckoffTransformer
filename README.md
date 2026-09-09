@@ -35,6 +35,13 @@ Crystal symmetry plays a fundamental role in determining its physical, chemical,
 3. Install the dependencies, including torch. There are several options:
   - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
   - Configure `uv.toml` with your desired indices, see `scripts/platforms/zeus/uv.toml` and `scripts/platforms/cpu/uv.toml`
+
+   Either route installs PyXtal from the pinned fork declared in
+   `[tool.uv.sources]`, which fixes `check_wp` applying one species' like-like
+   distance tolerance to every pair. `uv` applies that source to `uv sync`,
+   `uv pip compile pyproject.toml` and `uv pip install -e .` alike, so no host
+   needs to do anything special. It is *not* part of the published metadata:
+   `pip install wyckoff-transformer` gets stock PyXtal from PyPI.
 4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
 ## Running a pilot model
 To verify that the installation is working, run a pilot model. Next token prediction:
@@ -214,6 +221,25 @@ This command uses no MLIP energies and performs no relaxation or active learning
 the shortlist feeds the external DFT workflow. See the
 [DFT fixed-hull adversarial screening design](docs/dft_fixed_hull_attack.md) for
 the objective, estimator boundaries, ablations, and reporting protocol.
+
+### Generative novelty screening
+
+The energy screen trades novelty for stability, so it pairs with a second lever
+read off the generator itself. `wyformer-gene-novelty` scores each gene by
+`-log p(gene)` under the model that produced it -- a continuous novelty estimator
+that needs no reference set (AUC 0.93 against the fingerprint lookup, 0.81
+against post-relaxation structure novelty):
+
+```bash
+uv run wyformer-gene-novelty generated/<run>/wyckoff_genes.json.gz \
+    --model-path runs/<run> --condition energy_above_hull=0 \
+    --permutation-samples 64 --device cuda \
+    --out generated/<run>/gene_novelty.csv
+```
+
+Score the pool at the condition it was generated at. See
+[generative novelty screening](docs/generative_novelty_screen.md) for what the
+density is, how the two levers combine, and what the combination is worth.
 
 ## Ranking model variants (`wyformer-protocol`)
 
