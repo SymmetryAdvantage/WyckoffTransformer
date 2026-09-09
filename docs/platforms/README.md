@@ -26,4 +26,4 @@ Do not read a sibling host's pages for guidance on this one. Nothing there
 transfers: driver versions, container runtimes, filesystem layout, schedulers
 and local package indices all differ, and a session cannot move between hosts.
 
-Project and host environments might evolve - make sure to update this page as needed, especially when you encounter and solve issues.
+Keep the documentation in platforms/ updated - if you encounter that something there is wrong, update the documentation as needed. WyFormer codebase and environment might also evolve - again, keep the platform-specific documentation up to date.
