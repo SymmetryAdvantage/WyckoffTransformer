@@ -910,6 +910,14 @@ def stage_score(args) -> None:
     structures that could possibly match, then ``StructureMatcher`` decides.
     The reference for novelty is built per run, since only LeMat-Bulk entries
     whose fingerprint collides with a generated one ever reach the matcher.
+
+    Each relaxed structure is also re-fingerprinted (PyXtal symmetry detection),
+    and novelty is decided against LeMat-Bulk entries sharing *either* the
+    sampled gene's fingerprint or the relaxed structure's -- relaxation can move
+    a structure off the orbit set PyXtal placed it on.  ``structures.csv`` then
+    carries ``gene_novel`` (the sampled gene), ``novel_by_sampled_gene`` (the
+    old sampled-fingerprint-only verdict), ``novel_structure`` (the two-
+    fingerprint verdict, which MetaSUN uses), and ``relaxed_fingerprint_*``.
     """
     from pymatgen.core import Structure
 
@@ -933,7 +941,8 @@ def stage_score(args) -> None:
     hull = HullEnergyCalculator(args.mlip)
     phase.done("load the hull")
 
-    validity, fingerprints, structures, hull_energies = {}, {}, {}, {}
+    validity, fingerprints, relaxed_fingerprints = {}, {}, {}
+    structures, hull_energies = {}, {}
     for index in frame.index:
         cif_path = cif_dir / f"{index}.cif"
         if not cif_path.is_file():
@@ -950,6 +959,14 @@ def stage_score(args) -> None:
             fingerprints[index] = fingerprinter.fingerprint(genes[index])
         except Exception as exc:
             logger.warning("Gene %d: no fingerprint (%s)", index, exc)
+        # The relaxed structure's own fingerprint, which relaxation -- the
+        # rattle stage especially -- can move away from the sampled gene's.
+        # Novelty is judged against both, so a gene that PyXtal placed on a
+        # LeMat-Bulk-known orbit set but relaxed off it is still checked.
+        try:
+            relaxed_fingerprints[index] = fingerprinter.fingerprint_structure(structure)
+        except Exception as exc:
+            logger.warning("Gene %d: no relaxed fingerprint (%s)", index, exc)
 
         energy = frame.at[index, "energy"]
         if pd.notna(energy):
@@ -965,6 +982,19 @@ def stage_score(args) -> None:
     phase.done("read CIFs, validity, fingerprints and e_above_hull")
     frame["valid_structure"] = pd.Series(validity)
     frame["e_above_hull"] = pd.Series(hull_energies)
+    novel_genes = set(screen.novel)
+    frame["gene_novel"] = pd.Series(
+        {index: index in novel_genes for index in frame.index}
+    )
+    frame["relaxed_fingerprint_resolved"] = pd.Series(
+        {index: index in relaxed_fingerprints for index in frame.index}
+    )
+    frame["relaxed_fingerprint_changed"] = pd.Series(
+        {
+            index: relaxed_fingerprints[index] != fingerprints.get(index)
+            for index in relaxed_fingerprints
+        }
+    )
 
     # Only structures that got this far can be unique or novel, and comparing
     # the ones that did not would just cost matcher calls.
@@ -977,6 +1007,7 @@ def stage_score(args) -> None:
     scored = scored.loc[
         [i for i in scored.index if bool(validity.get(i, False))]
     ]
+    scored["relaxed_fingerprint"] = pd.Series(relaxed_fingerprints).reindex(scored.index)
 
     unique_index = filter_by_unique_structure(scored).index
     frame["unique_structure"] = pd.Series(
@@ -984,23 +1015,49 @@ def stage_score(args) -> None:
     )
     phase.done("uniqueness (StructureMatcher)")
 
+    # The matcher needs a candidate for either fingerprint, so the reference is
+    # built over the union of the sampled and the relaxed ones.
+    all_fingerprints = pd.concat(
+        [scored["fingerprint"], scored["relaxed_fingerprint"].dropna()]
+    )
     reference = build_novelty_reference(
-        scored["fingerprint"],
+        all_fingerprints,
         cache=args.reference_cache,
         splits=tuple(s.strip() for s in args.reference_splits.split(",")),
         lemat_cif_csv=args.lemat_cif_csv,
     )
     phase.done("build the novelty reference")
     novelty_filter = NoveltyFilter(reference)
-    frame["novel_structure"] = pd.Series(
+
+    def _relaxed_missing(value) -> bool:
+        return value is None or (isinstance(value, float) and pd.isna(value))
+
+    def _is_novel(row: pd.Series) -> bool:
+        """Novel iff no LeMat-Bulk entry sharing *either* fingerprint matches."""
+        if not novelty_filter.is_novel(row):
+            return False
+        relaxed = row.get("relaxed_fingerprint")
+        if _relaxed_missing(relaxed):
+            return True
+        return novelty_filter.is_novel(
+            pd.Series({"fingerprint": relaxed, "structure": row.structure})
+        )
+
+    frame["novel_by_sampled_gene"] = pd.Series(
         {index: novelty_filter.is_novel(row) for index, row in scored.iterrows()}
+    )
+    frame["novel_structure"] = pd.Series(
+        {index: _is_novel(row) for index, row in scored.iterrows()}
     )
     phase.done("novelty (StructureMatcher)")
 
     frame.drop(columns=["structure"], errors="ignore").to_csv(
         args.output_dir / STRUCTURES_FILE
     )
-    _update_manifest(args.output_dir / MANIFEST_FILE, {"hull": hull.provenance})
+    _update_manifest(
+        args.output_dir / MANIFEST_FILE,
+        {"hull": hull.provenance, "novelty": "sampled+relaxed fingerprint"},
+    )
     report = funnel(screen, frame)
     (args.output_dir / FUNNEL_FILE).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
@@ -1061,8 +1118,10 @@ def build_parser() -> argparse.ArgumentParser:
         prog="wyformer-protocol",
         description=(
             "Rank a WyFormer variant by MetaSUN per generated gene. Filters that "
-            "need no potential (validity, uniqueness, gene novelty) run first, so "
-            "only gene-novel structures are relaxed."
+            "need no potential (validity, uniqueness, gene novelty) run first; "
+            "every unique gene is then relaxed, gene-known ones included, since a "
+            "known fingerprint can still relax into a novel structure and its "
+            "e_above_hull is needed to keep the energy distribution unbiased."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )

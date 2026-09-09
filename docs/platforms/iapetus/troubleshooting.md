@@ -10,6 +10,7 @@
 | `Warp requires CUDA driver 12.0 or higher` | The inherited Warp 1.17 CUDA wheel cannot run on iapetus's 470 driver. Restore the CPU-only Warp wheel from [environment.md](environment.md); this does not prevent GPU ORB forward evaluation. |
 | CUDA out of memory | The cards have 2--5 GiB of memory. Reduce batch size/model size, choose CPU, or use a better-equipped platform. |
 | `nvcc: command not found` on the host | Expected. The CUDA toolkit is part of the image; build and run extensions from inside the container. |
+| `ModuleNotFoundError` for a pure-Python dep (`sklearn`, `omegaconf`, …) that is installed in `.venv`, and `sys.executable` is `/opt/venv312/bin/python` | `.venv/bin/` is gone, so `run.sh` cannot resolve `python` against the venv and falls through to the image interpreter. Almost always caused by running `uv` or `uv run` **on the host**: it sees the venv's interpreter symlink as broken, deletes `.venv/bin/`, then aborts on a permission error in `.venv/lib` (container-owned files), leaving `.venv` half-destroyed. Never run `uv*` on the host. `lib/site-packages` (deps, the editable `.pth`, and `container-base.pth` which wires in the image's torch) survives, so recreate only `bin/` inside the container, no rebuild: `run.sh bash -lc '/opt/uv-python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 -m venv --system-site-packages --without-pip /workspace/.venv'` — `venv` without `--clear` re-uses the directory and leaves `lib/` untouched. Then run the health check above. |
 
 ## Health checks
 

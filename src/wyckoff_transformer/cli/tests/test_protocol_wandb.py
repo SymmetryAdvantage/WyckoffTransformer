@@ -64,6 +64,21 @@ class TestParserDefaults(unittest.TestCase):
         args = pw.build_parser().parse_args(["r", "--output-dir", "x", "--no-upload"])
         self.assertFalse(args.upload)
 
+    def test_stages_and_from_artifact_defaults(self):
+        args = pw.build_parser().parse_args(["r", "--output-dir", "x"])
+        self.assertEqual(args.stages, "screen,generate,relax,score")
+        self.assertIsNone(args.from_artifact)
+
+    def test_from_artifact_takes_latest_or_a_pinned_version(self):
+        bare = pw.build_parser().parse_args(
+            ["r", "--output-dir", "x", "--from-artifact"]
+        )
+        self.assertEqual(bare.from_artifact, "latest")
+        pinned = pw.build_parser().parse_args(
+            ["r", "--output-dir", "x", "--from-artifact", "v2"]
+        )
+        self.assertEqual(pinned.from_artifact, "v2")
+
 
 class TestEnsureRunFiles(unittest.TestCase):
     def setUp(self):
@@ -159,6 +174,35 @@ class TestMainSkipGenerate(unittest.TestCase):
             ]
             pw.main()
         upload.assert_not_called()
+
+    def test_stages_subset_runs_only_those(self):
+        with patch.object(pw.protocol_cli, "stage_screen") as screen, \
+             patch.object(pw.protocol_cli, "stage_generate") as generate, \
+             patch.object(pw.protocol_cli, "stage_relax") as relax, \
+             patch.object(pw.protocol_cli, "stage_score", side_effect=self._write_funnel) as score, \
+             patch.object(pw, "upload"):
+            sys.argv = [
+                "wyformer-protocol-wandb", "run7", "--output-dir", str(self.out),
+                "--skip-generate", "--stages", "score",
+            ]
+            pw.main()
+        screen.assert_not_called()
+        generate.assert_not_called()
+        relax.assert_not_called()
+        score.assert_called_once()
+
+    def test_from_artifact_downloads_then_scores(self):
+        with patch.object(pw, "download_protocol_artifact") as download, \
+             patch.object(pw.protocol_cli, "stage_score", side_effect=self._write_funnel) as score, \
+             patch.object(pw, "upload") as upload:
+            sys.argv = [
+                "wyformer-protocol-wandb", "run7", "--output-dir", str(self.out),
+                "--from-artifact", "--stages", "score",
+            ]
+            pw.main()
+        download.assert_called_once()
+        score.assert_called_once()
+        upload.assert_called_once()
 
     def test_skip_generate_without_file_raises(self):
         (self.out / pw.GENES_FILE).unlink()

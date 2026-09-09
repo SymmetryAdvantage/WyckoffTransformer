@@ -25,6 +25,12 @@ Every key of ``funnel.json`` is flattened into ``run.summary`` under a
 ``manifest.json``, the generated gene file and ``cifs/`` go into an artifact
 named ``protocol_<run-id>`` of type ``protocol_eval``.  ``--no-upload`` runs
 everything and skips only the write-back.
+
+To re-score a run whose relaxations are already done -- e.g. after a change to
+how novelty is judged -- pass ``--from-artifact --stages score``: the previous
+``protocol_<run-id>`` artifact is downloaded into ``--output-dir`` and only the
+score stage runs, then the refreshed ``funnel.json`` and ``structures.csv`` go
+back as a new artifact version and ``run.summary`` is overwritten.
 """
 from __future__ import annotations
 
@@ -169,6 +175,30 @@ def generate_genes(
     return len(generated)
 
 
+def download_protocol_artifact(
+    run_id: str, entity: str, project: str, output_dir: Path, version: str = "latest"
+) -> str:
+    """Pull a run's ``protocol_<id>`` artifact into *output_dir*.
+
+    Used by ``--from-artifact`` to re-score an already-relaxed run: the stage
+    outputs (``screen.json``, ``structures.csv``, ``cifs/``, the gene file) are
+    read straight back, so no cohort is generated and nothing is relaxed.
+
+    Returns:
+        The concrete artifact version that was downloaded (e.g. ``"v1"``).
+    """
+    import wandb  # noqa: PLC0415
+
+    name = f"protocol_{run_id}"
+    artifact = wandb.Api().artifact(
+        f"{entity}/{project}/{name}:{version}", type=ARTIFACT_TYPE
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifact.download(root=str(output_dir))
+    logger.info("Downloaded %s:%s -> %s", name, artifact.version, output_dir)
+    return artifact.version
+
+
 def flatten_funnel(funnel: dict) -> dict:
     """Numeric leaves of ``funnel.json``, keyed for ``run.summary``.
 
@@ -228,6 +258,8 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
         metadata = {}
         if manifest_path.is_file():
             metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if args.from_artifact is not None:
+            metadata["rescored_from"] = f"protocol_{args.wandb_run}:{args.from_artifact}"
         artifact = wandb.Artifact(
             name=f"protocol_{args.wandb_run}",
             type=ARTIFACT_TYPE,
@@ -278,6 +310,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT)
     parser.add_argument("--no-upload", dest="upload", action="store_false",
                         help="Run everything but skip the write-back to W&B.")
+    parser.add_argument(
+        "--stages", type=str, default=",".join(protocol_cli.STAGES),
+        help="Comma-separated subset of %s to run, in this order." % ",".join(protocol_cli.STAGES),
+    )
+    parser.add_argument(
+        "--from-artifact", nargs="?", const="latest", default=None, metavar="VERSION",
+        help="Re-score an already-relaxed run: download its protocol_<id> "
+             "artifact (this VERSION, or the latest) into --output-dir and run "
+             "only the stages named by --stages (use --stages score). Implies "
+             "--skip-generate; nothing is generated or relaxed.",
+    )
 
     gen = parser.add_argument_group("generation")
     gen.add_argument("--n-genes", type=int, default=1000,
@@ -347,9 +390,22 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     gene_file = args.output_dir / GENES_FILE
 
-    if args.skip_generate:
+    stages = [s.strip() for s in args.stages.split(",") if s.strip()]
+    unknown = [s for s in stages if s not in protocol_cli.STAGES]
+    if unknown:
+        raise SystemExit(f"--stages: {unknown} not in {protocol_cli.STAGES}")
+
+    if args.from_artifact is not None:
+        download_protocol_artifact(
+            args.wandb_run, args.wandb_entity, args.wandb_project,
+            args.output_dir, version=args.from_artifact,
+        )
+
+    if args.skip_generate or args.from_artifact is not None:
         if not gene_file.is_file():
-            raise FileNotFoundError(f"--skip-generate but no gene file at {gene_file}")
+            raise FileNotFoundError(
+                f"no gene file at {gene_file} (--skip-generate/--from-artifact)"
+            )
         logger.info("Reusing gene file %s", gene_file)
     else:
         generate_genes(
@@ -365,7 +421,7 @@ def main() -> None:
         )
 
     stage_args = build_stage_args(args, gene_file)
-    for stage in protocol_cli.STAGES:
+    for stage in stages:
         protocol_cli.run_stage(stage, stage_args)
 
     funnel = json.loads(
