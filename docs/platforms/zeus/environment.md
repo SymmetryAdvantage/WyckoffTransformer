@@ -186,11 +186,11 @@ uv sync --extra dev --extra relax --extra compile
 
 ### Why the extras are not in `uv.toml`
 
-They cannot be. `uv.toml` accepts an `extra = [...]` key — `uv.toml.local` in
-the repository root sets one — but it is honoured by the `uv pip` interface and
-**ignored by `uv sync`**. Verified: with `extra = ["dev", "relax", "compile"]`
-in `uv.toml`, `uv sync --dry-run` still plans to remove MACE, ORB, pytest, ruff
-and triton. `default-groups` in `uv.toml` is ignored by `uv sync` too, and
+They cannot be. `uv.toml` accepts an `extra = [...]` key, but it is honoured by
+the `uv pip` interface and **ignored by `uv sync`**. Verified: with
+`extra = ["dev", "relax", "compile"]` in `uv.toml`, `uv sync --dry-run` still
+plans to remove MACE, ORB, pytest, ruff and triton. `default-groups` in
+`uv.toml` is ignored by `uv sync` too, and
 `--extra` has no environment variable. The command line is the only channel, so
 the extras live in `env_init.sh` and `scripts/platforms/zeus/uv.toml` carries a
 comment saying why it does not set them.
