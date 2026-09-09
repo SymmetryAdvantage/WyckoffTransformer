@@ -54,6 +54,7 @@ wyformer-gene-screen = "wyckoff_transformer.cli.gene_screen:main"
 wyformer-dft-screen = "wyckoff_transformer.cli.dft_screen:main"
 wyformer-gene-novelty = "wyckoff_transformer.cli.gene_novelty:main"
 wyformer-hull-energies = "wyckoff_transformer.formula_energy.hull_table:main"
+wyformer-system-prior = "wyckoff_transformer.cli.system_prior:main"
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]

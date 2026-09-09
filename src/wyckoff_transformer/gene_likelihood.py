@@ -320,6 +320,15 @@ def score_gene_likelihood(
         raise ValueError(
             "A composition-conditioned generator needs a composition vector per gene, "
             "which this scorer does not build.")
+    if getattr(trainer, "chemical_system_conditioning", False):
+        # The block is trivially derivable here -- it is the indicator of the gene's own
+        # elements -- but the resulting number is p(gene | its own chemical system), and
+        # every gene would be scored under a different conditioning. Novelty ranks genes
+        # against each other, so that is not the quantity wanted, and producing it
+        # silently would be worse than refusing.
+        raise ValueError(
+            "A chemical-system-conditioned generator scores each gene under its own "
+            "conditioning, which is not a likelihood comparable across genes.")
     if cond is not None:
         if not trainer.condition_features:
             raise ValueError("cond was supplied, but this model has no condition features.")
