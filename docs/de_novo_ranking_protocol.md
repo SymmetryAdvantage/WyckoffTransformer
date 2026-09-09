@@ -33,34 +33,67 @@ Against a gene file:
 ```bash
 uv run wyformer-protocol generated/<run>/wyckoff_genes.json.gz \
     --output-dir generated/<run>/protocol \
-    --cores 20
+    --devices cuda:0,cuda:1
 ```
 
-GPU instead of CPU: `--devices cuda:0,cuda:1 --workers-per-device 2`. The two
-are mutually exclusive.
+CPU instead of GPU: `--cores 20`. The two are mutually exclusive, and they
+apply to the relaxation only -- the PyXtal draws are always made on the CPU,
+`--pyxtal-cores` of them at a time.
 
 Trials follow each gene's positional degrees of freedom by default
 (`--n-trials "0:1,2:2,*:3"`); `--n-trials 1` forces a constant budget,
 `--no-rattle` drops the rattle stage and `--no-release-symmetry` the
 unconstrained stage before it. All three are recorded in `manifest.json`.
 
-Stages are separable, which matters because `relax` is the only expensive one:
+## The four stages
+
+Each stage needs different hardware, so each one is separately runnable and
+none of them waits on another's resource:
+
+| stage | what it needs | cost | output |
+|---|---|---|---|
+| `screen` | one core, 4M fingerprints in RAM | ~2 min cached, ~8 min cold | `screen.json` |
+| `generate` | every CPU core, no potential | seconds per draw | `pyxtal.extxyz`, `pyxtal.csv` |
+| `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `cifs/` |
+| `score` | the hull parquet and LeMat-Bulk geometry in RAM | ~1 min | `funnel.json` |
 
 ```bash
-wyformer-protocol genes.json.gz --output-dir run/ --stage screen   # ~2 min cached
-wyformer-protocol genes.json.gz --output-dir run/ --stage relax --cores 20
-wyformer-protocol genes.json.gz --output-dir run/ --stage score    # ~1 min
+wyformer-protocol genes.json.gz --output-dir run/ --stage screen
+wyformer-protocol genes.json.gz --output-dir run/ --stage generate --pyxtal-cores 12
+wyformer-protocol genes.json.gz --output-dir run/ --stage relax --devices cuda:0,cuda:1
+wyformer-protocol genes.json.gz --output-dir run/ --stage score
 ```
 
-`--limit 12` on `relax` gives a smoke test. Outputs:
+**PyXtal is generated before the relaxation, not inside it.** A draw takes
+milliseconds to seconds while a trial's relaxation takes seconds to minutes, so
+interleaving them costs little on CPU -- but it idles a GPU, and PyXtal
+rejection-samples, so a gene it cannot satisfy does not fail: it spins.
+`--pyxtal-timeout` (300 s) bounds one draw and `--relax-timeout` (1800 s) one
+trial, and an abandoned one is recorded as such rather than silently missing.
+
+**The unit of work is a trial, not a gene.** Trial budgets differ by a factor
+of three, so a pool keyed by gene leaves workers idle at the end; both stages
+therefore queue `(gene, trial)` pairs, and both append a row per pair as it
+finishes. `--resume` (on by default) then restarts at the trial granularity,
+and `--no-resume` starts over.
+
+`--limit 12` gives a smoke test on the first twelve genes. Outputs:
 
 | file | contents |
 |---|---|
 | `screen.json` | validity, uniqueness with counts, gene novelty |
-| `structures.csv` | per gene: energy, validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials` |
+| `pyxtal.extxyz` | every generated draw, tagged with its gene and trial |
+| `pyxtal.csv` | per trial: PyXtal status (`ok`/`failed`/`timeout`), formula, DoF, seconds |
+| `relaxations.csv` | per trial: status, energy, device, seconds, kept CIF, and the error if it failed |
+| `structures.csv` | per gene: the lowest-energy trial, plus validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials` |
 | `funnel.json` | the whole cascade, as rates per *sampled* gene |
-| `manifest.json` | MLIP, checkpoint, trial schedule, rattle, devices, hull provenance |
+| `manifest.json` | MLIP, checkpoint, trial schedule, rattle, devices, timeouts, hull provenance |
 | `cifs/`, `cryspr/` | relaxed structures, relaxation logs, per-trial `rattle.json` |
+
+A gene with no structure carries the reason in `structures.csv`'s `error`
+column, and the trial that produced it is in `relaxations.csv`. This matters:
+a cohort whose potential fails to load and one whose genes PyXtal cannot draw
+both read as `has_structure = 0` in the funnel and nowhere else.
 
 ## Evaluating a W&B run
 
@@ -91,8 +124,9 @@ Drop `--condition` for an unconditional run.
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.
 - **What lands on the run.** Every key in `funnel.json` is flattened into
   `run.summary` under a `protocol/` prefix (`protocol/metasun_per_sampled_gene`,
-  `protocol/valid_gene_rate`, …). `screen.json`, `structures.csv`,
-  `funnel.json`, `manifest.json` and `cifs/` go into an artifact named
+  `protocol/valid_gene_rate`, …). `screen.json`, `pyxtal.extxyz`,
+  `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `funnel.json`,
+  `manifest.json` and `cifs/` go into an artifact named
   `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything
   and skips only the write-back; `--entity` / `--project` override where the
   run is looked up.
