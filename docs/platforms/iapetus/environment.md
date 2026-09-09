@@ -51,6 +51,28 @@ docker run --rm --runtime=nvidia --ipc=host \
     /usr/local/bin/uv pip uninstall --python .venv/bin/python triton
 ```
 
+### Moving a single pinned dependency into the venv
+
+The venv is built from a compiled requirements file, so re-running
+`build_singularity_venv.sh` to pick up one changed pin costs a full rebuild and
+throws away the CPU-only Warp wheel below. For a single package — the pinned
+PyXtal fork in `[tool.uv.sources]` is the standing example — compile just the
+direct requirements and install that one line, so `pyproject.toml` stays the
+only place the pin is written:
+
+```bash
+scripts/platforms/iapetus/run.sh bash -lc '
+    uv pip compile --no-deps --no-annotate --no-header pyproject.toml \
+        | grep "^pyxtal " > /tmp/pyxtal.txt
+    uv pip install --python .venv/bin/python --no-deps -r /tmp/pyxtal.txt'
+```
+
+`--no-deps` on both commands is what keeps this safe: without it the resolver
+reconsiders the whole closure and puts a PyPI torch over the container's custom
+build. Note that a bare `uv pip install pyxtal` does **not** work here —
+`tool.uv.sources` applies only to a requirement that comes from the project's
+own dependency list, so the source has to reach uv through `pyproject.toml`.
+
 ### CPU-only Warp with GPU ORB inference
 
 The base image currently carries the stock CUDA-enabled `warp-lang` wheel,

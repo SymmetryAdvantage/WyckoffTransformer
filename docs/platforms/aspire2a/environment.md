@@ -68,6 +68,27 @@ resolution fails; and neither pin is wanted here. There is no `uv.lock` in this
 checkout, which is why the ASPIRE 2A dependency set is a **fresh resolution**
 rather than a pinned one — see the version-skew section below.
 
+The **PyXtal pin is a tarball, not a git branch, because of this host.** The
+fork in `[tool.uv.sources]` is referenced as
+`https://github.com/kazeevn/PyXtal/archive/<sha>.tar.gz`: a `{ git = ... }`
+source makes uv shell out to `git`, which this container does not have, and the
+compile in step 1 would fail outright on a *base* dependency. A tarball needs
+only HTTPS. Step 4's verification asserts the patched `check_wp` is what ended
+up in the venv, so a silent fallback to PyPI PyXtal fails the build.
+
+To move that pin into the existing venv without a rebuild — the venv is shared
+by every running job, so see the live-risk warning below — compile the direct
+requirements and install the one line:
+
+```bash
+bash scripts/run_in_singularity.sh bash -c '
+  export UV_CACHE_DIR=$PWD/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
+  ~/.local/bin/uv pip compile --no-deps --no-annotate --no-header pyproject.toml \
+      | grep "^pyxtal " > .venv-requirements.pyxtal.txt
+  ~/.local/bin/uv pip install --python .venv/bin/python --no-deps \
+      -r .venv-requirements.pyxtal.txt'
+```
+
 `uv` itself is a standalone binary at `~/.local/bin/uv` (0.12.6). The build sets
 `UV_CACHE_DIR=$REPO/.uv-cache` (3 GB — keeping it off the 50 GB home quota),
 `UV_PYTHON_DOWNLOADS=never` and `UV_LINK_MODE=copy`.
