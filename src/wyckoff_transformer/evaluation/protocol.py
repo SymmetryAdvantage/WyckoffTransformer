@@ -13,7 +13,9 @@ fingerprint alone is not a verdict -- two structures with the same space group
 and the same elements on the same Wyckoff orbits can still be different
 structures -- so the gene screen produces *candidates* for the matcher rather
 than a decision, and a gene already present in LeMat-Bulk can still relax into
-a novel structure.
+a novel structure.  Novelty is checked against both the sampled gene's
+fingerprint and the *relaxed* structure's own, since relaxation -- the rattle
+stage especially -- can move a structure off the orbit set PyXtal placed it on.
 
 What keeps this cheap is the relaxation budget.  Trials are allotted by the
 gene's positional degrees of freedom -- one where PyXtal has no free coordinate
@@ -346,7 +348,7 @@ class GeneFingerprinter:
     """
 
     def __init__(self) -> None:
-        from wyckoff_transformer.data import pyxtal_notation_to_sites
+        from wyckoff_transformer.data import pyxtal_notation_to_sites, structure_to_sites
         from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
         from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
@@ -355,6 +357,7 @@ class GeneFingerprinter:
         self.ss_from_letter = mappings.ss_from_letter
         self.augmentation = get_augmentation_dict()
         self._to_sites = pyxtal_notation_to_sites
+        self._structure_to_sites = structure_to_sites
 
     def record(self, gene: dict) -> dict:
         """Wyckoff-representation record for one gene.  Raises if illegal."""
@@ -365,6 +368,23 @@ class GeneFingerprinter:
     def fingerprint(self, gene: dict) -> tuple:
         """Augmented fingerprint, invariant to equivalent Wyckoff enumerations."""
         return record_to_augmented_fingerprint(self.record(gene))
+
+    def fingerprint_structure(
+        self, structure, tol: float = 0.1, a_tol: float = 5.0
+    ) -> tuple:
+        """Augmented fingerprint of a *relaxed* structure, not its sampled gene.
+
+        Runs PyXtal symmetry detection (``pyxtal.from_seed`` over a tolerance
+        sweep, via :func:`~wyckoff_transformer.data.structure_to_sites`) and
+        fingerprints the result.  Relaxation -- the rattle stage especially --
+        can lower the symmetry PyXtal imposed, so this fingerprint can differ
+        from :meth:`fingerprint` of the gene the structure was drawn from.
+        Raises if symmetry detection fails.
+        """
+        record = self._structure_to_sites(
+            structure, self.enum_from_ss_letter, self.augmentation, tol=tol, a_tol=a_tol
+        )
+        return record_to_augmented_fingerprint(record)
 
 
 def screen_genes(
@@ -426,12 +446,27 @@ def funnel(
 ) -> dict:
     """Assemble the full funnel, with every rate per sampled gene.
 
+    ``metastable`` / ``stable`` (and their ``_per_sampled_gene`` rates) count
+    every unique structure at or below the hull threshold, *without* the novelty
+    filter.  ``metastable_among_novel`` / ``stable_among_novel`` are the counts
+    with novelty applied, and ``metasun_per_sampled_gene`` /
+    ``sun_per_sampled_gene`` the corresponding rates -- that is what MetaSUN and
+    SUN mean.
+
+    ``gene_known_became_novel`` / ``gene_novel_became_known`` count how many
+    unique structures crossed the novelty line under relaxation, relative to
+    their *sampled gene's* novelty.  ``relaxed_fingerprint_resolved`` /
+    ``relaxed_fingerprint_changed`` say how often the relaxed structure could be
+    re-fingerprinted and how often that fingerprint differs from the gene's.
+
     Args:
         screen: Stage-A result.
         structures: One row per relaxed representative, indexed by gene index,
             with boolean columns ``has_structure``, ``valid_structure``,
             ``unique_structure``, ``novel_structure`` and a float
-            ``e_above_hull``.
+            ``e_above_hull``.  ``gene_known_became_novel`` and its siblings are
+            reported only when ``novel_structure``, ``relaxed_fingerprint_*``
+            are present.
             Columns absent from *structures* are reported as ``None`` rather
             than assumed, so a partial run stays honest about what it measured.
 
@@ -455,6 +490,7 @@ def funnel(
         ("novel_structure", "novel_structure"),
     ]
     surviving = None
+    pre_novelty = None
     for label, column in stages:
         if column not in structures.columns:
             result[label] = None
@@ -464,34 +500,79 @@ def funnel(
         if surviving is not None:
             mask = mask & surviving
         surviving = mask
+        if label != "novel_structure":
+            pre_novelty = mask
         result[label] = int(mask.sum())
         result[f"{label}_per_sampled_gene"] = _ratio(weighted(mask), denominator)
 
-    if "e_above_hull" in structures.columns and surviving is not None:
+    if "e_above_hull" in structures.columns and pre_novelty is not None:
         energies = structures["e_above_hull"]
-        for label, threshold in (
-            ("metastable", METASTABLE_THRESHOLD),
-            ("stable", STABLE_THRESHOLD),
+        has_energy = energies.notna()
+        novel = surviving if surviving is not None else pre_novelty
+        for label, sun_label, threshold in (
+            ("metastable", "metasun", METASTABLE_THRESHOLD),
+            ("stable", "sun", STABLE_THRESHOLD),
         ):
-            mask = surviving & energies.notna() & (energies <= threshold)
-            result[label] = int(mask.sum())
-            result[f"{label}_per_sampled_gene"] = _ratio(weighted(mask), denominator)
-        # The headline: MetaSUN counts everything at or below 0.1 eV/atom that
-        # also survived uniqueness and novelty.
-        result["metasun_per_sampled_gene"] = result["metastable_per_sampled_gene"]
-        result["sun_per_sampled_gene"] = result["stable_per_sampled_gene"]
+            below = has_energy & (energies <= threshold)
+            # metastable/stable: every unique structure below the threshold, no
+            # novelty filter.  metasun/sun and *_among_novel: the same, with
+            # novelty applied.
+            total = pre_novelty & below
+            among_novel = novel & below
+            result[label] = int(total.sum())
+            result[f"{label}_per_sampled_gene"] = _ratio(weighted(total), denominator)
+            result[f"{label}_among_novel"] = int(among_novel.sum())
+            result[f"{sun_label}_per_sampled_gene"] = _ratio(
+                weighted(among_novel), denominator
+            )
         # A structure the hull cannot reach -- a composition whose subspace is
         # empty, or a phase diagram that will not build -- fails both
         # thresholds, which is the conservative answer but not a visible one.
-        result["no_hull_energy"] = int((surviving & energies.isna()).sum())
+        result["no_hull_energy"] = int((pre_novelty & energies.isna()).sum())
     else:
         for key in (
-            "metastable", "metastable_per_sampled_gene",
-            "stable", "stable_per_sampled_gene",
+            "metastable", "metastable_per_sampled_gene", "metastable_among_novel",
+            "stable", "stable_per_sampled_gene", "stable_among_novel",
             "metasun_per_sampled_gene", "sun_per_sampled_gene",
             "no_hull_energy",
         ):
             result[key] = None
+
+    # Novelty moves under relaxation.  A gene whose sampled fingerprint is in
+    # LeMat-Bulk can still relax into a structure the matcher rejects (a); one
+    # whose sampled fingerprint is absent can relax onto a known structure
+    # through its *relaxed* fingerprint (b).  Both are counted against the
+    # sampled gene's novelty, over representatives that produced a unique
+    # structure.
+    if "novel_structure" in structures.columns and pre_novelty is not None:
+        novel_structure = structures["novel_structure"].fillna(False).astype(bool)
+        gene_index = structures.index.to_series()
+        known_gene = gene_index.isin(set(screen.known))
+        novel_gene = gene_index.isin(set(screen.novel))
+        became_novel = pre_novelty & known_gene & novel_structure
+        became_known = pre_novelty & novel_gene & ~novel_structure
+        result["gene_known_became_novel"] = int(became_novel.sum())
+        result["gene_novel_became_known"] = int(became_known.sum())
+        result["gene_known_became_novel_per_sampled_gene"] = _ratio(
+            weighted(became_novel), denominator
+        )
+        result["gene_novel_became_known_per_sampled_gene"] = _ratio(
+            weighted(became_known), denominator
+        )
+    else:
+        for key in (
+            "gene_known_became_novel", "gene_novel_became_known",
+            "gene_known_became_novel_per_sampled_gene",
+            "gene_novel_became_known_per_sampled_gene",
+        ):
+            result[key] = None
+
+    for column in ("relaxed_fingerprint_resolved", "relaxed_fingerprint_changed"):
+        result[column] = (
+            int(structures[column].fillna(False).astype(bool).sum())
+            if column in structures.columns
+            else None
+        )
 
     return result
 

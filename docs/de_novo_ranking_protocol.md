@@ -85,8 +85,8 @@ and `--no-resume` starts over.
 | `pyxtal.extxyz` | every generated draw, tagged with its gene and trial |
 | `pyxtal.csv` | per trial: PyXtal status (`ok`/`failed`/`timeout`), formula, DoF, seconds |
 | `relaxations.csv` | per trial: status, energy, device, seconds, kept CIF, and the error if it failed |
-| `structures.csv` | per gene: the lowest-energy trial, plus validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials` |
-| `funnel.json` | the whole cascade, as rates per *sampled* gene |
+| `structures.csv` | per gene: the lowest-energy trial, plus validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials`, `gene_novel`, `novel_by_sampled_gene`, `relaxed_fingerprint_resolved`, `relaxed_fingerprint_changed` |
+| `funnel.json` | the whole cascade, as rates per *sampled* gene, plus `gene_known_became_novel` / `gene_novel_became_known` |
 | `manifest.json` | MLIP, checkpoint, trial schedule, rattle, devices, timeouts, hull provenance |
 | `cifs/`, `cryspr/` | relaxed structures, relaxation logs, per-trial `rattle.json` |
 
@@ -124,7 +124,7 @@ Drop `--condition` for an unconditional run.
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.
 - **What lands on the run.** Every key in `funnel.json` is flattened into
   `run.summary` under a `protocol/` prefix (`protocol/metasun_per_sampled_gene`,
-  `protocol/valid_gene_rate`, …). `screen.json`, `pyxtal.extxyz`,
+  `protocol/valid_gene_rate`, `protocol/gene_known_became_novel`, …). `screen.json`, `pyxtal.extxyz`,
   `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `funnel.json`,
   `manifest.json` and `cifs/` go into an artifact named
   `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything
@@ -134,14 +134,29 @@ Drop `--condition` for an unconditional run.
 The same hardware, trial-schedule, MLIP and reference flags as `wyformer-protocol`
 are accepted and passed straight through.
 
+- **Re-scoring without re-relaxing.** `--from-artifact --stages score` downloads
+  the run's existing `protocol_<run-id>` artifact into `--output-dir` and runs
+  only the score stage on it — no cohort is generated, nothing is relaxed. The
+  refreshed `funnel.json` and `structures.csv` go back as a new artifact
+  version and `run.summary` is overwritten. Use it after a change to how
+  novelty or the hull is judged. `--from-artifact v2` pins a version instead of
+  taking the latest.
+
 ## The cascade
 
 ```
 sampled → valid gene → unique gene (keep counts)
         → PyXtal + 1–3 trials × 4-stage CrySPR (2 symmetric, free, rattle)
-        → valid structure → unique structure → novel structure
-        → e_hull ≤ 0.1 → ≤ 0
+        → valid structure → unique structure ─┬─→ e_hull ≤ 0.1 (metastable) → ≤ 0 (stable)
+                                              └─→ novel structure (sampled + relaxed fingerprint)
+                                                  → e_hull ≤ 0.1 (MetaSUN) → ≤ 0 (SUN)
 ```
+
+**`metastable` / `stable` are measured before the novelty filter**, over every
+unique structure with a hull energy; `metastable_among_novel` / `stable_among_novel`
+and the `metasun` / `sun` rates add novelty back. So `metastable ≥
+metastable_among_novel`, and MetaSUN is the novel-only slice of the metastable
+count.
 
 **Uniqueness deduplicates but keeps counts.** Every rate stays per sampled gene;
 a duplicate belongs once in the numerator and once per sample in the
@@ -166,6 +181,19 @@ group and the same elements on the same Wyckoff orbits differ in their free
 coordinates and lattice parameters, so a gene that occurs in LeMat-Bulk can
 still relax into a structure that is not in it. The screen therefore produces
 *candidates* for the matcher rather than a decision.
+
+**Novelty is judged against two fingerprints, not one.** The sampled gene's,
+and the *relaxed* structure's own — recomputed by PyXtal symmetry detection in
+the score stage. Relaxation, the rattle stage especially, can move a structure
+off the orbit set PyXtal placed it on, so a gene PyXtal drew onto a
+LeMat-Bulk-known fingerprint can relax into something genuinely new, and a gene
+drawn onto an unknown one can relax onto a known structure. A structure is
+`novel_structure` iff no LeMat-Bulk entry sharing *either* fingerprint matches
+it; MetaSUN and SUN use this. `funnel.json` reports the two crossings —
+`gene_known_became_novel` and `gene_novel_became_known` — against the sampled
+gene's novelty. When symmetry detection fails on a relaxed structure
+(`relaxed_fingerprint_resolved = false`), only the sampled fingerprint is used
+for that gene.
 
 That is what makes the reference affordable. LeMat-Bulk has 4.2M entries and
 the matcher needs a `Structure` per candidate, which is far too much to hold;
@@ -233,16 +261,15 @@ minutes.
 
 ## Known limitations
 
-- **Novelty is judged on the sampled gene, not the relaxed one.** Stage 1 uses
-  the gene WyFormer emitted; relaxation can lower the symmetry, so a structure
-  whose *relaxed* fingerprint is in LeMat-Bulk while its sampled one is not will
-  be called novel without the matcher ever seeing it. Bounding this needs the
-  relaxed structure re-fingerprinted, which the score stage does not yet do.
-  **The rattle stage makes this matter more**: breaking the symmetry PyXtal
-  imposed is precisely its purpose, so accepted rattles (33% of trials in the
-  study) are exactly the cases where the sampled and relaxed fingerprints
-  diverge. Re-fingerprinting the kept structure is now the first thing to fix
-  here.
+- **The relaxed fingerprint is a fingerprint, not a full re-analysis.** The
+  score stage now re-fingerprints the relaxed structure and judges novelty
+  against both it and the sampled gene's (see *Novelty and uniqueness are
+  two-stage*), so a structure that relaxed onto or off a known orbit set is
+  caught. What is still fingerprint-first is the *candidate* set: only
+  LeMat-Bulk entries sharing one of the two fingerprints reach the matcher, so
+  a match that neither fingerprint points at is missed. PyXtal symmetry
+  detection also fails on some relaxed cells; those fall back to the sampled
+  fingerprint alone (`relaxed_fingerprint_resolved = false`).
 - **The matcher runs at pymatgen's defaults** (`ltol=0.2, stol=0.3,
   angle_tol=5`, primitive cell, scaled). A looser tolerance would find more
   matches and lower the novelty rate.

@@ -444,6 +444,23 @@ class TestNoveltyReference(unittest.TestCase):
         self.assertEqual(list(reference.columns), ["fingerprint", "structure"])
 
 
+class TestRelaxedFingerprint(unittest.TestCase):
+    """The relaxed structure is re-fingerprinted, not trusted to match its gene."""
+
+    def test_a_structure_fingerprints_to_its_gene_when_symmetry_is_unchanged(self):
+        from pymatgen.core import Lattice, Structure
+
+        fingerprinter = GeneFingerprinter()
+        # Rocksalt NaCl: Na on 4a, Cl on 4b of Fm-3m -- exactly the NACL gene.
+        rocksalt = Structure.from_spacegroup(
+            "Fm-3m", Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+        )
+        self.assertEqual(
+            fingerprinter.fingerprint_structure(rocksalt),
+            fingerprinter.fingerprint(NACL),
+        )
+
+
 class TestCliDefaults(unittest.TestCase):
     def test_protocol_defaults_match_the_specification(self):
         args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
@@ -928,11 +945,72 @@ class TestFunnel(unittest.TestCase):
         self.assertEqual(report["valid_structure"], 2)
         # Genes 0 and 1 stand for 3 + 2 = 5 of the 10 sampled genes.
         self.assertAlmostEqual(report["valid_structure_per_sampled_gene"], 0.5)
-        # Only gene 0 is at or below 0.1 eV/atom and survived every filter.
+        # Only gene 0 is a unique structure at or below 0.1 eV/atom.
         self.assertEqual(report["metastable"], 1)
+        self.assertEqual(report["metastable_among_novel"], 1)
+        self.assertAlmostEqual(report["metastable_per_sampled_gene"], 0.3)
         self.assertAlmostEqual(report["metasun_per_sampled_gene"], 0.3)
         self.assertEqual(report["stable"], 0)
+        self.assertEqual(report["stable_among_novel"], 0)
         self.assertAlmostEqual(report["sun_per_sampled_gene"], 0.0)
+
+    def test_metastable_ignores_novelty_but_metasun_applies_it(self):
+        # Genes 0-3 are all unique structures below 0.1 eV/atom; 1 and 3 are not
+        # novel. counts are {0: 3, 1: 2, 2: 2, 3: 1} over 10 sampled genes.
+        structures = pd.DataFrame(
+            {
+                "has_structure": [True, True, True, True],
+                "valid_structure": [True, True, True, True],
+                "unique_structure": [True, True, True, True],
+                "novel_structure": [True, False, True, False],
+                "e_above_hull": [0.05, 0.02, -0.01, -0.2],
+            },
+            index=[0, 1, 2, 3],
+        )
+        report = funnel(self._screen(), structures)
+        self.assertEqual(report["metastable"], 4)
+        self.assertEqual(report["metastable_among_novel"], 2)
+        self.assertAlmostEqual(report["metastable_per_sampled_gene"], 0.8)
+        self.assertAlmostEqual(report["metasun_per_sampled_gene"], 0.5)
+        # Only genes 2 and 3 are at or below 0 eV/atom; only gene 2 is novel.
+        self.assertEqual(report["stable"], 2)
+        self.assertEqual(report["stable_among_novel"], 1)
+        self.assertAlmostEqual(report["stable_per_sampled_gene"], 0.3)
+        self.assertAlmostEqual(report["sun_per_sampled_gene"], 0.2)
+
+    def test_novelty_transitions_are_counted_against_the_sampled_gene(self):
+        structures = pd.DataFrame(
+            {
+                "has_structure": [True, True, True, True],
+                "valid_structure": [True, True, True, True],
+                "unique_structure": [True, True, True, True],
+                # gene 3 is known but relaxed to a structure the matcher rejects;
+                # gene 1 is a novel gene that relaxed onto a known structure.
+                "novel_structure": [True, False, True, True],
+                "relaxed_fingerprint_resolved": [True, True, False, True],
+                "relaxed_fingerprint_changed": [False, True, False, True],
+            },
+            index=[0, 1, 2, 3],
+        )
+        report = funnel(self._screen(), structures)
+        self.assertEqual(report["gene_known_became_novel"], 1)
+        self.assertEqual(report["gene_novel_became_known"], 1)
+        # weighted by counts {3: 1, 1: 2} over 10 sampled genes.
+        self.assertAlmostEqual(
+            report["gene_known_became_novel_per_sampled_gene"], 0.1
+        )
+        self.assertAlmostEqual(
+            report["gene_novel_became_known_per_sampled_gene"], 0.2
+        )
+        self.assertEqual(report["relaxed_fingerprint_resolved"], 3)
+        self.assertEqual(report["relaxed_fingerprint_changed"], 2)
+
+    def test_novelty_transitions_are_none_without_the_columns(self):
+        structures = pd.DataFrame({"has_structure": [True]}, index=[0])
+        report = funnel(self._screen(), structures)
+        self.assertIsNone(report["gene_known_became_novel"])
+        self.assertIsNone(report["gene_novel_became_known"])
+        self.assertIsNone(report["relaxed_fingerprint_changed"])
 
     def test_a_stage_cannot_resurrect_a_gene_an_earlier_one_dropped(self):
         structures = pd.DataFrame(
