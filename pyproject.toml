@@ -24,7 +24,13 @@ dependencies = [
   "pyxtal ~=1.1",
   "pydantic >=2.12.5",
   "huggingface-hub>=1.7.2",
-  "matminer",
+  # matminer 0.8.0 (Aug 2023) does `from scipy.special import sph_harm`, removed in
+  # scipy 1.17, and imports the private `pymatgen.core.periodic_table._pt_data`,
+  # renamed since. 0.10.1 fixes both. Its own `pandas<3` is what an unconstrained
+  # resolve trades away: it takes pandas 3 and backtracks matminer to 0.8.0
+  # instead, so every fresh-resolving platform silently loses the evaluation
+  # metrics and the Magpie baselines. Nothing here needs pandas 3.
+  "matminer >=0.10.1",
   "safetensors>=0.7.0",
   "datasets>=4.8.5",
   "pyarrow>=24.0.0",

@@ -170,7 +170,7 @@ you want for anything touching the repo itself.
 ## Dependency version skew
 
 Because the build resolves fresh instead of using a lockfile, it picks up
-whatever is newest on PyPI at build time. As of 2026-09-08 that has broken
+whatever is newest on PyPI at build time. As of 2026-09-08 that had broken
 `matminer` 0.8.0 (unmaintained since 2023) against both `scipy` 1.18.1 and
 `pymatgen` 2026.5.4:
 
@@ -179,9 +179,9 @@ whatever is newest on PyPI at build time. As of 2026-09-08 that has broken
 | `matminer.featurizers.site.bonding` | `cannot import name 'sph_harm' from 'scipy.special'` |
 | `matminer.utils.data` | `cannot import name '_pt_data' from 'pymatgen.core.periodic_table'` |
 
-Neither `scipy` nor `matminer` is pinned in `pyproject.toml`. Training,
-generation and relaxation are unaffected; the CDVAE evaluation metrics and the
-`formula_energy` Magpie baselines are not. See
+`pyproject.toml` now floors `matminer` at 0.10.1, which fixes both imports and,
+through its own `pandas<3`, holds pandas at 2.3.3. Fresh resolves get the
+working set; a `.venv` built before 2026-09-09 does not. See
 [troubleshooting.md](troubleshooting.md#matminer-is-broken-against-the-resolved-scipy-and-pymatgen).
 
 ---

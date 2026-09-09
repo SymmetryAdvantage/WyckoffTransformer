@@ -153,11 +153,12 @@ so there is nothing to mismatch.
 everything, which quietly degrades the environment:
 
 - pandas 3.0.5 is selected;
-- matminer 0.10.1 requires `pandas<3`, so the resolver backtracks matminer to
-  **0.8.0**;
+- matminer 0.10.1 requires `pandas<3`, so the resolver used to backtrack
+  matminer to **0.8.0** — `pyproject.toml` now floors it at 0.10.1, so this one
+  resolves the other way and pandas goes to 2.x instead;
 - matminer 0.8.0 does `from scipy.special import sph_harm`, removed in scipy
   1.17;
-- the test suite dies at collection with
+- the test suite died at collection with
   `ImportError: cannot import name 'sph_harm' from 'scipy.special'`.
 
 Nothing here is container-specific — it is the ordinary reason the project ships

@@ -85,8 +85,9 @@ ImportError: cannot import name '_pt_data' from 'pymatgen.core.periodic_table'
 ```
 
 `matminer` 0.8.0 (Aug 2023, unmaintained) against scipy 1.18.1 and pymatgen
-2026.5.4. Neither is pinned in `pyproject.toml`, and the ASPIRE 2A build
-resolves fresh (no `uv.lock`), so it takes the newest of both.
+2026.5.4. The ASPIRE 2A build resolves fresh (no `uv.lock`), so it takes the
+newest of everything — and `matminer` used to be unpinned, so the resolver
+preferred pandas 3 and backtracked `matminer` to 0.8.0.
 
 What it breaks:
 
@@ -97,18 +98,20 @@ What it breaks:
 | `pytest` collection of `tests/test_trainer_cache.py` | transitively the same |
 | 5 tests in `formula_energy/tests/test_experiment.py` | `MagpieData` at setup |
 
-Training, generation, screening and relaxation are unaffected. A full run
-(ignoring the uncollectable file) is 633 passed / 39 skipped / 5 errors:
+Training, generation, screening and relaxation are unaffected.
+
+**Fixed** by the `matminer >=0.10.1` floor in `pyproject.toml`: 0.10.1 uses
+`scipy.special.sph_harm_y` and the public `Element` API, and its own `pandas<3`
+pulls pandas back to 2.3.3. Any `.venv` built before that floor still has the
+old pair; rebuild it, or move the packages in individually — including `pytz`,
+which pandas 2 needs and pandas 3 dropped, so a `--no-deps` install of just
+`matminer` and `pandas` trades this failure for `Unable to import required
+dependencies: pytz`. A full run is then 664 passed / 41 skipped, with nothing
+deselected:
 
 ```bash
-bash scripts/run_in_singularity.sh python -m pytest -q \
-    --ignore=src/wyckoff_transformer/tests/test_trainer_cache.py
+bash scripts/run_in_singularity.sh python -m pytest -q
 ```
-
-**Not yet fixed.** The fix is to constrain `scipy` (and probably `pymatgen`) in
-`pyproject.toml` or a constraints file used by step 1 of the build, then rebuild
-— which cannot be done while chained jobs share the `.venv`. Until then, treat
-these six as a known baseline, not a regression you introduced.
 
 ---
 

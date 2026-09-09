@@ -56,20 +56,33 @@ inside the container, even when its host index is different.
 
 ## `matminer` fails to import (`_pt_data`, `sph_harm`)
 
-Two test modules error at collection in this venv:
-
 ```
-ImportError: cannot import name '_pt_data' from 'pymatgen.core.periodic_table'
 ImportError: cannot import name 'sph_harm' from 'scipy.special'
+ImportError: cannot import name '_pt_data' from 'pymatgen.core.periodic_table'
 ```
 
-Both come from `matminer`, which reaches into private pymatgen internals and
-into a SciPy function removed in SciPy 1.17. Nothing in WyFormer's own code is
-involved, and neither the de novo ranking protocol nor training touches
-`matminer`. Deselect the two modules until `matminer` is updated:
+**Fixed** by the `matminer >=0.10.1` floor in `pyproject.toml`. A venv built
+before that floor still carries `matminer` 0.8.0, which loses
+`tests/test_trainer_cache.py` at collection and the five Magpie-baseline tests
+in `formula_energy/tests/test_experiment.py` at setup. Move the two packages in
+without a full rebuild, as in
+[environment.md](environment.md#moving-a-single-pinned-dependency-into-the-venv):
 
 ```bash
-run python -m pytest src/ \
-    --ignore=src/wyckoff_transformer/tests/test_trainer_cache.py \
-    --ignore=src/wyckoff_transformer/formula_energy/tests/test_experiment.py
+scripts/platforms/iapetus/run.sh bash -lc '
+    uv pip compile --no-annotate --no-header pyproject.toml -o /tmp/full.txt
+    grep -E "^(matminer|pandas|pytz)==" /tmp/full.txt > /tmp/mm.txt
+    uv pip install --python .venv/bin/python --no-deps -r /tmp/mm.txt'
+```
+
+`pytz` is in that grep on purpose. `matminer` 0.10.1 requires `pandas<3`, so
+this downgrades pandas 3.0.5 to 2.3.3 — and pandas 2 imports `pytz`, which
+pandas 3 dropped. `--no-deps` will not bring it in, so without the third name
+every module that touches pandas dies at collection with `Unable to import
+required dependencies: pytz`.
+
+Afterwards the whole suite runs with nothing deselected:
+
+```bash
+run python -m pytest src/
 ```
