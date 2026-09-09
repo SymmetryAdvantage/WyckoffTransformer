@@ -9,7 +9,7 @@ Symptoms seen on this machine, and what they mean.
 | MACE, ORB, triton, `pytest` or `ruff` suddenly missing | Something ran a bare `uv sync`, which prunes every extra. Restore with `scripts/platforms/zeus/env_init.sh`. |
 | A resolver picking triton 3.7.x, or a version mismatch with torch | The `constraint-dependencies` pin is gone. The root `uv.toml` is untracked — re-copy it via `env_init.sh`. |
 | `uv pip list` shows `nvidia-cublas`, `nvidia-cudnn-cu13`, ... | A PyPI manylinux torch was installed over the locally built one. The count of `nvidia-*` distributions should be 0. Reinstall torch from the local index. |
-| Nothing resolves; uv cannot find torch 2.11.0 | `uv.toml` is missing, so the local flat index is not declared. It is untracked — recreate it from `uv.toml.local`. |
+| Nothing resolves; uv cannot find torch 2.14.0+cu133 | `uv.toml` is missing, so the local flat index is not declared. It is untracked — recreate it from `uv.toml.local`. |
 | `warning: Found both a uv.toml file and a [tool.uv] section ... extra-build-dependencies` | Expected on every uv invocation here, and harmless: the zeus `uv.toml` repeats the shadowed value. See [environment.md](environment.md#tooluvextra-build-dependencies-and-the-shadowing-warning). |
 | `import torch` fails with a missing `libmkl_*.so.3` | The wheel finds MKL through a RUNPATH into `/opt/intel/oneapi/mkl/latest/lib/intel64`. oneAPI has moved or been removed. |
 | Jobs are much slower than the core count suggests | 48 is threads, not cores; there are 24 physical cores. A CrySPR script with `NP` unset uses 48 workers. See [usage.md](usage.md#worker-counts-24-physical-cores-not-48). |
@@ -30,6 +30,7 @@ import torch
 print('torch    ', torch.__version__, '/ cuda', torch.version.cuda)
 print('file     ', torch.__file__)
 print('available', torch.cuda.is_available(), torch.cuda.device_count())
+print('magma    ', torch._C._has_magma)
 import triton
 print('triton   ', triton.__version__)
 "
@@ -39,10 +40,11 @@ uv pip list | grep -c '^nvidia' ; echo '^ must be 0'
 Expected:
 
 ```text
-torch     2.11.0 / cuda 13.2
+torch     2.14.0+cu133 / cuda 13.3
 file      /home/kna/WyckoffTransformer/.venv/lib/python3.12/site-packages/torch/__init__.py
 available True 2
-triton    3.6.0
+magma     True
+triton    3.8.0
 0
 ^ must be 0
 ```

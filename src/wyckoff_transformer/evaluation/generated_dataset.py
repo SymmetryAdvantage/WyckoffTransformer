@@ -748,8 +748,8 @@ class GeneratedDataset():
             from cdvae_property_models import prop_model_eval
         except ImportError:
             raise ImportError(
-                "cdvae-property-models is required for CDVAE energy evaluation. "
-                "Install it with: pip install cdvae-property-models"
+                "cdvae-property-models is required for CDVAE energy evaluation, "
+                "but the package was removed from this repository."
             ) from None
 
         sample_rows = self.data.index[:sample_size]

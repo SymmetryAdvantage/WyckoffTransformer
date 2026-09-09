@@ -115,10 +115,6 @@ From: pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
 
     cd /opt/wyformer
     sed -i -E 's/"torch[[:space:]]*(==|>=)[^"]*"/"torch ==2.14.0"/' pyproject.toml
-    sed -i \
-        -e '/^cdvae = \["cdvae-property-models"\]$/d' \
-        -e '/^cdvae-property-models = { path = "cdvae_property_models" }$/d' \
-        pyproject.toml
     /usr/local/bin/uv venv --system-site-packages .venv
     UV_CACHE_DIR=/opt/wyformer/.uv-cache \
         /usr/local/bin/uv sync --no-dev --no-install-package torch
@@ -159,12 +155,6 @@ image to require 2.14.0, while `--no-install-package torch` prevents `uv`
 from installing another Torch distribution into `.venv`.
 `--system-site-packages` makes the base image's CUDA-enabled Torch visible to
 the virtual environment.
-
-The optional `cdvae` extra and its local source entry are also removed from the
-copied metadata. That optional package hard-pins Torch 2.11.0, which makes
-uv's universal dependency resolution incompatible with the CUDA 13.2 base.
-This does not affect the default WyFormer installation. The image does not
-include the optional CDVAE package or its model checkpoints.
 
 ## Build each revision
 

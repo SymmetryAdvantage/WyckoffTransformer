@@ -315,8 +315,8 @@ class GenEval(object):
                 from cdvae_property_models import prop_model_eval
             except ImportError:
                 raise ImportError(
-                    "cdvae-property-models is required for property evaluation. "
-                    "Install it with: pip install cdvae-property-models"
+                    "cdvae-property-models is required for property evaluation, "
+                    "but the package was removed from this repository."
                 ) from None
             with torch.no_grad():
                 pred_props = prop_model_eval(self.eval_model_name, [

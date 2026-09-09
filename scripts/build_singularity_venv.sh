@@ -14,9 +14,8 @@
 # * Dependencies are resolved with `uv pip compile` (project deps only) and then
 #   installed from a requirements file with torch / nvidia-* / triton stripped out.
 #   `uv sync` is avoided on purpose: it writes a universal uv.lock that also has to
-#   resolve the genbench-oracle group's `material-hasher` git dependency and the
-#   cdvae extra's torch==2.11 pin, neither of which is wanted here and the container
-#   has no working git.
+#   resolve the genbench-oracle group's `material-hasher` git dependency, which is
+#   not wanted here and the container has no working git.
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/scratch/users/nus/kna/WyckoffTransformer}

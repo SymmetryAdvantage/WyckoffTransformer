@@ -16,7 +16,7 @@ One command:
 ```bash
 scripts/platforms/zeus/env_init.sh              # dev + relax + compile
 scripts/platforms/zeus/env_init.sh --dry-run    # show the plan, change nothing
-WYFORMER_EXTRAS="dev relax compile cdvae" scripts/platforms/zeus/env_init.sh
+WYFORMER_EXTRAS="dev relax compile research" scripts/platforms/zeus/env_init.sh
 ```
 
 It does two things: copies `scripts/platforms/zeus/uv.toml` to the repository
@@ -47,8 +47,8 @@ inspect a scratch venv, pass `--python /tmp/venv-test/bin/python`.
 | --- | --- |
 | Python | 3.12.3, the system interpreter (`home = /usr/bin` in `pyvenv.cfg`) |
 | `include-system-site-packages` | `false` — nothing is inherited from the host Python |
-| torch | 2.11.0, CUDA 13.2, locally built wheel |
-| triton | 3.6.0, from PyPI, via the `compile` extra |
+| torch | 2.14.0+cu133, CUDA 13.3, locally built wheel |
+| triton | 3.8.0, from PyPI, via the `compile` extra |
 | `nvidia-*` distributions | none — CUDA and MKL come from the host |
 | Extras installed | `dev`, `relax`, `compile` |
 | Project | installed editable (`_editable_impl_wyckoff_transformer.pth`) |
@@ -69,19 +69,19 @@ url = "file:///mnt/hdd/torch_wheels/"
 format = "flat"
 ```
 
-Four packages come from that index. Of the 292 packages the lock resolves, the
+Two packages come from that index. Of the 287 packages the lock resolves, the
 rest come from PyPI, git or local path sources:
 
 | Package | Version |
 | --- | --- |
-| `torch` | 2.11.0 |
+| `torch` | 2.14.0+cu133 |
 | `spglib` | 2.7.0 |
-| `torch-scatter` | 2.1.2 |
-| `torch-sparse` | 0.6.18 |
 
 The directory also holds wheels for unrelated work on this box (`vllm`,
-`flash_attn`, `nixl`, `torchvision`, several older `torch` builds). It is a
-shared scratch index, not a WyFormer artefact. Nothing prunes it.
+`flash_attn`, `nixl`, `torchvision`, several older `torch` builds, and
+`torch-scatter`/`torch-sparse`, left over from when the now-removed `cdvae`
+extra needed them). It is a shared scratch index, not a WyFormer artefact.
+Nothing prunes it.
 
 ### `uv.lock` is untracked too, and deliberately
 
@@ -89,7 +89,7 @@ shared scratch index, not a WyFormer artefact. Nothing prunes it.
 
 ```toml
 name = "torch"
-version = "2.11.0"
+version = "2.14.0+cu133"
 source = { registry = "/mnt/hdd/torch_wheels/" }
 ```
 
@@ -152,6 +152,18 @@ pinned to those absolute host paths — removing or relocating oneAPI's MKL, or
 The oneAPI initialiser also **prints a banner on every login shell**, which
 lands in the middle of scripted output. Set `SETVARS_COMPLETED=1` to suppress
 the re-init, or read the value you want with `env -i`.
+
+**MAGMA is compiled in.** `torch._C._has_magma` is `True` at runtime. The
+`magma_*`/`magmablas_*` symbols are statically linked into
+`libtorch_cuda_linalg.so` (630 of them, verified with `nm -D`); there is no
+separate `libmagma.so` to keep on the library path.
+
+**OpenMP comes from `libgomp`, not `libiomp5`.** The build links
+`libmkl_gnu_thread.so.3` (MKL's GNU-threading variant), and every
+OpenMP-using library in the wheel (`libtorch_cpu.so`, `libshm.so`,
+`libtorch_cuda_linalg.so`, `libtorch_global_deps.so`) needs `libgomp.so.1`
+only. Nothing needs `libiomp5.so` / `libomp.so.5`, so there is no
+Intel-vs-LLVM OpenMP conflict to work around on this box.
 
 ---
 
@@ -260,7 +272,7 @@ come prebuilt from the local index; it would bite if `uv.toml` ever pointed at
 an index without them.
 
 The copy-then-sync shape of `env_init.sh` is the same one CI uses, which does
-`cp uv.toml.cpu uv.toml` before `uv sync --extra dev --extra cdvae --extra
+`cp uv.toml.cpu uv.toml` before `uv sync --extra dev --extra
 research --extra relax` (`.github/workflows/pytest.yml`). Per-host `uv.toml`
 plus command-line extras is the established pattern in this repository, not a
 zeus invention.
@@ -283,13 +295,16 @@ cascade model uses the same machinery
 
 ### Why triton is an extra rather than a base dependency
 
-torch declares triton itself — but only in some of its wheels:
+torch declares triton itself — but only in some of its wheels, and whether a
+zeus-built wheel does depends on the release process at build time, not
+something fixed once and for all:
 
 | torch wheel | triton |
 | --- | --- |
-| PyPI (GPU) `torch 2.11.0` | `triton==3.6.0; platform_system == "Linux"` |
+| PyPI (GPU) `torch` | pinned for Linux (e.g. `triton==3.6.0; platform_system == "Linux"` on 2.11.0) |
 | `download.pytorch.org/whl/cpu` | no triton |
-| Built from source on zeus | **no triton** — the pin is added by the release process, not the build |
+| Built from source on zeus, torch 2.11.0 (previous) | no triton — the release process hadn't started adding the pin to source builds yet |
+| Built from source on zeus, torch 2.14.0+cu133 (current) | `triton==3.8.0; platform_system == "Linux" and platform_machine == "x86_64"` — now baked in, same as the official wheels |
 
 So the CPU-only story that kept triton out of the base dependencies is real and
 worth preserving: triton is a 640 MB Linux-only GPU compiler, and a CPU-only or
@@ -300,25 +315,28 @@ would inflict it on every such install, and there is no environment marker for
 The two facts are reconciled by making it **opt-in**:
 
 - `pyproject.toml` gains `compile = ["triton >=3.6"]`;
-- environments that use a stock PyPI GPU torch never need the extra, because
-  torch already pulls triton in;
+- environments that use a stock PyPI GPU torch, or the current zeus build,
+  never need the extra, because torch already pulls triton in;
 - environments on a CPU torch, macOS or Windows never get triton, exactly as
-  before — including CI, which syncs `dev cdvae research relax`;
-- zeus, whose torch is built from source and so carries no pin, asks for the
-  extra explicitly in `env_init.sh`.
+  before — including CI, which syncs `dev research relax`;
+- zeus asks for the extra explicitly in `env_init.sh` anyway, so a future
+  torch rebuild that drops the pin again doesn't silently lose
+  `torch.compile`.
 
 The version pin is split for the same reason. The extra keeps a loose floor
 (`>=3.6`) because the right triton depends on which torch you have; the host
 `uv.toml` pins the exact series with
 
 ```toml
-constraint-dependencies = ["triton ==3.6.0"]
+constraint-dependencies = ["triton ==3.8.0"]
 ```
 
-because this host knows its torch is 2.11, and 3.6 is the series torch 2.11
-targets upstream. Without that constraint nothing stops a resolver taking
-triton 3.7.x, which pairs with a newer torch. **Bump both together when torch
-is rebuilt.**
+because this host's torch is 2.14.0+cu133, and that wheel's own METADATA
+requires exactly triton 3.8.0. Without that constraint nothing stops a
+resolver taking whichever triton pairs with the next torch bump on its own
+schedule. **Bump both together when torch is rebuilt, and check the new
+wheel's `Requires-Dist` for triton rather than assuming the old
+"source builds carry no pin" behaviour still holds.**
 
 `cuequivariance_torch` is a separate matter and is still not installed; the MLIP
 code gates cuEQ behind an import check and degrades silently. Its

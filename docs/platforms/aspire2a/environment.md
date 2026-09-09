@@ -62,11 +62,11 @@ Four steps, all inside the container:
 Cold build ~20 min (bandwidth-bound, so **do it on a login node**); warm ~3 min.
 
 **`uv sync` is deliberately not used.** Its universal lock also has to resolve
-the `genbench-oracle` group's `material-hasher` git dependency and the `cdvae`
-extra's `torch==2.11` pin. The container has no git and no libcurl, so that
-resolution fails; and neither pin is wanted here. There is no `uv.lock` in this
-checkout, which is why the ASPIRE 2A dependency set is a **fresh resolution**
-rather than a pinned one — see the version-skew section below.
+the `genbench-oracle` group's `material-hasher` git dependency. The container
+has no git and no libcurl, so that resolution fails, and the pin is not wanted
+here anyway. There is no `uv.lock` in this checkout, which is why the ASPIRE 2A
+dependency set is a **fresh resolution** rather than a pinned one — see the
+version-skew section below.
 
 `uv` itself is a standalone binary at `~/.local/bin/uv` (0.12.6). The build sets
 `UV_CACHE_DIR=$REPO/.uv-cache` (3 GB — keeping it off the 50 GB home quota),

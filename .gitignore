@@ -49,7 +49,7 @@ generated.bak
 generated_public
 generated.tar.gz
 generated_public.tar.gz
-uv.toml
+/uv.toml
 src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json
 dist/
 relax/

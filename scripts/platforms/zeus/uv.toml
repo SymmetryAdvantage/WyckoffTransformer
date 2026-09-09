@@ -1,0 +1,31 @@
+# uv configuration for WyFormer on zeus.
+#
+# Copy it to the repository root, where uv looks for it:
+#     cp scripts/platforms/zeus/uv.toml uv.toml
+# `env_init.sh` in this directory does that and then syncs the venv.
+#
+# The root uv.toml is gitignored, because every setting below is true of this
+# machine only. See docs/platforms/zeus/environment.md.
+
+# torch and spglib are built on this box, for this box (sm89, -march=native,
+# MKL), and served from a flat directory index. PyPI remains the default index
+# for everything else. (torch-scatter and torch-sparse also live in that
+# index, left over from when the cdvae extra needed them; nothing in this
+# project requires them any more.)
+[[index]]
+name = "zeus"
+url = "file:///mnt/hdd/torch_wheels/"
+format = "flat"
+
+# torch-2.14.0+cu133 declares `triton==3.8.0; platform_system == "Linux" and
+# platform_machine == "x86_64"` in its own METADATA -- unlike the torch-2.11.0
+# build it replaces, which was built before that pin was added and declared no
+# triton dependency at all. Without this constraint a resolver is otherwise
+# free to take whatever triton series pairs with the next torch bump; pin it
+# to what the wheel in hand actually declares.
+# The `compile` extra is what puts triton in the graph at all.
+constraint-dependencies = ["triton ==3.8.0"]
+
+# Extras are deliberately NOT set here. `extra = [...]` is honoured by the
+# `uv pip` interface but ignored by `uv sync`, which would then prune the
+# environment down to the base dependencies. env_init.sh names them instead.

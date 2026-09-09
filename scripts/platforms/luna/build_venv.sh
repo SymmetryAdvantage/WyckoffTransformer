@@ -24,10 +24,6 @@
 #
 # The venv's interpreter points at the container's /usr/bin/python, so the venv
 # only works inside the container. Use run.sh to enter it.
-#
-# The cdvae extra is deliberately not installed: it pulls torch-scatter and
-# torch-sparse, which compile against torch and take a long time. Add it with
-#   scripts/platforms/luna/run.sh uv pip install -e ".[cdvae]"
 set -euo pipefail
 
 source "$(dirname "${BASH_SOURCE[0]}")/config.sh"

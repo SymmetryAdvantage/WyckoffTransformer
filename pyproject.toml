@@ -56,7 +56,6 @@ wyformer-hull-energies = "wyckoff_transformer.formula_energy.hull_table:main"
 
 [project.optional-dependencies]
 dev = ["pytest >=9.0.2", "ruff >=0.15.0"]
-cdvae = ["cdvae-property-models"]
 publish = ["build", "twine", "packaging >=25"]
 research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "ipympl"]
 # orb-models pins the ORB v3 weights by a date-stamped URL literal in its own
@@ -64,15 +63,17 @@ research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "
 # the checkpoint that LeMat-Bulk's orb_conserv_inf hull was built with.
 relax = ["mace-torch >=0.3", "ase >=3.23", "orb-models >=0.5.1"]
 # `torch.compile` needs triton, which torch itself declares -- but only in the
-# GPU wheels: the official PyPI torch carries `triton==3.6.0; platform_system
-# == "Linux"`, while the CPU wheels from download.pytorch.org/whl/cpu carry no
-# such pin. That is the behaviour we want, so triton must NOT be a base
-# dependency: a CPU-only or non-Linux install would then drag in a 640 MB
-# GPU compiler it can never use.
-# The gap is a torch built from source, which omits the pin the release process
-# adds. Such an environment gets `TritonMissing` from every config with
-# `compile_model: true`, and opts back in with this extra. Keep the floor in
-# step with torch: 3.6 is the series that matches torch 2.11.
+# GPU wheels: the official PyPI torch carries a triton pin for Linux, while the
+# CPU wheels from download.pytorch.org/whl/cpu carry no such pin. That is the
+# behaviour we want, so triton must NOT be a base dependency: a CPU-only or
+# non-Linux install would then drag in a 640 MB GPU compiler it can never use.
+# A torch built from source may or may not carry that pin itself, depending on
+# whether the release process added it (zeus's 2.14.0+cu133 build does; its
+# 2.11.0 predecessor did not). Either way, an environment missing triton gets
+# `TritonMissing` from every config with `compile_model: true`, and opts back
+# in with this extra. Per-host `constraint-dependencies` (see
+# scripts/platforms/zeus/uv.toml) pin the exact series to match whatever torch
+# that host has.
 compile = ["triton >=3.6"]
 cuequivariance-cu13 = ["cuequivariance-torch >=0.9", "triton >=3", "cuequivariance-ops-torch-cu13 >=0.9"]
 mp = [
@@ -99,16 +100,8 @@ include = [
 ]
 
 [tool.uv.sources]
-cdvae-property-models = { path = "cdvae_property_models" }
 # Test oracle only; see the genbench-oracle dependency group.
 material-hasher = { git = "https://github.com/LeMaterial/material-hasher.git" }
-
-# In the ideal world, we would forget about these packages
-# However, if cdvaae-property-models are requested, they drag
-# torch-scatter and torch-sparse with them, and uv fails because it can't build them here
-[tool.uv.extra-build-dependencies]
-torch-scatter = ["torch"]
-torch-sparse = ["torch"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]

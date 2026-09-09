@@ -46,14 +46,6 @@ scripts/platforms/luna/run.sh uv pip install \
 If a package genuinely needs a newer torch than the container's, the right move
 is to rebuild on a newer image, not to let uv install one into the venv.
 
-The `cdvae` extra is not installed by default because it pulls `torch-scatter`
-and `torch-sparse`, which compile against torch and take a long time. The
-`devel` image has the toolchain for it if you need it:
-
-```bash
-scripts/platforms/luna/run.sh uv pip install -e ".[cdvae]"
-```
-
 ---
 
 ## Updating the container image

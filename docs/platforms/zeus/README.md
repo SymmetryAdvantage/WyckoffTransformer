@@ -75,23 +75,22 @@ Storage:
 
 ## Verified state
 
-Confirmed working on 2026-09-07, on branch `training-loss-fixes`:
+Confirmed working on 2026-09-09, on branch `training-loss-fixes`, after
+switching to the `torch-2.14.0+cu133` wheel and purging the `cdvae` extra that
+had been pinning torch to 2.11.0 project-wide:
 
 | Check | Result |
 | --- | --- |
-| `pytest` | 594 passed, 40 skipped, 10 deselected, 328 subtests, 100 s |
-| torch provenance | `2.11.0` / CUDA `13.2`, from `.venv/.../torch`, built locally (`cp312-cp312-linux_x86_64`) |
-| `torch.cuda.is_available()` | True, 2 devices, 44.4 GiB each, sm89 |
+| `pytest` | 638 passed, 40 skipped, 10 deselected, 1483 subtests, 120 s |
+| torch provenance | `2.14.0+cu133` / CUDA `13.3`, from `.venv/.../torch`, built locally (`cp312-cp312-linux_x86_64`) |
+| `torch.cuda.is_available()` | True, 2 devices, sm89 |
+| `torch._C._has_magma` | True — MAGMA is compiled in, statically linked (no `libmagma.so` needed) |
+| OpenMP | `libgomp.so.1` throughout; no `libiomp5.so` / `libomp.so.5` dependency anywhere in the wheel |
 | CUDA wheels in the venv | **none** — no `nvidia-*` distributions at all; CUDA and MKL come from the host |
-| torch import in a bare env (`env -i`) | works; MKL resolves via the wheel's RUNPATH |
-| `wyformer-generate --hf-model SymmetryAdvantage/WyFormer-Alex-MP20` | 1000 structures, 5.25 s generation / 9.7 s wall on a contended GPU |
-| `torch.compile` | works, via `triton==3.6.0` from the `compile` extra |
-| `train.py --pilot` with `compile_model: true` | full run: training plus both evaluation passes, no `TritonMissing` |
-| CPU path unaffected | `uv.toml.cpu` + CI's extras resolves `torch 2.11.0+cpu` with **no triton**; adding `--extra compile` brings it in |
-| W&B auth | `~/.netrc`, default entity `kazeev`; `symmetry-advantage` team visible |
-| Installed extras | `dev`, `relax`, `compile`. Absent: `cdvae`, `research`, `mp`, group `genbench-oracle` |
-| `uv lock --check` | lockfile up to date (292 packages: 4 from the local index, the rest PyPI, git or path) |
-| `env_init.sh` into a scratch venv | 172 packages, clean install, no `nvidia-*` wheels |
+| `wyformer-generate --hf-model SymmetryAdvantage/WyFormer-Alex-MP20` | 1000 structures, ~5.3 s on a contended GPU |
+| `torch.compile` | works, via `triton==3.8.0` from the `compile` extra (torch 2.14.0+cu133's own METADATA now requires exactly this version) |
+| Installed extras | `dev`, `relax`, `compile`. Absent: `research`, `mp`, group `genbench-oracle` |
+| `uv lock --upgrade` | resolves cleanly to torch 2.14.0+cu133 / triton 3.8.0 with the `cdvae` pin gone; drops `torch-scatter`/`torch-sparse`, which nothing else needs |
 | Cached datasets | `lemat_bulk_fmax1` 13 G, `lemat_bulk_ehull` 5.2 G, `alex_mp_20` 3.5 G, `mp_20` 911 M, and others under `cache/` |
 
 Both GPUs were in use by other jobs during these checks, which is the normal

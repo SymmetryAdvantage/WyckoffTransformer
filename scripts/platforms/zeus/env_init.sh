@@ -5,7 +5,7 @@
 # Usage:
 #     scripts/platforms/zeus/env_init.sh              # dev + relax + compile
 #     scripts/platforms/zeus/env_init.sh --dry-run    # show the plan, change nothing
-#     WYFORMER_EXTRAS="dev relax compile cdvae" scripts/platforms/zeus/env_init.sh
+#     WYFORMER_EXTRAS="dev relax compile research" scripts/platforms/zeus/env_init.sh
 #
 # Extras are named here rather than in uv.toml because `extra = [...]` in a
 # uv.toml is honoured by the `uv pip` interface and ignored by `uv sync` --
