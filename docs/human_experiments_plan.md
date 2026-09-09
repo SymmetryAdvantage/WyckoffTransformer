@@ -1,22 +1,13 @@
-CRySPR experiments/improvements
-0. Allocate relaxation budget per DoF (confirmed via a study, TBD)
-1. Rattling to break symmetry (confirmed via a study, TBD)
-2. Fix volume inflation (confusing - cryspr won't converge without factor=1.3)
-3. Conditioning audit - new robust protocol on converged model
-
 Backbone
 1. Train the models longer with the low LR
 2. Increase model capacity (NSCC, in progress)
-3. Predict lattice
+3. Predict lattice (negative results from oracle study, predicted lattice doesn't help cryspr)
 4. Better SS representation (NSCC, in progress)
-5. Wyckoff Regressor - censored min(E|gene) likelihood implemented, untrained (docs/csp_mode.md)
-6. Architecture improvement - pooling, log-z, conditioning
-7. Enrich internal representation - technical and physical
-8. Decoder (Beam search/energy selection/etc) - composition-constrained decoder implemented (docs/csp_mode.md)
-9. Inverse cascade - sample elements, then Wyckoffs
-10. Condition on E - min(E, polymorphs); structure-level label training as wjwmgjag (docs/dirty_data_conditioning.md), gene-level label implemented but untrained
-11. Condition on the composition - implemented, CPU pilot only (yamls/models/lemat_bulk_ehull/ehull_composition.yaml)
-12. CSP decoder picks z itself - union-over-z decoding, 3.6x less relaxation budget
+5. Architecture improvement - pooling, log-z, conditioning
+6. Enrich internal representation - technical and physical
+7. Decoder (Beam search/temperature/energy selection/etc) - composition-constrained decoder implemented (docs/csp_mode.md)
+8. Condition on the composition (CSP)- (implemented, not trained)
+9. CSP decoder picks z itself - union-over-z decoding, 3.6x less relaxation budget
 
 Screening (composition level, docs/composition_screening_results.md)
 1. Formula table and MP experimental provenance - done
