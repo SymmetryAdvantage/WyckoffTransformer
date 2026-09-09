@@ -27,9 +27,15 @@ augmented_token_fields:
 sequence_fields:
   space_group:
     - spacegroup_number
-  # AdaLN conditioning feature, taken as-is from the dataframe
+  # Per-structure scalars taken as-is from the dataframe. A name missing from the
+  # dataframe is warned about and skipped, not raised, so listing one that only some
+  # datasets carry leaves the others untouched.
   no_processing:
+    # AdaLN conditioning feature.
     - energy_above_hull
+    # Target for band-gap models; absent from the LeMat-Bulk caches, which therefore
+    # tokenise exactly as before.
+    - band_gap
   # converts a Counter into tokens, uses the specified field name embedding
   # Basically, aimed at e. g.
   # {Element Nd: 1.0, Element Al: 8.0, Element Cu: 4.0}
