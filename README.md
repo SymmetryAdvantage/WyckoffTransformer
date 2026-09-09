@@ -35,6 +35,13 @@ Crystal symmetry plays a fundamental role in determining its physical, chemical,
 3. Install the dependencies, including torch. There are several options:
   - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
   - Configure `uv.toml` with your desired indices, see `uv.toml.local` and `uv.toml.cpu`
+
+   Either route installs PyXtal from the pinned fork declared in
+   `[tool.uv.sources]`, which fixes `check_wp` applying one species' like-like
+   distance tolerance to every pair. `uv` applies that source to `uv sync`,
+   `uv pip compile pyproject.toml` and `uv pip install -e .` alike, so no host
+   needs to do anything special. It is *not* part of the published metadata:
+   `pip install wyckoff-transformer` gets stock PyXtal from PyPI.
 4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
 ## Running a pilot model
 To verify that the installation is working, run a pilot model. Next token prediction:

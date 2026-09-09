@@ -68,6 +68,27 @@ resolution fails; and neither pin is wanted here. There is no `uv.lock` in this
 checkout, which is why the ASPIRE 2A dependency set is a **fresh resolution**
 rather than a pinned one — see the version-skew section below.
 
+The **PyXtal pin is a tarball, not a git branch, because of this host.** The
+fork in `[tool.uv.sources]` is referenced as
+`https://github.com/kazeevn/PyXtal/archive/<sha>.tar.gz`: a `{ git = ... }`
+source makes uv shell out to `git`, which this container does not have, and the
+compile in step 1 would fail outright on a *base* dependency. A tarball needs
+only HTTPS. Step 4's verification asserts the patched `check_wp` is what ended
+up in the venv, so a silent fallback to PyPI PyXtal fails the build.
+
+To move that pin into the existing venv without a rebuild — the venv is shared
+by every running job, so see the live-risk warning below — compile the direct
+requirements and install the one line:
+
+```bash
+bash scripts/run_in_singularity.sh bash -c '
+  export UV_CACHE_DIR=$PWD/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
+  ~/.local/bin/uv pip compile --no-deps --no-annotate --no-header pyproject.toml \
+      | grep "^pyxtal " > .venv-requirements.pyxtal.txt
+  ~/.local/bin/uv pip install --python .venv/bin/python --no-deps \
+      -r .venv-requirements.pyxtal.txt'
+```
+
 `uv` itself is a standalone binary at `~/.local/bin/uv` (0.12.6). The build sets
 `UV_CACHE_DIR=$REPO/.uv-cache` (3 GB — keeping it off the 50 GB home quota),
 `UV_PYTHON_DOWNLOADS=never` and `UV_LINK_MODE=copy`.
@@ -149,7 +170,7 @@ you want for anything touching the repo itself.
 ## Dependency version skew
 
 Because the build resolves fresh instead of using a lockfile, it picks up
-whatever is newest on PyPI at build time. As of 2026-09-08 that has broken
+whatever is newest on PyPI at build time. As of 2026-09-08 that had broken
 `matminer` 0.8.0 (unmaintained since 2023) against both `scipy` 1.18.1 and
 `pymatgen` 2026.5.4:
 
@@ -158,9 +179,9 @@ whatever is newest on PyPI at build time. As of 2026-09-08 that has broken
 | `matminer.featurizers.site.bonding` | `cannot import name 'sph_harm' from 'scipy.special'` |
 | `matminer.utils.data` | `cannot import name '_pt_data' from 'pymatgen.core.periodic_table'` |
 
-Neither `scipy` nor `matminer` is pinned in `pyproject.toml`. Training,
-generation and relaxation are unaffected; the CDVAE evaluation metrics and the
-`formula_energy` Magpie baselines are not. See
+`pyproject.toml` now floors `matminer` at 0.10.1, which fixes both imports and,
+through its own `pandas<3`, holds pandas at 2.3.3. Fresh resolves get the
+working set; a `.venv` built before 2026-09-09 does not. See
 [troubleshooting.md](troubleshooting.md#matminer-is-broken-against-the-resolved-scipy-and-pymatgen).
 
 ---

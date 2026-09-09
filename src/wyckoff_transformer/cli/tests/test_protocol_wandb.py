@@ -40,9 +40,10 @@ class TestBuildStageArgs(unittest.TestCase):
         # Every attribute the protocol stage functions touch must exist.
         for name in (
             "input", "output_dir", "mlip", "cores", "devices", "workers_per_device",
-            "n_trials", "fmax", "release_symmetry", "rattle", "limit", "resume",
+            "n_trials", "pyxtal_cores", "pyxtal_timeout", "fmax", "relax_timeout",
+            "release_symmetry", "rattle", "limit", "resume",
             "reference_cache", "reference_splits", "reference_fingerprint_cache",
-            "lemat_cif_csv",
+            "lemat_cif_csv", "debug",
         ):
             self.assertTrue(hasattr(stage_args, name), name)
 
@@ -54,6 +55,10 @@ class TestParserDefaults(unittest.TestCase):
         self.assertTrue(args.upload)
         self.assertTrue(args.rattle)
         self.assertFalse(args.skip_generate)
+
+    def test_resume_is_on_by_default(self):
+        args = pw.build_parser().parse_args(["r", "--output-dir", "x"])
+        self.assertTrue(args.resume)
 
     def test_no_upload(self):
         args = pw.build_parser().parse_args(["r", "--output-dir", "x", "--no-upload"])
@@ -80,8 +85,32 @@ class TestEnsureRunFiles(unittest.TestCase):
         run = MagicMock()
         run.id = "r1"
         run.file.return_value.download.side_effect = RuntimeError("404")
+        run.logged_artifacts.return_value = []
         with self.assertRaises(FileNotFoundError):
             pw.ensure_run_files(run, self.run_dir)
+
+    def test_downloads_missing_file_from_latest_artifact(self):
+        (self.run_dir / "wyckoff_processor.json").write_text("{}")
+        (self.run_dir / "spacegroup_distribution.json").write_text("{}")
+        run = MagicMock()
+        run.id = "r1"
+        run.file.return_value.download.side_effect = RuntimeError("404")
+        older = MagicMock()
+        older.name = "best_model_r1:v0"
+        older_file = MagicMock()
+        older_file.name = "wrong_file"
+        older.files.return_value = [older_file]
+        latest = MagicMock()
+        latest.name = "best_model_r1:v1"
+        latest_file = MagicMock()
+        latest_file.name = "best_model_params.pt"
+        latest.files.return_value = [latest_file]
+        run.logged_artifacts.return_value = [older, latest]
+
+        pw.ensure_run_files(run, self.run_dir)
+
+        latest.download.assert_called_once_with(root=str(self.run_dir))
+        older.download.assert_not_called()
 
 
 class TestMainSkipGenerate(unittest.TestCase):
@@ -99,8 +128,9 @@ class TestMainSkipGenerate(unittest.TestCase):
             json.dumps({"sampled": 1, "metasun_per_sampled_gene": 0.0}), encoding="utf-8"
         )
 
-    def test_runs_stages_and_uploads(self):
+    def test_runs_every_stage_and_uploads(self):
         with patch.object(pw.protocol_cli, "stage_screen") as screen, \
+             patch.object(pw.protocol_cli, "stage_generate") as generate, \
              patch.object(pw.protocol_cli, "stage_relax") as relax, \
              patch.object(pw.protocol_cli, "stage_score", side_effect=self._write_funnel) as score, \
              patch.object(pw, "upload") as upload:
@@ -111,12 +141,14 @@ class TestMainSkipGenerate(unittest.TestCase):
             ]
             pw.main()
         screen.assert_called_once()
+        generate.assert_called_once()
         relax.assert_called_once()
         score.assert_called_once()
         upload.assert_called_once()
 
     def test_no_upload_skips_writeback(self):
         with patch.object(pw.protocol_cli, "stage_screen"), \
+             patch.object(pw.protocol_cli, "stage_generate"), \
              patch.object(pw.protocol_cli, "stage_relax"), \
              patch.object(pw.protocol_cli, "stage_score", side_effect=self._write_funnel), \
              patch.object(pw, "upload") as upload:

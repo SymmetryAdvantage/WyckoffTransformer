@@ -2,9 +2,9 @@
 
 Takes a run id, generates a fresh gene cohort from its checkpoint exactly as
 ``wyformer-generate`` does with no conditioning, runs the full
-screen -> relax -> score cascade of :mod:`wyckoff_transformer.cli.protocol`, and
-then writes the funnel metrics into the run's summary and every protocol output
-into one versioned artifact.
+screen -> generate -> relax -> score cascade of
+:mod:`wyckoff_transformer.cli.protocol`, and then writes the funnel metrics into
+the run's summary and every protocol output into one versioned artifact.
 
     uv run wyformer-protocol-wandb <run-id> \\
         --output-dir generated/<run-id>/protocol \\
@@ -19,7 +19,9 @@ scored on stays recoverable.  A conditional run needs its target passed with
 from training data); an unconditional run takes neither flag.
 
 Every key of ``funnel.json`` is flattened into ``run.summary`` under a
-``protocol/`` prefix.  ``screen.json``, ``structures.csv``, ``funnel.json``,
+``protocol/`` prefix.  ``screen.json``, the generated draws in
+``pyxtal.extxyz``, the per-trial ``pyxtal.csv`` and ``relaxations.csv``,
+``structures.csv``, ``funnel.json``,
 ``manifest.json``, the generated gene file and ``cifs/`` go into an artifact
 named ``protocol_<run-id>`` of type ``protocol_eval``.  ``--no-upload`` runs
 everything and skips only the write-back.
@@ -75,15 +77,26 @@ def ensure_run_files(run, run_dir: Path) -> None:
         target = run_dir / name
         if target.is_file():
             continue
-        wandb_file = run.file(name)
         try:
             logger.info("Downloading %s -> %s", name, target)
-            wandb_file.download(root=str(run_dir), replace=True)
+            run.file(name).download(root=str(run_dir), replace=True)
         except Exception as exc:  # noqa: BLE001 - surface a usable message
-            raise FileNotFoundError(
-                f"Run {run.id} has no {name!r} to download ({exc}). Put the "
-                f"model files in {run_dir}/ by hand and re-run."
-            ) from exc
+            for artifact in reversed(list(run.logged_artifacts())):
+                if name not in {artifact_file.name for artifact_file in artifact.files()}:
+                    continue
+                logger.info(
+                    "Downloading %s from artifact %s -> %s",
+                    name,
+                    artifact.name,
+                    target,
+                )
+                artifact.download(root=str(run_dir))
+                break
+            else:
+                raise FileNotFoundError(
+                    f"Run {run.id} has no {name!r} to download ({exc}). Put the "
+                    f"model files in {run_dir}/ by hand and re-run."
+                ) from exc
 
 
 def generate_genes(
@@ -179,7 +192,10 @@ def build_stage_args(args, gene_file: Path) -> Namespace:
         devices=args.devices,
         workers_per_device=args.workers_per_device,
         n_trials=args.n_trials,
+        pyxtal_cores=args.pyxtal_cores,
+        pyxtal_timeout=args.pyxtal_timeout,
         fmax=args.fmax,
+        relax_timeout=args.relax_timeout,
         release_symmetry=args.release_symmetry,
         rattle=args.rattle,
         limit=args.limit,
@@ -188,6 +204,8 @@ def build_stage_args(args, gene_file: Path) -> Namespace:
         reference_splits=args.reference_splits,
         reference_fingerprint_cache=args.reference_fingerprint_cache,
         lemat_cif_csv=args.lemat_cif_csv,
+        # Read by the stages when they configure logging in their pool workers.
+        debug=args.debug,
     )
 
 
@@ -218,6 +236,12 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
         for name in (
             GENES_FILE,
             protocol_cli.SCREEN_FILE,
+            # The draws themselves, not just their outcome: with these a single
+            # trial's relaxation can be repeated exactly, which the kept CIF
+            # and the per-trial row alone do not allow.
+            protocol_cli.PYXTAL_FILE,
+            protocol_cli.PYXTAL_TRIALS_FILE,
+            protocol_cli.RELAXATIONS_FILE,
             protocol_cli.STRUCTURES_FILE,
             protocol_cli.FUNNEL_FILE,
             protocol_cli.MANIFEST_FILE,
@@ -273,6 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Shorthand for --condition <the one feature>=VALUE, for a "
                           "single-channel conditional model.")
 
+    pyxtal = parser.add_argument_group("PyXtal generation")
+    pyxtal.add_argument("--pyxtal-cores", type=int, default=None,
+                        help="CPU processes drawing PyXtal structures. Defaults to every core.")
+    pyxtal.add_argument("--pyxtal-timeout", type=float, default=300.0,
+                        help="Seconds one PyXtal draw may take before it is abandoned.")
+
     hardware = parser.add_argument_group("relaxation hardware")
     hardware.add_argument("--cores", type=int, default=None,
                           help="Run relaxation on CPU with this many workers.")
@@ -284,11 +314,14 @@ def build_parser() -> argparse.ArgumentParser:
     relax.add_argument("--mlip", type=str, default=DEFAULT_HULL_MLIP, choices=sorted(HULL_MLIPS))
     relax.add_argument("--n-trials", type=str, default=DEFAULT_TRIAL_SCHEDULE)
     relax.add_argument("--fmax", type=float, default=0.05)
+    relax.add_argument("--relax-timeout", type=float, default=1800.0,
+                       help="Seconds one trial's four-stage relaxation may take.")
     relax.add_argument("--release-symmetry", action=argparse.BooleanOptionalAction, default=True)
     relax.add_argument("--rattle", action=argparse.BooleanOptionalAction, default=True)
     relax.add_argument("--limit", type=int, default=None, help="Only relax genes below this index.")
-    relax.add_argument("--resume", action=argparse.BooleanOptionalAction, default=False,
-                       help="Skip genes the structures CSV already has a row for.")
+    relax.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True,
+                       help="Keep the trials the generate and relax logs already recorded "
+                            "and do only the rest. --no-resume starts both from scratch.")
 
     reference = parser.add_argument_group("references")
     reference.add_argument("--reference-cache", type=Path, default=DEFAULT_REFERENCE_CACHE)
@@ -332,13 +365,8 @@ def main() -> None:
         )
 
     stage_args = build_stage_args(args, gene_file)
-    for stage in ("screen", "relax", "score"):
-        logger.info("=== stage: %s ===", stage)
-        {
-            "screen": protocol_cli.stage_screen,
-            "relax": protocol_cli.stage_relax,
-            "score": protocol_cli.stage_score,
-        }[stage](stage_args)
+    for stage in protocol_cli.STAGES:
+        protocol_cli.run_stage(stage, stage_args)
 
     funnel = json.loads(
         (args.output_dir / protocol_cli.FUNNEL_FILE).read_text(encoding="utf-8")

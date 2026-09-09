@@ -24,7 +24,13 @@ dependencies = [
   "pyxtal ~=1.1",
   "pydantic >=2.12.5",
   "huggingface-hub>=1.7.2",
-  "matminer",
+  # matminer 0.8.0 (Aug 2023) does `from scipy.special import sph_harm`, removed in
+  # scipy 1.17, and imports the private `pymatgen.core.periodic_table._pt_data`,
+  # renamed since. 0.10.1 fixes both. Its own `pandas<3` is what an unconstrained
+  # resolve trades away: it takes pandas 3 and backtracks matminer to 0.8.0
+  # instead, so every fresh-resolving platform silently loses the evaluation
+  # metrics and the Magpie baselines. Nothing here needs pandas 3.
+  "matminer >=0.10.1",
   "safetensors>=0.7.0",
   "datasets>=4.8.5",
   "pyarrow>=24.0.0",
@@ -102,6 +108,31 @@ include = [
 
 [tool.uv.sources]
 cdvae-property-models = { path = "cdvae_property_models" }
+# PyXtal's `random_crystal.check_wp` applied one tolerance -- the like-like one
+# of the species being placed -- to every pair it checked. With
+# `Tol_matrix(prototype="atomic")` the pair tolerance is `f * (r_A + r_B)`, so
+# `f * 2 * r_new` lets a pair overlap whenever the new species is the smaller of
+# the two, and rejects legal structures whenever it is the larger. The fork
+# looks the tolerance up per pair. Drop this entry once the fix is upstream.
+#
+# Pinned as a GitHub tarball rather than `{ git = ..., branch =
+# "fix/cross-species-distance-tolerance" }` for two reasons:
+#  * a git source needs the `git` binary, which the ASPIRE 2A container does not
+#    have -- uv fails with `Git executable not found`. A tarball needs only
+#    HTTPS, so every host resolves it the same way.
+#  * there is no committed uv.lock (see .gitignore), so a branch would resolve
+#    to whatever HEAD is at the moment each host builds, and the hosts would
+#    silently drift apart. The commit is the pin.
+# Bump the SHA to move the pin.
+#
+# `tool.uv.sources` is uv-only and is stripped from the published metadata, so
+# the PyPI wheel keeps the plain `pyxtal ~=1.1` requirement -- which also means
+# an install from PyPI does *not* get this fix.
+#
+# The `pyxtal` in [build-system].requires stays on PyPI on purpose: sources do
+# not reach a PEP 517 build environment anyway, and the build hook only walks
+# the Wyckoff tables, which the fork does not touch.
+pyxtal = { url = "https://github.com/kazeevn/PyXtal/archive/c0e62f7fbb9187e8a712ac61b6fce3a01b8fd1e7.tar.gz" }
 # Test oracle only; see the genbench-oracle dependency group.
 material-hasher = { git = "https://github.com/LeMaterial/material-hasher.git" }
 

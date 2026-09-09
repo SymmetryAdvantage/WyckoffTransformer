@@ -146,7 +146,7 @@ Confirmed on 2026-09-08 on `asp2a-gpu002`, branch `training-loss-fixes`:
 | key versions | pymatgen 2026.5.4, numpy 2.5.3, triton 3.8.0, pyxtal 1.1.4, spglib 2.7.0 |
 | relax extra | orb-models 0.7.0, mace-torch 0.3.16 — present |
 | `pytest` | **633 passed, 39 skipped, 5 errors, 1483 subtests, 204 s** — plus one collection error |
-| the 6 failures | all `matminer` 0.8.0 vs new scipy/pymatgen — see [troubleshooting.md](troubleshooting.md#matminer-is-broken-against-the-resolved-scipy-and-pymatgen) |
+| the 6 failures | all `matminer` 0.8.0 vs new scipy/pymatgen; fixed since by the `matminer >=0.10.1` floor, which this `.venv` predates — see [troubleshooting.md](troubleshooting.md#matminer-is-broken-against-the-resolved-scipy-and-pymatgen) |
 | W&B online from a compute node | works, `~/.netrc`, entity `kazeev` |
 | HuggingFace download | ~16 MB/s from a compute node |
 | ORB checkpoint S3 (`us-west-1`) | 32 kB/s on one connection, ~400 kB/s on 16 — [troubleshooting.md](troubleshooting.md#the-orb-checkpoint-downloads-at-a-crawl) |

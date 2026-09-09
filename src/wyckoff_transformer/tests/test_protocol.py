@@ -4,14 +4,25 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 from wyckoff_transformer.cli.protocol import (
+    PYXTAL_COLUMNS,
+    RELAXATION_COLUMNS,
+    RowLog,
+    Timeout,
+    LOGM_ROUNDOFF,
+    _init_relax_worker,
     _pin_visible_device,
+    _quiet_logm_roundoff,
+    aggregate_structures,
+    claim_device,
     build_parser,
     resolve_devices,
+    time_limit,
 )
 from wyckoff_transformer.cryspr.relaxer import (
     RATTLE_ACCEPT_EV_PER_ATOM,
@@ -23,6 +34,7 @@ from wyckoff_transformer.evaluation.hull_mlips import (
     HULL_MLIPS,
     PUBLISHED_HULL_ENTRIES,
     UnsupportedHullMlip,
+    _use_cpu_orb_neighbors_when_needed,
     resolve_hull_mlip,
 )
 from wyckoff_transformer.evaluation.protocol import (
@@ -101,6 +113,41 @@ class TestHullMlips(unittest.TestCase):
         # Named outright rather than left to mace-torch's version-dependent
         # mace_mp(model=None) alias, which is what made it ambiguous.
         self.assertEqual(HULL_MLIPS["mace_mp"].checkpoint, "MACE-MP-0a-medium")
+
+    def test_cpu_only_warp_uses_cpu_neighbors_for_cuda_orb(self):
+        calculator = MagicMock()
+        calculator.adapter.from_ase_atoms.return_value = SimpleNamespace(
+            to=MagicMock(return_value="cuda-batch")
+        )
+        calculator.device = "cuda:0"
+        calculator.model.predict.return_value = "prediction"
+        atoms = object()
+
+        with patch("warp.get_devices", return_value=["cpu"]):
+            with patch("ase.calculators.calculator.Calculator.calculate") as calculate:
+                result = _use_cpu_orb_neighbors_when_needed(calculator, "cuda:0")
+                result.calculate(atoms)
+
+        self.assertIs(result, calculator)
+        calculate.assert_called_once_with(calculator, atoms)
+        calculator.adapter.from_ase_atoms.assert_called_once_with(
+            atoms=atoms,
+            max_num_neighbors=calculator.max_num_neighbors,
+            edge_method=calculator.edge_method,
+            half_supercell=calculator.half_supercell,
+            device="cpu",
+        )
+        calculator.adapter.from_ase_atoms.return_value.to.assert_called_once_with("cuda:0")
+        calculator.model.predict.assert_called_once_with("cuda-batch")
+        calculator._update_results.assert_called_once_with("prediction")
+
+    def test_cuda_warp_keeps_orb_calculator_unmodified(self):
+        calculator = MagicMock()
+        original_calculate = calculator.calculate
+        with patch("warp.get_devices", return_value=["cuda:0"]):
+            result = _use_cpu_orb_neighbors_when_needed(calculator, "cuda:0")
+        self.assertIs(result, calculator)
+        self.assertIs(calculator.calculate, original_calculate)
 
 
 def _cached_hull_parquet(hull_type: str = "orb_conserv_inf"):
@@ -194,6 +241,104 @@ class TestResolveDevices(unittest.TestCase):
             resolve_devices(None, " , ", 1)
         with self.assertRaises(ValueError):
             resolve_devices(None, "cuda:0", 0)
+
+
+class TestClaimDevice(unittest.TestCase):
+    """Each worker must get the slot it was allotted, never a fallback.
+
+    A queue of devices looked equivalent and was not: ``Queue.put`` defers to a
+    feeder thread, so a worker calling ``get_nowait`` at spawn time could find
+    it empty and silently fall back to CPU -- one idle GPU and a few trials
+    running ten times too slowly, with nothing in the log to say so.
+    """
+
+    @staticmethod
+    def _counter(start=0):
+        import multiprocessing
+
+        return multiprocessing.get_context("spawn").Value("i", start)
+
+    def test_every_slot_is_handed_out_once(self):
+        slots = ["cuda:0", "cuda:0", "cuda:1", "cuda:1", "cuda:2"]
+        counter = self._counter()
+        claimed = [claim_device(counter, slots) for _ in slots]
+        self.assertEqual(claimed, slots)
+
+    def test_a_replacement_worker_takes_a_real_device_not_the_cpu(self):
+        # The pool respawns a worker after a crash; it must land on a card
+        # rather than quietly halving the run's throughput.
+        slots = ["cuda:0", "cuda:1"]
+        counter = self._counter()
+        claimed = [claim_device(counter, slots) for _ in range(5)]
+        self.assertEqual(claimed, ["cuda:0", "cuda:1", "cuda:0", "cuda:1", "cuda:0"])
+        self.assertNotIn("cpu", claimed)
+
+    def test_the_initialiser_takes_the_counter_and_the_slots(self):
+        # Guards the initargs tuple against drifting from the signature, which
+        # a pool reports only as a worker that dies at startup.
+        import inspect
+
+        self.assertEqual(
+            list(inspect.signature(_init_relax_worker).parameters),
+            ["counter", "slots", "mlip", "debug"],
+        )
+
+
+class TestLogmRoundoffFilter(unittest.TestCase):
+    """SciPy's logm chatter must go without taking a real warning with it.
+
+    ASE takes a matrix logarithm once per optimiser step, so these arrive in
+    the thousands. They cannot be filtered by message: SciPy interpolates the
+    residual into the text, so every one is a different string and both the
+    `default` and `once` actions -- which key their registries by text -- print
+    every one. That is why the relaxation log drowns in them.
+    """
+
+    def setUp(self):
+        import warnings
+
+        self._saved = warnings.showwarning
+        self.addCleanup(setattr, warnings, "showwarning", self._saved)
+        self.seen = []
+        warnings.showwarning = lambda message, *a, **k: self.seen.append(str(message))
+        _quiet_logm_roundoff()
+
+    @staticmethod
+    def _warn(text):
+        import warnings
+
+        warnings.warn(text, RuntimeWarning)
+
+    def test_roundoff_residuals_are_dropped(self):
+        for residual in (6.89e-13, 7.12e-13, 4.55e-13, 9.01e-13):
+            self._warn(f"logm result may be inaccurate, approximate err = {residual}")
+        self.assertEqual(self.seen, [])
+
+    def test_a_residual_worth_seeing_survives(self):
+        # 1e-6 is a near-singular deformation gradient, i.e. a collapsing cell.
+        self._warn("logm result may be inaccurate, approximate err = 1e-06")
+        self.assertEqual(len(self.seen), 1)
+
+    def test_other_warnings_are_untouched(self):
+        self._warn("something else entirely")
+        self.assertEqual(self.seen, ["something else entirely"])
+
+    def test_an_unparseable_residual_is_kept_rather_than_guessed(self):
+        self._warn("logm result may be inaccurate, approximate err = nonsense")
+        self.assertEqual(len(self.seen), 1)
+
+    def test_installing_twice_does_not_nest_the_wrapper(self):
+        import warnings
+
+        wrapped = warnings.showwarning
+        _quiet_logm_roundoff()
+        self.assertIs(warnings.showwarning, wrapped)
+
+    def test_the_threshold_sits_well_above_scipys(self):
+        # SciPy warns above 1000*eps = 2.2e-13; the drop threshold must cover
+        # that with room, and stay far below anything that moves a relaxation.
+        self.assertGreater(LOGM_ROUNDOFF, 1000 * 2.220446049250313e-16)
+        self.assertLess(LOGM_ROUNDOFF, 1e-6)
 
 
 class TestPinVisibleDevice(unittest.TestCase):
@@ -340,6 +485,188 @@ class TestCliDefaults(unittest.TestCase):
             build_parser().parse_args(
                 ["genes.json", "--output-dir", "out", "--mlip", "chgnet"]
             )
+
+    def test_the_four_stages_are_separately_runnable(self):
+        for stage in ("screen", "generate", "relax", "score", "all"):
+            args = build_parser().parse_args(
+                ["genes.json", "--output-dir", "out", "--stage", stage]
+            )
+            self.assertEqual(args.stage, stage)
+
+    def test_generation_and_relaxation_have_their_own_timeouts(self):
+        """Neither stage may be held hostage by one gene it cannot finish."""
+        args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
+        self.assertEqual(args.pyxtal_timeout, 300.0)
+        self.assertEqual(args.relax_timeout, 1800.0)
+        self.assertIsNone(args.pyxtal_cores)  # every core
+
+    def test_resume_is_on_by_default(self):
+        # Both per-trial logs are written row by row, so repeating finished
+        # trials is pure waste; --no-resume is the deliberate fresh start.
+        args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
+        self.assertTrue(args.resume)
+        args = build_parser().parse_args(
+            ["genes.json", "--output-dir", "out", "--no-resume"]
+        )
+        self.assertFalse(args.resume)
+
+
+class TestTimeLimit(unittest.TestCase):
+    def test_a_slow_block_is_interrupted(self):
+        with self.assertRaises(Timeout):
+            with time_limit(0.05):
+                while True:
+                    pass
+
+    def test_a_timeout_survives_a_broad_except_clause(self):
+        """PyXtal's callers catch Exception; a timeout must not look like one.
+
+        ``single_pyxtal`` reports every failure as ``None``, so a Timeout
+        derived from Exception would be recorded as an ordinary generation
+        failure rather than as the gene that hung.
+        """
+        self.assertFalse(issubclass(Timeout, Exception))
+
+    def test_no_limit_leaves_the_block_alone(self):
+        with time_limit(0):
+            pass
+        with time_limit(None):
+            pass
+
+
+class TestRowLog(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "rows.csv"
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_rows_are_on_disk_before_the_stage_ends(self):
+        log = RowLog(self.path, PYXTAL_COLUMNS, resume=False)
+        log.write({"index": 3, "trial": 0, "status": "ok"})
+        # Deliberately not closed: an interrupted stage never closes it either.
+        self.assertEqual(len(pd.read_csv(self.path)), 1)
+        log.close()
+
+    def test_resuming_skips_what_is_already_recorded(self):
+        log = RowLog(self.path, PYXTAL_COLUMNS, resume=False)
+        log.write({"index": 3, "trial": 0, "status": "ok"})
+        log.write({"index": 3, "trial": 1, "status": "failed"})
+        log.close()
+
+        resumed = RowLog(self.path, PYXTAL_COLUMNS, resume=True)
+        self.assertEqual(resumed.done, {(3, 0), (3, 1)})
+        resumed.write({"index": 4, "trial": 0, "status": "ok"})
+        self.assertEqual(len(resumed.frame()), 3)
+        resumed.close()
+
+    def test_no_resume_starts_from_scratch(self):
+        first = RowLog(self.path, PYXTAL_COLUMNS, resume=False)
+        first.write({"index": 3, "trial": 0, "status": "ok"})
+        first.close()
+        fresh = RowLog(self.path, PYXTAL_COLUMNS, resume=False)
+        self.assertEqual(fresh.done, set())
+        fresh.close()
+        self.assertEqual(len(pd.read_csv(self.path)), 0)
+
+    def test_a_line_cut_in_half_by_a_kill_is_dropped_not_fatal(self):
+        log = RowLog(self.path, PYXTAL_COLUMNS, resume=False)
+        log.write({"index": 3, "trial": 0, "status": "ok"})
+        log.close()
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write("4,0,ok,NaCl")  # killed mid-row: no newline, no rest
+        resumed = RowLog(self.path, PYXTAL_COLUMNS, resume=True)
+        self.assertEqual(resumed.done, {(3, 0)})
+        resumed.close()
+
+
+class TestAggregateStructures(unittest.TestCase):
+    """The reduction from per-trial rows to the one structure a gene kept."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _write(self, draws, relaxations):
+        pd.DataFrame(draws, columns=list(PYXTAL_COLUMNS)).to_csv(
+            self.out / "pyxtal.csv", index=False
+        )
+        pd.DataFrame(relaxations, columns=list(RELAXATION_COLUMNS)).to_csv(
+            self.out / "relaxations.csv", index=False
+        )
+
+    def _cif(self, name, text):
+        path = self.out / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return str(path)
+
+    def test_the_lowest_energy_trial_wins_and_its_cif_is_kept(self):
+        self._write(
+            draws=[
+                {"index": 0, "trial": 0, "status": "ok", "dof_positional": 3,
+                 "n_trials": 2, "seconds": 1.0},
+                {"index": 0, "trial": 1, "status": "ok", "dof_positional": 3,
+                 "n_trials": 2, "seconds": 1.0},
+            ],
+            relaxations=[
+                {"index": 0, "trial": 0, "status": "ok", "formula": "NaCl",
+                 "energy": -5.0, "energy_per_atom": -2.5, "n_atoms": 2,
+                 "device": "cuda:0", "seconds": 2.0,
+                 "cif": self._cif("cryspr/0/trial-0/NaCl_kept.cif", "data_high")},
+                {"index": 0, "trial": 1, "status": "ok", "formula": "NaCl",
+                 "energy": -9.0, "energy_per_atom": -4.5, "n_atoms": 2,
+                 "device": "cuda:1", "seconds": 2.0,
+                 "cif": self._cif("cryspr/0/trial-1/NaCl_kept.cif", "data_low")},
+            ],
+        )
+        frame = aggregate_structures(self.out)
+        self.assertTrue(bool(frame.at[0, "has_structure"]))
+        self.assertEqual(frame.at[0, "energy"], -9.0)
+        self.assertEqual(frame.at[0, "best_trial"], 1)
+        self.assertEqual(frame.at[0, "n_relaxed"], 2)
+        self.assertEqual(
+            (self.out / "cifs" / "0.cif").read_text(encoding="utf-8"), "data_low"
+        )
+
+    def test_a_failed_relaxation_is_reported_with_its_reason(self):
+        """The funnel says a gene has no structure; only this says why.
+
+        A whole cohort once came back with has_structure False on every gene
+        and nothing anywhere recording that the potential had failed to load.
+        """
+        self._write(
+            draws=[{"index": 1, "trial": 0, "status": "ok", "dof_positional": 0,
+                    "n_trials": 1, "seconds": 1.0}],
+            relaxations=[{"index": 1, "trial": 0, "status": "failed",
+                          "error": "RuntimeError: CUDA out of memory",
+                          "seconds": 0.5}],
+        )
+        frame = aggregate_structures(self.out)
+        self.assertFalse(bool(frame.at[1, "has_structure"]))
+        self.assertIn("CUDA out of memory", frame.at[1, "error"])
+
+    def test_a_gene_pyxtal_could_not_draw_is_told_apart_from_a_relaxation_failure(self):
+        self._write(
+            draws=[{"index": 2, "trial": 0, "status": "timeout",
+                    "dof_positional": 12, "n_trials": 3, "seconds": 300.0}],
+            relaxations=[],
+        )
+        frame = aggregate_structures(self.out)
+        self.assertFalse(bool(frame.at[2, "has_structure"]))
+        self.assertIn("timeout", frame.at[2, "error"])
+        self.assertEqual(frame.at[2, "n_drawn"], 0)
+
+    def test_a_draw_that_was_never_relaxed_keeps_a_row(self):
+        # The relax stage has not reached this gene: that is not a failure of
+        # the gene, and the reason must not read like one.
+        self._write(
+            draws=[{"index": 5, "trial": 0, "status": "ok", "dof_positional": 1,
+                    "n_trials": 2, "seconds": 1.0}],
+            relaxations=[],
+        )
+        frame = aggregate_structures(self.out)
+        self.assertEqual(frame.at[5, "error"], "generated but never relaxed")
 
 
 class TestTrialSchedule(unittest.TestCase):

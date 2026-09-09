@@ -176,6 +176,94 @@ def single_pyxtal(
         return None
 
 
+def relax_trial(
+        atoms_in: Atoms,
+        calculator: Calculator,
+        trial_dir: Path,
+        label: str = "",
+        fix_symmetry: bool = True,
+        release_symmetry: bool = True,
+        rattle: bool = True,
+        rattle_stdev: float = RATTLE_STDEV,
+        strain_stdev: float = RATTLE_STRAIN_STDEV,
+        rattle_accept: float = RATTLE_ACCEPT_EV_PER_ATOM,
+        clash_guard: bool = False,
+        seed: Optional[int] = None,
+        fmax: float = 0.01,
+        optimizer: type[Optimizer] = BFGS,
+) -> tuple[Optional[Atoms], Optional[float]]:
+    """Relax one PyXtal draw and write the CIF the relaxation kept.
+
+    The relaxation half of :func:`func_run`, for one trial and with no PyXtal
+    call of its own, so that a caller which generates structures on the CPU can
+    hand them to a separate process holding the MLIP on a GPU.
+
+    Args:
+        atoms_in: The generated structure to relax.
+        calculator: Shared ASE Calculator.
+        trial_dir: Directory for this trial's stage CIFs, logs and kept CIF.
+        label: Prefix for the log lines, e.g. ``"orb-17 trial-0"``.
+        fix_symmetry: Run the symmetry-constrained step.
+        release_symmetry: Run the unconstrained step before the rattle.
+        rattle: Run the rattle stage.
+        rattle_stdev: Per-atom displacement of the perturbation, A.
+        strain_stdev: Cell strain of the perturbation, dimensionless.
+        rattle_accept: Energy the rattle must win to be kept, eV/atom.
+        clash_guard: Discard a relaxed structure whose atoms have collapsed
+            into each other (:func:`has_atomic_clash`).  A MACE pathology; see
+            :func:`func_run`, which resolves the default.
+        seed: Seed for the rattle perturbation.
+        fmax: Force convergence criterion in eV/A.
+        optimizer: ASE local optimisation algorithm class.
+
+    Returns:
+        ``(atoms, energy)``, or ``(None, None)`` when the clash guard rejected
+        the relaxed structure.
+
+    Raises:
+        Exception: Whatever the relaxation raised.  Unlike :func:`func_run`,
+            which has other trials to fall back on, this reports the failure to
+            its caller rather than logging it.
+    """
+    trial_dir = Path(trial_dir)
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    formula = atoms_in.get_chemical_formula(mode="metal")
+    logger.info("[%s] Starting relaxation", label)
+
+    atoms_relaxed = stepwise_relax(
+        atoms_in=atoms_in,
+        calculator=calculator,
+        optimizer=optimizer,
+        fix_symmetry=fix_symmetry,
+        release_symmetry=release_symmetry,
+        rattle=rattle,
+        rattle_stdev=rattle_stdev,
+        strain_stdev=strain_stdev,
+        rattle_accept=rattle_accept,
+        seed=seed,
+        fmax=fmax,
+        wdir=trial_dir,
+        logfile_prefix=formula,
+        logfile_postfix="relax",
+    )
+    energy = atoms_relaxed.get_potential_energy()
+    if clash_guard and has_atomic_clash(atoms_relaxed):
+        logger.warning(
+            "[%s] Relaxed structure has atomic clashes (E = %.5f eV); "
+            "discarding as unphysical.", label, energy,
+        )
+        return None, None
+
+    # The kept structure, whichever stage produced it.
+    write(
+        filename=str(trial_dir / f"{formula}{KEPT_CIF_SUFFIX}"),
+        images=atoms_relaxed,
+        format="cif",
+    )
+    logger.info("[%s] Done, E = %.5f eV", label, energy)
+    return atoms_relaxed, energy
+
+
 def func_run(
         id_gene: int | str,
         wyckoffgene: dict,
@@ -257,47 +345,31 @@ def func_run(
             continue
 
         formula = atoms_in.get_chemical_formula(mode="metal")
-        logger.info("[%s-%s %s] Starting relaxation", model_name, id_gene, trial_key)
 
         try:
-            atoms_relaxed = stepwise_relax(
+            atoms_relaxed, energy = relax_trial(
                 atoms_in=atoms_in,
                 calculator=calculator,
-                optimizer=optimizer,
+                trial_dir=trial_dir,
+                label=f"{model_name}-{id_gene} {trial_key}",
                 fix_symmetry=fix_symmetry,
                 release_symmetry=release_symmetry,
                 rattle=rattle,
                 rattle_stdev=rattle_stdev,
                 strain_stdev=strain_stdev,
                 rattle_accept=rattle_accept,
+                clash_guard=clash_guard,
                 seed=_trial_seed(id_gene, i_trial),
                 fmax=fmax,
-                wdir=trial_dir,
-                logfile_prefix=formula,
-                logfile_postfix="relax",
-            )
-            energy = atoms_relaxed.get_potential_energy()
-            if clash_guard and has_atomic_clash(atoms_relaxed):
-                logger.warning(
-                    "[%s-%s %s] Relaxed structure has atomic clashes "
-                    "(E = %.5f eV); discarding as unphysical.",
-                    model_name, id_gene, trial_key, energy,
-                )
-                continue
-            atoms_by_trial[trial_key] = atoms_relaxed
-            energy_by_trial[trial_key] = energy
-            # The kept structure, whichever stage produced it.
-            write(
-                filename=str(trial_dir / f"{formula}{KEPT_CIF_SUFFIX}"),
-                images=atoms_relaxed,
-                format="cif",
-            )
-            logger.info(
-                "[%s-%s %s] Done, E = %.5f eV",
-                model_name, id_gene, trial_key, energy_by_trial[trial_key],
+                optimizer=optimizer,
             )
         except Exception as exc:
             logger.warning("[%s-%s %s] Relaxation failed: %s", model_name, id_gene, trial_key, exc)
+            continue
+        if atoms_relaxed is None:  # the clash guard rejected it
+            continue
+        atoms_by_trial[trial_key] = atoms_relaxed
+        energy_by_trial[trial_key] = energy
 
     if not atoms_by_trial:
         logger.warning(
