@@ -11,18 +11,19 @@
 
 On the 400-structure oracle cohort it is transformative: **one template start
 recovers 81.5% of the targets against 60.8% for ten random ones**, and costs a
-third of the optimiser steps. On the de novo protocol it is not: it beats a
-random start at a matched budget (MetaSUN 0.239 against 0.206, p = 0.002) but
-loses to the protocol's three-trial schedule (0.281), and added on top of that
-schedule it buys 0.281 → 0.293 for 17% more compute. The two results are the
-same fact seen twice. A template start is good at landing on a structure
-LeMat-Bulk already contains — which the oracle study scores as recovery and
-MetaSUN subtracts as non-novelty. Of the 32 extra sub-0.1 eV/atom structures the
-template trial adds to the protocol run, only 12 are novel.
+third of the optimiser steps. On the de novo protocol it is worth less, and
+*where* it is worth less is the whole story: added to run `e9ywwsie` it moves
+MetaSUN 0.281 → 0.293 overall, but that is **0.351 → 0.374 on the genes whose
+fingerprint LeMat-Bulk does not have** and **0.108 → 0.094 on the genes it
+does**. On a gene the training set already names, the template start lands on
+the very structure that makes the gene known, wins the trial on energy, and
+displaces a novel one. Withholding it there — which is a change to the
+retrieval, not to the search — gives 0.297 and costs nothing.
 
-**So it is off by default**, and it belongs where reproducing a known structure
-is the objective: CSP against a named target, and generating geometry training
-targets for a learned realizer.
+**It is off by default**, because on a mixed cohort the gain is small. It earns
+its place on gene-novel cohorts, and outright where reproducing a known
+structure is the objective: CSP against a named target, and generating geometry
+training targets for a learned realizer.
 
 ## What it does
 
@@ -336,27 +337,92 @@ against 13.0 s — and moves MetaSUN from 0.281 to 0.293 and SUN from 0.011 to
 0.013, with 21 genes gained against 9 lost (p = 0.043). The template trial was
 the lowest-energy one for 325 of the 856 genes that had one.
 
-### Novelty is what it costs
+### Novelty is what it costs — but only on genes LeMat-Bulk already has
 
-The prediction in the section above is confirmed: every arm that uses a template
-start is **less novel**. 0.704 → 0.661 at one trial per gene; 0.687 → 0.669 when
-added to the full budget.
+Every arm that uses a template start is less novel overall: 0.704 → 0.661 at one
+start per gene, 0.687 → 0.669 when added to the full budget. Going from `random`
+to `union` adds 32 structures below 0.1 eV/atom and only 12 of them survive the
+novelty filter.
 
-The accounting is exact and it is the whole story of this experiment. Going from
-`random` to `union` adds **32** structures below 0.1 eV/atom — and only **12** of
-them survive the novelty filter. Two thirds of what the template start finds is
-a structure LeMat-Bulk already has, which is precisely what experiment 1
-measured as an 81.5% recovery rate. **The oracle study rewards reproducing a
-training structure; MetaSUN subtracts it.** These are the same number with
-opposite signs, and no amount of tuning the retrieval changes that: the method's
-strength is its bias.
+Splitting by the *sampled gene's* own novelty says where those 20 went. Scoring
+each of the 3258 trials separately rather than each gene
+(`analyse_template_protocol.py ceiling`) gives, per sampled gene of each subset:
 
-That makes template starts useful in the two places where reproducing a known
-structure is the goal rather than the failure — CSP against a known target, and
-building geometry training targets for a learned realizer
-([candidate 2](archive/pyxtal_dof_reduction_study.md)) — and marginal in de novo
-generation, where a 1.2-point MetaSUN gain for 17% more compute is real,
-significant at p = 0.043, and small.
+| | gene-novel (712 sampled) | gene-known (288 sampled) |
+|---|---:|---:|
+| `random` delivers | 0.351 | 0.108 |
+| `union` delivers | **0.374** | **0.094** |
+| template trials that are themselves MetaSUN | 179 | 16 |
+| template trials metastable but **known** | 13 | 208 |
+| genes lost to selection, `random` → `union` | 3 → 5 | 11 → 18 |
+
+The two columns are opposite. On a gene whose fingerprint LeMat-Bulk does not
+have, the template start is a clean gain: 179 of its trials are novel *and*
+below 0.1 eV/atom, only 13 are metastable-but-known, and MetaSUN rises by 2.3
+points. On a gene whose fingerprint LeMat-Bulk *does* have, the template start is
+retrieving the structure that makes the gene known — 208 of 287 such trials are
+metastable and known — and because it wins the trial on energy it evicts the
+novel structure a random draw had found. MetaSUN there **falls**, by 1.4 points.
+
+That mechanism is forced rather than incidental. Selection is by lowest energy,
+and at fixed composition `e_above_hull` is affine in the total energy, so the
+lowest-energy trial is also the lowest-`e_hull` trial. The only way a gene can
+lose MetaSUN at the selection step is a lower-energy trial that is **not novel**
+displacing a higher-energy one that is — which is precisely what retrieving a
+training structure does on a gene the training set already contains.
+
+The fix is on the retrieval side and needs no new relaxation: withhold the
+template start where the gene's own *augmented* fingerprint is in LeMat-Bulk, or
+equivalently exclude from its candidates the entries that share it. Composed out
+of the trials already on disk that arm delivers **0.297**, against 0.293 for
+`union` and 0.281 for `random`.
+
+### How much room is left
+
+The arms say what the search delivered; they cannot say what it could have
+delivered, because a gene whose best structure is genuinely above the hull looks
+exactly like one whose good structure was never sampled. The per-trial scores
+separate the two. *Delivered* is the verdict on the lowest-energy trial;
+*ceiling* is whether **any** trial of that gene is valid, novel and at or below
+0.1 eV/atom. (Reconstructing `random` and `union` this way reproduces the
+funnel's 0.281 and 0.293 exactly, which is the check on the per-trial pass.)
+
+Over the 712 gene-novel sampled genes, per sampled gene of that subset:
+
+| trials per gene | delivered | ceiling |
+|---|---:|---:|
+| 1 random | 0.249 | 0.249 |
+| 2 random | 0.319 | 0.319 |
+| the full random schedule (2.64) | 0.351 | 0.355 |
+| plus the template start (3.44) | **0.374** | 0.381 |
+
+Two things follow.
+
+**The search is nowhere near done.** The curve is still rising by five to seven
+points per increment of trials and shows no sign of flattening; the second
+random trial alone is worth seven points. Whatever the true ceiling for these
+genes is, this cohort has not approached it, and the template start moves the
+*bound* rather than closing the gap to it.
+
+**Selection is not the problem — on novel genes.** The any-trial ceiling sits
+0.4 to 0.7 points above what the lowest-energy rule delivers, five genes in 712.
+That is the reconstruction study's "coverage ≈ delivery" again: almost nothing
+novel and stable is found and then discarded. All the selection loss is on the
+gene-known subset, where it grows from 11 genes to 18 once the template start is
+added — the eviction described above.
+
+Selecting the lowest-energy trial *among the novel* ones attains the ceiling
+exactly, and would give **0.316** over all 1000 genes against the 0.293 that
+`union` reports. That is a change of readout, not of search, and it is not free
+of interpretation: the structure it would report is metastable with respect to a
+known polymorph the same run also found.
+
+**What this ceiling is not.** It is a lower bound in three ways: it is bounded
+by the 3258 trials that were actually run, it uses ORB's `e_above_hull` rather
+than DFT's, and it applies no uniqueness filter (which does not bind here —
+every arm has exactly one fewer unique structure than valid one). The true
+MetaSUN ceiling for this gene sample is unknown, and the rising curve says it is
+higher than 0.381.
 
 ### Two relaxations wedged
 
@@ -384,12 +450,14 @@ the template cell's volume by a median factor of 1.002 — but the 2.8% of start
 that do break the distance floor recover 27% against 86% for the rest, so
 repairing those is the one clear increment left.
 
-**It copies the training set.** This one is not a risk, it is measured:
-experiment 2 shows `novel_structure` falling from 0.704 to 0.661 at one start
-per gene, and two thirds of the extra metastable structures the template finds
-being rejected as known. It is inherent to the method rather than a defect of
-this implementation — the reason a training structure's coordinates are a good
-guess is that the gene describes something like it.
+**It copies the training set — on the genes that were already copies.** This is
+measured, not a risk: `novel_structure` falls from 0.704 to 0.661 at one start
+per gene. But the per-trial split above localises it entirely to genes whose own
+fingerprint LeMat-Bulk has, where the retrieved template *is* the structure that
+makes the gene known. On gene-novel genes the template start adds 179 novel
+metastable trials against 13 known ones. Excluding candidates that share the
+gene's augmented fingerprint would close it; that is the one change to the
+retrieval this study leaves undone.
 
 ## Reproduce
 
@@ -424,6 +492,11 @@ scripts/platforms/iapetus/run.sh python scripts/analyse_template_protocol.py sco
 scripts/platforms/iapetus/run.sh python scripts/analyse_template_protocol.py table \
     --run-dir generated/e9ywwsie/protocol_template \
     --baseline generated/e9ywwsie/protocol   # optional: logs the published funnel
+
+# the ceiling: scores each of the 3258 trials rather than each gene (~15 min),
+# then re-reads per_trial_scores.csv on any later call
+scripts/platforms/iapetus/run.sh python scripts/analyse_template_protocol.py ceiling \
+    --run-dir generated/e9ywwsie/protocol_template
 ```
 
 The relaxation stages are the only expensive ones: 386 starts (21 min) for

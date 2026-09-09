@@ -273,9 +273,278 @@ def stage_table(args) -> None:
     print(json.dumps({"energy": energy, "relaxation_seconds": cost}, indent=2))
 
 
+#: Trial-level columns written by :func:`stage_ceiling`.
+TRIAL_COLUMNS = (
+    "index", "trial", "source", "energy_per_atom", "e_above_hull",
+    "valid_structure", "novel_structure", "metasun",
+)
+
+
+def stage_ceiling(args) -> None:
+    """Score every *trial*, not every gene, and read the ceiling off it.
+
+    The arms answer what the search *delivered*.  They cannot say how much is
+    left, because a gene whose best structure is above the hull looks the same
+    as one whose best structure was never sampled.  Scoring each trial
+    separately separates the two:
+
+    ``delivered``
+        the verdict on the lowest-energy trial, which is what the protocol
+        reports;
+    ``ceiling``
+        whether *any* trial of that gene is valid, novel and at or below the
+        threshold.
+
+    The difference is a selection loss, and it has exactly one mechanism here.
+    At fixed composition ``e_above_hull`` is affine in the total energy, so the
+    lowest-energy trial is also the lowest-``e_hull`` one; a gene can therefore
+    only lose MetaSUN at the selection step when the lowest-energy trial is
+    **not novel** and a higher-energy one is.  That is what a template start
+    does when it lands on the LeMat-Bulk structure it was taken from, so this is
+    the measurement that says whether the template trial is displacing novel
+    structures rather than merely failing to add them.
+
+    The ceiling is a *lower bound* on what the gene set could yield -- it is
+    bounded by the trials that were actually run -- so it is reported next to
+    the same quantity restricted to the random trials, whose gap says how much
+    the template start moved the bound.
+
+    Uniqueness is not applied.  It does not bind: every arm has exactly one
+    fewer unique structure than valid one, so including it would change no digit
+    and would make a per-trial verdict depend on which trial of another gene was
+    selected.
+    """
+    from pymatgen.core import Structure
+
+    from wyckoff_transformer.cli.protocol import GeneFingerprinter, load_genes
+    from wyckoff_transformer.evaluation.hull_energy import HullEnergyCalculator
+    from wyckoff_transformer.evaluation.novelty import NoveltyFilter
+    from wyckoff_transformer.evaluation.protocol import METASTABLE_THRESHOLD, read_screen
+    from wyckoff_transformer.evaluation.structure_novelty import build_novelty_reference
+    from wyckoff_transformer.evaluation.structure_validity import is_valid
+
+    run_dir = args.run_dir
+    genes = load_genes(args.genes or (run_dir / "wyckoff_genes.json.gz"))
+    screen = read_screen(run_dir / SCREEN_FILE)
+    tables_dir = args.output_dir or (run_dir / "tables")
+    scores_path = tables_dir / "per_trial_scores.csv"
+    if scores_path.is_file():
+        # Scoring 3258 trials costs a quarter of an hour and a pass over the
+        # CIF export; the summary is a groupby.  Re-read rather than re-score.
+        logger.info("Reusing %s", scores_path)
+        _report_ceiling(pd.read_csv(scores_path), screen, tables_dir)
+        return
+    relaxations = read_rows(run_dir / RELAXATIONS_FILE, RELAXATION_COLUMNS)
+    relaxations = relaxations[relaxations["status"] == "ok"]
+    logger.info("Scoring %d trials over %d genes",
+                len(relaxations), relaxations["index"].nunique())
+
+    fingerprinter = GeneFingerprinter()
+    hull = HullEnergyCalculator(args.mlip)
+
+    gene_fingerprints = {}
+    for index in sorted(set(relaxations["index"])):
+        try:
+            gene_fingerprints[int(index)] = fingerprinter.fingerprint(genes[int(index)])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Gene %d: no fingerprint (%s)", index, exc)
+
+    rows, structures, fingerprints, relaxed_fingerprints = [], {}, {}, {}
+    for position, record in enumerate(relaxations.itertuples(index=False), start=1):
+        key = (int(record.index), int(record.trial))
+        path = Path(str(record.cif))
+        if not path.is_file():
+            continue
+        try:
+            structure = Structure.from_file(path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Trial %s: unreadable CIF (%s)", key, exc)
+            continue
+        structures[key] = structure
+        fingerprints[key] = gene_fingerprints.get(key[0])
+        try:
+            relaxed_fingerprints[key] = fingerprinter.fingerprint_structure(structure)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Trial %s: no relaxed fingerprint (%s)", key, exc)
+        try:
+            energy = float(record.energy_per_atom) * len(structure)
+            e_above_hull = hull.energy_above_hull(energy, structure.composition)
+        except (ValueError, TypeError) as exc:
+            logger.warning("Trial %s: e_above_hull failed (%s)", key, exc)
+            e_above_hull = None
+        rows.append({
+            "index": key[0],
+            "trial": key[1],
+            "source": "template" if key[1] == TEMPLATE_TRIAL else "random",
+            "energy_per_atom": float(record.energy_per_atom),
+            "e_above_hull": e_above_hull,
+            "valid_structure": bool(is_valid(structure)),
+        })
+        if position % 250 == 0:
+            logger.info("Read %d/%d trials", position, len(relaxations))
+
+    frame = pd.DataFrame(rows)
+    scored = pd.DataFrame({
+        "fingerprint": pd.Series(fingerprints),
+        "structure": pd.Series(structures),
+    }).dropna()
+    scored["relaxed_fingerprint"] = pd.Series(relaxed_fingerprints).reindex(scored.index)
+    reference = build_novelty_reference(
+        pd.concat([scored["fingerprint"], scored["relaxed_fingerprint"].dropna()]),
+        cache=args.reference_cache,
+        lemat_cif_csv=args.lemat_cif_csv,
+    )
+    novelty = NoveltyFilter(reference)
+
+    def is_novel(record: pd.Series) -> bool:
+        """Novel iff no LeMat-Bulk entry sharing *either* fingerprint matches."""
+        if not novelty.is_novel(record):
+            return False
+        relaxed = record.get("relaxed_fingerprint")
+        if relaxed is None or (isinstance(relaxed, float) and pd.isna(relaxed)):
+            return True
+        return novelty.is_novel(
+            pd.Series({"fingerprint": relaxed, "structure": record.structure}))
+
+    novel = {key: is_novel(record) for key, record in scored.iterrows()}
+    frame["novel_structure"] = [
+        bool(novel.get((i, t), False)) for i, t in zip(frame["index"], frame["trial"])
+    ]
+    frame["metasun"] = (
+        frame["valid_structure"]
+        & frame["novel_structure"]
+        & frame["e_above_hull"].le(METASTABLE_THRESHOLD)
+    )
+
+    tables_dir.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(scores_path, index=False)
+    _report_ceiling(frame, screen, tables_dir)
+
+
+def _report_ceiling(frame: pd.DataFrame, screen, tables_dir: Path) -> None:
+    """Summarise the per-trial scores, whole and over the gene-novel subset.
+
+    The gene-novel split is the one the ceiling question is really about: a gene
+    whose fingerprint LeMat-Bulk already has can still relax into a novel
+    structure, but it is not where new material is expected to come from, and
+    averaging the two hides how much room the novel genes have left.
+    """
+    novel_genes = set(screen.novel)
+    # Denominators are *sampled* genes, as everywhere else in the funnel: a gene
+    # sampled twice belongs once in the numerator and twice in the denominator.
+    summary = {
+        "all_genes": _ceiling_summary(frame, screen.n_sampled),
+        "gene_novel": _ceiling_summary(
+            frame[frame["index"].isin(novel_genes)], screen.n_sampled_novel),
+        "gene_known": _ceiling_summary(
+            frame[~frame["index"].isin(novel_genes)], screen.n_sampled_known),
+    }
+    summary["n_sampled"] = screen.n_sampled
+    summary["n_sampled_novel"] = screen.n_sampled_novel
+    summary["n_gene_novel_representatives"] = len(novel_genes)
+    summary["derived_arms"] = _derived_arms(frame, novel_genes, screen.n_sampled)
+    (tables_dir / "ceiling.json").write_text(
+        json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(summary, indent=2))
+
+
+def _best_by_energy(trials: pd.DataFrame) -> pd.Series:
+    """MetaSUN verdict on each gene's lowest-energy trial: what the protocol picks."""
+    if not len(trials):
+        return pd.Series(dtype=bool)
+    best = trials.loc[trials.groupby("index")["energy_per_atom"].idxmin()]
+    return best.set_index("index")["metasun"]
+
+
+def _derived_arms(frame: pd.DataFrame, novel_genes: set, sampled: int) -> dict:
+    """Two arms that need no further relaxation, only a different choice.
+
+    ``template_on_novel_genes``
+        The template start only where the gene's own fingerprint is *absent*
+        from LeMat-Bulk, and the random trials where it is present.  The
+        per-trial scores say the template start's novelty cost falls entirely on
+        gene-known genes -- where it lands on the very structure the gene names,
+        wins on energy, and displaces a novel trial -- so withholding it there
+        should keep the gain and drop the loss.  Selecting the template's own
+        candidates by *augmented* fingerprint instead would do the same thing
+        inside the retrieval, and is the version worth implementing.
+
+    ``novelty_aware_selection``
+        The lowest-energy trial *among the novel ones*, falling back to the
+        lowest-energy trial when none is novel.  This attains the ceiling
+        exactly: within one gene the composition is fixed, so the lowest-energy
+        novel trial is also the lowest-``e_hull`` novel trial.  It is a change
+        of readout rather than of search, and it is not free of interpretation
+        -- the structure it reports is metastable with respect to a known
+        polymorph the same run also found.
+    """
+    is_novel_gene = frame["index"].isin(novel_genes)
+    random_trials = frame[frame["source"] == "random"]
+
+    mixed = pd.concat([frame[is_novel_gene],
+                       random_trials[~random_trials["index"].isin(novel_genes)]])
+    novel_first = frame[frame["metasun"] | frame["novel_structure"]]
+
+    arms = {
+        "random": _best_by_energy(random_trials),
+        "union": _best_by_energy(frame),
+        "template_on_novel_genes": _best_by_energy(mixed),
+        # Genes with no novel trial fall back to the union's own choice.
+        "novelty_aware_selection": _best_by_energy(novel_first).combine_first(
+            _best_by_energy(frame)),
+    }
+    return {
+        name: {
+            "delivered": int(verdict.sum()),
+            "delivered_per_sampled_gene": round(float(verdict.sum()) / sampled, 4),
+        }
+        for name, verdict in arms.items()
+    }
+
+
+def _ceiling_summary(frame: pd.DataFrame, sampled: int) -> dict:
+    """Delivered against any-trial MetaSUN, whole and split by trial source."""
+    def arm(trials: pd.DataFrame) -> dict:
+        if not len(trials):
+            return {}
+        best = trials.loc[trials.groupby("index")["energy_per_atom"].idxmin()]
+        ceiling = trials.groupby("index")["metasun"].any()
+        delivered = best.set_index("index")["metasun"]
+        # A gene the selection lost: some trial is MetaSUN, the chosen one is
+        # not.  At fixed composition that can only be a novelty verdict.
+        lost = ceiling & ~delivered.reindex(ceiling.index).fillna(False)
+        return {
+            "trials": int(len(trials)),
+            "genes": int(trials["index"].nunique()),
+            "delivered": int(delivered.sum()),
+            "delivered_per_sampled_gene": round(float(delivered.sum()) / sampled, 4),
+            "ceiling": int(ceiling.sum()),
+            "ceiling_per_sampled_gene": round(float(ceiling.sum()) / sampled, 4),
+            "lost_to_selection": int(lost.sum()),
+        }
+
+    random_only = frame[frame["source"] == "random"]
+    summary = {
+        "sampled": sampled,
+        "union": arm(frame),
+        "random": arm(random_only),
+        "template_trials_that_are_metasun": int(
+            frame.loc[frame["source"] == "template", "metasun"].sum()),
+        "template_trials_that_are_metastable_but_known": int(
+            (frame["source"].eq("template")
+             & frame["e_above_hull"].le(0.1)
+             & ~frame["novel_structure"]).sum()),
+    }
+    # Best-of-k over the random trials, in the order the schedule drew them:
+    # whether the curve is still rising says how far the search is from done.
+    for k in (1, 2, 3):
+        summary[f"random_best_of_{k}"] = arm(random_only[random_only["trial"] < k])
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("stage", choices=["arms", "score", "table"])
+    parser.add_argument("stage", choices=["arms", "score", "table", "ceiling"])
     parser.add_argument("--run-dir", type=Path, required=True,
                         help="The run extended with the protocol's template stage.")
     parser.add_argument("--baseline", type=Path, default=None,
@@ -298,6 +567,8 @@ def main() -> None:
         stage_arms(args)
     elif args.stage == "score":
         stage_score_arms(args)
+    elif args.stage == "ceiling":
+        stage_ceiling(args)
     else:
         stage_table(args)
 
