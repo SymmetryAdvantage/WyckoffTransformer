@@ -1,3 +1,10 @@
+CRySPR experiments/improvements
+1. Template-matched starts instead of random PyXtal draws - implemented as
+   `wyformer-protocol --stage template`, off by default. 81.5% recovery from one
+   start on the 400-gene oracle cohort against 60.8% for ten random ones, but on
+   e9ywwsie only MetaSUN 0.281 -> 0.293 for 17% more compute: what it recovers is
+   mostly already in LeMat-Bulk (docs/cryspr_template_starts.md)
+
 Backbone
 1. Train the models longer with the low LR
 2. Increase model capacity (NSCC, in progress)

@@ -28,6 +28,12 @@ nothing is gained by making one wait for another's hardware:
     loads large references (the hull parquet, and the LeMat-Bulk geometry of
     every colliding fingerprint) into RAM.
 
+A fifth stage, ``template``, is optional and not part of ``--stage all``.  It
+adds one start per gene taken from a training structure on the same Wyckoff
+orbits rather than drawn at random, to be relaxed and scored as an extra trial
+alongside them; see :mod:`wyckoff_transformer.cryspr.template` and
+``docs/cryspr_template_starts.md``.
+
 Each stage appends its rows to disk as they complete, so an interrupted run
 keeps its finished work and ``--resume`` picks up the rest per *trial*, not per
 gene.
@@ -90,6 +96,17 @@ CIF_DIR = "cifs"
 CRYSPR_DIR = "cryspr"
 
 STAGES = ("screen", "generate", "relax", "score")
+
+#: Stages that are not part of ``--stage all``.  ``template`` is an *alternative*
+#: source of starting structures rather than a step of the cascade: it appends
+#: one template-matched draw per gene to whatever ``generate`` produced, and the
+#: relax and score stages then treat it as one more trial.
+OPTIONAL_STAGES = ("template",)
+
+#: Trial index the template start is filed under.  Far above any schedule's
+#: budget so it never collides with a random trial, and constant so ``--resume``
+#: recognises a template draw that has already been made or relaxed.
+TEMPLATE_TRIAL = 1000
 
 #: Columns of ``pyxtal.csv``: one row per attempted PyXtal draw.
 PYXTAL_COLUMNS = (
@@ -633,6 +650,117 @@ def stage_generate(args) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Optional stage: template
+# --------------------------------------------------------------------------- #
+def stage_template(args) -> None:
+    """One template-matched start per gene, appended to the generate stage's output.
+
+    Where ``generate`` asks PyXtal to *guess* the cell and every free Wyckoff
+    coordinate, this takes them from a LeMat-Bulk structure that already
+    occupies the gene's orbits -- the closest one by chemical formula -- and
+    writes the gene's elements onto it
+    (:mod:`wyckoff_transformer.cryspr.template`).  A gene with no such training
+    structure, or whose candidates cannot be rebuilt, gets nothing here and
+    keeps the random draws ``generate`` made for it.
+
+    The start is filed as trial :data:`TEMPLATE_TRIAL` in the same
+    ``pyxtal.extxyz`` and ``pyxtal.csv`` the random draws live in, so ``relax``
+    picks it up as one more trial and ``--resume`` relaxes only the new ones.
+    Running this stage on a finished run therefore costs one relaxation per
+    gene and re-runs none of them.
+    """
+    from ase.io import write as ase_write
+
+    from wyckoff_transformer.cryspr.template import (
+        TemplateIndex,
+        gene_query,
+        load_template_structures,
+        single_template,
+    )
+
+    genes = load_genes(args.input)
+    screen = read_screen(args.output_dir / SCREEN_FILE)
+    schedule = parse_trial_schedule(args.n_trials)
+    todo = _todo_representatives(screen, args.limit)
+
+    log = RowLog(args.output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS, resume=True)
+    todo = [index for index in todo if (index, TEMPLATE_TRIAL) not in log.done]
+    if not todo:
+        log.close()
+        print("Every gene already has a template draw.")
+        return
+
+    index_table = TemplateIndex.load(args.template_index)
+    logger.info(
+        "Template index: %d LeMat-Bulk entries over %d anonymous fingerprints",
+        len(index_table), index_table.n_fingerprints,
+    )
+    fingerprinter = GeneFingerprinter()
+
+    matches = {}
+    for gene_index in todo:
+        try:
+            query = gene_query(genes[gene_index], fingerprinter)
+        except Exception as exc:  # noqa: BLE001 - the screen already ruled on validity
+            logger.warning("Gene %d: no template query (%s)", gene_index, exc)
+            continue
+        matches[gene_index] = index_table.select(query, k=args.template_candidates)
+    logger.info(
+        "%d/%d genes have a candidate template", sum(1 for m in matches.values() if m),
+        len(todo),
+    )
+
+    # One pass over the ~1 GB CIF export for every candidate of every gene: the
+    # index carries no geometry, and reading it per gene would be the whole cost
+    # of the stage.
+    ids = sorted({match.immutable_id for found in matches.values() for match in found})
+    structures = load_template_structures(ids, lemat_cif_csv=args.lemat_cif_csv)
+    logger.info("Read %d of %d candidate templates", len(structures), len(ids))
+
+    structures_path = args.output_dir / PYXTAL_FILE
+    n_ok = 0
+    try:
+        for gene_index in todo:
+            started = time.time()
+            dof, n_trials = _budget(genes[gene_index], schedule)
+            row = {
+                "index": gene_index, "trial": TEMPLATE_TRIAL, "status": "failed",
+                "dof_positional": dof, "n_trials": n_trials, "error": None,
+            }
+            atoms, match, error = single_template(
+                genes[gene_index], matches.get(gene_index, ()), structures
+            )
+            if atoms is None:
+                row["error"] = error
+            else:
+                trial_dir = _trial_dir(args.output_dir, gene_index, TEMPLATE_TRIAL)
+                trial_dir.mkdir(parents=True, exist_ok=True)
+                atoms.info = {
+                    "gene": int(gene_index),
+                    "trial": int(TEMPLATE_TRIAL),
+                    "template": match.immutable_id,
+                    "template_distance": round(match.distance, 6),
+                }
+                ase_write(str(structures_path), atoms, format="extxyz", append=True)
+                row["status"] = "ok"
+                row["formula"] = atoms.get_chemical_formula(mode="metal")
+                row["n_atoms"] = len(atoms)
+                n_ok += 1
+            row["seconds"] = round(time.time() - started, 2)
+            log.write(row)
+    finally:
+        log.close()
+
+    _update_manifest(args.output_dir / MANIFEST_FILE, {
+        "template_index": str(args.template_index or "default"),
+        "template_candidates": args.template_candidates,
+        "template_genes": len(todo),
+        "template_drawn": n_ok,
+    })
+    print(f"{n_ok}/{len(todo)} genes got a template start -> {structures_path}")
+
+
+# --------------------------------------------------------------------------- #
 # Stage 3: relax
 # --------------------------------------------------------------------------- #
 def _relax_one(
@@ -1131,8 +1259,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for all stage outputs; stages read each other's files here.",
     )
     parser.add_argument(
-        "--stage", choices=STAGES + ("all",), default="all",
-        help="Which stage to run. 'all' runs screen, generate, relax and score.",
+        "--stage", choices=STAGES + OPTIONAL_STAGES + ("all",), default="all",
+        help=(
+            "Which stage to run. 'all' runs screen, generate, relax and score. "
+            "'template' is not part of 'all': it adds one template-matched start "
+            "per gene to the draws 'generate' made, to be relaxed alongside them."
+        ),
     )
     parser.add_argument(
         "--mlip", type=str, default=DEFAULT_HULL_MLIP, choices=sorted(HULL_MLIPS),
@@ -1164,6 +1296,23 @@ def build_parser() -> argparse.ArgumentParser:
             "gives every gene the same number. The default spends one trial on "
             "the fifth of genes with no free coordinates, where a second one "
             "provably changes nothing, and two on the rest."
+        ),
+    )
+
+    template = parser.add_argument_group("template starts (stage: template)")
+    template.add_argument(
+        "--template-index", type=Path, default=None,
+        help=(
+            "Parquet of LeMat-Bulk keyed by anonymous Wyckoff fingerprint. Built "
+            "from --reference-cache on first use and cached beside it."
+        ),
+    )
+    template.add_argument(
+        "--template-candidates", type=int, default=4,
+        help=(
+            "Templates carried out of the index per gene, closest formula first. "
+            "More than one because the closest can resist symmetry detection, and "
+            "reading its geometry costs a pass over the CIF export either way."
         ),
     )
 

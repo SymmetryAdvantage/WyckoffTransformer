@@ -172,6 +172,16 @@ attention, so the autoregressive backbone stays discrete and fast.
 
 ### 3. Prototype retrieval as the prior and the baseline
 
+> Since implemented and measured, as `wyformer-protocol --stage template`:
+> [template-matched starts](../cryspr_template_starts.md). The implementation
+> matches on the *fully* anonymous fingerprint rather than the partition-keeping
+> one this section's coverage table uses, so its coverage is higher than the
+> 0.668 below — 85.9% of the genes of run `e9ywwsie`. It does what this section
+> says it would ("start about four in ten of the currently hopeless dof >10
+> genes in the right basin"): 65.9% of them, against 21.1% for five random
+> trials. What it does *not* do is raise MetaSUN by much, because the structures
+> it recovers are the ones the novelty filter removes.
+
 Zero training: look up the generated gene's anonymised prototype in LeMat-Bulk,
 take the free parameters of the nearest entry, rescale to the predicted (or
 composition-estimated) volume, relax. By the tables above it would start about

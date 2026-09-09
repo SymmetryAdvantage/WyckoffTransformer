@@ -57,6 +57,12 @@ none of them waits on another's resource:
 | `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `cifs/` |
 | `score` | the hull parquet and LeMat-Bulk geometry in RAM | ~1 min | `funnel.json` |
 
+There is a fifth, optional stage. `template` adds one
+[template-matched start](cryspr_template_starts.md) per gene — a training
+structure's lattice and coordinates instead of a PyXtal draw — as an extra
+trial, to be relaxed and scored alongside the random ones. It is not part of
+`--stage all` and changes no default.
+
 ```bash
 wyformer-protocol genes.json.gz --output-dir run/ --stage screen
 wyformer-protocol genes.json.gz --output-dir run/ --stage generate --pyxtal-cores 12

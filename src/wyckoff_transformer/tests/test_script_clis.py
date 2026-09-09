@@ -22,6 +22,8 @@ SCRIPTS = (
     "scripts/audit_ehull_conditioning.py",
     "scripts/tokenise_a_dataset.py",
     "scripts/train.py",
+    "scripts/run_template_reconstruction_study.py",
+    "scripts/analyse_template_protocol.py",
 )
 
 
