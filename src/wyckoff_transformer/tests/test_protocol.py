@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -23,6 +24,7 @@ from wyckoff_transformer.evaluation.hull_mlips import (
     HULL_MLIPS,
     PUBLISHED_HULL_ENTRIES,
     UnsupportedHullMlip,
+    _use_cpu_orb_neighbors_when_needed,
     resolve_hull_mlip,
 )
 from wyckoff_transformer.evaluation.protocol import (
@@ -101,6 +103,42 @@ class TestHullMlips(unittest.TestCase):
         # Named outright rather than left to mace-torch's version-dependent
         # mace_mp(model=None) alias, which is what made it ambiguous.
         self.assertEqual(HULL_MLIPS["mace_mp"].checkpoint, "MACE-MP-0a-medium")
+
+    def test_cpu_only_warp_uses_cpu_neighbors_for_cuda_orb(self):
+        calculator = MagicMock()
+        calculator.adapter.from_ase_atoms.return_value = SimpleNamespace(
+            to=MagicMock(return_value="cuda-batch")
+        )
+        calculator.device = "cuda:0"
+        calculator.model.predict.return_value = "prediction"
+        atoms = object()
+
+        with patch("warp.get_devices", return_value=["cpu"]):
+            with patch("ase.calculators.calculator.Calculator.calculate") as calculate:
+                result = _use_cpu_orb_neighbors_when_needed(calculator, "cuda:0")
+                result.calculate(atoms)
+
+        self.assertIs(result, calculator)
+        calculate.assert_called_once_with(calculator, atoms)
+        calculator.adapter.from_ase_atoms.assert_called_once_with(
+            atoms=atoms,
+            max_num_neighbors=calculator.max_num_neighbors,
+            edge_method=calculator.edge_method,
+            half_supercell=calculator.half_supercell,
+            device="cpu",
+        )
+        calculator.adapter.from_ase_atoms.return_value.to.assert_called_once_with("cuda:0")
+        calculator.model.predict.assert_called_once_with("cuda-batch")
+        calculator._update_results.assert_called_once_with("prediction")
+
+    def test_cuda_warp_keeps_orb_calculator_unmodified(self):
+        calculator = MagicMock()
+        original_calculate = calculator.calculate
+        with patch("warp.get_devices", return_value=["cuda:0"]):
+            result = _use_cpu_orb_neighbors_when_needed(calculator, "cuda:0")
+        self.assertIs(result, calculator)
+        self.assertIs(calculator.calculate, original_calculate)
+
 
 
 def _cached_hull_parquet(hull_type: str = "orb_conserv_inf"):
