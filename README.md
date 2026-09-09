@@ -34,7 +34,7 @@ Crystal symmetry plays a fundamental role in determining its physical, chemical,
 2. Run `uv venv --python 3.12`
 3. Install the dependencies, including torch. There are several options:
   - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
-  - Configure `uv.toml` with your desired indices, see `scripts/platforms/zeus/uv.toml` and `uv.toml.cpu`
+  - Configure `uv.toml` with your desired indices, see `scripts/platforms/zeus/uv.toml` and `scripts/platforms/cpu/uv.toml`
 4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
 ## Running a pilot model
 To verify that the installation is working, run a pilot model. Next token prediction:

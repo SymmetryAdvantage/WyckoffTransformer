@@ -100,7 +100,8 @@ and do not delete the ignore entry.
 
 The practical consequence: on zeus the lock is **local state**. It resolves
 against whichever `uv.toml` is active. If you switch `uv.toml` (e.g. to
-`uv.toml.cpu`), the existing lock is meaningless and must be regenerated.
+`scripts/platforms/cpu/uv.toml`), the existing lock is meaningless and must be
+regenerated.
 
 ---
 
@@ -272,7 +273,7 @@ come prebuilt from the local index; it would bite if `uv.toml` ever pointed at
 an index without them.
 
 The copy-then-sync shape of `env_init.sh` is the same one CI uses, which does
-`cp uv.toml.cpu uv.toml` before `uv sync --extra dev --extra
+`cp scripts/platforms/cpu/uv.toml uv.toml` before `uv sync --extra dev --extra
 research --extra relax` (`.github/workflows/pytest.yml`). Per-host `uv.toml`
 plus command-line extras is the established pattern in this repository, not a
 zeus invention.
