@@ -242,6 +242,18 @@ class TestMainSkipGenerate(unittest.TestCase):
         relax.assert_not_called()
         score.assert_called_once()
 
+    def test_a_stage_subset_without_score_exits_cleanly(self):
+        """A screen-only arm writes no funnel; that is not a failure."""
+        with patch.object(pw.protocol_cli, "stage_screen") as screen, \
+             patch.object(pw, "upload") as upload:
+            sys.argv = [
+                "wyformer-protocol-wandb", "run7", "--output-dir", str(self.out),
+                "--skip-generate", "--stages", "screen", "--no-upload",
+            ]
+            pw.main()
+        screen.assert_called_once()
+        upload.assert_not_called()
+
     def test_from_artifact_downloads_then_scores(self):
         with patch.object(pw, "download_protocol_artifact") as download, \
              patch.object(pw.protocol_cli, "stage_score", side_effect=self._write_funnel) as score, \
@@ -263,6 +275,43 @@ class TestMainSkipGenerate(unittest.TestCase):
         ]
         with self.assertRaises(FileNotFoundError):
             pw.main()
+
+    def test_all_workers_fail_reports_computed_metrics_then_raises(self):
+        def _screen_and_fail_relax(stage, stage_args):
+            if stage == "relax":
+                raise RuntimeError("All 5 relaxation worker(s) failed: BrokenProcessPool")
+
+        from wyckoff_transformer.evaluation.protocol import GeneScreen
+
+        screen = GeneScreen(
+            n_sampled=10, valid=[0, 1], invalid=[], counts={0: 6, 1: 4}, novel=[0], known=[1]
+        )
+        pw.protocol_cli.write_screen(screen, self.out / pw.protocol_cli.SCREEN_FILE)
+
+        with patch.object(pw.protocol_cli, "run_stage", side_effect=_screen_and_fail_relax), \
+             patch.object(pw, "upload") as mock_upload:
+            sys.argv = [
+                "wyformer-protocol-wandb", "run7",
+                "--output-dir", str(self.out),
+                "--skip-generate",
+            ]
+            with self.assertRaises(RuntimeError) as ctx:
+                pw.main()
+            self.assertIn("All 5 relaxation worker(s) failed", str(ctx.exception))
+
+        mock_upload.assert_called_once()
+        uploaded_funnel = mock_upload.call_args[0][2]
+        self.assertEqual(uploaded_funnel["sampled"], 10)
+        self.assertEqual(uploaded_funnel["valid_gene"], 2)
+        self.assertIsNone(uploaded_funnel["structure"])
+        self.assertIsNone(uploaded_funnel["metastable"])
+        self.assertIsNone(uploaded_funnel["metasun_per_sampled_gene"])
+
+        funnel_on_disk = json.loads(
+            (self.out / pw.protocol_cli.FUNNEL_FILE).read_text(encoding="utf-8")
+        )
+        self.assertEqual(funnel_on_disk["sampled"], 10)
+        self.assertIsNone(funnel_on_disk["metastable"])
 
 
 class TestGenerateGenes(unittest.TestCase):
@@ -435,6 +484,42 @@ class TestGenerateGenes(unittest.TestCase):
         self.assertEqual(kwargs["composition_cond"], "COMP_COND")
         self.assertEqual(kwargs["start_tensor"], "START_T")
         self.assertEqual(kwargs["allowed_element_mask"], "ELEM_MASK")
+
+    def test_temperature_reaches_the_generator(self):
+        """The sweep is only a sweep if the cohort was actually drawn at T."""
+        trainer = MagicMock()
+        trainer.condition_features = ()
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+                temperature=0.7,
+            )
+        self.assertEqual(
+            trainer.generate_structures.call_args.kwargs["temperature"], 0.7)
+
+    def test_the_manifest_records_the_temperature_and_the_raw_validity(self):
+        """The kept cohort is truncated, so the rejected fraction lives here or nowhere."""
+        trainer = MagicMock()
+        trainer.condition_features = ()
+        trainer.generate_structures.return_value = [{"i": i} for i in range(11)]
+        manifest = self.out.parent / "manifest.json"
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.4, device="cpu", output_path=self.out,
+                temperature=0.7, manifest_path=manifest,
+            )
+        recorded = json.loads(manifest.read_text())
+        self.assertEqual(recorded["sampling_temperature"], 0.7)
+        self.assertEqual(recorded["generation_attempted"], 14)
+        self.assertEqual(recorded["generation_formally_valid"], 11)
+        self.assertAlmostEqual(recorded["formal_gene_validity"], 11 / 14, places=4)
 
 
 if __name__ == "__main__":

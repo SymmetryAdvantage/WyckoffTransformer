@@ -2084,7 +2084,9 @@ class WyckoffTrainer():
             allowed_element_set: Controls the pool of allowed elements. "all" allows every element in
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
                 defines a custom pool. Only used when element-constrained generation is active.
-            temperature: Softmax temperature for sampling.
+            temperature: Softmax temperature for sampling, applied to every generated
+                cascade field. It does not touch the start token: the space group is
+                drawn from the saved empirical distribution, not from the model.
             cond: Optional tensor of shape [n_structures, len(condition_features)] carrying
                 the scalar conditioning features in their configured order, in physical
                 units (any condition_transform is applied here, not by the caller).
@@ -2186,9 +2188,10 @@ class WyckoffTrainer():
             )
         elif compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
-                start_tensor, compute_validity=True, cond=cond)
+                start_tensor, temperature=temperature, compute_validity=True, cond=cond)
         else:
-            generated_tensors = generator.generate_tensors(start_tensor, compute_validity=False, cond=cond)
+            generated_tensors = generator.generate_tensors(
+                start_tensor, temperature=temperature, compute_validity=False, cond=cond)
 
         # Non-target fields are filled in by their engineers (harmonic_site_symmetries,
         # site_symmetry_ops_id, ...). They are inputs to the model, not part of the generated

@@ -156,12 +156,24 @@ def generate_genes(
     condition: Optional[list] = None,
     condition_value: Optional[float] = None,
     system_prior: Optional[Path] = None,
+    temperature: float = 1.0,
+    manifest_path: Optional[Path] = None,
 ) -> int:
     """Generate a gene cohort from the run's checkpoint and write it to disk.
 
     Mirrors ``wyformer-generate`` with no element constraints: start tokens are
     sampled from the run's saved space-group distribution, and the formally
     valid genes are truncated to *n_genes*.
+
+    *temperature* rescales every generated cascade field's logits; the start
+    token is drawn from the run's saved space-group distribution regardless, so
+    the space-group marginal is the same at every temperature.
+
+    *manifest_path* receives what only this step knows: the temperature the
+    cohort was drawn at, and how much of the raw draw was formally valid.  The
+    kept cohort is truncated to *n_genes*, so the rejected fraction is
+    unrecoverable from the gene file afterwards -- and it moves with the
+    temperature, which is exactly what a sweep needs to be able to see.
 
     A conditional run uses the targets passed via *condition*
     (``["energy_above_hull=0"]``) or *condition_value*. Any unspecified
@@ -252,7 +264,8 @@ def generate_genes(
             len(elements_tokeniser), stop_token=elements_tokeniser.stop_token, device=device
         )
 
-    logger.info("Generating %d genes (%d attempted) from run %s", n_genes, attempted, run_id)
+    logger.info("Generating %d genes (%d attempted) from run %s at T=%g",
+                n_genes, attempted, run_id, temperature)
     generated = trainer.generate_structures(
         n_structures=attempted,
         calibrate=False,
@@ -260,12 +273,22 @@ def generate_genes(
         composition_cond=composition_cond,
         start_tensor=start_tensor,
         allowed_element_mask=element_mask,
+        temperature=temperature,
     )
     if len(generated) < n_genes:
         raise ValueError(
             f"Only {len(generated)} of {attempted} generated genes are formally "
             f"valid; need {n_genes}. Raise --oversample."
         )
+    if manifest_path is not None:
+        from wyckoff_transformer.cli.protocol import update_manifest  # noqa: PLC0415
+
+        update_manifest(manifest_path, {
+            "sampling_temperature": temperature,
+            "generation_attempted": attempted,
+            "generation_formally_valid": len(generated),
+            "formal_gene_validity": round(len(generated) / attempted, 4),
+        })
     generated = generated[:n_genes]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(output_path, "wt", encoding="utf-8") as handle:
@@ -475,6 +498,10 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--system-prior", type=Path, default=None,
                      help="Path to a system_prior.npz. For chemical_system_conditioning models, "
                           "defaults to cache/<dataset>/system_prior.npz.")
+    gen.add_argument("--temperature", type=float, default=1.0,
+                     help="Softmax temperature for every generated cascade field. Below 1 "
+                          "sharpens the sampler, above 1 flattens it. Recorded in "
+                          "manifest.json as sampling_temperature.")
 
     pyxtal = parser.add_argument_group("PyXtal generation")
     pyxtal.add_argument("--pyxtal-cores", type=int, default=None,
@@ -651,11 +678,41 @@ def main() -> None:
             condition=args.condition,
             condition_value=args.condition_value,
             system_prior=args.system_prior,
+            temperature=args.temperature,
+            manifest_path=args.output_dir / protocol_cli.MANIFEST_FILE,
         )
 
     stage_args = build_stage_args(args, gene_file)
-    for stage in stages:
-        protocol_cli.run_stage(stage, stage_args)
+    stage_exc = None
+    try:
+        for stage in stages:
+            protocol_cli.run_stage(stage, stage_args)
+    except Exception as exc:
+        stage_exc = exc
+
+    if stage_exc is not None:
+        screen_path = args.output_dir / protocol_cli.SCREEN_FILE
+        if screen_path.is_file():
+            import pandas as pd  # noqa: PLC0415
+
+            try:
+                screen = protocol_cli.read_screen(screen_path)
+                partial_funnel = protocol_cli.funnel(screen, pd.DataFrame())
+                funnel_path = args.output_dir / protocol_cli.FUNNEL_FILE
+                funnel_path.write_text(
+                    json.dumps(partial_funnel, indent=2) + "\n", encoding="utf-8"
+                )
+                if args.upload:
+                    try:
+                        upload(args, gene_file, partial_funnel)
+                    except Exception as upload_exc:  # noqa: BLE001
+                        logger.warning("Failed to upload partial metrics to W&B: %s", upload_exc)
+                else:
+                    logger.info("--no-upload: skipping W&B write-back")
+                print(json.dumps(flatten_funnel(partial_funnel), indent=2))
+            except Exception as report_exc:  # noqa: BLE001
+                logger.warning("Failed to report partial metrics: %s", report_exc)
+        raise stage_exc
 
     # Only the score stage writes funnel.json, and --stages need not include it:
     # a run that is only drawing or only pre-screening -- because the next half

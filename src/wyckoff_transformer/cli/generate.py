@@ -281,6 +281,10 @@ def main():
         "generated structures and quality metrics.")
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"), help="The device to use.")
     parser.add_argument("--calibrate", action="store_true", help="Calibrate the generator.")
+    parser.add_argument("--temperature", type=float, default=1.0,
+                        help="Softmax temperature for every generated cascade field. "
+                             "Below 1 sharpens, above 1 flattens. The start token is "
+                             "drawn from the saved space-group distribution either way.")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode.")
     parser.add_argument("--required-elements", "--r", type=str,
                         help="Required elements for constrained generation (e.g., 'Li-S'). "
@@ -499,6 +503,7 @@ def main():
     generated_wp = trainer.generate_structures(
         n_structures=n_structures,
         calibrate=args.calibrate,
+        temperature=args.temperature,
         start_tensor=start_tensor_override,
         cond=cond,
         composition_cond=system_cond,

@@ -778,6 +778,18 @@ class TestRowLog(unittest.TestCase):
         self.assertEqual(resumed.done, {(3, 0)})
         resumed.close()
 
+    def test_resuming_retries_tasks_that_failed_due_to_worker_crash(self):
+        log = RowLog(self.path, RELAXATION_COLUMNS, resume=False)
+        log.write({"index": 1, "trial": 0, "status": "ok"})
+        log.write({"index": 2, "trial": 0, "status": "failed", "error": "BrokenProcessPool: worker crashed"})
+        log.write({"index": 3, "trial": 0, "status": "failed", "error": "ValueError: clash"})
+        log.close()
+
+        resumed = RowLog(self.path, RELAXATION_COLUMNS, resume=True)
+        # index 1 succeeded, index 3 failed chemically (so done), index 2 was a worker crash (so retried)
+        self.assertEqual(resumed.done, {(1, 0), (3, 0)})
+        resumed.close()
+
 
 class TestAggregateStructures(unittest.TestCase):
     """The reduction from per-trial rows to the one structure a gene kept."""
@@ -1258,6 +1270,167 @@ class TestFunnel(unittest.TestCase):
         self.assertEqual(report["structure"], 1)
         self.assertIsNone(report["valid_structure"])
         self.assertIsNone(report["metasun_per_sampled_gene"])
+
+
+class TestStageWorkerFailure(unittest.TestCase):
+    def setUp(self):
+        import json
+        self._tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_stage_relax_raises_when_all_workers_fail(self):
+        from concurrent.futures.process import BrokenProcessPool
+        from ase.build import bulk
+        from ase.io import write as ase_write
+        from wyckoff_transformer.cli.protocol import stage_relax, PYXTAL_FILE, PYXTAL_TRIALS_FILE
+
+        atoms = bulk("Cu", "fcc", a=3.6)
+        atoms.info = {"gene": 0, "trial": 0}
+        ase_write(str(self.out / PYXTAL_FILE), atoms, format="extxyz")
+        pd.DataFrame([{"index": 0, "trial": 0, "status": "ok", "dof_positional": 0, "n_trials": 1, "seconds": 0.1}], columns=list(PYXTAL_COLUMNS)).to_csv(self.out / PYXTAL_TRIALS_FILE, index=False)
+
+        broken_future = MagicMock()
+        broken_future.result.side_effect = BrokenProcessPool("Process died")
+
+        mock_pool = MagicMock()
+        mock_pool.__enter__.return_value = mock_pool
+        mock_pool.submit.return_value = broken_future
+
+        args = SimpleNamespace(
+            output_dir=self.out,
+            mlip="orb_conserv_inf",
+            cores=1,
+            devices=None,
+            workers_per_device=1,
+            limit=None,
+            resume=False,
+            fmax=0.05,
+            release_symmetry=True,
+            rattle=True,
+            relax_timeout=10.0,
+            debug=False,
+        )
+
+        with patch("wyckoff_transformer.cli.protocol.ProcessPoolExecutor", return_value=mock_pool), \
+             patch("wyckoff_transformer.cli.protocol.as_completed", return_value=[broken_future]), \
+             patch("wyckoff_transformer.cli.protocol._shutdown_relax_pool"):
+            with self.assertRaises(RuntimeError) as ctx:
+                stage_relax(args)
+            self.assertIn("relaxation worker(s) failed", str(ctx.exception))
+
+    def test_stage_relax_hung_worker_times_out_and_restarts_pool(self):
+        from concurrent.futures import Future
+        from ase.build import bulk
+        from ase.io import write as ase_write
+        from wyckoff_transformer.cli.protocol import (
+            stage_relax, PYXTAL_FILE, PYXTAL_TRIALS_FILE, RELAXATIONS_FILE, read_rows, RELAXATION_COLUMNS,
+        )
+
+        atoms = bulk("Cu", "fcc", a=3.6)
+        atoms.info = {"gene": 0, "trial": 0}
+        ase_write(str(self.out / PYXTAL_FILE), atoms, format="extxyz")
+        pd.DataFrame([{"index": 0, "trial": 0, "status": "ok", "dof_positional": 0, "n_trials": 1, "seconds": 0.1}], columns=list(PYXTAL_COLUMNS)).to_csv(self.out / PYXTAL_TRIALS_FILE, index=False)
+
+        hung_future = Future()
+        mock_pool = MagicMock()
+        mock_pool.submit.return_value = hung_future
+
+        args = SimpleNamespace(
+            output_dir=self.out,
+            mlip="orb_conserv_inf",
+            cores=1,
+            devices=None,
+            workers_per_device=1,
+            limit=None,
+            resume=False,
+            fmax=0.05,
+            release_symmetry=True,
+            rattle=True,
+            relax_timeout=0.02,
+            debug=False,
+        )
+
+        shutdown_calls = []
+
+        def fake_shutdown(pool, grace=120.0):
+            shutdown_calls.append(pool)
+
+        with patch("wyckoff_transformer.cli.protocol.ProcessPoolExecutor", return_value=mock_pool), \
+             patch("wyckoff_transformer.cli.protocol._shutdown_relax_pool", side_effect=fake_shutdown):
+            stage_relax(args)
+
+        self.assertTrue(len(shutdown_calls) >= 1)
+        relax_df = read_rows(self.out / RELAXATIONS_FILE, RELAXATION_COLUMNS)
+        self.assertEqual(len(relax_df), 1)
+        self.assertEqual(relax_df.iloc[0]["status"], "timeout")
+        self.assertIn("worker hung", str(relax_df.iloc[0]["error"]))
+
+    def test_stage_generate_raises_when_all_workers_fail(self):
+        import json
+        from concurrent.futures.process import BrokenProcessPool
+        from wyckoff_transformer.cli.protocol import stage_generate, SCREEN_FILE
+
+        genes_file = self.out / "genes.json"
+        genes_file.write_text(
+            json.dumps([{"group": 225, "species": ["Cu"], "numIons": [4], "sites": [["4a"]]}]),
+            encoding="utf-8",
+        )
+        screen = GeneScreen(n_sampled=1, valid=[0], invalid=[], counts={0: 1}, novel=[0], known=[])
+        write_screen(screen, self.out / SCREEN_FILE)
+
+        broken_future = MagicMock()
+        broken_future.result.side_effect = BrokenProcessPool("Process died")
+
+        mock_pool = MagicMock()
+        mock_pool.__enter__.return_value = mock_pool
+        mock_pool.submit.return_value = broken_future
+
+        args = SimpleNamespace(
+            input=genes_file,
+            output_dir=self.out,
+            pyxtal_cores=1,
+            pyxtal_timeout=10.0,
+            pyxtal_tol_factor=1.3,
+            n_trials="1",
+            limit=None,
+            resume=False,
+            debug=False,
+        )
+
+        with patch("wyckoff_transformer.cli.protocol.ProcessPoolExecutor", return_value=mock_pool), \
+             patch("wyckoff_transformer.cli.protocol.as_completed", return_value=[broken_future]):
+            with self.assertRaises(RuntimeError) as ctx:
+                stage_generate(args)
+            self.assertIn("PyXtal generation worker(s) failed", str(ctx.exception))
+
+    def test_stage_score_refuses_when_all_relaxations_failed_with_worker_errors(self):
+        from wyckoff_transformer.cli.protocol import (
+            stage_score,
+            SCREEN_FILE,
+            STRUCTURES_FILE,
+            RELAXATIONS_FILE,
+            RELAXATION_COLUMNS,
+        )
+
+        screen = GeneScreen(n_sampled=1, valid=[0], invalid=[], counts={0: 1}, novel=[0], known=[])
+        write_screen(screen, self.out / SCREEN_FILE)
+        pd.DataFrame([{"index": 0, "has_structure": False, "error": "failed"}]).to_csv(
+            self.out / STRUCTURES_FILE
+        )
+        pd.DataFrame(
+            [{"index": 0, "trial": 0, "status": "failed", "error": "BrokenProcessPool: worker died"}],
+            columns=list(RELAXATION_COLUMNS),
+        ).to_csv(self.out / RELAXATIONS_FILE, index=False)
+
+        args = SimpleNamespace(
+            input=self.out / "genes.json",
+            output_dir=self.out,
+            mlip="orb_conserv_inf",
+        )
+        with self.assertRaises(RuntimeError) as ctx:
+            stage_score(args)
+        self.assertIn("Cannot score: all 1 relaxation trial(s) failed with worker errors", str(ctx.exception))
 
 
 if __name__ == "__main__":

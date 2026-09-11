@@ -46,6 +46,13 @@ if [[ ! -d "$WYFORMER_VENV" && -z "${WYFORMER_BUILDING_VENV:-}" ]]; then
     exit 1
 fi
 
+# After a host reboot, /dev/nvidia-uvm is not created until nvidia-modprobe runs.
+# Without it, NVIDIA container toolkit cannot pass UVM to the container and
+# CUDA initialization in PyTorch fails with "CUDA unknown error".
+if [[ ! -e /dev/nvidia-uvm ]] && command -v nvidia-modprobe >/dev/null 2>&1; then
+    nvidia-modprobe -c 0 -u || true
+fi
+
 # The image's entrypoint prepends /opt/venv312/bin to PATH *after* anything we
 # set, so a bare `python` is the image's interpreter, which cannot see the
 # project venv's packages -- and since torch does live in the image, that fails

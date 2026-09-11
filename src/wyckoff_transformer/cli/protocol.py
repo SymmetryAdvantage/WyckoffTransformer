@@ -55,7 +55,9 @@ import os
 import signal
 import time
 import warnings
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Optional
 
@@ -329,7 +331,7 @@ class RowLog:
     #: skipping it silently turns an infrastructure failure into a permanent
     #: hole in the cohort -- 1034 of 1800 trials in one run here, which read as
     #: a collapsed reconstruction rate rather than as a crash.
-    RETRYABLE_ERRORS = ("BrokenProcessPool", "A process in the process pool")
+    RETRYABLE_ERRORS = ("BrokenProcessPool", "A process in the process pool", "worker failed")
 
     def __init__(
         self, path: Path, columns, resume: bool, retry_failed: bool = False
@@ -826,6 +828,8 @@ def stage_generate(args) -> None:
 
     ctx = multiprocessing.get_context("spawn")
     n_ok = 0
+    worker_failures = 0
+    first_worker_exc = None
     try:
         with ProcessPoolExecutor(
             max_workers=cores,
@@ -851,6 +855,9 @@ def stage_generate(args) -> None:
                     row, atoms = future.result()
                 except Exception as exc:  # noqa: BLE001 - a worker died
                     logger.warning("Gene %d trial %d: worker failed (%s)", index, trial, exc)
+                    worker_failures += 1
+                    if first_worker_exc is None:
+                        first_worker_exc = exc
                     row, atoms = (
                         {"index": index, "trial": trial, "status": "failed",
                          "error": f"{type(exc).__name__}: {exc}", "seconds": None},
@@ -872,6 +879,7 @@ def stage_generate(args) -> None:
         log.close()
 
     frame = log.frame()
+    pyxtal_ok = int((frame["status"] == "ok").sum())
     _update_manifest(args.output_dir / MANIFEST_FILE, {
         "input": str(args.input),
         "trial_schedule": args.n_trials,
@@ -884,14 +892,18 @@ def stage_generate(args) -> None:
         # they took: a run's structures cannot be compared with another's
         # without it, and nothing else in the output says which floor was used.
         "pyxtal_tol_factor": args.pyxtal_tol_factor,
-        "pyxtal_ok": int((frame["status"] == "ok").sum()),
+        "pyxtal_ok": pyxtal_ok,
         "pyxtal_failed": int((frame["status"] == "failed").sum()),
         "pyxtal_timed_out": int((frame["status"] == "timeout").sum()),
     })
     print(
-        f"{n_ok} new draws, {int((frame['status'] == 'ok').sum())}/{len(frame)} "
+        f"{n_ok} new draws, {pyxtal_ok}/{len(frame)} "
         f"trials with a structure -> {structures_path}"
     )
+    if futures and (worker_failures == len(futures) or (pyxtal_ok == 0 and worker_failures > 0)):
+        raise RuntimeError(
+            f"All {cores} PyXtal generation worker(s) failed ({worker_failures}/{len(futures)} tasks failed with worker errors): {first_worker_exc}"
+        ) from first_worker_exc
 
 
 # --------------------------------------------------------------------------- #
@@ -1761,6 +1773,56 @@ def _read_draws(
     return draws
 
 
+def _shutdown_relax_pool(pool, grace: float = 120.0) -> None:
+    """Stop the workers without waiting on one that will never stop.
+
+    By the time this runs every future has resolved and every row is on disk,
+    so a worker still alive has nothing left to do -- but
+    ``ProcessPoolExecutor.__exit__`` joins them unconditionally, and a worker
+    that wedged inside its initialiser never returns.  That has happened here:
+    a worker whose CUDA context never finished coming up spun at 100% CPU for
+    the whole run, took no trial, and then deadlocked the stage *after* all
+    2369 relaxations were complete -- an eight-hour run with nothing to show
+    for it, because the score stage never started.
+
+    So: ask nicely, wait *grace* seconds, then terminate and move on.
+    """
+    pool.shutdown(wait=False, cancel_futures=True)
+    deadline = time.time() + grace
+    # `_processes` is None until the pool spawns its first worker, which a
+    # fully resumed stage never does.
+    for process in list((getattr(pool, "_processes", None) or {}).values()):
+        process.join(max(0.0, deadline - time.time()))
+        if not process.is_alive():
+            continue
+        logger.warning(
+            "Relaxation worker %s did not exit; terminating it", process.pid)
+        process.terminate()
+        process.join(10)
+        if process.is_alive():
+            logger.warning("Relaxation worker %s ignored SIGTERM; killing it", process.pid)
+            process.kill()
+            process.join(10)
+
+
+def _warn_about_idle_slots(relaxed: pd.DataFrame, slots: list[str]) -> None:
+    """Say so when a card that was asked for took no trials.
+
+    A worker that never finishes its initialiser costs its whole share of the
+    throughput and says nothing: the run simply takes two and a half times as
+    long as it should, which is easy to blame on the cohort.  The per-trial
+    device column is the only place it shows.
+    """
+    used = set(relaxed["device"].dropna().unique())
+    idle = [device for device in sorted(set(slots)) if device not in used]
+    if idle:
+        logger.warning(
+            "%s took no trials of %d: its worker(s) never became ready, so this "
+            "stage ran on %s alone",
+            ", ".join(idle), len(relaxed), ", ".join(sorted(used)) or "nothing",
+        )
+
+
 def stage_relax(args) -> None:
     """CrySPR on every generated draw, one pool task per trial.
 
@@ -1818,51 +1880,159 @@ def stage_relax(args) -> None:
     claimed = ctx.Value("i", 0)
 
     started = time.time()
-    try:
-        with ProcessPoolExecutor(
+    worker_failures = 0
+    first_worker_exc = None
+    total_trials = len(todo)
+    done = 0
+
+    def _make_pool() -> ProcessPoolExecutor:
+        return ProcessPoolExecutor(
             max_workers=len(slots),
             mp_context=ctx,
             initializer=_init_relax_worker,
             initargs=(claimed, slots, args.mlip, prerelax_mlip, args.debug),
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _relax_one,
-                    index,
-                    trial,
-                    atoms,
-                    str(_trial_dir(args.output_dir, index, trial)),
-                    args.fmax,
-                    args.release_symmetry,
-                    args.rattle,
-                    args.relax_timeout,
-                    getattr(args, "prerelax_fmax", 0.1),
-                    getattr(args, "prerelax_max_expansion", None),
-                ): (index, trial)
-                for index, trial, atoms in todo
-            }
-            for done, future in enumerate(as_completed(futures), start=1):
-                index, trial = futures[future]
-                try:
-                    row = future.result()
-                except Exception as exc:  # noqa: BLE001 - a worker died
-                    logger.warning("Gene %d trial %d: worker failed (%s)", index, trial, exc)
-                    row = {
-                        "index": index, "trial": trial, "status": "failed",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
+        )
+
+    pool = _make_pool()
+    todo_deque = deque(todo)
+    active_futures: dict[object, tuple[int, int, object, float]] = {}
+    max_in_flight = len(slots)
+    consecutive_pool_failures = 0
+    max_pool_restarts = max(3, len(slots))
+
+    relax_timeout = args.relax_timeout
+    if relax_timeout:
+        grace = min(0.1, relax_timeout) if relax_timeout < 1.0 else max(5.0, min(30.0, relax_timeout * 0.1))
+        timeout_limit = relax_timeout + grace
+        wait_timeout = min(2.0, max(0.01, timeout_limit / 2.0))
+    else:
+        timeout_limit = None
+        wait_timeout = 2.0
+
+    def _fill_active() -> None:
+        while len(active_futures) < max_in_flight and todo_deque:
+            idx, tr, at = todo_deque.popleft()
+            fut = pool.submit(
+                _relax_one,
+                idx,
+                tr,
+                at,
+                str(_trial_dir(args.output_dir, idx, tr)),
+                args.fmax,
+                args.release_symmetry,
+                args.rattle,
+                args.relax_timeout,
+                getattr(args, "prerelax_fmax", 0.1),
+                getattr(args, "prerelax_max_expansion", None),
+            )
+            active_futures[fut] = (idx, tr, at, time.time())
+
+    try:
+        _fill_active()
+        while active_futures:
+            pool_broken = False
+            timed_out_item = None
+            try:
+                for future in as_completed(list(active_futures.keys()), timeout=wait_timeout):
+                    idx, tr, at, sub_time = active_futures.pop(future)
+                    try:
+                        row = future.result()
+                    except Exception as exc:  # noqa: BLE001 - a worker died
+                        logger.warning("Gene %d trial %d: worker failed (%s)", idx, tr, exc)
+                        worker_failures += 1
+                        if first_worker_exc is None:
+                            first_worker_exc = exc
+                        row = {
+                            "index": idx, "trial": tr, "status": "failed",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                        if isinstance(exc, BrokenProcessPool):
+                            pool_broken = True
+                    else:
+                        if row.get("status") == "ok":
+                            consecutive_pool_failures = 0
+
+                    log.write(row)
+                    done += 1
+                    if done % 25 == 0 or done == total_trials:
+                        rate = (time.time() - started) / done
+                        logger.info(
+                            "Relaxed %d/%d (%.1f s/trial, %.0f min left)",
+                            done, total_trials, rate, rate * (total_trials - done) / 60,
+                        )
+
+                    if pool_broken:
+                        break
+
+                    if todo_deque and len(active_futures) < max_in_flight:
+                        n_idx, n_tr, n_at = todo_deque.popleft()
+                        n_fut = pool.submit(
+                            _relax_one,
+                            n_idx,
+                            n_tr,
+                            n_at,
+                            str(_trial_dir(args.output_dir, n_idx, n_tr)),
+                            args.fmax,
+                            args.release_symmetry,
+                            args.rattle,
+                            args.relax_timeout,
+                            getattr(args, "prerelax_fmax", 0.1),
+                            getattr(args, "prerelax_max_expansion", None),
+                        )
+                        active_futures[n_fut] = (n_idx, n_tr, n_at, time.time())
+                    break
+            except TimeoutError:
+                pass
+
+            if timeout_limit is not None and not pool_broken:
+                now = time.time()
+                for fut, (idx, tr, at, sub_time) in list(active_futures.items()):
+                    elapsed = now - sub_time
+                    if elapsed > timeout_limit:
+                        timed_out_item = (fut, idx, tr, at, elapsed)
+                        break
+
+            if timed_out_item is not None:
+                fut, idx, tr, at, elapsed = timed_out_item
+                logger.warning(
+                    "Gene %d trial %d: relaxation timed out after %.1f s (worker hung); "
+                    "terminating worker pool and restarting",
+                    idx, tr, elapsed,
+                )
+                row = {
+                    "index": idx, "trial": tr, "status": "timeout",
+                    "device": None, "n_atoms": len(at),
+                    "formula": at.get_chemical_formula(mode="metal"),
+                    "energy": None, "energy_per_atom": None, "cif": None,
+                    "error": f"exceeded {args.relax_timeout:g} s (worker hung)",
+                    "seconds": round(elapsed, 2),
+                }
                 log.write(row)
-                if done % 25 == 0 or done == len(futures):
-                    rate = (time.time() - started) / done
-                    logger.info(
-                        "Relaxed %d/%d (%.1f s/trial, %.0f min left)",
-                        done, len(futures), rate, rate * (len(futures) - done) / 60,
-                    )
+                done += 1
+                active_futures.pop(fut, None)
+                pool_broken = True
+
+            if pool_broken:
+                for remaining_fut, (r_idx, r_tr, r_at, _) in list(active_futures.items()):
+                    todo_deque.appendleft((r_idx, r_tr, r_at))
+                active_futures.clear()
+
+                _shutdown_relax_pool(pool, grace=10.0)
+                consecutive_pool_failures += 1
+                if consecutive_pool_failures >= max_pool_restarts or not todo_deque:
+                    break
+                logger.info("Restarting relaxation worker pool")
+                pool = _make_pool()
+                _fill_active()
     finally:
         log.close()
+        _shutdown_relax_pool(pool)
 
     frame = aggregate_structures(args.output_dir)
     relaxed = log.frame()
+    _warn_about_idle_slots(relaxed, slots)
+    trials_relaxed = int((relaxed["status"] == "ok").sum())
+    trials_failed = int((relaxed["status"] != "ok").sum())
     _update_manifest(args.output_dir / MANIFEST_FILE, {
         "mlip": args.mlip,
         "hull_type": spec.hull_type,
@@ -1886,8 +2056,8 @@ def stage_relax(args) -> None:
         # twice has two workers on it, which is how cards of different size
         # get different shares.
         "device_slots": slots,
-        "trials_relaxed": int((relaxed["status"] == "ok").sum()),
-        "trials_failed": int((relaxed["status"] != "ok").sum()),
+        "trials_relaxed": trials_relaxed,
+        "trials_failed": trials_failed,
         # What the trials actually ran on, not just what was asked for. A run
         # once recorded three GPUs while one of them never took a single trial
         # and a worker fell back to the CPU; only the per-trial rows said so.
@@ -1902,6 +2072,10 @@ def stage_relax(args) -> None:
         f"{int(frame['has_structure'].sum())}/{len(frame)} genes produced a "
         f"structure -> {args.output_dir / STRUCTURES_FILE}"
     )
+    if total_trials and (worker_failures == total_trials or (trials_relaxed == 0 and worker_failures > 0)):
+        raise RuntimeError(
+            f"All {len(slots)} relaxation worker(s) failed ({worker_failures}/{total_trials} tasks failed with worker errors): {first_worker_exc}"
+        ) from first_worker_exc
 
 
 def aggregate_structures(output_dir: Path) -> pd.DataFrame:
@@ -1998,7 +2172,16 @@ def aggregate_structures(output_dir: Path) -> pd.DataFrame:
             row["error"] = _failure_reason(group, relaxed)
         rows.append(row)
 
-    frame = pd.DataFrame(rows).set_index("index").sort_index()
+    if rows:
+        frame = pd.DataFrame(rows).set_index("index").sort_index()
+    else:
+        frame = pd.DataFrame(
+            columns=[
+                "index", "dof_positional", "n_trials", "n_drawn", "n_relaxed",
+                "pyxtal_seconds", "relax_seconds", "has_structure", "formula",
+                "energy", "energy_per_atom", "n_atoms", "best_trial", "device", "error",
+            ]
+        ).set_index("index")
     frame.to_csv(output_dir / STRUCTURES_FILE)
     return frame
 
@@ -2010,8 +2193,13 @@ def _failure_reason(draws: pd.DataFrame, relaxations: pd.DataFrame) -> str:
         if "ok" in set(draws["status"]):
             return "generated but never relaxed"
         return f"no PyXtal structure ({', '.join(statuses) or 'unknown'})"
-    errors = [str(e) for e in relaxations["error"] if isinstance(e, str) and e]
-    return f"all {len(relaxations)} relaxation(s) failed: {errors[0] if errors else 'unknown'}"
+    latest = (
+        relaxations.drop_duplicates(subset=["trial"], keep="last")
+        if "trial" in relaxations.columns
+        else relaxations
+    )
+    errors = [str(e) for e in latest["error"] if isinstance(e, str) and e]
+    return f"all {len(latest)} relaxation(s) failed: {errors[0] if errors else 'unknown'}"
 
 
 # --------------------------------------------------------------------------- #
@@ -2048,6 +2236,18 @@ def stage_score(args) -> None:
     phase = _PhaseTimer()
     screen = read_screen(args.output_dir / SCREEN_FILE)
     frame = pd.read_csv(args.output_dir / STRUCTURES_FILE, index_col="index")
+    if frame["has_structure"].sum() == 0:
+        relax_path = args.output_dir / RELAXATIONS_FILE
+        if relax_path.is_file():
+            relax_df = read_rows(relax_path, RELAXATION_COLUMNS)
+            if len(relax_df) > 0 and (relax_df["status"] == "ok").sum() == 0:
+                worker_errors = relax_df["error"].fillna("").str.startswith(
+                    ("BrokenProcessPool", "worker failed")
+                )
+                if worker_errors.all():
+                    raise RuntimeError(
+                        f"Cannot score: all {len(relax_df)} relaxation trial(s) failed with worker errors"
+                    )
     cif_dir = args.output_dir / CIF_DIR
 
     genes = load_genes(args.input)
@@ -2299,6 +2499,11 @@ def _update_manifest(manifest_path: Path, entries: dict) -> None:
             logger.warning("Unreadable manifest at %s (%s)", manifest_path, exc)
     manifest.update(entries)
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
+
+#: Public alias. ``wyformer-protocol-wandb`` records the sampling temperature it
+#: generated the cohort at, which no stage of this module can know.
+update_manifest = _update_manifest
 
 
 def build_parser() -> argparse.ArgumentParser:

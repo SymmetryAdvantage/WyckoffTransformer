@@ -27,6 +27,7 @@ SCRIPTS = (
     "scripts/run_nep89_protocol_variants.py",
     "scripts/run_pyxtal_tolerance_sweep.py",
     "scripts/measure_prescreen_selector.py",
+    "scripts/analyse_temperature_sweep.py",
 )
 
 

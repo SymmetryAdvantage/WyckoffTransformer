@@ -136,6 +136,13 @@ Drop `--condition` for an unconditional run.
   `max_force` default to 0 if not specified via CLI. Other features must be
   passed with `--condition NAME=VALUE` (or `--condition-value` for a
   single-channel model). An unconditional run takes neither.
+- **`--temperature` re-draws the cohort, nothing else.** It rescales the logits
+  of every generated cascade field; the start token still comes from the run's
+  saved space-group distribution, so the space-group marginal is held fixed.
+  The value, and how much of the raw draw was formally valid at it, go into
+  `manifest.json` as `sampling_temperature` / `formal_gene_validity`. What a
+  sweep over it costs and buys is in [the temperature
+  sweep](temperature_sweep.md).
 - **The run's model files must be reachable.** `runs/<run-id>/` is used if it
   already holds `best_model_params.pt`, `wyckoff_processor.json` and
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.
@@ -303,4 +310,5 @@ minutes.
 - [Improving de novo quality](archive/de_novo_quality_plan.md) — what to change in the model
 - [CrySPR trial and stage spread](cryspr_trial_and_stage_spread.md) — where the trial and stage numbers come from
 - [CrySPR reconstruction report](cryspr_reconstruction_report.md) — the rattle stage, the DoF breakdown, and the 79% reconstruction ceiling
+- [Sampling temperature](temperature_sweep.md) — what the readouts do as the sampler is sharpened or flattened
 - [Every `e_hull` in this repository](e_hull_definitions.md) — the six definitions, which agree, and which must never be mixed

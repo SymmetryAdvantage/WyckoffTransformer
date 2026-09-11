@@ -124,6 +124,7 @@ run wyformer-protocol-wandb <run-id> \
   [ORB on GPU](#orb-on-gpu)), so much of a trial is not GPU work at all: an
   idle 750 Ti relaxed the same 28-atom cell in 25-39 s against 22-40 s on a
   two-worker K20c, and took 27% of the trials as the fifth worker.
+- **Check that every card you name actually works.** A card whose CUDA context hangs takes no trials and says nothing: on 2026-09-10 GPU 1 did this and a 1000-gene arm ran on three workers instead of five, at 8 trials/min rather than 17, for 5.3 hours. `stage_relax` now warns when a named device takes no trials, and `manifest.json` records `trials_by_device` -- but the cheap check is the ORB health check in [troubleshooting.md](troubleshooting.md), once per card, before a long run.
 - **Check `nvidia-smi` first** and do not share a card with a training job. A
   second protocol process on the same card roughly halves throughput: five
   workers over three cards ran at 17 trials/min where four workers sharing
