@@ -305,6 +305,86 @@ site-count cap, so it keeps the 4,581 structures with more than 61 Wyckoff sites
 padded sequence width goes to 361 — filter them out before caching, or use the reusing
 script's `--max-sites`.
 
+## `lemat_bulk_fmax1_stress`: recovered MP forces, and residual stress
+
+Built 2026-09-10 by the same `scripts/build_lemat_bulk_fmax.py`, now defaulting to
+`--recovered-forces`. `lemat_bulk_fmax1` is left as it was; reproduce it with
+`--recovered-forces none`.
+
+**The 30,679 rows without forces were never missing at the source.** LeMat read the MP
+task document's top-level `output.forces` and `output.stress`, which the 2013–2017 legacy
+tasks leave empty; the last ionic step of the same calculation keeps both.
+`scripts/recover_mp_forces.py` reads them from MP's public S3 task documents for 30,676
+rows, matched to LeMat's geometry within 1e-5 Å and its total energy within 1e-5 eV, and
+reproduces the archived arrays bit for bit on 800 rows that were never missing. The
+imputation they replace was off by a factor of two: median `max_force` 0.086 recovered
+against 0.042 imputed.
+
+| | `lemat_bulk_fmax1` | `lemat_bulk_fmax1_stress` |
+| --- | ---: | ---: |
+| train / val / test | 5,133,142 / 99,985 / 99,987 | 5,132,786 / 99,985 / 99,987 |
+| `max_force` imputed | 30,676 | 3 |
+| stress labels | — | `stress_hydrostatic`, `stress_von_mises`, `stress_missing` |
+
+The 356 rows that leave train are recovered rows above the 1 eV/Å cut, all previously
+imputed. Otherwise the two agree exactly on `energy_above_hull` and
+`formation_energy_per_atom`; `delta_e_polymorph` moves on 160 rows, by at most 8 meV/atom,
+where a dropped row had been its formula's minimum. Val and test are unchanged.
+
+**Stress labels.** kBar, in the archive's VASP sign (positive: compressed, wants to
+expand): the hydrostatic part `tr(σ)/3` and the von Mises equivalent of the deviator.
+Stress rather than force is what sets the energy an unfinished relaxation leaves behind
+(a gradient-matched ORB estimate over 1,004 rows ranks it 0.81 against 0.31 for force), and
+it is informative on the symmetry-locked rows whose force is identically zero. It is not a
+clean convergence label, though:
+
+| hydrostatic stress, kBar | Alexandria | MP | OQMD |
+| --- | ---: | ---: | ---: |
+| median | +1.4 | +0.02 | +7.5 |
+| p99 | +12 | +14 | +75 |
+| positive, of rows with \|p\| > 5 | 89% | 50% | 97% |
+
+MP's residual stress comes from the relaxation's own last step and is symmetric in sign,
+which is what under-convergence looks like. OQMD's is one-signed, uncorrelated with the
+residual force (Spearman 0.09), and scales with pseudopotential hardness — median +62 kBar
+in compounds with F, +22 to +24 with O or N, +3 to +4 with K, Cs, I or Br — which is the
+signature of a relaxation that ended at the minimum of a stale plane-wave basis, or of
+different settings, than those of the calculation that reports the energy. For Alexandria
+this is established directly rather than inferred: LeMat's energy, forces and stress are
+Alexandria's database entry, a separate calculation at the relaxation's final geometry that
+matches no step of the published relaxation path (0 of 500 sampled rows). Its hydrostatic
+stress is compressive in 84–99% of rows, depending on chemistry, while the path's own final
+restart at the same geometry sits at zero.
+
+That makes the stress label provenance-laden — conditioning on it partly conditions on the
+source database — but not spurious. Stress and energy come from the same calculation, so the
+stress is the gradient of the labelled energy, and the energy a relaxation under those
+settings would still release is real. The one discrepancy no VASP stress shows is the
+intrinsic Pulay term (the reported stress is the fixed-plane-wave-count derivative, the
+energy lives at fixed cutoff), which is small at 520 eV and makes a compressive offset
+slightly *larger* than reported.
+
+Per-row forces and stress invariants for the whole archive are cached in
+`data/lemat-bulk/convergence_labels.parquet` (`convergence_source`: `archive`,
+`mp_task_doc`, `missing`).
+
+```
+python scripts/recover_mp_forces.py all --run full
+python scripts/build_lemat_bulk_fmax.py --name lemat_bulk_fmax1_stress
+python scripts/cache_a_dataset_reusing.py lemat_bulk_fmax1_stress \
+  --reuse cache/lemat_bulk_fmax1/data.pkl.gz \
+  --scalar-columns energy_above_hull delta_e_polymorph max_force max_force_missing \
+      stress_hydrostatic stress_von_mises stress_missing formation_energy_per_atom \
+  --observed-gene-minimum-target --max-sites 61 --n-jobs 8
+```
+
+No tokeniser or model config uses the stress columns yet, and on the evidence of
+[`unconverged_relaxation_energy.md`](unconverged_relaxation_energy.md) none should: the
+energy an unfinished relaxation leaves behind has a population-weighted median of
+0.08 meV/atom against a 100 meV/atom metastability threshold, so the convergence channel
+costs provenance bias and buys nothing the model can resolve. The recommendation for the
+next run on this dataset is two channels, `energy_above_hull` and `delta_e_polymorph`.
+
 ## What went wrong the first time
 
 `wjwmgjag` reached its best at epoch 3000 and then climbed, on train and validation

@@ -41,16 +41,41 @@ Three conditioning labels come out, all per structure, all in physical units:
     whose Wyckoff positions are fully determined, not structures that relaxed well.
 
 ``max_force_missing``
-    1.0 where the archive reports no forces at all, 0.0 elsewhere. 30,679 rows -- 22.1%
-    of Materials Project, and nothing from Alexandria or OQMD -- carry an empty ``forces``
-    array (and an empty ``stress_tensor``), because the MP task chosen to represent the
-    bulk material did not report them. A ``max_force <= X`` filter drops those rows for
-    any X, since NaN fails every comparison: the same accidental provenance filter as the
-    0.02 cut, one layer down, and it survived loosening the cut to 1. They are kept here,
-    with ``max_force`` imputed as the median over the rows of *their own source database*
-    that do have forces (0.0417 for MP, against 0.0034 for Alexandria) and the indicator
-    saying the value is imputed. Imputing zero instead would have filed them under the
-    symmetry-locked mode above, which is precisely what they are not known to be.
+    1.0 where no forces are known, 0.0 elsewhere. 30,679 rows -- 22.1% of Materials
+    Project, and nothing from Alexandria or OQMD -- carry an empty ``forces`` array and an
+    empty ``stress_tensor`` in the archive. They were never absent at the source: LeMat
+    read the task document's top-level ``output.forces``, which the 2013-2017 legacy tasks
+    leave empty, while the last ionic step of the same calculation keeps both.
+    ``scripts/recover_mp_forces.py`` reads them back from MP's public S3 task documents
+    for 30,676 of the rows, matched to LeMat's geometry within 1e-5 A and its energy
+    within 1e-5 eV, and reproduces the archived arrays bit for bit on 800 control rows
+    that were never missing. ``--recovered-forces`` (the default) uses them; three rows
+    stay ambiguous.
+
+    What is still missing is imputed as the median over *its own source database*, with
+    the indicator saying so. Imputing zero would have filed those rows under the
+    symmetry-locked mode above. The imputation is the older dataset's fallback, and it was
+    wrong for the rows it covered: the median ``max_force`` of the recovered rows is
+    0.088, twice the 0.0417 imputed, and 356 of them exceed the 1 eV/A cut. A
+    ``max_force <= X`` filter on unrecovered rows would drop them for any X, since NaN
+    fails every comparison, so they are kept rather than filtered.
+
+``stress_hydrostatic``, ``stress_von_mises``, ``stress_missing``
+    The residual stress, kBar, in the archive's VASP sign (positive: the cell is compressed
+    and wants to expand): its hydrostatic part ``tr(sigma)/3`` and the von Mises equivalent
+    of its deviator. Residual stress, not force, sets how much energy an unfinished
+    relaxation leaves on the table -- a gradient-matched ORB estimate over 1,004 rows put
+    98% of it in the cell block, rank-correlated 0.81 with stress against 0.31 with force
+    -- and it is informative on the symmetry-locked rows where ``max_force`` is
+    identically zero. It is not purely a convergence label, though: OQMD's hydrostatic
+    stress is one-signed (97% positive above 5 kBar, median +7.5 against MP's +0.02) and
+    scales with pseudopotential hardness (median +62 kBar with F, +3 to +4 with K, Cs, I,
+    Br) rather than with the residual force: the relaxation ended at the minimum of a stale
+    basis or of different settings than the calculation reporting the energy (for
+    Alexandria, LeMat's row is a separate calculation at the path's final geometry). The
+    label is therefore provenance-laden, but not spurious -- it comes from the same
+    calculation as the energy, so the energy it implies is real on the label's own surface.
+    ``stress_missing`` marks the same rows as ``max_force_missing``.
 
 ``formation_energy_per_atom``
     The PBE formation energy from the same phase-diagram calculation that supplies
@@ -81,16 +106,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.paths import cache_root, data_root
+
 logger = logging.getLogger("build_lemat_bulk_fmax")
 
 REPO = Path(__file__).resolve().parent.parent
 #: ``max_force`` and the CIFs. The energy CSV has a ``max_force`` column too, and it is
 #: NaN in every one of its rows.
-DEFAULT_STRUCTURE_CSV = REPO / "data" / "lemat-bulk" / "lemat_pbe.csv.gz"
+DEFAULT_STRUCTURE_CSV = data_root() / "lemat-bulk" / "lemat_pbe.csv.gz"
 #: Written by ``scripts/build_lemat_bulk_fmax.py --labels-only`` (or the scratch probe):
 #: one row per structure with the reduced formula, cell size and energies, no CIF.
-DEFAULT_LABELS = REPO / "data" / "lemat-bulk" / "labels.parquet"
-DEFAULT_SPLIT_IDS = REPO / "cache" / "lemat_bulk_ehull" / "split_ids.json"
+DEFAULT_LABELS = data_root() / "lemat-bulk" / "labels.parquet"
+DEFAULT_SPLIT_IDS = cache_root() / "lemat_bulk_ehull" / "split_ids.json"
+#: LeMat-Bulk as downloaded: per-atom ``forces`` (eV/A) and ``stress_tensor`` (kBar, VASP
+#: sign), which the structure CSV only summarises as ``max_force``.
+DEFAULT_RAW = data_root() / "lemat-bulk" / "raw" / "data.parquet"
+#: Written by ``scripts/recover_mp_forces.py``: forces and stress for the MP rows whose
+#: archived arrays are empty, read from the last ionic step of the very task LeMat took the
+#: energy from.
+DEFAULT_RECOVERED = cache_root() / "mp_forces_recovery" / "runs" / "full" / "results.parquet"
+DEFAULT_CONVERGENCE_LABELS = data_root() / "lemat-bulk" / "convergence_labels.parquet"
 
 #: Formation energies outside this window are corrupt rather than exotic -- the archive
 #: runs to -37.9 and +650.7 eV/atom. It matters more here than in a mean-fitting model:
@@ -108,6 +143,9 @@ OUTPUT_COLUMNS = [
     "delta_e_polymorph",
     "max_force",
     "max_force_missing",
+    "stress_hydrostatic",
+    "stress_von_mises",
+    "stress_missing",
     "formation_energy_per_atom",
 ]
 
@@ -123,6 +161,85 @@ def _source(ids: pd.Series) -> pd.Series:
         np.where(text.str.startswith("mp-"), "mp",
                  np.where(text.str.startswith("agm"), "alexandria", "oqmd")),
         index=ids.index)
+
+
+def _max_abs_component(column) -> np.ndarray:
+    """Largest |component| of a ``list<list<double>>`` arrow column per row; NaN when empty."""
+    import pyarrow.compute as pc
+
+    array = column.combine_chunks()
+    inner = array.flatten()
+    row_of_inner = pc.list_parent_indices(array).to_numpy()
+    values = inner.flatten().fill_null(np.nan).to_numpy(zero_copy_only=False)
+    row_of_value = row_of_inner[pc.list_parent_indices(inner).to_numpy()]
+    out = np.full(len(array), -np.inf)
+    finite = np.isfinite(values)
+    np.maximum.at(out, row_of_value[finite], np.abs(values[finite]))
+    out[out == -np.inf] = np.nan
+    return out
+
+
+def _stress_invariants(stress: np.ndarray) -> dict:
+    """Hydrostatic part and von Mises equivalent of ``(n, 3, 3)`` stresses, kBar, VASP sign."""
+    stress = 0.5 * (stress + np.transpose(stress, (0, 2, 1)))
+    hydrostatic = np.trace(stress, axis1=1, axis2=2) / 3.0
+    deviator = stress - hydrostatic[:, None, None] * np.eye(3)
+    return {"stress_hydrostatic": hydrostatic,
+            "stress_von_mises": np.sqrt(1.5 * np.einsum("nij,nij->n", deviator, deviator))}
+
+
+def build_convergence_labels(raw: Path, recovered: Path | None, out: Path) -> pd.DataFrame:
+    """Per-row ``max_force`` and stress invariants, with the archive's gaps filled from MP.
+
+    ``convergence_source`` says where each row's numbers came from: ``archive``,
+    ``mp_task_doc`` (recovered), or ``missing``.
+    """
+    import pyarrow.compute as pc
+    import pyarrow.parquet as pq
+
+    logger.info("reading forces and stress from %s", raw)
+    parquet = pq.ParquetFile(raw)
+    parts = []
+    for group in range(parquet.metadata.num_row_groups):
+        table = parquet.read_row_group(group, columns=["immutable_id", "forces", "stress_tensor"])
+        column = table.column("stress_tensor").combine_chunks()
+        present = pc.list_value_length(column).fill_null(0).to_numpy() == 3
+        stress = np.full((table.num_rows, 3, 3), np.nan)
+        stress[present] = column.flatten().flatten().to_numpy(zero_copy_only=False).reshape(-1, 3, 3)
+        parts.append(pd.DataFrame({
+            "immutable_id": table.column("immutable_id").to_pandas(),
+            "max_force": _max_abs_component(table.column("forces")),
+            **_stress_invariants(stress),
+        }))
+    frame = pd.concat(parts, ignore_index=True).dropna(subset=["immutable_id"])
+    frame = frame.set_index("immutable_id")
+    if not frame.index.is_unique:
+        raise ValueError(f"immutable_id is not unique in {raw}")
+    frame["convergence_source"] = np.where(frame["max_force"].notna(), "archive", "missing")
+
+    if recovered is not None:
+        docs = pd.read_parquet(recovered, columns=[
+            "immutable_id", "group", "status", "forces", "stress", "control_dF", "control_dS"])
+        control = docs[docs["group"] != "missing"]
+        logger.info("recovery control: %d rows, max |dF| %.3g, max |dS| %.3g against the archive",
+                    len(control), control["control_dF"].abs().max(), control["control_dS"].abs().max())
+        docs = docs[(docs["group"] == "missing") & (docs["status"] == "exact_forces_stress")]
+        docs = docs.set_index("immutable_id")
+        gaps = docs.index[frame.loc[docs.index, "max_force"].isna()]
+        if len(gaps) != len(docs):
+            raise ValueError(f"{len(docs) - len(gaps)} recovered rows already have archived forces")
+        forces = docs.loc[gaps, "forces"].map(lambda f: float(np.abs(np.stack(f)).max()))
+        stress = np.stack([np.stack(s).astype(float) for s in docs.loc[gaps, "stress"]])
+        frame.loc[gaps, "max_force"] = forces.to_numpy()
+        for name, values in _stress_invariants(stress).items():
+            frame.loc[gaps, name] = values
+        frame.loc[gaps, "convergence_source"] = "mp_task_doc"
+    logger.info("convergence sources: %s", frame["convergence_source"].value_counts().to_dict())
+    frame = frame.reset_index()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(out, index=False)
+    logger.info("wrote %s", out)
+    return frame
 
 
 def build_labels(structure_csv: Path, energy_csv: Path, out: Path) -> pd.DataFrame:
@@ -147,6 +264,27 @@ def build_labels(structure_csv: Path, energy_csv: Path, out: Path) -> pd.DataFra
     table.to_parquet(out, index=False)
     logger.info("wrote %s (%.1f MB)", out, out.stat().st_size / 1e6)
     return table
+
+
+def attach_convergence_labels(labels: pd.DataFrame, convergence: pd.DataFrame) -> pd.DataFrame:
+    """Take ``max_force`` from the convergence table, and add the stress invariants.
+
+    Where the structure CSV already has ``max_force`` the two are the same arrays read
+    twice, so they must agree; that doubles as a check on the join.
+    """
+    merged = labels[["immutable_id", "max_force"]].merge(
+        convergence, on="immutable_id", how="left", suffixes=("", "_convergence"),
+        validate="one_to_one")
+    # The one row without an immutable_id cannot be joined; label_rows drops it anyway.
+    known = (merged["max_force"].notna() & merged["immutable_id"].notna()).to_numpy()
+    if not np.allclose(merged.loc[known, "max_force"], merged.loc[known, "max_force_convergence"],
+                       rtol=1e-6, atol=1e-9):
+        raise ValueError("the structure CSV's max_force disagrees with the raw archive's forces")
+    labels = labels.copy()
+    labels["max_force"] = merged["max_force_convergence"].to_numpy()
+    for column in ("stress_hydrostatic", "stress_von_mises", "convergence_source"):
+        labels[column] = merged[column].to_numpy()
+    return labels
 
 
 def label_rows(labels: pd.DataFrame, max_force: float) -> pd.DataFrame:
@@ -181,6 +319,13 @@ def label_rows(labels: pd.DataFrame, max_force: float) -> pd.DataFrame:
     by_source = kept.groupby(_source(kept["immutable_id"]), sort=False)["max_force"]
     kept["max_force"] = kept["max_force"].fillna(by_source.transform("median")).fillna(
         kept["max_force"].median())
+    # Forces and stress are absent from exactly the same rows, and are filled the same way.
+    kept["stress_missing"] = kept["stress_hydrostatic"].isna().astype(float)
+    logger.info("  of which stress is absent: %8d", int(kept["stress_missing"].sum()))
+    for column in ("stress_hydrostatic", "stress_von_mises"):
+        by_source = kept.groupby(_source(kept["immutable_id"]), sort=False)[column]
+        kept[column] = kept[column].fillna(by_source.transform("median")).fillna(
+            kept[column].median())
     # ``e_form`` is the formation energy per atom against the same elemental
     # references that define ``e_hull``. Preserve it so cache construction can
     # assign every equivalent Wyckoff gene its observed minimum.
@@ -223,10 +368,20 @@ def main():
                         help="Keep structures whose largest force component is at most this, eV/A.")
     parser.add_argument("--structure-csv", type=Path, default=DEFAULT_STRUCTURE_CSV)
     parser.add_argument("--energy-csv", type=Path,
-                        default=REPO / "data" / "lemat-bulk" / "lemat_pbe_ehull.csv.gz")
+                        default=data_root() / "lemat-bulk" / "lemat_pbe_ehull.csv.gz")
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS,
                         help="Cached label table; rebuilt from the CSVs when absent.")
     parser.add_argument("--rebuild-labels", action="store_true")
+    parser.add_argument("--raw-parquet", type=Path, default=DEFAULT_RAW,
+                        help="LeMat-Bulk parquet carrying the per-atom forces and stress tensors.")
+    parser.add_argument("--recovered-forces", type=lambda s: None if s.lower() == "none" else Path(s),
+                        default=DEFAULT_RECOVERED,
+                        help="scripts/recover_mp_forces.py results, filling the MP rows whose "
+                             "archived forces and stress are empty. 'none' keeps them missing "
+                             "(imputed and flagged), which is how lemat_bulk_fmax1 was built.")
+    parser.add_argument("--convergence-labels", type=Path, default=DEFAULT_CONVERGENCE_LABELS,
+                        help="Cached per-row max_force and stress table; rebuilt when absent.")
+    parser.add_argument("--rebuild-convergence-labels", action="store_true")
     parser.add_argument("--split-ids", type=Path, default=DEFAULT_SPLIT_IDS,
                         help="JSON of {split: [immutable_id]} to inherit val/test from.")
     parser.add_argument("--seed", type=int, default=20260906,
@@ -248,6 +403,18 @@ def main():
         logger.info("reading cached labels %s", args.labels)
         labels = pd.read_parquet(args.labels)
 
+    convergence_path = args.convergence_labels
+    if args.recovered_forces is None:
+        # A table built without the recovered rows must not be read back as one built with them.
+        convergence_path = convergence_path.with_name(convergence_path.stem + "_archive_only.parquet")
+    if args.rebuild_convergence_labels or not convergence_path.exists():
+        convergence = build_convergence_labels(args.raw_parquet, args.recovered_forces, convergence_path)
+    else:
+        logger.info("reading cached convergence labels %s", convergence_path)
+        convergence = pd.read_parquet(convergence_path)
+    labels = attach_convergence_labels(labels, convergence)
+    del convergence
+
     kept = label_rows(labels, args.max_force)
     del labels
     kept = kept.set_index("immutable_id")
@@ -263,7 +430,7 @@ def main():
     split_of[test_ids] = "test"
     logger.info("split sizes: %s", split_of.value_counts().to_dict())
 
-    out_dir = REPO / "data" / args.name
+    out_dir = data_root() / args.name
     out_dir.mkdir(parents=True, exist_ok=True)
     handles = {
         name: gzip.open(out_dir / f"{name}.csv.gz", "wt", newline="",
@@ -287,6 +454,9 @@ def main():
                     "delta_e_polymorph",
                     "max_force",
                     "max_force_missing",
+                    "stress_hydrostatic",
+                    "stress_von_mises",
+                    "stress_missing",
                     "formation_energy_per_atom",
                 ]
             ])
