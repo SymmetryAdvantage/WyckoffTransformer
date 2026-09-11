@@ -14,7 +14,10 @@ convergence filter. It is closer to a provenance filter.
 `wyckoff_transformer.formula_energy.dataset` already measured what it removes: the cut
 keeps 95.6% of Alexandria rows and 35.5% of the ICSD-backed Materials Project ones,
 because MP reports forces from a different protocol whose median is 0.028 — above the
-cut. `scripts/pull_mp_provenance.py` records the same thing from the other end: 138,931
+cut. That protocol never imposed a force criterion at all: 87–90% of MP's relaxations
+stopped on a positive `EDIFFG`, VASP's energy-change criterion, and none hit their ionic
+step limit, so the cut discards calculations that converged exactly as they were asked to
+(see [unconverged_relaxation_energy.md](unconverged_relaxation_energy.md) §6). `scripts/pull_mp_provenance.py` records the same thing from the other end: 138,931
 MP rows in the energy CSV against 31,794 in the cache. The rows a de-novo generator would
 most like to imitate are the ones the filter is most likely to drop.
 

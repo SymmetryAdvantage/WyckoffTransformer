@@ -30,9 +30,10 @@ silently wrong, and both bias the dataset against Materials Project.
 (**kBar, VASP sign**: positive means compressed). Its 5,335,299 rows are the paper's
 "LeMaterial (Compatible, PBE)" exactly ([arXiv:2511.05178](https://arxiv.org/abs/2511.05178),
 Table 6). **`max_force` means something different in each source**: for Materials Project it
-is the relaxation's own convergence residual, for Alexandria and OQMD a re-evaluation at
-different settings on the relaxed geometry. Treat it as a provenance proxy, not a
-convergence label. The paper's Appendix L has MP and Alexandria the other way round; see
+is the relaxation's own residual, for Alexandria and OQMD a re-evaluation at different
+settings on the relaxed geometry. Even for MP it is not a convergence verdict: 87–90% of
+its relaxations stopped on a positive `EDIFFG` (energy change), never on a force threshold.
+Treat it as a provenance proxy, not a convergence label. The paper's Appendix L has MP and Alexandria the other way round; see
 [unconverged_relaxation_energy.md](unconverged_relaxation_energy.md) §8 for the evidence.
 
 ### 2. Structures and energies
