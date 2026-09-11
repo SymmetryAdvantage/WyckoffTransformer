@@ -244,6 +244,39 @@ If the dependency is permanent, add it to `pyproject.toml` and re-run
 `env_init.sh` rather than leaving it as a hand-install that the next sync
 removes.
 
+### calorine and NEP89
+
+The `nep` extra provides `calorine`, which is what runs the NEP89
+pre-relaxation potential (`--prerelax-mlip nep89`, `--stage prescreen`; see
+[the variants doc](../../de_novo_ranking_protocol_nep89_variants.md)). **Do not
+install it with `uv sync --extra nep` on this box.** calorine declares
+`numpy<=2.3`, this venv runs numpy 2.5.3, and a sync would resolve the conflict
+by downgrading numpy under everything else.
+
+The pin is spurious — calorine's `_nepy` extension is pybind11 over C++ with no
+numpy C API in it, and CPUNEP is verified working here at numpy 2.5.3: energies,
+forces and stress on Si, NaCl and Fe, with the analytic derivatives of the
+Lennard-Jones fallback matching finite differences to 1e-11. So install it
+additively:
+
+```bash
+uv pip install --no-deps calorine
+```
+
+Its remaining runtime dependencies (ase, numpy, pandas, scikit-learn,
+matplotlib) are all already installed. Two consequences of the sdist build:
+
+- It compiles under this box's `-march=native`, like anything else without a
+  wheel here. Fine on zeus, not portable off it.
+- `uv sync` prunes what the lock does not name, so a later `env_init.sh` run
+  removes calorine again. Re-run the `uv pip install` line after a sync, or add
+  `nep` to `WYFORMER_EXTRAS` and accept the numpy downgrade — which nothing has
+  needed so far.
+
+The model file itself is not a dependency: it is 15 MB of plain text pinned by
+GPUMD commit and SHA-256 in `cryspr/nep89.py`, downloaded on first use into
+`~/.cache/wyckoff_transformer/nep_models/`.
+
 ### `[tool.uv.extra-build-dependencies]` and the shadowing warning
 
 Every uv invocation in this repository prints:

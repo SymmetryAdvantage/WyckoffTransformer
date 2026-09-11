@@ -184,9 +184,24 @@ anyway, and they cost only ~20% more compute:
 
 ## PyXtal's tolerance factor stays at 1.3
 
-`Tol_matrix(prototype="atomic", factor=1.3)` is the floor on how close two atoms
-may *start*, as a multiple of the covalent-radius sum. It is retained, and the
-oracle studies are the reason rather than inertia.
+`Tol_matrix(prototype="atomic", factor=1.3)` biases how close two atoms may
+*start*. Two corrections to how this used to be described, both measured on
+2026-09-10:
+
+- **The multiplier is the covalent-radius *mean*, not the sum.** `Tol_matrix`
+  returns `0.5 × (rₐ + r_b)` per pair, so factor 1.3 asks for contacts no
+  shorter than `0.65 × (rₐ + r_b)` — 35% *shorter* than a covalent bond, not 30%
+  longer. Read as the sum, 1.3 would forbid every real bonded crystal.
+- **It is a bias, not a floor.** 45% of the structures PyXtal returns violate it
+  (worst 0.60 in tolerance units, below PyXtal's own default of 1.0), and only 2
+  of 272 violations were an atom against its own periodic image. PyXtal checks
+  distances while placing atoms, not exhaustively on the finished cell.
+
+Neither changes the conclusion. All 750 ORB-relaxed oracle references clear the
+floor, the tightest by 14%, so it does not exclude the answer; and the
+relaxation repairs the crowded draws, landing at a median contact of 1.82
+against the ground truth's 1.83. It is retained, and the oracle studies are the
+reason rather than inertia.
 
 With the lattice free — which is how this protocol samples — a 1.3 floor makes
 PyXtal draw a **loose** cell, median 1.68× the target volume, and the

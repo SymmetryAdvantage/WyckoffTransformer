@@ -47,6 +47,15 @@ import torch
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.cli import describe_condition, resolve_condition_values
 from wyckoff_transformer.cli import protocol as protocol_cli
+from wyckoff_transformer.cryspr.basin_hopping import (
+    BASINHOP_STDEV,
+    BASINHOP_STRAIN_STDEV,
+    DEFAULT_STEPS as BASINHOP_STEPS,
+    DEFAULT_TEMPERATURE_EV_PER_ATOM as BASINHOP_TEMPERATURE,
+)
+from wyckoff_transformer.cryspr.generator import DEFAULT_PYXTAL_TOL_FACTOR, PRERELAX_FMAX
+from wyckoff_transformer.cryspr.mlips import prerelax_mlip_names
+from wyckoff_transformer.cryspr.prescreen import DEDUP_ENERGY_TOL_EV_PER_ATOM
 from wyckoff_transformer.cli.csp import load_trainer
 from wyckoff_transformer.evaluation.hull_mlips import DEFAULT_HULL_MLIP, HULL_MLIPS
 from wyckoff_transformer.evaluation.protocol import (
@@ -222,14 +231,37 @@ def build_stage_args(args, gene_file: Path) -> Namespace:
         devices=args.devices,
         workers_per_device=args.workers_per_device,
         n_trials=args.n_trials,
+        trial_multiplier=args.trial_multiplier,
         pyxtal_cores=args.pyxtal_cores,
         pyxtal_timeout=args.pyxtal_timeout,
+        pyxtal_tol_factor=args.pyxtal_tol_factor,
         fmax=args.fmax,
         relax_timeout=args.relax_timeout,
         release_symmetry=args.release_symmetry,
         rattle=args.rattle,
+        relax_from=args.relax_from,
+        prerelax_mlip=args.prerelax_mlip,
+        prerelax_fmax=args.prerelax_fmax,
+        prerelax_max_expansion=args.prerelax_max_expansion,
+        prescreen_mlip=args.prescreen_mlip,
+        prescreen_fmax=args.prescreen_fmax,
+        prescreen_dedup=args.prescreen_dedup,
+        prescreen_energy_tol=args.prescreen_energy_tol,
+        prescreen_release_symmetry=args.prescreen_release_symmetry,
+        prescreen_rattle=args.prescreen_rattle,
+        prescreen_select=args.prescreen_select,
+        basinhop_mlip=args.basinhop_mlip,
+        basinhop_steps=args.basinhop_steps,
+        basinhop_temperature=args.basinhop_temperature,
+        basinhop_stdev=args.basinhop_stdev,
+        basinhop_strain_stdev=args.basinhop_strain_stdev,
+        prerattle_metrics=args.prerattle_metrics,
+        # The optional stages' own arguments, so that --stages can name them.
+        template_index=args.template_index,
+        template_candidates=args.template_candidates,
         limit=args.limit,
         resume=args.resume,
+        retry_failed=args.retry_failed,
         reference_cache=args.reference_cache,
         reference_splits=args.reference_splits,
         reference_fingerprint_cache=args.reference_fingerprint_cache,
@@ -274,6 +306,10 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
             protocol_cli.PYXTAL_FILE,
             protocol_cli.PYXTAL_TRIALS_FILE,
             protocol_cli.RELAXATIONS_FILE,
+            # Only present in a wide-then-narrow run; add_file is guarded on
+            # is_file() below, so a single-stage run simply ships neither.
+            protocol_cli.PRESCREEN_TRIALS_FILE,
+            protocol_cli.PRESCREEN_SELECTION_FILE,
             protocol_cli.STRUCTURES_FILE,
             protocol_cli.FUNNEL_FILE,
             protocol_cli.MANIFEST_FILE,
@@ -312,7 +348,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Run everything but skip the write-back to W&B.")
     parser.add_argument(
         "--stages", type=str, default=",".join(protocol_cli.STAGES),
-        help="Comma-separated subset of %s to run, in this order." % ",".join(protocol_cli.STAGES),
+        help=(
+            "Comma-separated subset of %s to run, in this order. The optional "
+            "stages %s are accepted but not in the default: 'template' adds one "
+            "template-matched start per gene, 'prescreen' narrows a widened draw "
+            "down to the schedule's usual count on a cheap potential."
+            % (",".join(protocol_cli.STAGES), ",".join(protocol_cli.OPTIONAL_STAGES))
+        ),
     )
     parser.add_argument(
         "--from-artifact", nargs="?", const="latest", default=None, metavar="VERSION",
@@ -345,6 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="CPU processes drawing PyXtal structures. Defaults to every core.")
     pyxtal.add_argument("--pyxtal-timeout", type=float, default=300.0,
                         help="Seconds one PyXtal draw may take before it is abandoned.")
+    pyxtal.add_argument("--pyxtal-tol-factor", type=float, default=DEFAULT_PYXTAL_TOL_FACTOR,
+                        help="Scale on PyXtal's inter-atomic distance floor, 0.5*(r_a+r_b) "
+                             "times this. Lower is more permissive; 1.3 is what every "
+                             "published number was measured with.")
 
     hardware = parser.add_argument_group("relaxation hardware")
     hardware.add_argument("--cores", type=int, default=None,
@@ -361,7 +407,98 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Seconds one trial's four-stage relaxation may take.")
     relax.add_argument("--release-symmetry", action=argparse.BooleanOptionalAction, default=True)
     relax.add_argument("--rattle", action=argparse.BooleanOptionalAction, default=True)
+    relax.add_argument(
+        "--relax-from", type=str, default="pyxtal",
+        choices=sorted(protocol_cli.RELAX_SOURCES),
+        help="Starting structures: what 'generate' wrote, or what 'prescreen' selected.",
+    )
+    relax.add_argument(
+        "--prerelax-mlip", type=str, default=None, choices=prerelax_mlip_names(),
+        help="Relax every trial on this cheap potential before --mlip. Off by default.",
+    )
+    relax.add_argument(
+        "--prerelax-fmax", type=float, default=PRERELAX_FMAX,
+        help="Force convergence of the pre-relaxation, eV/A.",
+    )
+    relax.add_argument(
+        "--prerelax-max-expansion", type=float, default=None,
+        help="Fall back to the raw draw if the pre-relaxation grew the cell by "
+             "more than this factor. Unset by default.",
+    )
+    relax.add_argument(
+        "--trial-multiplier", type=int, default=1,
+        help="Draw this multiple of the schedule's trials. Pair 10 with --stages "
+             "...,prescreen,relax and --relax-from prescreen.",
+    )
+
+    prescreen = parser.add_argument_group("wide-then-narrow (stage: prescreen)")
+    prescreen.add_argument(
+        "--prescreen-mlip", type=str, default=None, choices=prerelax_mlip_names(),
+        help="Potential the pre-screen relaxes and ranks with. Defaults to nep89.",
+    )
+    prescreen.add_argument(
+        "--prescreen-fmax", type=float, default=PRERELAX_FMAX,
+        help="Force convergence of the pre-screen relaxation, eV/A.",
+    )
+    prescreen.add_argument(
+        "--prescreen-dedup", type=str, default="matcher", choices=("matcher", "energy"),
+        help="How two pre-relaxed draws of one gene are judged the same structure.",
+    )
+    prescreen.add_argument(
+        "--prescreen-energy-tol", type=float, default=DEDUP_ENERGY_TOL_EV_PER_ATOM,
+        help="Energy gap, eV/atom, above which the matcher is not called.",
+    )
+    prescreen.add_argument(
+        "--prescreen-release-symmetry", action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run the unconstrained stage in the pre-screen. With "
+             "--prescreen-rattle and --prescreen-select 1 this is the "
+             "NEP89-first arm.",
+    )
+    prescreen.add_argument(
+        "--prescreen-rattle", action=argparse.BooleanOptionalAction, default=False,
+        help="Run the rattle stage in the pre-screen.",
+    )
+    prescreen.add_argument(
+        "--prescreen-select", type=str, default="dof",
+        help="Structures per gene handed to the scoring potential: 'dof' for the "
+             "trial schedule's allotment, or an integer.",
+    )
+
+    basinhop = parser.add_argument_group("basin hopping (stage: basinhop)")
+    basinhop.add_argument(
+        "--basinhop-mlip", type=str, default=None, choices=prerelax_mlip_names(),
+        help="Potential the walk relaxes and ranks with.",
+    )
+    basinhop.add_argument("--basinhop-steps", type=int, default=BASINHOP_STEPS,
+                          help="Hops per starting draw.")
+    basinhop.add_argument("--basinhop-temperature", type=float, default=BASINHOP_TEMPERATURE,
+                          help="Metropolis temperature, eV/atom. 0 is downhill only.")
+    basinhop.add_argument("--basinhop-stdev", type=float, default=BASINHOP_STDEV,
+                          help="Displacement drawn per hop, A, before projection.")
+    basinhop.add_argument("--basinhop-strain-stdev", type=float, default=BASINHOP_STRAIN_STDEV,
+                          help="Cell strain drawn per hop, before projection.")
+
+    scoring = parser.add_argument_group("scoring")
+    scoring.add_argument(
+        "--prerattle-metrics", action=argparse.BooleanOptionalAction, default=True,
+        help="Report every metric a second time on the pre-rattle structure, "
+             "plus what the rattle changed.",
+    )
+
+    template = parser.add_argument_group("template starts (stage: template)")
+    template.add_argument(
+        "--template-index", type=Path, default=None,
+        help="Parquet of LeMat-Bulk keyed by anonymous Wyckoff fingerprint.",
+    )
+    template.add_argument(
+        "--template-candidates", type=int, default=4,
+        help="Templates carried out of the index per gene, closest formula first.",
+    )
     relax.add_argument("--limit", type=int, default=None, help="Only relax genes below this index.")
+    relax.add_argument("--retry-failed", action="store_true",
+                       help="On --resume, re-run failed trials too. A killed-worker "
+                            "row is re-run regardless.")
     relax.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True,
                        help="Keep the trials the generate and relax logs already recorded "
                             "and do only the rest. --no-resume starts both from scratch.")
@@ -391,9 +528,10 @@ def main() -> None:
     gene_file = args.output_dir / GENES_FILE
 
     stages = [s.strip() for s in args.stages.split(",") if s.strip()]
-    unknown = [s for s in stages if s not in protocol_cli.STAGES]
+    known = protocol_cli.STAGES + protocol_cli.OPTIONAL_STAGES
+    unknown = [s for s in stages if s not in known]
     if unknown:
-        raise SystemExit(f"--stages: {unknown} not in {protocol_cli.STAGES}")
+        raise SystemExit(f"--stages: {unknown} not in {known}")
 
     if args.from_artifact is not None:
         download_protocol_artifact(
@@ -424,9 +562,20 @@ def main() -> None:
     for stage in stages:
         protocol_cli.run_stage(stage, stage_args)
 
-    funnel = json.loads(
-        (args.output_dir / protocol_cli.FUNNEL_FILE).read_text(encoding="utf-8")
-    )
+    # Only the score stage writes funnel.json, and --stages need not include it:
+    # a run that is only drawing or only pre-screening -- because the next half
+    # wants different hardware -- has nothing to report or upload yet, and
+    # reading the funnel anyway turns a finished stage into a crash.
+    funnel_path = args.output_dir / protocol_cli.FUNNEL_FILE
+    if not funnel_path.is_file():
+        logger.info(
+            "Stages %s produced no %s; nothing to report or upload. "
+            "Run --stages score to score what they left.",
+            ",".join(stages), protocol_cli.FUNNEL_FILE,
+        )
+        return
+
+    funnel = json.loads(funnel_path.read_text(encoding="utf-8"))
     if args.upload:
         upload(args, gene_file, funnel)
     else:

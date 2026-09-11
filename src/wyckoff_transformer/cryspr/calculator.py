@@ -32,23 +32,44 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CACHE_DIR = Path.home() / ".cache" / "wyckoff_transformer" / "mace_models"
 
 
-def resolve_model_path(model: Union[str, Path]) -> Path:
+def resolve_model_path(
+    model: Union[str, Path],
+    cache_dir: Optional[Path] = None,
+    expected_sha256: Optional[str] = None,
+) -> Path:
     """Return a local path to the model, downloading it first if a URL is given.
 
     Args:
         model: Local filesystem path or an ``http(s)://`` URL pointing to a
-            MACE model file.
+            model file.
+        cache_dir: Directory to cache downloads in.  Defaults to the MACE cache,
+            which is where every caller predating the NEP models put theirs.
+        expected_sha256: Digest a downloaded file must have.  ``None`` skips the
+            check, which is the only option for the checkpoints whose publishers
+            do not state one.
 
     Returns:
         A :class:`~pathlib.Path` to a local copy of the model.
     """
     s = str(model)
     if s.startswith("https://") or s.startswith("http://"):
-        return _download_and_cache(s)
+        return _download_and_cache(s, cache_dir, expected_sha256)
     return Path(model)
 
 
-def _download_and_cache(url: str, cache_dir: Optional[Path] = None) -> Path:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _download_and_cache(
+    url: str,
+    cache_dir: Optional[Path] = None,
+    expected_sha256: Optional[str] = None,
+) -> Path:
     """Download *url* to *cache_dir* and return the local path.
 
     The destination filename is derived from a hash of the URL so that
@@ -59,9 +80,16 @@ def _download_and_cache(url: str, cache_dir: Optional[Path] = None) -> Path:
     Args:
         url: HTTPS/HTTP URL of the model file.
         cache_dir: Directory to store cached models.
+        expected_sha256: Digest the file must have.  Checked on download *and*
+            on a cache hit -- a cache entry that no longer matches is the same
+            problem as a bad download, and it would otherwise persist silently
+            across every subsequent run.
 
     Returns:
         Path to the cached model file.
+
+    Raises:
+        ValueError: If *expected_sha256* is given and does not match.
     """
     if cache_dir is None:
         cache_dir = _DEFAULT_CACHE_DIR
@@ -70,17 +98,30 @@ def _download_and_cache(url: str, cache_dir: Optional[Path] = None) -> Path:
     suffix = Path(url.split("?")[0]).suffix or ".model"
     dest = cache_dir / f"{url_hash}{suffix}"
     if not dest.exists():
-        logger.info("Downloading MACE model from %s → %s", url, dest)
+        logger.info("Downloading model from %s → %s", url, dest)
         tmp_dest = dest.with_suffix(".tmp")
         try:
             urllib.request.urlretrieve(url, tmp_dest)
+            if expected_sha256 is not None:
+                actual = _sha256(tmp_dest)
+                if actual != expected_sha256:
+                    raise ValueError(
+                        f"{url} has SHA-256 {actual}, expected {expected_sha256}"
+                    )
             tmp_dest.rename(dest)
         except Exception:
             if tmp_dest.exists():
                 tmp_dest.unlink()
             raise
     else:
-        logger.info("Using cached MACE model from %s", dest)
+        logger.info("Using cached model from %s", dest)
+        if expected_sha256 is not None:
+            actual = _sha256(dest)
+            if actual != expected_sha256:
+                raise ValueError(
+                    f"Cached {dest} has SHA-256 {actual}, expected {expected_sha256}; "
+                    f"delete it to re-download from {url}"
+                )
     return dest
 
 

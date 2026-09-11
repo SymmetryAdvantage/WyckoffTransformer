@@ -1,8 +1,9 @@
 """Registry of foundation MLIPs usable as the CrySPR relaxation calculator.
 
-Each entry corresponds to a model on the `Matbench Discovery
-<https://matbench-discovery.materialsproject.org/>`_ leaderboard and knows how
-to construct an ASE calculator for it.
+Most entries correspond to a model on the `Matbench Discovery
+<https://matbench-discovery.materialsproject.org/>`_ leaderboard; each knows how
+to construct an ASE calculator for it.  ``nep89`` is the exception and is here
+for :func:`build_prerelax_calculator` -- see the note on its entry.
 
 The backends live in mutually incompatible dependency sets — several pin exact
 CUDA-suffixed ``torch``/``torch-scatter`` builds and GRACE runs on TensorFlow
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Callable, Optional, Union
 
 from ase.calculators.calculator import Calculator
+
+from .nep89 import NEP89_MODEL_URL
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +106,16 @@ MLIP_REGISTRY: dict[str, MlipSpec] = {
         checkpoint="MACE-OMAT-0-medium",
         default_dtype="float64",
         pip="mace-torch",
+    ),
+    # Not a leaderboard entry and not a scoring potential: NEP89 is here so
+    # that --prerelax-mlip can select it uniformly. See
+    # :mod:`wyckoff_transformer.cryspr.nep89` for why its energies must never
+    # reach the funnel.
+    "nep89": MlipSpec(
+        name="NEP89",
+        backend="nep",
+        checkpoint=NEP89_MODEL_URL,
+        pip="calorine",
     ),
 }
 
@@ -203,6 +216,14 @@ def _build_grace(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Ca
     return grace_fm(checkpoint)
 
 
+def _build_nep(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Calculator:
+    """NEP89 with the Lennard-Jones fallback for the elements it omits."""
+    from .nep89 import build_nep89_calculator
+
+    model = None if checkpoint == NEP89_MODEL_URL else checkpoint
+    return build_nep89_calculator(model=model, device=device)
+
+
 def _build_pet(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Calculator:
     from upet.calculator import UPETCalculator
 
@@ -220,6 +241,7 @@ _BUILDERS: dict[str, Callable[[MlipSpec, str, str, str], Calculator]] = {
     "equiformer_v3": _build_equiformer_v3,
     "grace": _build_grace,
     "pet": _build_pet,
+    "nep": _build_nep,
 }
 
 
@@ -256,3 +278,54 @@ def build_calculator(
     calc = _BUILDERS[spec.backend](spec, locator, device, dtype)
     logger.info("Built %s calculator (backend=%s) on %s [%s]", spec.name, spec.backend, device, dtype)
     return calc
+
+
+def build_prerelax_calculator(name: str, device: str = "cpu") -> Calculator:
+    """Build a calculator for a *pre*-relaxation, hull-paired or not.
+
+    The scoring potential is chosen through
+    :func:`~wyckoff_transformer.evaluation.hull_mlips.build_hull_calculator`,
+    which admits only MLIPs that LeMat-Bulk publishes a convex hull for -- so
+    that ``e_above_hull`` never mixes energy scales.  A pre-relaxation is a
+    different job: its output is a *geometry*, its energies are used at most to
+    order the trials of one gene against each other, and nothing it computes
+    reaches the funnel.  That freedom is the whole point of NEP89 here, and it
+    is why this resolver is separate rather than a relaxation of the hull check.
+
+    Args:
+        name: A key of :data:`MLIP_REGISTRY`, or of
+            :data:`~wyckoff_transformer.evaluation.hull_mlips.HULL_MLIPS` -- so
+            that a run can pre-relax with the scoring potential itself, which is
+            the control arm for measuring what the cheap one costs.
+        device: Torch device string.  NEP89 ignores it and runs on the CPU.
+
+    Returns:
+        An ASE ``Calculator``.
+
+    Raises:
+        KeyError: If *name* is in neither registry.
+    """
+    if name in MLIP_REGISTRY:
+        return build_calculator(name, device=device)
+
+    from wyckoff_transformer.evaluation.hull_mlips import HULL_MLIPS, build_hull_calculator
+
+    if name in HULL_MLIPS:
+        return build_hull_calculator(name, device=device)
+    raise KeyError(
+        f"Unknown pre-relaxation MLIP {name!r}. Known: "
+        f"{', '.join(sorted(set(MLIP_REGISTRY) | set(HULL_MLIPS)))}"
+    )
+
+
+#: Every name :func:`build_prerelax_calculator` accepts, for ``--prerelax-mlip``'s
+#: ``choices``.  Computed lazily rather than at import time so that this module
+#: stays importable without :mod:`wyckoff_transformer.evaluation`.
+def prerelax_mlip_names() -> list[str]:
+    from wyckoff_transformer.evaluation.hull_mlips import HULL_MLIPS
+
+    return sorted(set(MLIP_REGISTRY) | {n for n, s in HULL_MLIPS.items() if s.is_runnable})
+
+
+#: The pre-relaxation potential the NEP89 protocol variants use.
+DEFAULT_PRERELAX_MLIP = "nep89"

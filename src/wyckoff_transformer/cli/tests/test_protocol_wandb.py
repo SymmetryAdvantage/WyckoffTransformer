@@ -40,7 +40,8 @@ class TestBuildStageArgs(unittest.TestCase):
         # Every attribute the protocol stage functions touch must exist.
         for name in (
             "input", "output_dir", "mlip", "cores", "devices", "workers_per_device",
-            "n_trials", "pyxtal_cores", "pyxtal_timeout", "fmax", "relax_timeout",
+            "n_trials", "pyxtal_cores", "pyxtal_timeout", "pyxtal_tol_factor",
+            "fmax", "relax_timeout",
             "release_symmetry", "rattle", "limit", "resume",
             "reference_cache", "reference_splits", "reference_fingerprint_cache",
             "lemat_cif_csv", "debug",
@@ -283,3 +284,67 @@ class TestGenerateGenes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStagesWithoutScore(unittest.TestCase):
+    """A run that does not score has nothing to report, and must not crash.
+
+    Only the score stage writes funnel.json. ``--stages`` need not include it:
+    the wide-then-narrow arm draws and pre-screens on CPU cores and then relaxes
+    and scores on a GPU, which is two invocations with different hardware, and
+    the first of them has no funnel yet. Reading it unconditionally turned a
+    finished pre-screen into a FileNotFoundError.
+    """
+
+    def test_a_run_without_the_score_stage_reports_nothing_and_returns(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from wyckoff_transformer.cli import protocol_wandb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            genes = out / protocol_wandb.GENES_FILE
+            import gzip
+
+            with gzip.open(genes, "wt", encoding="utf-8") as handle:
+                json.dump([], handle)
+            argv = [
+                "wyformer-protocol-wandb", "someid", "--output-dir", str(out),
+                "--stages", "generate", "--skip-generate", "--no-upload",
+            ]
+            with patch("sys.argv", argv), \
+                    patch.object(protocol_wandb.protocol_cli, "run_stage") as run_stage, \
+                    patch.object(protocol_wandb, "upload") as upload:
+                protocol_wandb.main()
+            run_stage.assert_called_once()
+            upload.assert_not_called()
+
+    def test_a_scoring_run_still_uploads(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from wyckoff_transformer.cli import protocol_wandb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            import gzip
+
+            with gzip.open(out / protocol_wandb.GENES_FILE, "wt", encoding="utf-8") as handle:
+                json.dump([], handle)
+            (out / protocol_wandb.protocol_cli.FUNNEL_FILE).write_text(
+                json.dumps({"metasun_per_sampled_gene": 0.1}), encoding="utf-8"
+            )
+            argv = [
+                "wyformer-protocol-wandb", "someid", "--output-dir", str(out),
+                "--stages", "score", "--skip-generate",
+            ]
+            with patch("sys.argv", argv), \
+                    patch.object(protocol_wandb.protocol_cli, "run_stage"), \
+                    patch.object(protocol_wandb, "upload") as upload:
+                protocol_wandb.main()
+            upload.assert_called_once()

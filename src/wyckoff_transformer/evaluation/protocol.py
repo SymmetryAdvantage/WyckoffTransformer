@@ -443,6 +443,7 @@ def screen_genes(
 def funnel(
     screen: GeneScreen,
     structures: pd.DataFrame,
+    prefix: str = "",
 ) -> dict:
     """Assemble the full funnel, with every rate per sampled gene.
 
@@ -470,10 +471,19 @@ def funnel(
             Columns absent from *structures* are reported as ``None`` rather
             than assumed, so a partial run stays honest about what it measured.
 
+        prefix: Report a second readout under prefixed keys, reading prefixed
+            columns.  ``"prerattle_"`` is the structure the rattle stage was
+            *handed* rather than the one the protocol kept, which answers two
+            questions the kept structure cannot: whether the rattle moved the
+            structure off the Wyckoff orbits the gene predicted, and whether it
+            turned a novel structure into a known one.  The gene screen is
+            reported only for the unprefixed readout, since it precedes the
+            relaxation and is identical for both.
+
     Returns:
         A dict of counts and rates, suitable for JSON.
     """
-    result = screen.summary()
+    result = {} if prefix else screen.summary()
     denominator = screen.n_sampled
 
     def weighted(mask: "pd.Series") -> int:
@@ -484,17 +494,17 @@ def funnel(
         return sum(screen.counts.get(i, 0) for i in selected)
 
     stages = [
-        ("structure", "has_structure"),
-        ("valid_structure", "valid_structure"),
-        ("unique_structure", "unique_structure"),
-        ("novel_structure", "novel_structure"),
+        ("structure", "has_structure" if not prefix else "has_prerattle"),
+        ("valid_structure", f"valid_structure{_suffix(prefix)}"),
+        ("unique_structure", f"unique_structure{_suffix(prefix)}"),
+        ("novel_structure", f"novel_structure{_suffix(prefix)}"),
     ]
     surviving = None
     pre_novelty = None
     for label, column in stages:
         if column not in structures.columns:
-            result[label] = None
-            result[f"{label}_per_sampled_gene"] = None
+            result[f"{prefix}{label}"] = None
+            result[f"{prefix}{label}_per_sampled_gene"] = None
             continue
         mask = structures[column].fillna(False).astype(bool)
         if surviving is not None:
@@ -502,11 +512,12 @@ def funnel(
         surviving = mask
         if label != "novel_structure":
             pre_novelty = mask
-        result[label] = int(mask.sum())
-        result[f"{label}_per_sampled_gene"] = _ratio(weighted(mask), denominator)
+        result[f"{prefix}{label}"] = int(mask.sum())
+        result[f"{prefix}{label}_per_sampled_gene"] = _ratio(weighted(mask), denominator)
 
-    if "e_above_hull" in structures.columns and pre_novelty is not None:
-        energies = structures["e_above_hull"]
+    hull_column = f"e_above_hull{_suffix(prefix)}"
+    if hull_column in structures.columns and pre_novelty is not None:
+        energies = structures[hull_column]
         has_energy = energies.notna()
         novel = surviving if surviving is not None else pre_novelty
         for label, sun_label, threshold in (
@@ -519,16 +530,18 @@ def funnel(
             # novelty applied.
             total = pre_novelty & below
             among_novel = novel & below
-            result[label] = int(total.sum())
-            result[f"{label}_per_sampled_gene"] = _ratio(weighted(total), denominator)
-            result[f"{label}_among_novel"] = int(among_novel.sum())
-            result[f"{sun_label}_per_sampled_gene"] = _ratio(
+            result[f"{prefix}{label}"] = int(total.sum())
+            result[f"{prefix}{label}_per_sampled_gene"] = _ratio(
+                weighted(total), denominator
+            )
+            result[f"{prefix}{label}_among_novel"] = int(among_novel.sum())
+            result[f"{prefix}{sun_label}_per_sampled_gene"] = _ratio(
                 weighted(among_novel), denominator
             )
         # A structure the hull cannot reach -- a composition whose subspace is
         # empty, or a phase diagram that will not build -- fails both
         # thresholds, which is the conservative answer but not a visible one.
-        result["no_hull_energy"] = int((pre_novelty & energies.isna()).sum())
+        result[f"{prefix}no_hull_energy"] = int((pre_novelty & energies.isna()).sum())
     else:
         for key in (
             "metastable", "metastable_per_sampled_gene", "metastable_among_novel",
@@ -536,7 +549,7 @@ def funnel(
             "metasun_per_sampled_gene", "sun_per_sampled_gene",
             "no_hull_energy",
         ):
-            result[key] = None
+            result[f"{prefix}{key}"] = None
 
     # Novelty moves under relaxation.  A gene whose sampled fingerprint is in
     # LeMat-Bulk can still relax into a structure the matcher rejects (a); one
@@ -544,19 +557,20 @@ def funnel(
     # through its *relaxed* fingerprint (b).  Both are counted against the
     # sampled gene's novelty, over representatives that produced a unique
     # structure.
-    if "novel_structure" in structures.columns and pre_novelty is not None:
-        novel_structure = structures["novel_structure"].fillna(False).astype(bool)
+    novel_column = f"novel_structure{_suffix(prefix)}"
+    if novel_column in structures.columns and pre_novelty is not None:
+        novel_structure = structures[novel_column].fillna(False).astype(bool)
         gene_index = structures.index.to_series()
         known_gene = gene_index.isin(set(screen.known))
         novel_gene = gene_index.isin(set(screen.novel))
         became_novel = pre_novelty & known_gene & novel_structure
         became_known = pre_novelty & novel_gene & ~novel_structure
-        result["gene_known_became_novel"] = int(became_novel.sum())
-        result["gene_novel_became_known"] = int(became_known.sum())
-        result["gene_known_became_novel_per_sampled_gene"] = _ratio(
+        result[f"{prefix}gene_known_became_novel"] = int(became_novel.sum())
+        result[f"{prefix}gene_novel_became_known"] = int(became_known.sum())
+        result[f"{prefix}gene_known_became_novel_per_sampled_gene"] = _ratio(
             weighted(became_novel), denominator
         )
-        result["gene_novel_became_known_per_sampled_gene"] = _ratio(
+        result[f"{prefix}gene_novel_became_known_per_sampled_gene"] = _ratio(
             weighted(became_known), denominator
         )
     else:
@@ -565,15 +579,127 @@ def funnel(
             "gene_known_became_novel_per_sampled_gene",
             "gene_novel_became_known_per_sampled_gene",
         ):
-            result[key] = None
+            result[f"{prefix}{key}"] = None
 
     for column in ("relaxed_fingerprint_resolved", "relaxed_fingerprint_changed"):
-        result[column] = (
-            int(structures[column].fillna(False).astype(bool).sum())
-            if column in structures.columns
+        name = f"{column}{_suffix(prefix)}"
+        result[f"{prefix}{column}"] = (
+            int(structures[name].fillna(False).astype(bool).sum())
+            if name in structures.columns
             else None
         )
 
+    return result
+
+
+def _suffix(prefix: str) -> str:
+    """Column suffix for a prefixed readout.
+
+    The keys are *prefixed* (``prerattle_metasun_per_sampled_gene``) while the
+    columns they read are *suffixed* (``novel_structure_prerattle``), because
+    ``structures.csv``'s unprefixed names are the ones every existing consumer
+    already reads and renaming them would break those readers for nothing.
+    """
+    return f"_{prefix.rstrip('_')}" if prefix else ""
+
+
+def rattle_effect(screen: GeneScreen, structures: pd.DataFrame) -> dict:
+    """What the rattle stage cost and bought, per gene, beyond energy.
+
+    The rattle lowers ORB's energy and that is why it is on by default.  It also
+    does two things the energy cannot show, and this is where they are counted.
+
+    **It moves the structure off the gene.**  A rattle is a finite
+    symmetry-breaking perturbation, so the structure it leaves need not sit on
+    the Wyckoff orbits WyFormer predicted -- and the whole point of a Wyckoff
+    generative model is that those orbits *are* the prediction.  A gene whose
+    pre-rattle structure still re-fingerprints to its own gene and whose kept
+    structure does not has had its prediction discarded in exchange for
+    millielectronvolts.  ``rattle_moved_off_gene`` counts exactly that case.
+
+    **It can turn a novel structure into a known one.**  Relaxing away from a
+    symmetric stationary point can land on a LeMat-Bulk entry that the
+    unrattled structure was distinct from, which converts a MetaSUN hit into
+    nothing at all.  ``rattle_novel_became_known`` and
+    ``rattle_metasun_lost`` count that, and their ``_gained`` counterparts
+    count the opposite, because the effect runs both ways and reporting only
+    the loss would overstate it.
+
+    Every count is over genes that produced both structures, and every rate is
+    per sampled gene, as everywhere else in the funnel.
+
+    Args:
+        screen: Stage-A result, for the per-sampled-gene weighting.
+        structures: One row per gene, carrying both readouts' columns as
+            :func:`funnel` reads them.
+
+    Returns:
+        A dict of counts and rates.  Keys whose inputs are absent are ``None``.
+    """
+    result: dict = {}
+    denominator = screen.n_sampled
+
+    def weighted(mask) -> int:
+        return sum(
+            screen.counts.get(index, 0) for index, keep in mask.items() if bool(keep)
+        )
+
+    def column(name: str):
+        if name not in structures.columns:
+            return None
+        return structures[name].fillna(False).astype(bool)
+
+    for name in ("rattle_moved_off_gene", "rattle_lowered_energy"):
+        mask = column(name)
+        result[name] = int(mask.sum()) if mask is not None else None
+        result[f"{name}_per_sampled_gene"] = (
+            _ratio(weighted(mask), denominator) if mask is not None else None
+        )
+
+    kept_unique, pre_unique = column("unique_structure"), column("unique_structure_prerattle")
+    kept_novel, pre_novel = column("novel_structure"), column("novel_structure_prerattle")
+    # `None in (...)` would compare with `==`, which broadcasts over a Series
+    # and raises "the truth value of a Series is ambiguous".
+    if any(part is None for part in (kept_unique, pre_unique, kept_novel, pre_novel)):
+        for key in (
+            "rattle_novel_became_known", "rattle_known_became_novel",
+            "rattle_metasun_lost", "rattle_metasun_gained",
+            "rattle_metastable_lost", "rattle_metastable_gained",
+        ):
+            result[key] = None
+            result[f"{key}_per_sampled_gene"] = None
+        return result
+
+    # Both readouts had to survive to uniqueness for the comparison to mean
+    # anything: a gene the rattle turned invalid is a different failure, and
+    # counting it here would attribute it to novelty.
+    both = kept_unique & pre_unique
+    for key, mask in (
+        ("rattle_novel_became_known", both & pre_novel & ~kept_novel),
+        ("rattle_known_became_novel", both & ~pre_novel & kept_novel),
+    ):
+        result[key] = int(mask.sum())
+        result[f"{key}_per_sampled_gene"] = _ratio(weighted(mask), denominator)
+
+    kept_e = structures.get("e_above_hull")
+    pre_e = structures.get("e_above_hull_prerattle")
+    if kept_e is None or pre_e is None:
+        for key in ("rattle_metasun_lost", "rattle_metasun_gained",
+                    "rattle_metastable_lost", "rattle_metastable_gained"):
+            result[key] = None
+            result[f"{key}_per_sampled_gene"] = None
+        return result
+
+    kept_meta = kept_e.notna() & (kept_e <= METASTABLE_THRESHOLD)
+    pre_meta = pre_e.notna() & (pre_e <= METASTABLE_THRESHOLD)
+    for key, mask in (
+        ("rattle_metastable_lost", both & pre_meta & ~kept_meta),
+        ("rattle_metastable_gained", both & ~pre_meta & kept_meta),
+        ("rattle_metasun_lost", both & (pre_meta & pre_novel) & ~(kept_meta & kept_novel)),
+        ("rattle_metasun_gained", both & ~(pre_meta & pre_novel) & (kept_meta & kept_novel)),
+    ):
+        result[key] = int(mask.sum())
+        result[f"{key}_per_sampled_gene"] = _ratio(weighted(mask), denominator)
     return result
 
 

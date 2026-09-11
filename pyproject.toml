@@ -70,6 +70,18 @@ research = ["ase", "matbench-discovery", "ipykernel", "ipywidgets", "jupyter", "
 # source, identically from 0.5.1 through 0.7.0, so the floor is enough to fix
 # the checkpoint that LeMat-Bulk's orb_conserv_inf hull was built with.
 relax = ["mace-torch >=0.3", "ase >=3.23", "orb-models >=0.5.1"]
+# NEP89 (arXiv:2504.21286), the cheap pre-relaxation potential behind
+# `--prerelax-mlip nep89` and `--stage prescreen`. calorine builds a pybind11
+# extension from an sdist -- there are no wheels -- so this extra needs a C++
+# compiler, and it declares `numpy<=2.3` while this project runs on 2.5. That
+# pin is spurious: `_nepy` touches no numpy C API, and CPUNEP is verified
+# working here at numpy 2.5.3 (energies, forces and stress). A `uv sync
+# --extra nep` will nonetheless *downgrade* numpy to satisfy it, so on a host
+# whose numpy matters install it additively instead:
+#     uv pip install --no-deps calorine
+# every runtime dependency it then needs (ase, numpy, pandas, scikit-learn,
+# matplotlib) is already in this project. See docs/platforms/zeus/environment.md.
+nep = ["calorine >=3.5"]
 # `torch.compile` needs triton, which torch itself declares -- but only in the
 # GPU wheels: the official PyPI torch carries a triton pin for Linux, while the
 # CPU wheels from download.pytorch.org/whl/cpu carry no such pin. That is the

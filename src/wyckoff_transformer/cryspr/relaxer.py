@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,37 @@ RATTLE_VERDICT_FILE = "rattle.json"
 #: minimum for numerical noise; with it, 33.1% of trials in the study accepted,
 #: by a median of 186 meV/atom.
 RATTLE_ACCEPT_EV_PER_ATOM = 1e-3
+
+
+@dataclass
+class RelaxStages:
+    """Both structures a trial produces, and what the rattle decided.
+
+    The protocol keeps the rattled structure when it wins, which is the right
+    call on energy and the wrong one for two other questions.  A rattle is a
+    finite symmetry-breaking perturbation, so the structure it leaves is no
+    longer on the Wyckoff orbits the gene specified -- which is what WyFormer
+    was asked to predict -- and it can relax onto a *known* structure that the
+    unrattled one was distinct from.  Reporting both therefore needs both
+    structures carried out of the relaxation rather than one, which is what this
+    exists for.
+
+    Attributes:
+        kept: What the trial keeps: the rattled structure when the rattle won,
+            otherwise the last stage that ran.  This is what the protocol scores.
+        prerattle: The structure the rattle stage was handed, i.e. the last
+            symmetry-respecting relaxation's output.  Identical to *kept* when
+            the rattle did not run or did not win.
+        rattled: The rattle stage's own output, or ``None`` if it did not run.
+        rattle_accepted: Whether it won its margin.  ``None`` if it did not run.
+        rattle_delta_ev_per_atom: Its energy change, eV/atom.  Negative is a win.
+    """
+
+    kept: Atoms
+    prerattle: Atoms
+    rattled: Optional[Atoms] = None
+    rattle_accepted: Optional[bool] = None
+    rattle_delta_ev_per_atom: Optional[float] = None
 
 
 def _get_spacegroup_info(atoms: Atoms, symprec: float) -> tuple[str, int]:
@@ -192,7 +224,70 @@ def perturb(
     return atoms
 
 
-def stepwise_relax(
+def symmetric_perturb(
+        atoms_in: Atoms,
+        rattle_stdev: float = RATTLE_STDEV,
+        strain_stdev: float = RATTLE_STRAIN_STDEV,
+        symprec: float = 1e-3,
+        seed: Optional[int] = None,
+) -> Atoms:
+    """A copy of *atoms_in* perturbed *within* its space group.
+
+    The exact opposite of :func:`perturb`, and it works by exploiting the trap
+    that function documents.  :meth:`ase.Atoms.set_positions` enforces the
+    attached constraints, so a :class:`~ase.constraints.FixSymmetry` built from
+    the unperturbed structure projects any displacement onto the symmetric
+    subspace -- it "symmetrises the rattle away", which is a bug for stage 4 and
+    is precisely the move a symmetry-constrained search needs.  The same holds
+    for the cell through ``adjust_cell``.
+
+    So a random Cartesian rattle becomes a random step along the gene's *free
+    Wyckoff coordinates*, and a random strain becomes a random step in the
+    lattice parameters the space group allows.  Nothing has to enumerate either
+    set: spglib's symmetry operations define the projection, and the structure
+    stays on the orbits the gene specified.
+
+    The consequence for a gene with **zero positional degrees of freedom** is
+    that the projected displacement is identically zero and this function
+    returns the structure unchanged -- correctly, since there is nowhere
+    symmetry-preserving to go, and the cell is what stages 1 and 2 already
+    relax.  A caller searching such a gene is searching a point.
+
+    Args:
+        atoms_in: Structure to perturb; not modified in place.
+        rattle_stdev: Standard deviation of the Cartesian displacement drawn
+            *before* projection, A.  The projected step is smaller, by a factor
+            that depends on how much freedom the orbits have.
+        strain_stdev: Standard deviation of the cell strain drawn before
+            projection, dimensionless.
+        symprec: Symmetry tolerance, A.  What space group is preserved is
+            whatever spglib finds at this tolerance.
+        seed: Seed for the perturbation.
+
+    Returns:
+        The perturbed copy, still carrying its symmetry constraint so that a
+        subsequent relaxation stays in the same subspace.
+    """
+    atoms = atoms_in.copy()
+    atoms.calc = None
+    # Built from the unperturbed structure, and attached before anything moves:
+    # this is the projector, so it has to describe where we are, not where the
+    # draw would take us.
+    atoms.set_constraint([FixSymmetry(atoms, symprec=symprec)])
+
+    rng = np.random.default_rng(seed)
+    drawn = rng.normal(0.0, strain_stdev, size=(3, 3))
+    strain = 0.5 * (drawn + drawn.T)
+    atoms.set_cell(atoms.cell @ (np.eye(3) + strain), scale_atoms=True)
+    # set_positions, not rattle(): Atoms.rattle writes through to the positions
+    # array without going through the constraints, so the projection would be
+    # skipped and the symmetry broken after all.
+    displacement = rng.normal(0.0, rattle_stdev, size=(len(atoms), 3))
+    atoms.set_positions(atoms.get_positions() + displacement)
+    return atoms
+
+
+def stepwise_relax_stages(
         atoms_in: Atoms,
         calculator: Calculator,
         optimizer: type[Optimizer] = BFGS,
@@ -267,8 +362,8 @@ def stepwise_relax(
         logfile_postfix: Postfix for log file names.
 
     Returns:
-        The kept :class:`~ase.Atoms`: the rattled structure when it won,
-        otherwise the last relaxation stage that ran.
+        A :class:`RelaxStages` carrying both the kept structure and the
+        pre-rattle one, so that a caller can report metrics for each.
 
     Raises:
         ValueError: If no stage that relaxes the cell would run, i.e. all of
@@ -342,18 +437,28 @@ def stepwise_relax(
     # Step 3: leave the stationary point by force, and keep the result only if
     # it is genuinely lower.  The margin is what makes this safe to run always:
     # a converged structure cannot be traded away for noise.
-    if rattle:
-        atoms = _rattle_stage(
-            atoms,
-            rattle_stdev=rattle_stdev,
-            strain_stdev=strain_stdev,
-            rattle_accept=rattle_accept,
-            seed=seed,
-            logfile=logfile_for("rattle_no-sym"),
-            **shared,
-        )
+    if not rattle:
+        return RelaxStages(kept=atoms, prerattle=atoms)
 
-    return atoms
+    return _rattle_stage(
+        atoms,
+        rattle_stdev=rattle_stdev,
+        strain_stdev=strain_stdev,
+        rattle_accept=rattle_accept,
+        seed=seed,
+        logfile=logfile_for("rattle_no-sym"),
+        **shared,
+    )
+
+
+def stepwise_relax(*args, **kwargs) -> Atoms:
+    """:func:`stepwise_relax_stages`, returning only the structure it kept.
+
+    The original signature, kept because most callers -- the oracle studies, the
+    standalone ``wyformer-cryspr`` -- want exactly one structure and would gain
+    nothing from the pre-rattle one.
+    """
+    return stepwise_relax_stages(*args, **kwargs).kept
 
 
 def _rattle_stage(
@@ -364,8 +469,13 @@ def _rattle_stage(
         seed: Optional[int],
         logfile: Path,
         **shared,
-) -> Atoms:
-    """Perturb, re-relax, and return whichever structure has the lower energy."""
+) -> RelaxStages:
+    """Perturb, re-relax, and report both structures with the verdict.
+
+    Which one the trial *keeps* is decided on energy here; which one a metric is
+    computed on is decided by the caller, because the rattle is not free of
+    consequence beyond energy -- see :class:`RelaxStages`.
+    """
     if rattle_accept < 0:
         raise ValueError(f"rattle_accept must be non-negative, got {rattle_accept}")
 
@@ -385,8 +495,8 @@ def _rattle_stage(
         logfile=logfile,
         **shared,
     )
-    delta = (rattled.get_potential_energy() - energy_before) / len(atoms)
-    accepted = delta < -rattle_accept
+    delta = float(rattled.get_potential_energy() - energy_before) / len(atoms)
+    accepted = bool(delta < -rattle_accept)
     logger.info(
         "Rattle stage: dE = %+.6f eV/atom, %s",
         delta, "accepted" if accepted else "rejected",
@@ -394,17 +504,28 @@ def _rattle_stage(
     # Recorded per trial, not just logged: pool workers do not configure
     # logging, and how often the rattle wins -- and by how much -- is the
     # measurement that sets the trial schedule and justifies the stage.
+    # Cast on the way out.  An MLIP that returns numpy scalars -- NEP89 does,
+    # ORB does not -- makes `delta` a numpy float and `accepted` a numpy.bool_,
+    # which json refuses with "Object of type bool is not JSON serializable".
+    # That failure surfaced only once a potential of the first kind ran this
+    # stage, so the cast belongs here rather than in any one caller.
     (shared["wdir"] / RATTLE_VERDICT_FILE).write_text(
         json.dumps(
             {
-                "delta_ev_per_atom": delta,
-                "accepted": accepted,
-                "accept_threshold_ev_per_atom": rattle_accept,
-                "rattle_stdev": rattle_stdev,
-                "strain_stdev": strain_stdev,
-                "seed": seed,
+                "delta_ev_per_atom": float(delta),
+                "accepted": bool(accepted),
+                "accept_threshold_ev_per_atom": float(rattle_accept),
+                "rattle_stdev": float(rattle_stdev),
+                "strain_stdev": float(strain_stdev),
+                "seed": None if seed is None else int(seed),
             }
         ) + "\n",
         encoding="utf-8",
     )
-    return rattled if accepted else atoms
+    return RelaxStages(
+        kept=rattled if accepted else atoms,
+        prerattle=atoms,
+        rattled=rattled,
+        rattle_accepted=accepted,
+        rattle_delta_ev_per_atom=delta,
+    )

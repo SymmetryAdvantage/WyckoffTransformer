@@ -139,6 +139,152 @@ class TestSinglePyxtal(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# pyxtal_tol_matrix
+# ---------------------------------------------------------------------------
+
+class TestPyxtalTolMatrix(unittest.TestCase):
+    def test_the_default_factor_is_the_shipped_one(self):
+        from wyckoff_transformer.cryspr.generator import (
+            DEFAULT_PYXTAL_TOL_FACTOR,
+            _DEFAULT_IADM,
+            pyxtal_tol_matrix,
+        )
+        self.assertEqual(DEFAULT_PYXTAL_TOL_FACTOR, 1.3)
+        self.assertIs(pyxtal_tol_matrix(), _DEFAULT_IADM)
+
+    def test_the_same_factor_is_not_rebuilt(self):
+        """The cache is the reason this helper exists.
+
+        A `Tol_matrix(prototype="atomic")` fills a 100x100 radius array, which
+        the generate stage would otherwise pay for once per draw.
+        """
+        from wyckoff_transformer.cryspr.generator import pyxtal_tol_matrix
+        self.assertIs(pyxtal_tol_matrix(0.63), pyxtal_tol_matrix(0.63))
+        self.assertIs(pyxtal_tol_matrix(0.63), pyxtal_tol_matrix(0.63000))
+
+    def test_a_different_factor_gets_its_own_matrix(self):
+        from wyckoff_transformer.cryspr.generator import pyxtal_tol_matrix
+        strict, loose = pyxtal_tol_matrix(1.3), pyxtal_tol_matrix(0.4)
+        self.assertIsNot(strict, loose)
+        # The tolerance is linear in the factor, and that is what "permissive"
+        # means here: the same pair, a shorter allowed contact.
+        self.assertAlmostEqual(
+            loose.get_tol(11, 17) / strict.get_tol(11, 17), 0.4 / 1.3, places=6
+        )
+
+    def test_the_clash_guard_is_left_alone(self):
+        """A post-relaxation guard and a generation floor are different things.
+
+        `has_atomic_clash` rejects MACE's collapse artifacts. If it followed
+        `--pyxtal-tol-factor` down, a permissive draw would also switch off the
+        guard that catches a *relaxed* structure collapsing, and the two
+        effects would be inseparable.
+        """
+        import inspect
+
+        from wyckoff_transformer.cryspr.generator import (
+            _CLASH_IADM,
+            has_atomic_clash,
+            pyxtal_tol_matrix,
+        )
+
+        self.assertIs(
+            inspect.signature(has_atomic_clash).parameters["iadm"].default,
+            _CLASH_IADM,
+        )
+        # Still factor 1.1, and still its own object: it must not be served out
+        # of the generation cache, where a caller could reach it by factor.
+        self.assertAlmostEqual(
+            _CLASH_IADM.get_tol(11, 17), pyxtal_tol_matrix(1.1).get_tol(11, 17)
+        )
+        self.assertIsNot(_CLASH_IADM, pyxtal_tol_matrix(1.1))
+
+
+class TestPermissiveFactorDrawsCloserContacts(unittest.TestCase):
+    """The factor has to change the draws, not just the manifest.
+
+    Real PyXtal draws rather than a mock, because what is being asserted is a
+    property of PyXtal's rejection sampling. `from_random` draws from its own
+    RNG, which `single_pyxtal` does not expose a seed for, so the test is
+    statistical: over 20 draws of a 12-DoF gene the permissive arm's closest
+    contact is lower than the strict arm's in 3000 of 3000 bootstrap resamples
+    of a 200-draw-per-arm measurement (strict: min 0.94, 10% below 1.0;
+    permissive at 0.2: min 0.30, 48% below 1.0).
+    """
+
+    #: A gene with 12 free coordinates in a 16-atom cell, from the oracle
+    #: cohort.  Free coordinates are the whole point: for a gene whose orbits
+    #: are all fixed there is nothing for the floor to reject, and the arms
+    #: would differ only through the cell PyXtal guesses.
+    GENE = {
+        "group": 33,
+        "species": ["Cs", "Ag", "Te"],
+        "numIons": [4, 4, 8],
+        "sites": [["4a"], ["4a"], ["4a", "4a"]],
+    }
+
+    N_DRAWS = 20
+    PERMISSIVE = 0.2
+
+    @staticmethod
+    def _closest_contact(atoms) -> float:
+        """`min(d / (0.5*(r_a+r_b)))` over pairs of distinct atoms.
+
+        Measured at factor 1.0 whatever the draw used, so the number is a
+        physical ratio; in each arm's own units every arm's floor would be 1.0
+        by construction.
+        """
+        import numpy as np
+        from ase.neighborlist import neighbor_list
+        from pyxtal.tolerance import Tol_matrix
+
+        tm = Tol_matrix(prototype="atomic", factor=1.0)
+        numbers = atoms.numbers
+        unique = sorted({int(n) for n in numbers})
+        # Grown until the nearest distinct pair is inside it: a loose draw can
+        # have nothing at all within one tolerance.
+        cutoff = 2.5 * max(tm.get_tol(a, b) for a in unique for b in unique)
+        while True:
+            first, second, dist = neighbor_list("ijd", atoms, cutoff)
+            distinct = first != second
+            if distinct.any() or cutoff > 40.0:
+                break
+            cutoff *= 2
+        tols = np.array([tm.get_tol(int(numbers[a]), int(numbers[b]))
+                         for a, b in zip(first, second)])
+        return float(np.min((dist / tols)[distinct]))
+
+    def _contacts(self, factor: float) -> list[float]:
+        from wyckoff_transformer.cryspr.generator import pyxtal_tol_matrix, single_pyxtal
+
+        contacts = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for _ in range(self.N_DRAWS):
+                atoms = single_pyxtal(
+                    wyckoffgene=self.GENE,
+                    iadm=pyxtal_tol_matrix(factor),
+                    nlimit=30,
+                    wdir=Path(tmp),
+                )
+                if atoms is not None:
+                    contacts.append(self._closest_contact(atoms))
+        return contacts
+
+    def test_a_permissive_factor_admits_closer_contacts(self):
+        from wyckoff_transformer.cryspr.generator import DEFAULT_PYXTAL_TOL_FACTOR
+
+        strict = self._contacts(DEFAULT_PYXTAL_TOL_FACTOR)
+        loose = self._contacts(self.PERMISSIVE)
+        self.assertGreater(len(strict), 0, "PyXtal drew nothing at all")
+        self.assertGreater(len(loose), 0, "PyXtal drew nothing at all")
+        self.assertLess(min(loose), min(strict))
+        # The nominal floor is 0.65*(r_a+r_b), i.e. 1.3 in these units, and the
+        # strict arm still goes below 1.0 -- the floor biases the draw rather
+        # than bounding it.  A permissive arm has to go well below it.
+        self.assertLess(min(loose), 1.0)
+
+
+# ---------------------------------------------------------------------------
 # func_run — unit test (all trials fail)
 # ---------------------------------------------------------------------------
 
@@ -236,11 +382,13 @@ class TestFuncRunClashGuard(unittest.TestCase):
                         cell=[5.6, 5.6, 5.6], pbc=True)
         relaxed.calc = SinglePointCalculator(relaxed, energy=-7.0)
 
+        from wyckoff_transformer.cryspr.relaxer import RelaxStages
+
         with tempfile.TemporaryDirectory() as tmp:
             with patch("wyckoff_transformer.cryspr.generator.single_pyxtal",
                        return_value=relaxed.copy()), \
-                 patch("wyckoff_transformer.cryspr.generator.stepwise_relax",
-                       return_value=relaxed), \
+                 patch("wyckoff_transformer.cryspr.generator.stepwise_relax_stages",
+                       return_value=RelaxStages(kept=relaxed, prerattle=relaxed)), \
                  patch("wyckoff_transformer.cryspr.generator.has_atomic_clash",
                        return_value=True) as mock_clash:
                 result = func_run(

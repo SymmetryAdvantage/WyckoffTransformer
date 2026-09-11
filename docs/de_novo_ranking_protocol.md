@@ -57,11 +57,21 @@ none of them waits on another's resource:
 | `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `cifs/` |
 | `score` | the hull parquet and LeMat-Bulk geometry in RAM | ~1 min | `funnel.json` |
 
-There is a fifth, optional stage. `template` adds one
-[template-matched start](cryspr_template_starts.md) per gene — a training
-structure's lattice and coordinates instead of a PyXtal draw — as an extra
-trial, to be relaxed and scored alongside the random ones. It is not part of
-`--stage all` and changes no default.
+Two further stages are optional, and neither is part of `--stage all`. Both are
+alternative *sources of starting structures* rather than steps of the cascade,
+and neither changes a default.
+
+`template` adds one [template-matched start](cryspr_template_starts.md) per gene
+— a training structure's lattice and coordinates instead of a PyXtal draw — as
+an extra trial, to be relaxed and scored alongside the random ones.
+
+`prescreen` narrows instead of adding: with `generate --trial-multiplier 10` it
+relaxes ten times the usual draws on a cheap potential under fixed symmetry,
+drops the ones that landed on the same structure, and hands `relax --relax-from
+prescreen` the schedule's *usual* number of lowest-energy survivors — so the
+expensive relaxation count is unchanged and only the choice of start improves.
+That, and the two-stage `--prerelax-mlip nep89`, are the two
+[NEP89 variants](de_novo_ranking_protocol_nep89_variants.md).
 
 ```bash
 wyformer-protocol genes.json.gz --output-dir run/ --stage screen
@@ -288,6 +298,7 @@ minutes.
 ## See also
 
 - [The rationale notes](archive/de_novo_ranking_protocol_rationale.md) — why every default is what it is
+- [The NEP89 variants](de_novo_ranking_protocol_nep89_variants.md) — two-stage NEP89→ORB, and wide-then-narrow
 - [Improving de novo quality](archive/de_novo_quality_plan.md) — what to change in the model
 - [CrySPR trial and stage spread](cryspr_trial_and_stage_spread.md) — where the trial and stage numbers come from
 - [CrySPR reconstruction report](cryspr_reconstruction_report.md) — the rattle stage, the DoF breakdown, and the 79% reconstruction ceiling

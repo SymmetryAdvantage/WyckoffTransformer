@@ -1,4 +1,5 @@
 """Tests for the de novo ranking protocol."""
+import json
 import os
 import tempfile
 import unittest
@@ -10,6 +11,8 @@ import pandas as pd
 import pytest
 
 from wyckoff_transformer.cli.protocol import (
+    _budget,
+    _generate_one,
     PYXTAL_COLUMNS,
     RELAXATION_COLUMNS,
     RowLog,
@@ -25,6 +28,7 @@ from wyckoff_transformer.cli.protocol import (
     resolve_devices,
     time_limit,
 )
+from wyckoff_transformer.cryspr.generator import DEFAULT_PYXTAL_TOL_FACTOR
 from wyckoff_transformer.cryspr.relaxer import (
     RATTLE_ACCEPT_EV_PER_ATOM,
     perturb,
@@ -40,6 +44,7 @@ from wyckoff_transformer.evaluation.hull_mlips import (
 )
 from wyckoff_transformer.evaluation.protocol import (
     DEFAULT_TRIAL_SCHEDULE,
+    rattle_effect,
     GeneFingerprinter,
     GeneScreen,
     funnel,
@@ -276,12 +281,14 @@ class TestClaimDevice(unittest.TestCase):
 
     def test_the_initialiser_takes_the_counter_and_the_slots(self):
         # Guards the initargs tuple against drifting from the signature, which
-        # a pool reports only as a worker that dies at startup.
+        # a pool reports only as a worker that dies at startup.  Both the relax
+        # and the prescreen stage build their tuple positionally, and the
+        # prescreen one passes None for the scoring potential.
         import inspect
 
         self.assertEqual(
             list(inspect.signature(_init_relax_worker).parameters),
-            ["counter", "slots", "mlip", "debug"],
+            ["counter", "slots", "mlip", "prerelax_mlip", "debug"],
         )
 
 
@@ -537,12 +544,71 @@ class TestCliDefaults(unittest.TestCase):
         self.assertGreater(args.template_candidates, 1)
         self.assertIsNone(args.template_index)  # built from the reference cache
 
+    def test_the_nep89_variants_are_off_by_default(self):
+        """Every published number was measured with the single-stage arm.
+
+        A variant that changed a default would invalidate the trial schedule,
+        the stage design and the funnel rates all at once, and silently.
+        """
+        args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
+        self.assertIsNone(args.prerelax_mlip)
+        self.assertEqual(args.trial_multiplier, 1)
+        self.assertEqual(args.relax_from, "pyxtal")
+
+    def test_the_prescreen_stage_is_runnable_but_not_part_of_all(self):
+        from wyckoff_transformer.cli.protocol import OPTIONAL_STAGES, STAGES
+
+        args = build_parser().parse_args(
+            ["genes.json", "--output-dir", "out", "--stage", "prescreen"]
+        )
+        self.assertEqual(args.stage, "prescreen")
+        self.assertNotIn("prescreen", STAGES)
+        self.assertIn("prescreen", OPTIONAL_STAGES)
+
+    def test_the_pre_relaxation_potential_need_not_have_a_published_hull(self):
+        """Which is exactly why it is resolved through a separate registry.
+
+        NEP89 has no LeMat-Bulk hull, so --mlip must refuse it; the
+        pre-relaxation computes no reported energy, so --prerelax-mlip must not.
+        """
+        args = build_parser().parse_args(
+            ["genes.json", "--output-dir", "out", "--prerelax-mlip", "nep89"]
+        )
+        self.assertEqual(args.prerelax_mlip, "nep89")
+        self.assertNotIn("nep89", HULL_MLIPS)
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(
+                ["genes.json", "--output-dir", "out", "--mlip", "nep89"]
+            )
+
+    def test_the_pre_relaxation_converges_more_loosely_than_the_scoring_one(self):
+        args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
+        self.assertGreater(args.prerelax_fmax, args.fmax)
+        self.assertGreater(args.prescreen_fmax, args.fmax)
+
     def test_generation_and_relaxation_have_their_own_timeouts(self):
         """Neither stage may be held hostage by one gene it cannot finish."""
         args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
         self.assertEqual(args.pyxtal_timeout, 300.0)
         self.assertEqual(args.relax_timeout, 1800.0)
         self.assertIsNone(args.pyxtal_cores)  # every core
+
+    def test_the_pyxtal_distance_floor_is_unchanged_by_default(self):
+        """Every published number was drawn under factor 1.3.
+
+        The option exists so the floor can be *measured*
+        (docs/pyxtal_tolerance_sweep.md); a changed default would silently
+        redefine what the protocol's draws are.
+        """
+        args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
+        self.assertEqual(args.pyxtal_tol_factor, 1.3)
+        self.assertEqual(args.pyxtal_tol_factor, DEFAULT_PYXTAL_TOL_FACTOR)
+
+    def test_a_more_permissive_floor_can_be_asked_for(self):
+        args = build_parser().parse_args(
+            ["genes.json", "--output-dir", "out", "--pyxtal-tol-factor", "0.4"]
+        )
+        self.assertEqual(args.pyxtal_tol_factor, 0.4)
 
     def test_resume_is_on_by_default(self):
         # Both per-trial logs are written row by row, so repeating finished
@@ -553,6 +619,86 @@ class TestCliDefaults(unittest.TestCase):
             ["genes.json", "--output-dir", "out", "--no-resume"]
         )
         self.assertFalse(args.resume)
+
+
+class TestPyxtalTolFactorReachesTheDraw(unittest.TestCase):
+    """The flag is worthless if it stops at the parser.
+
+    `--pyxtal-tol-factor` crosses a process boundary -- `stage_generate` hands
+    it to a spawned pool worker, which builds the tolerance matrix itself
+    because a `Tol_matrix` would have to be pickled otherwise -- so the value
+    arriving at `single_pyxtal` is worth asserting on directly.
+    """
+
+    _GENE = {"group": 225, "species": ["Na", "Cl"], "numIons": [4, 4],
+             "sites": [["4a"], ["4b"]]}
+
+    def _iadm_seen_by_pyxtal(self, *args_to_generate_one):
+        with patch("wyckoff_transformer.cryspr.generator.single_pyxtal") as mock:
+            mock.return_value = None
+            _generate_one(*args_to_generate_one)
+        return mock.call_args.kwargs["iadm"]
+
+    def test_the_default_draw_uses_the_shipped_floor(self):
+        # Identity rather than a factor attribute: PyXtal stores the factor
+        # halved (`Tol_matrix.f`), so comparing against the cached matrix for a
+        # known factor says what is meant without depending on that.
+        from wyckoff_transformer.cryspr.generator import pyxtal_tol_matrix
+
+        with tempfile.TemporaryDirectory() as tmp:
+            iadm = self._iadm_seen_by_pyxtal(0, 0, self._GENE, tmp, None)
+        self.assertIs(iadm, pyxtal_tol_matrix(DEFAULT_PYXTAL_TOL_FACTOR))
+
+    def test_a_permissive_factor_reaches_pyxtal(self):
+        from wyckoff_transformer.cryspr.generator import pyxtal_tol_matrix
+
+        with tempfile.TemporaryDirectory() as tmp:
+            iadm = self._iadm_seen_by_pyxtal(0, 0, self._GENE, tmp, None, 0.4)
+        self.assertIs(iadm, pyxtal_tol_matrix(0.4))
+        self.assertIsNot(iadm, pyxtal_tol_matrix(DEFAULT_PYXTAL_TOL_FACTOR))
+
+    def test_the_generate_stage_records_the_factor_it_drew_under(self):
+        """Nothing else in a run's output says which floor produced its CIFs."""
+        from wyckoff_transformer.cli.protocol import MANIFEST_FILE, stage_generate
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / "genes.json").write_text(json.dumps([self._GENE]), encoding="utf-8")
+            (out / "screen.json").write_text(
+                json.dumps({
+                    "n_sampled": 1, "valid": [0], "invalid": [],
+                    "invalid_reason": {}, "counts": {"0": 1},
+                    "novel": [0], "known": [],
+                }),
+                encoding="utf-8",
+            )
+            args = SimpleNamespace(
+                input=out / "genes.json", output_dir=out, limit=None,
+                n_trials="1", trial_multiplier=1, resume=False, retry_failed=False,
+                pyxtal_cores=1, pyxtal_timeout=60.0, pyxtal_tol_factor=0.4,
+                debug=False,
+            )
+            stage_generate(args)
+            manifest = json.loads((out / MANIFEST_FILE).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["pyxtal_tol_factor"], 0.4)
+
+    def test_the_wandb_wrapper_mirrors_the_flag(self):
+        """It builds the stage arguments itself, so a missing key is an
+        AttributeError inside `stage_generate` rather than a parser error."""
+        from wyckoff_transformer.cli.protocol_wandb import (
+            build_parser as build_wandb_parser,
+            build_stage_args,
+        )
+
+        parser = build_wandb_parser()
+        default = parser.parse_args(["run-id", "--output-dir", "out"])
+        self.assertEqual(default.pyxtal_tol_factor, DEFAULT_PYXTAL_TOL_FACTOR)
+        asked = parser.parse_args(
+            ["run-id", "--output-dir", "out", "--pyxtal-tol-factor", "0.7"]
+        )
+        self.assertEqual(
+            build_stage_args(asked, Path("genes.json")).pyxtal_tol_factor, 0.7
+        )
 
 
 class TestTimeLimit(unittest.TestCase):
@@ -747,6 +893,43 @@ class TestTrialSchedule(unittest.TestCase):
                     parse_trial_schedule(spec)
 
 
+class TestTrialMultiplier(unittest.TestCase):
+    """The wide arm widens the *draw* budget and nothing else."""
+
+    GENE = {"group": 225, "species": ["Na", "Cl"], "numIons": [4, 4],
+            "sites": [["4a"], ["4b"]]}
+
+    def _schedule(self):
+        return parse_trial_schedule(DEFAULT_TRIAL_SCHEDULE)
+
+    def test_the_default_multiplier_changes_nothing(self):
+        dof, trials = _budget(self.GENE, self._schedule())
+        self.assertEqual((dof, trials), _budget(self.GENE, self._schedule(), 1))
+
+    def test_the_multiplier_scales_the_schedule_rather_than_replacing_it(self):
+        """So the extra draws stay proportional to the free coordinates.
+
+        A flat "draw 30 of everything" would spend the same budget on the fifth
+        of genes with no free coordinate at all, where the schedule already
+        establishes that a second draw provably changes nothing.
+        """
+        schedule = self._schedule()
+        _, one = _budget(self.GENE, schedule, 1)
+        _, ten = _budget(self.GENE, schedule, 10)
+        self.assertEqual(ten, one * 10)
+
+    def test_a_zero_multiplier_is_refused(self):
+        with self.assertRaises(ValueError):
+            _budget(self.GENE, self._schedule(), 0)
+
+    def test_the_prescreen_selects_the_unmultiplied_budget_back_down(self):
+        """The arm's whole claim: the expensive relaxation count is unchanged."""
+        schedule = self._schedule()
+        _, drawn = _budget(self.GENE, schedule, 10)
+        _, selected = _budget(self.GENE, schedule)  # what _prescreen_select uses
+        self.assertEqual(drawn, 10 * selected)
+
+
 class TestPositionalDof(unittest.TestCase):
     def test_a_fully_determined_gene_has_no_free_coordinate(self):
         # 4a and 4b of Fm-3m are both fixed points: rock salt has none.
@@ -875,7 +1058,12 @@ class TestRattleStage(unittest.TestCase):
                 steps_limit=500,
                 wdir=Path(tmp),
             )
-        return kept is after
+        # The pre-rattle structure is reported whatever the verdict: the metrics
+        # that ignore the rattle are computed on it.
+        assert kept.prerattle is before
+        assert kept.rattled is after
+        assert kept.rattle_accepted is (kept.kept is after)
+        return kept.kept is after
 
     def test_a_win_larger_than_the_margin_is_kept(self):
         # 8 atoms, so -0.02 eV total is 2.5 meV/atom below the margin.
@@ -1064,3 +1252,238 @@ class TestFunnel(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPreRattleReadout(unittest.TestCase):
+    """Every metric twice, and an explicit account of what the rattle changed.
+
+    The rattle lowers energy, which is why it is on by default. It also discards
+    the Wyckoff orbits WyFormer predicted and can relax a novel structure onto a
+    known one, and neither shows up in the kept structure's own numbers.
+    """
+
+    @staticmethod
+    def _screen(n=4):
+        return GeneScreen(
+            n_sampled=n, valid=list(range(n)), counts={i: 1 for i in range(n)},
+            novel=list(range(n)), known=[],
+        )
+
+    @staticmethod
+    def _frame(rows):
+        return pd.DataFrame(rows).set_index("index")
+
+    def test_the_two_readouts_are_reported_under_separate_keys(self):
+        frame = self._frame([
+            # gene 0: metastable and novel both ways
+            {"index": 0, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02,
+             "has_prerattle": True, "valid_structure_prerattle": True,
+             "unique_structure_prerattle": True, "novel_structure_prerattle": True,
+             "e_above_hull_prerattle": 0.05},
+            # gene 1: the rattle turned a novel structure into a known one
+            {"index": 1, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": False, "e_above_hull": 0.01,
+             "has_prerattle": True, "valid_structure_prerattle": True,
+             "unique_structure_prerattle": True, "novel_structure_prerattle": True,
+             "e_above_hull_prerattle": 0.04},
+        ])
+        report = funnel(self._screen(2), frame)
+        report.update(funnel(self._screen(2), frame, prefix="prerattle_"))
+
+        # MetaSUN is 1 of 2 after the rattle and 2 of 2 before it.
+        self.assertEqual(report["metasun_per_sampled_gene"], 0.5)
+        self.assertEqual(report["prerattle_metasun_per_sampled_gene"], 1.0)
+        # The gene screen belongs to neither readout and is reported once.
+        self.assertIn("valid_gene_rate", report)
+        self.assertNotIn("prerattle_valid_gene_rate", report)
+
+    def test_the_rattle_effect_is_counted_in_both_directions(self):
+        frame = self._frame([
+            # lost: novel before, known after
+            {"index": 0, "unique_structure": True, "unique_structure_prerattle": True,
+             "novel_structure": False, "novel_structure_prerattle": True,
+             "e_above_hull": 0.01, "e_above_hull_prerattle": 0.02},
+            # gained: known before, novel after
+            {"index": 1, "unique_structure": True, "unique_structure_prerattle": True,
+             "novel_structure": True, "novel_structure_prerattle": False,
+             "e_above_hull": 0.01, "e_above_hull_prerattle": 0.02},
+            # metastability gained by the rattle, novelty unchanged
+            {"index": 2, "unique_structure": True, "unique_structure_prerattle": True,
+             "novel_structure": True, "novel_structure_prerattle": True,
+             "e_above_hull": 0.05, "e_above_hull_prerattle": 0.4},
+            # unchanged
+            {"index": 3, "unique_structure": True, "unique_structure_prerattle": True,
+             "novel_structure": True, "novel_structure_prerattle": True,
+             "e_above_hull": 0.02, "e_above_hull_prerattle": 0.02},
+        ])
+        effect = rattle_effect(self._screen(4), frame)
+        self.assertEqual(effect["rattle_novel_became_known"], 1)
+        self.assertEqual(effect["rattle_known_became_novel"], 1)
+        self.assertEqual(effect["rattle_metasun_lost"], 1)
+        self.assertEqual(effect["rattle_metasun_gained"], 2)  # genes 1 and 2
+        self.assertEqual(effect["rattle_metastable_gained"], 1)
+        self.assertEqual(effect["rattle_metastable_lost"], 0)
+        self.assertEqual(effect["rattle_novel_became_known_per_sampled_gene"], 0.25)
+
+    def test_a_gene_that_lost_uniqueness_is_not_counted_as_a_novelty_change(self):
+        """Otherwise a validity failure would be attributed to novelty."""
+        frame = self._frame([
+            {"index": 0, "unique_structure": False, "unique_structure_prerattle": True,
+             "novel_structure": False, "novel_structure_prerattle": True,
+             "e_above_hull": 0.01, "e_above_hull_prerattle": 0.02},
+        ])
+        effect = rattle_effect(self._screen(1), frame)
+        self.assertEqual(effect["rattle_novel_became_known"], 0)
+
+    def test_a_run_without_the_pre_rattle_columns_reports_nulls(self):
+        """A cohort relaxed before the pre-rattle CIFs existed must stay readable."""
+        frame = self._frame([
+            {"index": 0, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02},
+        ])
+        effect = rattle_effect(self._screen(1), frame)
+        self.assertIsNone(effect["rattle_novel_became_known"])
+        self.assertIsNone(effect["rattle_metasun_lost"])
+        report = funnel(self._screen(1), frame, prefix="prerattle_")
+        self.assertIsNone(report["prerattle_structure"])
+        self.assertIsNone(report["prerattle_metasun_per_sampled_gene"])
+
+    def test_the_kept_readout_keeps_its_unprefixed_keys(self):
+        """Every existing consumer reads these names; renaming them buys nothing."""
+        frame = self._frame([
+            {"index": 0, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02},
+        ])
+        report = funnel(self._screen(1), frame)
+        for key in ("metasun_per_sampled_gene", "sun_per_sampled_gene",
+                    "novel_structure_per_sampled_gene", "metastable"):
+            self.assertIn(key, report)
+
+
+class TestBasinHopTrialKeys(unittest.TestCase):
+    """A walk visits many minima, so its keys must not collide or drift."""
+
+    def test_keys_are_unique_across_walks_and_hops(self):
+        from wyckoff_transformer.cli.protocol import (
+            BASINHOP_TRIAL_BASE,
+            BASINHOP_TRIAL_STRIDE,
+        )
+
+        keys = {
+            BASINHOP_TRIAL_BASE + trial * BASINHOP_TRIAL_STRIDE + hop
+            for trial in range(30)
+            for hop in range(200)
+        }
+        self.assertEqual(len(keys), 30 * 200)
+
+    def test_keys_cannot_collide_with_a_scheduled_or_template_trial(self):
+        from wyckoff_transformer.cli.protocol import BASINHOP_TRIAL_BASE
+
+        schedule = parse_trial_schedule(DEFAULT_TRIAL_SCHEDULE)
+        largest_draw = max(trials for _, trials in schedule) * 10  # x10 multiplier
+        self.assertLess(largest_draw, TEMPLATE_TRIAL)
+        self.assertLess(TEMPLATE_TRIAL, BASINHOP_TRIAL_BASE)
+
+
+class TestRowLogMigration(unittest.TestCase):
+    """A column added between runs must not silently misalign a resumed log.
+
+    Appending today's fieldnames to a file written with yesterday's header makes
+    ``read_csv`` label values by position, so a resumed run's energies would
+    land in whatever column happens to sit where they were written. Nothing
+    raises; the numbers are just wrong.
+    """
+
+    def test_added_columns_are_migrated_and_rows_stay_aligned(self):
+        import csv
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "log.csv"
+            old = ["index", "trial", "status", "energy"]
+            with path.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=old)
+                writer.writeheader()
+                writer.writerow({"index": 0, "trial": 0, "status": "ok", "energy": -1.5})
+            new = old + ["energy_prerattle"]
+            log = RowLog(path, new, resume=True)
+            self.assertEqual(log.done, {(0, 0)})
+            log.write({"index": 1, "trial": 0, "status": "ok", "energy": -2.0,
+                       "energy_prerattle": -1.9})
+            log.close()
+
+            frame = log.frame()
+            self.assertEqual(list(frame.columns), new)
+            self.assertEqual(float(frame.loc[0, "energy"]), -1.5)
+            self.assertTrue(pd.isna(frame.loc[0, "energy_prerattle"]))
+            self.assertEqual(float(frame.loc[1, "energy_prerattle"]), -1.9)
+
+    def test_an_unchanged_header_is_left_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "log.csv"
+            columns = ["index", "trial", "status"]
+            first = RowLog(path, columns, resume=False)
+            first.write({"index": 0, "trial": 0, "status": "ok"})
+            first.close()
+            before = path.read_text()
+            second = RowLog(path, columns, resume=True)
+            second.close()
+            self.assertEqual(path.read_text(), before)
+
+
+class TestResumeAfterAKilledWorker(unittest.TestCase):
+    """A killed worker is not an answered trial.
+
+    A relaxation that diverged has been answered and --resume is right to skip
+    it. A trial whose worker was killed under it has not been answered at all,
+    and skipping it turns an infrastructure failure into a permanent hole in the
+    cohort: it happened here to 1034 of 1800 trials, and read as a collapsed
+    reconstruction rate rather than as a crash.
+    """
+
+    COLUMNS = ["index", "trial", "status", "error"]
+
+    def _log_with(self, rows, **kwargs):
+        import csv
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "log.csv"
+        with path.open("w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=self.COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        log = RowLog(path, self.COLUMNS, resume=True, **kwargs)
+        self.addCleanup(log.close)
+        return log
+
+    def test_a_broken_pool_row_is_retried(self):
+        log = self._log_with([
+            {"index": 0, "trial": 0, "status": "ok", "error": ""},
+            {"index": 1, "trial": 0, "status": "failed",
+             "error": "BrokenProcessPool: A process in the process pool was "
+                      "terminated abruptly"},
+        ])
+        self.assertEqual(log.done, {(0, 0)})
+
+    def test_a_genuine_failure_stays_done_by_default(self):
+        log = self._log_with([
+            {"index": 0, "trial": 0, "status": "failed",
+             "error": "ValueError: the cell collapsed"},
+        ])
+        self.assertEqual(log.done, {(0, 0)})
+
+    def test_retry_failed_reruns_a_genuine_failure_too(self):
+        log = self._log_with(
+            [{"index": 0, "trial": 0, "status": "failed",
+              "error": "ValueError: the cell collapsed"}],
+            retry_failed=True,
+        )
+        self.assertEqual(log.done, set())
+
+    def test_a_successful_row_is_never_retried(self):
+        log = self._log_with(
+            [{"index": 0, "trial": 0, "status": "ok", "error": ""}],
+            retry_failed=True,
+        )
+        self.assertEqual(log.done, {(0, 0)})

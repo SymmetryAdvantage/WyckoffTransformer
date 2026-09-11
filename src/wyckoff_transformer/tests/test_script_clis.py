@@ -24,6 +24,9 @@ SCRIPTS = (
     "scripts/train.py",
     "scripts/run_template_reconstruction_study.py",
     "scripts/analyse_template_protocol.py",
+    "scripts/run_nep89_protocol_variants.py",
+    "scripts/run_pyxtal_tolerance_sweep.py",
+    "scripts/measure_prescreen_selector.py",
 )
 
 
