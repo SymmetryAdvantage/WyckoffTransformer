@@ -254,6 +254,13 @@ the original audit still lands on its historical path, so the five shell scripts
 
 ## Building it again
 
+> **This recipe rebuilds `lemat_bulk_fmax1` as `19qbxo6l` trained on it, which is no longer
+> how the dataset should be built.** It predates `scripts/recover_mp_forces.py`, so it
+> leaves 30,676 Materials Project rows carrying an imputed `max_force` of 0.0415 against a
+> true median of 0.088, and keeps 356 rows its own cut would exclude. For a current build
+> follow [lemat_bulk_pipeline.md](lemat_bulk_pipeline.md); the recipe below is kept because
+> it documents an existing artifact.
+
 ```
 python -m wyckoff_transformer.formula_energy.hull_table --workers 16 \
   --input-file data/lemat-bulk/lemat_pbe.csv.gz \
