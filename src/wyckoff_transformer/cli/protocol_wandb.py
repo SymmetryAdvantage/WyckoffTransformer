@@ -16,7 +16,9 @@ sampled from the run's saved space-group distribution.  The gene file is written
 into ``--output-dir`` and shipped in the artifact, so the exact set a run was
 scored on stays recoverable.  A conditional run needs its target passed with
 ``--condition NAME=VALUE`` (datasets are not loaded, so it cannot be sampled
-from training data); an unconditional run takes neither flag.
+from training data); an unconditional run takes neither flag. Conditions
+in ``{energy_above_hull, delta_e_polymorph, max_force}`` default to 0 if required
+by the model and omitted.
 
 Every key of ``funnel.json`` is flattened into ``run.summary`` under a
 ``protocol/`` prefix.  ``screen.json``, the generated draws in
