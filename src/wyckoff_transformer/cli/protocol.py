@@ -236,6 +236,7 @@ _SINGLE_THREAD_ENV_VARS = {
 _WORKER_DEVICE: Optional[str] = None
 _WORKER_TORCH_DEVICE: Optional[str] = None
 _WORKER_CALCULATOR = None
+_WORKER_BUDGET: Optional[DeviceMemoryBudget] = None
 
 #: The cheap potential of a two-stage trial, or ``None`` for the single-stage
 #: protocol.  Built once per process, like the scoring one.
@@ -565,6 +566,97 @@ def claim_device(counter, slots: list[str]) -> str:
     return slots[index % len(slots)]
 
 
+def estimate_relaxation_memory(atoms) -> int:
+    """Projected peak GPU memory in MB for relaxing a structure with *atoms*.
+
+    Derived empirically on Tesla K20c (Kepler sm_35) with ORB-v3:
+      - Baseline context + model weights: ~350 MB.
+      - Graph neighbor tensors & autograd backward pass for forces + stress:
+        scales with N atoms and edge coordination density.
+      - Small/medium (N <= 48): <= 650 MB total.
+      - Dense metal / large cells (N >= 120): up to ~2300-3000 MB total.
+    """
+    n = len(atoms) if atoms is not None else 0
+    return max(600, int(400 + 15 * n))
+
+
+class DeviceMemoryBudget:
+    """Atomic counting memory budget semaphore for devices shared by multiple workers."""
+
+    def __init__(self, device: str, total_mb: int, ctx=None):
+        ctx = ctx or multiprocessing.get_context("spawn")
+        self.device = device
+        self.total_mb = int(total_mb)
+        self._lock = ctx.Lock()
+        self._cond = ctx.Condition(self._lock)
+        self._available_mb = ctx.Value("i", self.total_mb)
+
+    @property
+    def available_mb(self) -> int:
+        with self._lock:
+            return self._available_mb.value
+
+    @contextlib.contextmanager
+    def reserve(self, required_mb: int, label: str = ""):
+        claim = min(int(required_mb), self.total_mb)
+        waited = False
+        with self._cond:
+            while self._available_mb.value < claim:
+                if not waited:
+                    logger.info(
+                        "%sWaiting for %d MB memory budget on %s (available: %d MB / %d MB)",
+                        f"[{label}] " if label else "",
+                        claim, self.device, self._available_mb.value, self.total_mb,
+                    )
+                    waited = True
+                self._cond.wait(timeout=2.0)
+            self._available_mb.value -= claim
+            if waited:
+                logger.info(
+                    "%sAcquired %d MB memory budget on %s (remaining: %d MB)",
+                    f"[{label}] " if label else "",
+                    claim, self.device, self._available_mb.value,
+                )
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._available_mb.value += claim
+                self._cond.notify_all()
+
+
+def resolve_device_budgets(
+    slots: list[str],
+    ctx=None,
+    device_budget_overrides: Optional[dict[str, int]] = None,
+) -> dict[str, DeviceMemoryBudget]:
+    """Create a memory budget semaphore for each physical device in *slots*."""
+    ctx = ctx or multiprocessing.get_context("spawn")
+    budgets = {}
+    overrides = device_budget_overrides or {}
+
+    for device in sorted(set(slots)):
+        if device in overrides:
+            total_mb = overrides[device]
+        elif device.startswith("cuda"):
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    _, _, idx_str = device.partition(":")
+                    idx = int(idx_str) if idx_str else 0
+                    total_bytes = torch.cuda.get_device_properties(idx).total_memory
+                    total_mb = int(total_bytes * 0.85 / (1024 ** 2))
+                else:
+                    total_mb = 4000
+            except Exception:
+                total_mb = 4000
+        else:
+            total_mb = 16000
+        budgets[device] = DeviceMemoryBudget(device, total_mb, ctx=ctx)
+    return budgets
+
+
+
 #: Start of SciPy's ``logm`` accuracy warning, which carries its residual in the
 #: message text.
 _LOGM_WARNING = "logm result may be inaccurate"
@@ -621,6 +713,7 @@ def _init_relax_worker(
     mlip: Optional[str],
     prerelax_mlip: Optional[str],
     debug: bool,
+    budgets: Optional[dict[str, DeviceMemoryBudget]] = None,
 ) -> None:
     """Claim one device for this process and build its calculator(s) once.
 
@@ -637,9 +730,12 @@ def _init_relax_worker(
             which is *not* restricted to published hulls.  ``None`` leaves the
             trial single-stage.
         debug: DEBUG-level logging in this worker.
+        budgets: Per-device memory budgets shared by every worker on a
+            card; see :class:`DeviceMemoryBudget`.  ``None`` runs trials
+            without reserving memory.
     """
     global _WORKER_DEVICE, _WORKER_TORCH_DEVICE, _WORKER_CALCULATOR
-    global _WORKER_PRERELAX_CALCULATOR
+    global _WORKER_PRERELAX_CALCULATOR, _WORKER_BUDGET
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ[key] = value
     _init_worker_logging(debug)
@@ -647,6 +743,7 @@ def _init_relax_worker(
 
     _WORKER_DEVICE = claim_device(counter, slots)
     _WORKER_TORCH_DEVICE = _pin_visible_device(_WORKER_DEVICE)
+    _WORKER_BUDGET = budgets.get(_WORKER_DEVICE) if budgets else None
 
     try:
         import torch
@@ -670,6 +767,7 @@ def _init_relax_worker(
         _WORKER_DEVICE, _WORKER_TORCH_DEVICE, mlip or "no scoring potential",
         f", pre-relaxing with {prerelax_mlip}" if prerelax_mlip else "",
     )
+
 
 
 def _trial_dir(output_dir: Path, index: int, trial: int) -> Path:
@@ -1700,21 +1798,29 @@ def _relax_one(
         "energy_prerattle": None, "energy_per_atom_prerattle": None,
         "cif_prerattle": None, "error": None,
     }
+    req_mb = estimate_relaxation_memory(atoms)
+    budget = _WORKER_BUDGET
+    cm = (
+        budget.reserve(req_mb, label=f"gene {index} trial {trial}")
+        if budget is not None
+        else contextlib.nullcontext()
+    )
     try:
-        with time_limit(timeout):
-            relaxed, energy, prerattle = relax_trial(
-                atoms_in=atoms,
-                calculator=_WORKER_CALCULATOR,
-                trial_dir=Path(trial_dir),
-                label=f"gene {index} trial {trial}",
-                release_symmetry=release_symmetry,
-                rattle=rattle,
-                seed=_trial_seed(index, trial),
-                fmax=fmax,
-                prerelax_calculator=_WORKER_PRERELAX_CALCULATOR,
-                prerelax_fmax=prerelax_fmax,
-                prerelax_max_expansion=prerelax_max_expansion,
-            )
+        with cm:
+            with time_limit(timeout):
+                relaxed, energy, prerattle = relax_trial(
+                    atoms_in=atoms,
+                    calculator=_WORKER_CALCULATOR,
+                    trial_dir=Path(trial_dir),
+                    label=f"gene {index} trial {trial}",
+                    release_symmetry=release_symmetry,
+                    rattle=rattle,
+                    seed=_trial_seed(index, trial),
+                    fmax=fmax,
+                    prerelax_calculator=_WORKER_PRERELAX_CALCULATOR,
+                    prerelax_fmax=prerelax_fmax,
+                    prerelax_max_expansion=prerelax_max_expansion,
+                )
     except Timeout as exc:
         row["status"] = "timeout"
         row["error"] = str(exc)
@@ -1787,11 +1893,12 @@ def _shutdown_relax_pool(pool, grace: float = 120.0) -> None:
 
     So: ask nicely, wait *grace* seconds, then terminate and move on.
     """
+    # `_processes` is None until the pool spawns its first worker, which a
+    # fully resumed stage never does. Snapshot before pool.shutdown() clears it to None.
+    processes = list((getattr(pool, "_processes", None) or {}).values())
     pool.shutdown(wait=False, cancel_futures=True)
     deadline = time.time() + grace
-    # `_processes` is None until the pool spawns its first worker, which a
-    # fully resumed stage never does.
-    for process in list((getattr(pool, "_processes", None) or {}).values()):
+    for process in processes:
         process.join(max(0.0, deadline - time.time()))
         if not process.is_alive():
             continue
@@ -1885,12 +1992,14 @@ def stage_relax(args) -> None:
     total_trials = len(todo)
     done = 0
 
+    budgets = resolve_device_budgets(slots, ctx=ctx)
+
     def _make_pool() -> ProcessPoolExecutor:
         return ProcessPoolExecutor(
             max_workers=len(slots),
             mp_context=ctx,
             initializer=_init_relax_worker,
-            initargs=(claimed, slots, args.mlip, prerelax_mlip, args.debug),
+            initargs=(claimed, slots, args.mlip, prerelax_mlip, args.debug, budgets),
         )
 
     pool = _make_pool()
@@ -2022,6 +2131,7 @@ def stage_relax(args) -> None:
                 if consecutive_pool_failures >= max_pool_restarts or not todo_deque:
                     break
                 logger.info("Restarting relaxation worker pool")
+                budgets = resolve_device_budgets(slots, ctx=ctx)
                 pool = _make_pool()
                 _fill_active()
     finally:
@@ -2052,6 +2162,7 @@ def stage_relax(args) -> None:
         "relax_timeout": args.relax_timeout,
         "workers": len(slots),
         "devices": sorted(set(slots)),
+        "device_memory_budgets": {dev: b.total_mb for dev, b in budgets.items()},
         # The slots themselves, not just the distinct cards: a device named
         # twice has two workers on it, which is how cards of different size
         # get different shares.
@@ -2638,7 +2749,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     relax.add_argument(
-        "--relax-timeout", type=float, default=1800.0,
+        "--relax-timeout", type=float, default=300.0,
         help="Seconds one trial's four-stage relaxation may take. 0 disables the limit.",
     )
     relax.add_argument(

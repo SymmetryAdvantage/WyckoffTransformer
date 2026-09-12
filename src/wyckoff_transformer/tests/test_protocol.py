@@ -19,12 +19,15 @@ from wyckoff_transformer.cli.protocol import (
     TEMPLATE_TRIAL,
     Timeout,
     LOGM_ROUNDOFF,
+    DeviceMemoryBudget,
     _init_relax_worker,
     _pin_visible_device,
     _quiet_logm_roundoff,
     aggregate_structures,
     claim_device,
     build_parser,
+    estimate_relaxation_memory,
+    resolve_device_budgets,
     resolve_devices,
     time_limit,
 )
@@ -298,8 +301,131 @@ class TestClaimDevice(unittest.TestCase):
 
         self.assertEqual(
             list(inspect.signature(_init_relax_worker).parameters),
-            ["counter", "slots", "mlip", "prerelax_mlip", "debug"],
+            ["counter", "slots", "mlip", "prerelax_mlip", "debug", "budgets"],
         )
+
+
+class TestEstimateRelaxationMemory(unittest.TestCase):
+    def test_minimum_floor(self):
+        # Very small structures (N <= 13) get the minimum floor of 600 MB
+        atoms_small = MagicMock()
+        atoms_small.__len__.return_value = 4
+        self.assertEqual(estimate_relaxation_memory(atoms_small), 600)
+
+        atoms_13 = MagicMock()
+        atoms_13.__len__.return_value = 13
+        self.assertEqual(estimate_relaxation_memory(atoms_13), 600)
+
+    def test_linear_scaling(self):
+        # M(N) = max(600, 400 + 15 * N)
+        atoms_50 = MagicMock()
+        atoms_50.__len__.return_value = 50
+        self.assertEqual(estimate_relaxation_memory(atoms_50), 400 + 15 * 50)  # 1150
+
+        atoms_100 = MagicMock()
+        atoms_100.__len__.return_value = 100
+        self.assertEqual(estimate_relaxation_memory(atoms_100), 400 + 15 * 100)  # 1900
+
+        atoms_200 = MagicMock()
+        atoms_200.__len__.return_value = 200
+        self.assertEqual(estimate_relaxation_memory(atoms_200), 400 + 15 * 200)  # 3400
+
+
+class TestDeviceMemoryBudget(unittest.TestCase):
+    def test_budget_properties(self):
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        self.assertEqual(budget.device, "cuda:0")
+        self.assertEqual(budget.total_mb, 4000)
+        self.assertEqual(budget.available_mb, 4000)
+
+    def test_reserve_deducts_and_restores(self):
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        with budget.reserve(1200, label="test"):
+            self.assertEqual(budget.available_mb, 2800)
+        self.assertEqual(budget.available_mb, 4000)
+
+    def test_reserve_restores_on_exception(self):
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        with self.assertRaises(RuntimeError):
+            with budget.reserve(1500, label="error_test"):
+                self.assertEqual(budget.available_mb, 2500)
+                raise RuntimeError("something went wrong")
+        self.assertEqual(budget.available_mb, 4000)
+
+    def test_oversized_job_allowed_when_idle(self):
+        # A structure requiring 5000 MB on a 4000 MB device should be allowed to run
+        # when the card is idle, rather than deadlocking forever.
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        with budget.reserve(5000, label="oversized"):
+            self.assertEqual(budget.available_mb, 0)
+        self.assertEqual(budget.available_mb, 4000)
+
+    def test_concurrent_reservations_serialize_when_over_budget(self):
+        import time
+        import threading
+
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        order = []
+
+        def heavy_job_1():
+            with budget.reserve(2500, label="heavy1"):
+                order.append("heavy1_start")
+                time.sleep(0.05)
+                order.append("heavy1_end")
+
+        def heavy_job_2():
+            # Wait a tiny moment to ensure heavy1 grabs the lock first
+            time.sleep(0.01)
+            with budget.reserve(2500, label="heavy2"):
+                order.append("heavy2_start")
+                order.append("heavy2_end")
+
+        t1 = threading.Thread(target=heavy_job_1)
+        t2 = threading.Thread(target=heavy_job_2)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        # Because 2500 + 2500 = 5000 > 4000, heavy2 must wait until heavy1 ends
+        self.assertEqual(order, ["heavy1_start", "heavy1_end", "heavy2_start", "heavy2_end"])
+
+    def test_concurrent_light_jobs_run_in_parallel(self):
+        import time
+        import threading
+
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        active_counts = []
+        lock = threading.Lock()
+        active = 0
+
+        def light_job():
+            nonlocal active
+            with budget.reserve(1000, label="light"):
+                with lock:
+                    active += 1
+                    active_counts.append(active)
+                time.sleep(0.02)
+                with lock:
+                    active -= 1
+
+        threads = [threading.Thread(target=light_job) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # At least one point in time had > 1 active concurrent worker
+        self.assertGreater(max(active_counts), 1)
+        self.assertEqual(budget.available_mb, 4000)
+
+    def test_resolve_device_budgets(self):
+        slots = ["cuda:0", "cuda:0", "cuda:1"]
+        budgets = resolve_device_budgets(slots, device_budget_overrides={"cuda:0": 3500})
+        self.assertIn("cuda:0", budgets)
+        self.assertIn("cuda:1", budgets)
+        self.assertEqual(budgets["cuda:0"].total_mb, 3500)
+        self.assertGreater(budgets["cuda:1"].total_mb, 0)
 
 
 class TestLogmRoundoffFilter(unittest.TestCase):
@@ -600,7 +726,7 @@ class TestCliDefaults(unittest.TestCase):
         """Neither stage may be held hostage by one gene it cannot finish."""
         args = build_parser().parse_args(["genes.json", "--output-dir", "out"])
         self.assertEqual(args.pyxtal_timeout, 300.0)
-        self.assertEqual(args.relax_timeout, 1800.0)
+        self.assertEqual(args.relax_timeout, 300.0)
         self.assertIsNone(args.pyxtal_cores)  # every core
 
     def test_the_pyxtal_distance_floor_is_unchanged_by_default(self):
@@ -1365,6 +1491,28 @@ class TestStageWorkerFailure(unittest.TestCase):
         self.assertEqual(len(relax_df), 1)
         self.assertEqual(relax_df.iloc[0]["status"], "timeout")
         self.assertIn("worker hung", str(relax_df.iloc[0]["error"]))
+
+    def test_shutdown_relax_pool_terminates_workers_before_shutdown_clears_processes(self):
+        from wyckoff_transformer.cli.protocol import _shutdown_relax_pool
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 99999
+        mock_proc.is_alive.return_value = True
+
+        mock_pool = MagicMock()
+        mock_pool._processes = {99999: mock_proc}
+
+        def fake_shutdown(*args, **kwargs):
+            mock_pool._processes = None
+
+        mock_pool.shutdown.side_effect = fake_shutdown
+
+        _shutdown_relax_pool(mock_pool, grace=0.01)
+
+        mock_pool.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        mock_proc.terminate.assert_called_once()
+        mock_proc.kill.assert_called_once()
+
 
     def test_stage_generate_raises_when_all_workers_fail(self):
         import json

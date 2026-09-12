@@ -526,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
     relax.add_argument("--mlip", type=str, default=DEFAULT_HULL_MLIP, choices=sorted(HULL_MLIPS))
     relax.add_argument("--n-trials", type=str, default=DEFAULT_TRIAL_SCHEDULE)
     relax.add_argument("--fmax", type=float, default=0.05)
-    relax.add_argument("--relax-timeout", type=float, default=1800.0,
+    relax.add_argument("--relax-timeout", type=float, default=300.0,
                        help="Seconds one trial's four-stage relaxation may take.")
     relax.add_argument("--release-symmetry", action=argparse.BooleanOptionalAction, default=True)
     relax.add_argument("--rattle", action=argparse.BooleanOptionalAction, default=True)
