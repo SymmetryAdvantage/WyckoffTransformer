@@ -105,11 +105,11 @@ pytest src/wyckoff_transformer/tests/test_slice_dataset.py
 ## 6. Training Configuration & Verification
 
 ### Model Configs
-- Standard mini-batched training: [`yamls/models/lemat/unconditional_5x.yaml`](../yamls/models/lemat/unconditional_5x.yaml) with `dataset: lemat_bulk_fmax1_stress_ehull01`.
-- Exact split-size batching: [`yamls/models/lemat/unconditional_5x_ehull01.yaml`](../yamls/models/lemat/unconditional_5x_ehull01.yaml)
-  - `train_batch_size: 1576041` (or 50,000 for standard GPU VRAM constraints)
-  - `val_batch_size: 30543`
-  - `test_batch_size: 30818`
+- Mini-batched training config: [`yamls/models/lemat/unconditional_5x_ehull01.yaml`](../yamls/models/lemat/unconditional_5x_ehull01.yaml)
+  - `train_batch_size: 50000` (~31 steps per epoch, sized to fit comfortably in GPU memory on A100-40GB)
+  - `val_batch_size: 30543` (exhaustive evaluation across all 30,543 validation structures)
+  - `test_batch_size: 30818` (exhaustive evaluation across all 30,818 test structures)
+- Generic unconditional baseline: [`yamls/models/lemat/unconditional_5x.yaml`](../yamls/models/lemat/unconditional_5x.yaml)
 
 ### Pilot Training Run
 The dataset was verified end-to-end on an NVIDIA A100 SXM4 40GB GPU:

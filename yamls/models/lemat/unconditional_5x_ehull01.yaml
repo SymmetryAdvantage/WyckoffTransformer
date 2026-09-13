@@ -1,7 +1,6 @@
 # LeMat-Bulk unconditional WyFormer for lemat_bulk_fmax1_stress_ehull01 (E_hull <= 0.1).
-# train, val, and test batch sizes are set equal to the exact sizes of the corresponding
-# dataset splits (1,576,041 train, 30,543 val, 30,818 test), so each epoch consists of
-# exactly one full-dataset batch.
+# train_batch_size is set to 50,000 so each gradient step fits comfortably in GPU memory (A100-40GB),
+# while val_batch_size (30,543) and test_batch_size (30,818) cover the full validation and test splits.
 model:
   start_token: spacegroup_number
   cascade:
@@ -23,7 +22,7 @@ model:
     multiclass_next_token_with_order_permutation: true
     target: NextToken
     evaluation_samples: 1
-    train_batch_size: 1576041
+    train_batch_size: 50000
     val_batch_size: 30543
     test_batch_size: 30818
     compile_model: true
@@ -69,8 +68,7 @@ optimisation:
   validation_period: 500
   early_stopping_patience_epochs: 1000000
   clip_grad_norm: 10.
-  # With train_batch_size equal to the training set size (1,576,041), each epoch
-  # is exactly 1 optimiser step.
+  # 1,576,041 // 50,000 = 31 steps per epoch.
   epochs: 40000
 tokeniser:
   name: lemat_bulk_fmax1_sg_multiplicity
