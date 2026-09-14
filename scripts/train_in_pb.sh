@@ -199,7 +199,7 @@ submit_mode() {
 
     # The ops lookup table is read at model construction time, so a missing file is a
     # hard failure rather than a silent fallback. Comments are stripped before the
-    # grep; a false positive only costs the ~1 min idempotent build.
+    # grep; a false positive only costs a file existence check.
     local NEEDS_OPS_TABLE=0
     if sed 's/#.*//' "$TOKENISER_YAML" "$CONFIG_ABS" | grep -q 'site_symmetry_ops'; then
         NEEDS_OPS_TABLE=1
@@ -523,15 +523,10 @@ job_mode() {
 
     # --- one-off: the operations engineer and its lookup table --------------
     local OPS_TABLE="$REPO/src/wyckoff_transformer/engineers/site_symmetry_ops_id_table.json"
+    # Committed package data: missing means a broken checkout, and regenerating it here
+    # would hide that.
     if [ "$NEEDS_OPS_TABLE" -eq 1 ] && [ ! -f "$OPS_TABLE" ]; then
-        echo "site_symmetry_ops_id table missing -> building the engineers ($(date -Is))"
-        "${IN_CONTAINER[@]}" python -c "
-from wyckoff_transformer.preprocess_wychoffs import (
-    build_site_symmetry_ops_engineer, build_site_symmetry_ops_id_engineer)
-build_site_symmetry_ops_engineer()
-build_site_symmetry_ops_id_engineer()
-print('engineers built')
-" || die "failed to build the site_symmetry_ops engineers"
+        die "$OPS_TABLE is missing; it is committed, so restore it from git"
     fi
 
     # --- one-off: the tensor cache for this tokeniser -----------------------

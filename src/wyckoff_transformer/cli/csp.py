@@ -209,7 +209,8 @@ def run_csp(
         masks=backbone.masks_dict,
         stops=backbone.stops_dict,
         max_sequence_len=backbone.max_sequence_length,
-        device=device)
+        device=device,
+        model_dir=backbone.run_path)
 
     scalar_cond = None
     if condition_values is not None:

@@ -3,7 +3,6 @@ import importlib
 import math
 import os
 import random
-import shutil
 import time
 from random import randint
 import logging
@@ -23,7 +22,6 @@ from huggingface_hub import snapshot_download
 from wandb.sdk.data_types._private import MEDIA_TMP
 
 
-import wyckoff_transformer
 from wyckoff_transformer.paths import cache_root, runs_root
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
@@ -40,8 +38,9 @@ from wyckoff_transformer.composition import (
 )
 from wyckoff_transformer.tokenization import (
     load_tensors_and_tokenisers,
-    load_wyckoff_mappings, WYCKOFF_MAPPINGS_FILENAME,
+    load_wyckoff_mappings, save_package_data, WYCKOFF_MAPPINGS_FILENAME,
     get_wp_index, WyckoffProcessor)
+from wyckoff_transformer.wyckoff_processor import MODEL_ENGINEERS_DIRNAME, engineers_dir_for
 from wyckoff_transformer.generator import WyckoffGenerator
 from wyckoff_transformer.evaluation import (
     evaluate_and_log, StatisticalEvaluator, smac_validity_from_counter)
@@ -1281,7 +1280,8 @@ class WyckoffTrainer():
                 f"condition_dim is {declared} in the config, but nothing conditions this "
                 "model: set condition_feature, composition_conditioning or "
                 "chemical_system_conditioning, or remove condition_dim.")
-        model = CascadeTransformer.from_config_and_tokenisers(config, tokenisers, device)
+        model = CascadeTransformer.from_config_and_tokenisers(
+            config, tokenisers, device, engineers_dir=engineers_dir_for(run_path))
         # model.to(torch.float32)
         # Our hihgly dynamic concat-heavy workflow doesn't benefit much from compilation
         # torch._dynamo.config.cache_size_limit = 128
@@ -2463,18 +2463,21 @@ def train_from_config(
             wandb.run.summary["rescheduled_at_epoch"] = wandb.run.summary.get("epoch")
     else:
         this_run_path.mkdir(parents=True, exist_ok=False)
+        # Before the model is built, so that it is built from the run's own copy. Not on
+        # resume: the run already has the copy it was trained with -- or, if it predates
+        # them, only the package data could be what it used, and copying today's would
+        # claim otherwise.
+        save_package_data(this_run_path)
     trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule)
     if not resume:
         # A resumed run wrote all of these on its first attempt, and their W&B artifacts with
         # them; the config one is what check_resume_config just held it to.
-        shutil.copy(
-            Path(wyckoff_transformer.__file__).parent / WYCKOFF_MAPPINGS_FILENAME,
-            this_run_path / WYCKOFF_MAPPINGS_FILENAME,
-        )
         tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
         processor_json = trainer.processor.save_pretrained(this_run_path)
         tokenizers_engineers.add_file(processor_json)
         tokenizers_engineers.add_file(this_run_path / WYCKOFF_MAPPINGS_FILENAME)
+        tokenizers_engineers.add_dir(
+            str(this_run_path / MODEL_ENGINEERS_DIRNAME), name=MODEL_ENGINEERS_DIRNAME)
         wandb.log_artifact(tokenizers_engineers)
         config_save_path = this_run_path / "config.yaml"
         OmegaConf.save(config_dict, config_save_path)

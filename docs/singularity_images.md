@@ -174,7 +174,7 @@ build_image() {
 
   mkdir -p "$stage/source"
   git archive --format=tar "$source_ref" -- \
-    pyproject.toml uv.lock README.md LICENSE hatch_build.py src scripts yamls |
+    pyproject.toml uv.lock README.md LICENSE src scripts yamls |
     tar -x -C "$stage/source"
   cp "$workdir/tools/uv" "$stage/uv"
   cp "$workdir/WyFormer.def" "$stage/WyFormer.def"

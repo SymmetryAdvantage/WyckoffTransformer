@@ -95,7 +95,8 @@ class TestEnsureRunFiles(unittest.TestCase):
         run.id = "r1"
         pw.ensure_run_files(run, self.run_dir)
         downloaded = {c.args[0] for c in run.file.call_args_list}
-        self.assertEqual(downloaded, {"wyckoff_processor.json", "spacegroup_distribution.json"})
+        self.assertEqual(downloaded, {"wyckoff_processor.json", "spacegroup_distribution.json",
+                                      "wyckoffs_enumerated_by_ss.json"})
 
     def test_missing_download_raises_with_message(self):
         run = MagicMock()
@@ -108,6 +109,8 @@ class TestEnsureRunFiles(unittest.TestCase):
     def test_downloads_missing_file_from_latest_artifact(self):
         (self.run_dir / "wyckoff_processor.json").write_text("{}")
         (self.run_dir / "spacegroup_distribution.json").write_text("{}")
+        (self.run_dir / "wyckoffs_enumerated_by_ss.json").write_text("{}")
+        (self.run_dir / "engineers").mkdir()
         run = MagicMock()
         run.id = "r1"
         run.file.return_value.download.side_effect = RuntimeError("404")
@@ -127,6 +130,53 @@ class TestEnsureRunFiles(unittest.TestCase):
 
         latest.download.assert_called_once_with(root=str(self.run_dir))
         older.download.assert_not_called()
+
+
+class TestEnsureRunEngineers(unittest.TestCase):
+    """A run's own engineers come from its processors artifact, when it logged them."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.run_dir = Path(self._tmp.name)
+
+    @staticmethod
+    def _artifact(type_, *names):
+        artifact = MagicMock()
+        artifact.type = type_
+        artifact.name = f"{type_}_r1:v0"
+        files = []
+        for name in names:
+            artifact_file = MagicMock()
+            artifact_file.name = name
+            files.append(artifact_file)
+        artifact.files.return_value = files
+        return artifact
+
+    def test_downloads_the_processors_artifact_carrying_engineers(self):
+        model = self._artifact("model", "best_model_params.pt")
+        processors = self._artifact(
+            "processors", "wyckoff_processor.json", "engineers/multiplicity.json")
+        run = MagicMock()
+        run.logged_artifacts.return_value = [model, processors]
+        pw.ensure_run_engineers(run, self.run_dir)
+        processors.download.assert_called_once_with(root=str(self.run_dir))
+        model.download.assert_not_called()
+
+    def test_keeps_a_local_copy(self):
+        (self.run_dir / "engineers").mkdir()
+        run = MagicMock()
+        pw.ensure_run_engineers(run, self.run_dir)
+        run.logged_artifacts.assert_not_called()
+
+    def test_a_run_that_predates_engineers_only_warns(self):
+        processors = self._artifact("processors", "wyckoff_processor.json")
+        run = MagicMock()
+        run.id = "r1"
+        run.logged_artifacts.return_value = [processors]
+        with self.assertLogs(pw.logger, level="WARNING"):
+            pw.ensure_run_engineers(run, self.run_dir)
+        processors.download.assert_not_called()
 
 
 class TestMainSkipGenerate(unittest.TestCase):

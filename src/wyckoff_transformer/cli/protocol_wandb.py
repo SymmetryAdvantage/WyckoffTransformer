@@ -45,6 +45,8 @@ from typing import Optional
 import torch
 
 from wyckoff_transformer.paths import runs_root, wandb_dir
+from wyckoff_transformer.tokenization import WYCKOFF_MAPPINGS_FILENAME
+from wyckoff_transformer.wyckoff_processor import MODEL_ENGINEERS_DIRNAME
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.cli import describe_condition, resolve_condition_values
 from wyckoff_transformer.cli import protocol as protocol_cli
@@ -73,6 +75,7 @@ REQUIRED_RUN_FILES = (
     "best_model_params.pt",
     "wyckoff_processor.json",
     "spacegroup_distribution.json",
+    WYCKOFF_MAPPINGS_FILENAME,
 )
 
 GENES_FILE = "wyckoff_genes.json.gz"
@@ -113,6 +116,28 @@ def ensure_run_files(run, run_dir: Path) -> None:
                     f"Run {run.id} has no {name!r} to download ({exc}). Put the "
                     f"model files in {run_dir}/ by hand and re-run."
                 ) from exc
+    ensure_run_engineers(run, run_dir)
+
+
+def ensure_run_engineers(run, run_dir: Path) -> None:
+    """Fetch the run's own ``engineers/`` from its processors artifact, if it has one.
+
+    Runs trained before models carried their engineers have none; loading those falls
+    back to the package's, which is what they were trained with unless it has changed.
+    """
+    if (run_dir / MODEL_ENGINEERS_DIRNAME).is_dir():
+        return
+    prefix = f"{MODEL_ENGINEERS_DIRNAME}/"
+    for artifact in run.logged_artifacts():
+        if artifact.type != "processors":
+            continue
+        if any(artifact_file.name.startswith(prefix) for artifact_file in artifact.files()):
+            logger.info("Downloading %s from artifact %s -> %s", prefix, artifact.name, run_dir)
+            artifact.download(root=str(run_dir))
+            return
+    logger.warning(
+        "Run %s has no %s; it predates models carrying their engineers, so the "
+        "package's are used", run.id, prefix)
 
 
 def generate_genes(

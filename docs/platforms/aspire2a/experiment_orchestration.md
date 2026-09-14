@@ -85,9 +85,8 @@ ln -s $CANON/data                      $WT/data                      # shared ra
 ln -s $CANON/cache/$DATASET/data.pkl.gz $WT/cache/$DATASET/data.pkl.gz  # shared, code-independent (stage 1)
 # stage-2 tensor cache: symlink the shared one when the tokenisation fingerprint
 # matches, else point at a snapshot-private @<fp> path (see section 3)
-# wyckoffs_enumerated_by_ss.json is build-generated and NOT committed; it is loaded
-# relative to the package source dir, so generate it once per worktree (pure Python, no GPU):
-cd $WT && PYTHONPATH=src $VENV/bin/python -m wyckoff_transformer.preprocess_wychoffs
+# wyckoffs_enumerated_by_ss.json and engineers/*.json are committed package data, so a
+# worktree already has them -- do not regenerate them.
 ```
 
 Jobs then run `PYTHONPATH=$WT/src $VENV/bin/python scripts/train.py ...` from

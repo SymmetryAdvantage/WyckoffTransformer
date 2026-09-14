@@ -45,8 +45,10 @@ def main():
         datasets_pd = {name: dataset.sample(100) for name, dataset in datasets_pd.items()}
         print("Piloting with 100 samples")
     processor = WyckoffProcessor.from_config(config, tokenizer_path=args.tokenizer_path)
+    # tokenizer_path again: without it the processor builds fresh tokenisers from this
+    # data, whatever it was loaded from
     tensors, _, token_engineers = processor.tokenise_dataset(
-        datasets_pd, n_jobs=args.n_jobs)
+        datasets_pd, tokenizer_path=args.tokenizer_path, n_jobs=args.n_jobs)
     if args.debug and "multiplicity" in token_engineers:
         index = 0
         multiplicities_from_tokens = token_engineers["multiplicity"].get_feature_from_token_batch(
