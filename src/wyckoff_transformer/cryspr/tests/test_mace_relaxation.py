@@ -44,9 +44,11 @@ MACE_MODEL_URL = (
     "mace_mp_0/2023-12-10-mace-128-L0_energy_epoch-249.model"
 )
 
-# Path to MP-20 CSV files (repo root / data / mp_20 /)
-# parents: test file → tests/ → cryspr/ → wyckoff_transformer/ → src/ → repo root
-_MP20_DIR = Path(__file__).parents[4] / "data" / "mp_20"
+def _mp20_dir() -> Path:
+    """The MP-20 CSVs in the configured data store; see wyckoff_transformer.paths."""
+    from wyckoff_transformer.paths import data_path
+
+    return data_path("mp_20")
 
 # 10 MP-20 structures covering common topologies.
 # First 8 have 0 internal degrees of freedom (fractional coordinates fully
@@ -94,13 +96,13 @@ def _load_mp20_cif_map() -> dict[str, str]:
     """
     import pandas as pd
 
-    if not _MP20_DIR.exists():
+    if not _mp20_dir().exists():
         return {}
 
     needed = set(_MATERIAL_IDS)
     found: dict[str, str] = {}
     for split in ("train", "val", "test"):
-        csv_path = _MP20_DIR / f"{split}.csv"
+        csv_path = _mp20_dir() / f"{split}.csv"
         if not csv_path.exists() or not needed:
             continue
         df = pd.read_csv(csv_path, usecols=["material_id", "cif"])

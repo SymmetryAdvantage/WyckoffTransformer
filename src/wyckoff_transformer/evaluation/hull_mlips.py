@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from wyckoff_transformer.paths import resolve_store_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -280,6 +282,8 @@ def verify_hull_energies(
     """
     import pandas as pd
     from ase.io import read as ase_read
+
+    lemat_cif_csv = resolve_store_path(lemat_cif_csv)
 
     spec = resolve_hull_mlip(mlip)
 

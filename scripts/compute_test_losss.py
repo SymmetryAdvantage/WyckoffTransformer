@@ -4,6 +4,7 @@ import torch
 from omegaconf import OmegaConf
 import wandb
 from tqdm import trange
+from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.trainer import WyckoffTrainer
 
@@ -28,7 +29,7 @@ def main():
         final_config = OmegaConf.merge(base_config, wandb_config)
     else:
         final_config = wandb_config
-    run_dir = Path(__file__).parent.parent / "runs" / args.wandb_run
+    run_dir = runs_root() / args.wandb_run
     if not run_dir.exists():
         run_dir.mkdir(parents=True)
         wandb_run.file("best_model_params.pt").download(run_dir)

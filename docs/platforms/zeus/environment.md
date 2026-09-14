@@ -41,6 +41,37 @@ inspect a scratch venv, pass `--python /tmp/venv-test/bin/python`.
 
 ---
 
+## Where the data, cache and runs live
+
+zeus keeps them under XDG's data directory, on the NVMe root, as recorded in
+`~/.config/wyformer/paths.env` (format and rules: `docs/data_store.md`):
+
+```
+WYFORMER_DATA=/home/kna/.local/share/wyformer/data
+WYFORMER_CACHE=/home/kna/.local/share/wyformer/cache
+WYFORMER_RUNS=/home/kna/.local/share/wyformer/runs
+WANDB_DIR=/home/kna/.local/share/wyformer
+```
+
+The paths are written out literally. `XDG_DATA_HOME` is **unset** here -- it is a
+specification default, not an exported variable -- and the file is never
+expanded anyway, so `$XDG_DATA_HOME/wyformer` would be an error, not
+`~/.local/share/wyformer`.
+
+The checkout and `~/.local/share` are the same filesystem, so moving a directory
+between them is a rename, not a copy. Nothing on this machine may assume the old
+in-checkout paths: there are no compatibility symlinks, and other projects that
+read `/home/kna/WyckoffTransformer/data/...` directly (DiffCSPNew) have to point at
+the store instead.
+
+`~/.config/wyformer/env.sh` is a leftover of an earlier plan to export all four
+locations from `~/.bashrc`. Nothing reads it.
+
+The untracked datasets were moved into the store on 2026-09-14: `formula_energy`,
+`lemat-bulk`, `lemat_bulk_fmax1`, `lemat_bulk_fmax1_stress`,
+`unique_fingerprints.parquet`, and the three `mp_2026_gga_gap` CSVs (its README is
+tracked and stayed). Everything tracked by git stayed in the checkout.
+
 ## The state of the current venv
 
 | | |

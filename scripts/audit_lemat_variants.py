@@ -36,7 +36,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wyckoff_transformer.paths import cache_root, data_root
+from wyckoff_transformer.paths import cache_root, data_glob, data_path
 
 logger = logging.getLogger("audit_lemat_variants")
 
@@ -52,7 +52,7 @@ def archive_forces() -> pd.Series:
     The fallback for a cache built without a ``max_force`` scalar column: the cut it was
     built under is still legible from the archive values of the rows that survived it.
     """
-    path = data_root() / "lemat-bulk" / "convergence_labels.parquet"
+    path = data_path("lemat-bulk", "convergence_labels.parquet")
     if not path.exists():
         return pd.Series(dtype=float)
     table = pd.read_parquet(path, columns=["immutable_id", "max_force", "convergence_source"])
@@ -144,13 +144,13 @@ def main() -> None:
     if args.variant:
         wanted = [(v.split("/", 1)[0], v.split("/", 1)[1]) for v in args.variant]
     else:
-        wanted = ([("data", p.name) for p in sorted(data_root().glob("lemat_bulk*")) if p.is_dir()]
+        wanted = ([("data", p.name) for p in data_glob("lemat_bulk*") if p.is_dir()]
                   + [("cache", p.name) for p in sorted(cache_root().glob("lemat_bulk*")) if p.is_dir()])
 
     records = []
     for store, name in wanted:
         if store == "data":
-            frames = load_splits(data_root() / name)
+            frames = load_splits(data_path(name))
             if not frames:
                 logger.warning("data/%s holds no split CSVs; skipped", name)
                 continue

@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from wyckoff_transformer.paths import resolve_store_path
+
 DEFAULT_SOURCE = Path("data/lemat-bulk/lemat_pbe_ehull.csv.gz")
 DEFAULT_OUT = Path("data/mp_provenance.csv.gz")
 CHUNK = 1000
@@ -95,6 +97,8 @@ def main() -> None:
     if not api_key:
         raise SystemExit("MP_API_KEY is not set; put it in .env or the environment")
 
+    args.source = resolve_store_path(args.source)
+    args.out = resolve_store_path(args.out)
     ids = mp_ids(args.source)
     print(f"{len(ids)} mp- ids in {args.source}")
     table = fetch(ids, api_key)

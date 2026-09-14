@@ -40,6 +40,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.paths import resolve_store_path
+
 LEMAT_CACHE = Path("cache/lemat_bulk_ehull/data.pkl.gz")
 MP20_CACHE = Path("cache/mp_20/data.pkl.gz")
 DEFAULT_GENES = Path("generated/upi73i4k/wyckoff_genes_ehull0_n2500.json.gz")
@@ -90,6 +92,7 @@ def add_keys(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_cache(path: Path) -> dict[str, pd.DataFrame]:
+    path = resolve_store_path(path)
     started = time.time()
     data = pd.read_pickle(path)
     if not isinstance(data, dict):

@@ -15,6 +15,7 @@ from pymatgen.io.cif import CifParser
 from pymatgen.symmetry.analyzer import SymmetryUndeterminedError
 from pyxtal import pyxtal
 
+from wyckoff_transformer.paths import data_path
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
@@ -296,7 +297,7 @@ def compute_symmetry_sites(
 
 
 def read_all_MP_csv(
-    mp_path: Path = Path(__file__).resolve().parents[2] / "data" / "mp_20",
+    mp_path: Optional[Path] = None,
     n_jobs: Optional[int] = None,
     symmetry_precision: float = 0.1,
     symmetry_a_tol: float = 5.0,
@@ -305,6 +306,8 @@ def read_all_MP_csv(
     sort_by_letter: Optional[bool] = None,
 ) -> tuple[dict[str, pd.DataFrame], int]:
     """Read all split CSVs for a dataset and convert them to symmetry-site records."""
+    if mp_path is None:
+        mp_path = data_path("mp_20")
     datasets_pd = {}
     for dataset_name in ("train", "test", "val"):
         print(f"Reading dataset {dataset_name}...")

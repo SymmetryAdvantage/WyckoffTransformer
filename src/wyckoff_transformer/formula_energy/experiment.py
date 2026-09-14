@@ -36,6 +36,7 @@ from wyckoff_transformer.csp import parse_formula
 from wyckoff_transformer.formula_energy import answer_key as ak
 from wyckoff_transformer.formula_energy import baselines, metrics
 from wyckoff_transformer.formula_energy import train as T
+from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -211,7 +212,8 @@ def main() -> None:
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("device: %s", device)
     frame = run(
-        pd.read_parquet(args.shallow_table), pd.read_parquet(args.answer_key),
+        pd.read_parquet(resolve_store_path(args.shallow_table)),
+        pd.read_parquet(resolve_store_path(args.answer_key)),
         device, args.models, args.epochs, args.quick, args.noise,
     )
     ranking = pd.DataFrame(frame.attrs["ranking"])

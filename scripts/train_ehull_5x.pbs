@@ -47,6 +47,20 @@ set -u
 
 # --- fixed paths ---------------------------------------------------------------
 REPO=/scratch/users/nus/kna/WyckoffTransformer
+# The stores may live outside the checkout: resolved from
+# ~/.config/wyformer/paths.env (docs/data_store.md), the checkout being the
+# fallback only when there is no config file. Exported so the container's Python
+# uses exactly these, whatever it would resolve on its own.
+# shellcheck source=scripts/wyformer_paths.sh
+. "$REPO/scripts/wyformer_paths.sh"
+# Explicit exits: `set -e` is not on yet at this point in the script.
+DATA_DIR=$(wyformer_path WYFORMER_DATA "$REPO/data") || exit 1
+CACHE_DIR=$(wyformer_path WYFORMER_CACHE "$REPO/cache") || exit 1
+RUNS_DIR=$(wyformer_path WYFORMER_RUNS "$REPO/runs") || exit 1
+WANDB_ROOT=$(wyformer_path WANDB_DIR "$REPO") || exit 1
+export WYFORMER_DATA="$DATA_DIR" WYFORMER_CACHE="$CACHE_DIR" WYFORMER_RUNS="$RUNS_DIR" \
+       WANDB_DIR="$WANDB_ROOT"
+
 SIF=/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif
 CONFIG=yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml
 DATASET=lemat_bulk_ehull
@@ -63,7 +77,7 @@ cd "$REPO"
 mkdir -p logs runs
 
 # --- persistent W&B run id ---------------------------------------------------
-RUNID_FILE="$REPO/runs/.ehull_5x.runid"
+RUNID_FILE="$RUNS_DIR/.ehull_5x.runid"
 if [ -n "${RUN_ID:-}" ]; then
     :                                       # passed down the chain
 elif [ -f "$RUNID_FILE" ]; then
@@ -72,7 +86,7 @@ else
     RUN_ID="ehull5x-$(date +%Y%m%d-%H%M%S)"
     echo "$RUN_ID" > "$RUNID_FILE"
 fi
-RUN_DIR="$REPO/runs/$RUN_ID"
+RUN_DIR="$RUNS_DIR/$RUN_ID"
 
 echo "=========================================================="
 echo "attempt   : $ATTEMPT / $MAX_ATTEMPTS"
@@ -88,15 +102,33 @@ if [ -f "$RUN_DIR/COMPLETED" ]; then
     exit 0
 fi
 
-# A run dir with no checkpoint is a crash before the first save: nothing to
-# resume, and train.py refuses to mkdir over an existing dir, so clear it.
+# A run dir with no local checkpoint is NOT necessarily a crash before the first
+# save. `runs/` may be purge-policy scratch (docs/data_store.md), so the trainer
+# mirrors last_checkpoint.pt to W&B; ask before giving up, because a purged run has
+# trained epochs that exist nowhere else. train.py refuses to mkdir over an existing
+# dir, so a genuinely spent dir is moved aside -- never deleted, since it can hold
+# the only local best_model_params.pt.
 RESUME_ARGS=()
 if [ -f "$RUN_DIR/last_checkpoint.pt" ]; then
     RESUME_ARGS=(--resume "$RUN_ID")
     echo "resuming from $RUN_DIR/last_checkpoint.pt"
 elif [ -d "$RUN_DIR" ]; then
-    echo "run dir exists without a checkpoint -> removing and starting fresh"
-    rm -rf "$RUN_DIR"
+    PROBE_RC=0
+    PROBE_OUT=$(bash "$REPO/scripts/run_in_singularity.sh" \
+        python -m wyckoff_transformer.cli.resume_probe "$RUN_ID" --runs-path "$RUNS_DIR" 2>&1) \
+        || PROBE_RC=$?
+    if [ "$PROBE_RC" -eq 0 ]; then
+        RESUME_ARGS=(--resume "$RUN_ID")
+        echo "no local checkpoint -> train.py will recover it from W&B: $PROBE_OUT"
+    elif [ "$PROBE_RC" -eq 1 ]; then
+        SPENT_DIR="$RUN_DIR.spent-$(date +%Y%m%d-%H%M%S)"
+        echo "run dir has no resume state anywhere -> moving it to $SPENT_DIR" >&2
+        mv "$RUN_DIR" "$SPENT_DIR"
+    else
+        echo "error: cannot tell whether $RUN_ID has resume state ($PROBE_OUT)." >&2
+        echo "error: refusing to start over -- its epochs may exist only in W&B." >&2
+        exit 1
+    fi
 fi
 
 # --- environment for the container -----------------------------------------
@@ -123,7 +155,7 @@ set +e
 timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
     bash "$REPO/scripts/run_in_singularity.sh" \
         python scripts/train.py "$CONFIG" "$DATASET" cuda \
-            --run-path "$REPO/runs" ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+            --run-path "$RUNS_DIR" ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
 rc=$?
 set -e
 

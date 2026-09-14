@@ -106,26 +106,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wyckoff_transformer.paths import cache_root, data_root
+from wyckoff_transformer.paths import cache_root, data_path
 
 logger = logging.getLogger("build_lemat_bulk_fmax")
 
 REPO = Path(__file__).resolve().parent.parent
 #: ``max_force`` and the CIFs. The energy CSV has a ``max_force`` column too, and it is
 #: NaN in every one of its rows.
-DEFAULT_STRUCTURE_CSV = data_root() / "lemat-bulk" / "lemat_pbe.csv.gz"
+DEFAULT_STRUCTURE_CSV = data_path("lemat-bulk", "lemat_pbe.csv.gz")
 #: Written by ``scripts/build_lemat_bulk_fmax.py --labels-only`` (or the scratch probe):
 #: one row per structure with the reduced formula, cell size and energies, no CIF.
-DEFAULT_LABELS = data_root() / "lemat-bulk" / "labels.parquet"
+DEFAULT_LABELS = data_path("lemat-bulk", "labels.parquet")
 DEFAULT_SPLIT_IDS = cache_root() / "lemat_bulk_ehull" / "split_ids.json"
 #: LeMat-Bulk as downloaded: per-atom ``forces`` (eV/A) and ``stress_tensor`` (kBar, VASP
 #: sign), which the structure CSV only summarises as ``max_force``.
-DEFAULT_RAW = data_root() / "lemat-bulk" / "raw" / "data.parquet"
+DEFAULT_RAW = data_path("lemat-bulk", "raw", "data.parquet")
 #: Written by ``scripts/recover_mp_forces.py``: forces and stress for the MP rows whose
 #: archived arrays are empty, read from the last ionic step of the very task LeMat took the
 #: energy from.
 DEFAULT_RECOVERED = cache_root() / "mp_forces_recovery" / "runs" / "full" / "results.parquet"
-DEFAULT_CONVERGENCE_LABELS = data_root() / "lemat-bulk" / "convergence_labels.parquet"
+DEFAULT_CONVERGENCE_LABELS = data_path("lemat-bulk", "convergence_labels.parquet")
 
 #: Formation energies outside this window are corrupt rather than exotic -- the archive
 #: runs to -37.9 and +650.7 eV/atom. It matters more here than in a mean-fitting model:
@@ -392,7 +392,7 @@ def main():
                         help="Keep structures whose largest force component is at most this, eV/A.")
     parser.add_argument("--structure-csv", type=Path, default=DEFAULT_STRUCTURE_CSV)
     parser.add_argument("--energy-csv", type=Path,
-                        default=data_root() / "lemat-bulk" / "lemat_pbe_ehull.csv.gz")
+                        default=data_path("lemat-bulk", "lemat_pbe_ehull.csv.gz"))
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS,
                         help="Cached label table; rebuilt from the CSVs when absent.")
     parser.add_argument("--rebuild-labels", action="store_true")
@@ -470,7 +470,7 @@ def main():
     split_of[test_ids] = "test"
     logger.info("split sizes: %s", split_of.value_counts().to_dict())
 
-    out_dir = data_root() / args.name
+    out_dir = data_path(args.name)
     out_dir.mkdir(parents=True, exist_ok=True)
     # Record the held-out ids next to the cache the way lemat_bulk_ehull did, so a later
     # variant can inherit this split instead of redrawing one.

@@ -6,6 +6,7 @@ import pickle
 import gzip
 import logging
 
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, WyckoffProcessor, save_tensor_cache
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def main():
     tokenizer_full_name = args.config_file.resolve().relative_to(tokenizer_root_path).with_suffix('')
     if config.name != str(tokenizer_full_name):
         raise ValueError(f"Config inside file {config.name} does not match the file name {tokenizer_full_name}")
-    cache_path = Path(__file__).parent.parent.resolve() / "cache" / args.dataset
+    cache_path = cache_root() / args.dataset
     cache_path.mkdir(parents=True, exist_ok=True)
     with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
         datasets_pd = pickle.load(f)

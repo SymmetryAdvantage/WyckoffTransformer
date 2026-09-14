@@ -4,6 +4,7 @@ import math
 import os
 import random
 import shutil
+import time
 from random import randint
 import logging
 from functools import partial
@@ -23,6 +24,7 @@ from wandb.sdk.data_types._private import MEDIA_TMP
 
 
 import wyckoff_transformer
+from wyckoff_transformer.paths import cache_root, runs_root
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.censored import CensoredMinDiagnostics, CensoredMinLoss
@@ -204,6 +206,64 @@ CHECKPOINT_FILENAME = "last_checkpoint.pt"
 #: A resume that finds an older version fails loudly rather than restoring half a run.
 CHECKPOINT_FORMAT_VERSION = 1
 
+#: How often the resume checkpoint is mirrored to W&B, in seconds. `runs/` is
+#: per-machine and may sit on purge-policy scratch (docs/data_store.md), so the
+#: checkpoint is copied to the run's W&B files: it used to be the one part of a run that
+#: existed in exactly one place, and losing it silently restarted multi-day PBS chains
+#: from epoch 0.
+#:
+#: Throttled in *time* rather than epochs because the cadence of the local write is
+#: `checkpoint_period`, which is `validation_period` by default -- commonly 10 against
+#: tens of thousands of epochs. Mirroring every write would push tens of gigabytes for a
+#: file whose useful copies are "the latest one". The interval instead bounds what a
+#: purge can cost to the training done since the last mirror.
+CHECKPOINT_MIRROR_INTERVAL_S = 1800.0
+
+
+def restore_checkpoint_from_wandb(run_path: Path) -> Path | None:
+    """Download the resume checkpoint of the *current* W&B run into *run_path*.
+
+    For the case the mirror exists for: `runs/` was purged, or the chain moved to a
+    machine that never held this run. Returns the restored path, or ``None`` when the
+    run carries no mirrored checkpoint -- which means there is genuinely nothing to
+    resume, as opposed to a checkpoint that could not be fetched.
+
+    Raises:
+        RuntimeError: the file is listed on the run but could not be downloaded.
+            Failing here is deliberate: silently starting over is what this whole
+            mechanism exists to prevent.
+    """
+    if wandb.run is None:
+        return None
+    try:
+        api_run = wandb.Api().run(
+            f"{wandb.run.entity}/{wandb.run.project}/{wandb.run.id}")
+        remote = api_run.file(CHECKPOINT_FILENAME)
+    except Exception:  # noqa: BLE001 - offline, no credentials, or a run never synced
+        logger.info("Cannot ask W&B for %s of run %s", CHECKPOINT_FILENAME, wandb.run.id)
+        return None
+    # A file the run never uploaded comes back as an entry with no size rather than as
+    # an error, so the absence has to be read off the metadata.
+    if getattr(remote, "size", 0) in (0, None):
+        logger.info("Run %s has no mirrored %s", wandb.run.id, CHECKPOINT_FILENAME)
+        return None
+    try:
+        run_path.mkdir(parents=True, exist_ok=True)
+        remote.download(root=str(run_path), replace=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Run {wandb.run.id} lists a mirrored {CHECKPOINT_FILENAME} but it could "
+            f"not be downloaded to {run_path}. Fix this rather than starting over: the "
+            f"run has trained epochs that are in no local file."
+        ) from exc
+    restored = run_path / CHECKPOINT_FILENAME
+    if not restored.is_file():
+        raise RuntimeError(
+            f"Downloaded {CHECKPOINT_FILENAME} of run {wandb.run.id} to {run_path}, "
+            f"but no such file is there")
+    logger.warning("Restored %s from W&B -- the local copy was missing", restored)
+    return restored
+
 
 def ensure_wandb_media_directory() -> None:
     """Restore W&B's media staging directory if a long-running job lost it from /tmp."""
@@ -301,6 +361,11 @@ class WyckoffTrainer():
     #: A class attribute so that trainers built by tests via __new__, which skip __init__,
     #: still have a sane default rather than an AttributeError in the training loop.
     scheduler_steps_per_batch = False
+
+    #: `time.monotonic()` of the last checkpoint mirrored to W&B. Zero means "never", so
+    #: the first checkpoint of a process is always mirrored. A class attribute for the
+    #: same reason as the one above.
+    _last_checkpoint_mirror = 0.0
 
     #: Optimiser steps the step-indexed schedule was sized for, or None when the schedule
     #: does not depend on a horizon. train() checks this against the run it is about to do.
@@ -1113,12 +1178,14 @@ class WyckoffTrainer():
     def from_config(cls, config_dict: dict|DictConfig,
                     device: torch.device,
                     use_cached_tensors: bool = True,
-                    run_path: Optional[Path] = Path("runs"),
+                    run_path: Optional[Path] = None,
                     load_datasets: bool = True,
                     production_training: bool = False,
                     no_test: bool = False,
                     resume: bool = False,
                     reschedule: bool = False):
+        if run_path is None:
+            run_path = runs_root()
         config = OmegaConf.create(config_dict)
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
@@ -1738,7 +1805,47 @@ class WyckoffTrainer():
         }
         atomic_torch_save(checkpoint, self.checkpoint_path)
         logger.info("Wrote the resume checkpoint for epoch %d to %s", epoch, self.checkpoint_path)
+        self.mirror_checkpoint_to_wandb(force=epoch >= self.epochs)
         return self.checkpoint_path
+
+    def mirror_checkpoint_to_wandb(self, force: bool = False) -> bool:
+        """Copy the resume checkpoint into the run's W&B files, so a purge is survivable.
+
+        Uploaded as one of the run's files rather than an artifact: a file is a single
+        slot that later uploads overwrite, whereas every artifact log would mint a new
+        version of a 1-40 MB file that nothing would ever read again.
+        `restore_checkpoint_from_wandb` reads it back, the same way
+        `cli.protocol_wandb.ensure_run_files` fetches the rest of a run.
+
+        Rate-limited to :data:`CHECKPOINT_MIRROR_INTERVAL_S`; *force* overrides that and
+        is used for the save that records the end of the training loop, so the last word
+        on a run is always mirrored.
+
+        Best effort on purpose: failing to upload must never cost the epoch that was
+        just trained, and the local checkpoint still stands either way.
+
+        Returns:
+            Whether the upload was attempted.
+        """
+        if wandb.run is None:
+            return False
+        now = time.monotonic()
+        since = now - self._last_checkpoint_mirror
+        if not force and since < CHECKPOINT_MIRROR_INTERVAL_S:
+            logger.debug("Not mirroring the checkpoint yet: %.0fs since the last one", since)
+            return False
+        try:
+            wandb.save(str(self.checkpoint_path), base_path=str(self.run_path), policy="now")
+        except Exception:
+            # Never let the mirror cost a trained epoch.
+            logger.warning(
+                "Could not mirror %s to W&B; it exists only on this machine",
+                self.checkpoint_path, exc_info=True)
+            return False
+        self._last_checkpoint_mirror = now
+        logger.info("Mirrored %s to the W&B files of run %s",
+                    self.checkpoint_path.name, wandb.run.id)
+        return True
 
     def load_training_checkpoint(self) -> Dict[str, Any]:
         """Restore the state saved by `save_training_checkpoint` into this trainer.
@@ -2319,21 +2426,28 @@ def check_resume_config(
 def train_from_config(
     config_dict: dict,
     device: torch.device,
-    run_path: Path = Path(__file__).resolve().parent.parent / "runs",
+    run_path: Path | None = None,
     production_training: bool = False,
     no_test: bool = False,
     resume: bool = False,
     reschedule: bool = False):
 
+    if run_path is None:
+        run_path = runs_root()
     if wandb.run is None:
         raise ValueError("W&B run must be initialized")
     this_run_path = run_path / wandb.run.id
     if resume:
         checkpoint_path = this_run_path / CHECKPOINT_FILENAME
-        if not checkpoint_path.exists():
+        # `runs/` is per-machine and may be purged; the checkpoint is mirrored to W&B
+        # precisely so that is recoverable rather than a silent restart. Short-circuit:
+        # the download is only attempted when there is no local copy to use.
+        if (not checkpoint_path.exists()
+                and restore_checkpoint_from_wandb(this_run_path) is None):
             raise FileNotFoundError(
                 f"Asked to resume run {wandb.run.id}, but it has no checkpoint at "
-                f"{checkpoint_path}. A run that died before writing one has to be started over.")
+                f"{checkpoint_path} and none mirrored to W&B. A run that died "
+                f"before writing one has to be started over.")
         rescheduled = check_resume_config(
             config_dict, this_run_path / "config.yaml", reschedule=reschedule)
         logger.info("Resuming run %s from %s", wandb.run.id, checkpoint_path)
@@ -2378,7 +2492,7 @@ def train_from_config(
 
         evaluator: Optional[StatisticalEvaluator] = None
         if not no_test:
-            data_cache_path = Path(__file__).resolve().parents[2] / "cache" / config.dataset / "data.pkl.gz"
+            data_cache_path = cache_root() / config.dataset / "data.pkl.gz"
             with gzip.open(data_cache_path, "rb") as f:
                 datasets_pd = pickle.load(f)
             datasets_pd.pop("train", None)

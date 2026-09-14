@@ -49,6 +49,7 @@ from typing import Iterable, Optional, Sequence
 import pandas as pd
 
 from wyckoff_transformer.evaluation.novelty import record_to_augmented_fingerprint
+from wyckoff_transformer.paths import resolve_store_path
 
 # wyckoff_transformer.tokenization imports torch, and preprocess_wychoffs pulls
 # in sklearn/scipy, but only GeneFingerprinter needs either.  They are imported
@@ -209,6 +210,9 @@ def load_reference_fingerprints(
     Returns:
         The set of augmented Wyckoff fingerprints.
     """
+    cache = resolve_store_path(cache)
+    if fingerprint_cache is not None:
+        fingerprint_cache = resolve_store_path(fingerprint_cache)
     if fingerprint_cache is not None and Path(fingerprint_cache).is_file():
         with gzip.open(fingerprint_cache, "rb") as handle:
             fingerprints = pickle.load(handle)
@@ -216,7 +220,6 @@ def load_reference_fingerprints(
                     len(fingerprints), fingerprint_cache)
         return fingerprints
 
-    cache = Path(cache)
     if not cache.is_file():
         raise FileNotFoundError(
             f"No LeMat-Bulk gene cache at {cache}. Build it with the dataset "
@@ -348,7 +351,10 @@ class GeneFingerprinter:
     """
 
     def __init__(self) -> None:
-        from wyckoff_transformer.data import pyxtal_notation_to_sites, structure_to_sites
+        from wyckoff_transformer.data import (
+            pyxtal_notation_to_sites,
+            structure_to_sites,
+        )
         from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
         from wyckoff_transformer.tokenization import load_wyckoff_mappings
 

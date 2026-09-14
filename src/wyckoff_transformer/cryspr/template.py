@@ -52,6 +52,8 @@ from typing import Iterable, Mapping, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.paths import resolve_store_path
+
 logger = logging.getLogger(__name__)
 
 #: Where :meth:`TemplateIndex.load` keeps the built index.  Beside the Wyckoff
@@ -357,7 +359,7 @@ class TemplateIndex:
         Returns:
             The index.
         """
-        path = Path(path) if path is not None else DEFAULT_INDEX_PATH
+        path = resolve_store_path(path if path is not None else DEFAULT_INDEX_PATH)
         if path.is_file():
             frame = pd.read_parquet(path)
             logger.info("Loaded %d template rows from %s", len(frame), path)

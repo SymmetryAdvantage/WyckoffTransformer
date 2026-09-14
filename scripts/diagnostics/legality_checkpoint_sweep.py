@@ -5,6 +5,7 @@ from collections import Counter
 import numpy as np, torch
 from omegaconf import OmegaConf
 logging.basicConfig(level=logging.CRITICAL); warnings.filterwarnings("ignore")
+from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.cli import single_channel_condition
 
@@ -56,7 +57,7 @@ def measure(run: Path):
     common = n >= 3000
     return ds, (bad * w).sum(), bad.mean(), (bad[common].mean() if common.any() else float("nan")), nparam
 
-runs = sorted(p for p in Path("runs").iterdir() if (p / "best_model_params.pt").exists())
+runs = sorted(p for p in runs_root().iterdir() if (p / "best_model_params.pt").exists())
 print(f"{'run':>10} {'dataset':>22} {'params':>9} {'weighted':>9} {'unweighted':>11} {'common SGs':>11}")
 for r in runs:
     try:

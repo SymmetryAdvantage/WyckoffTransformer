@@ -17,6 +17,7 @@ from pandarallel import pandarallel
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.wyckoff_processor import (
     FeatureEngineer,
     WyckoffProcessor,
@@ -459,9 +460,11 @@ def load_tensors_and_tokenisers(
     dataset: str,
     config_name: str,
     use_cached_tensors: bool = True,
-    cache_path: Path = Path(__file__).resolve().parents[2] / "cache",
+    cache_path: Optional[Path] = None,
     tokenizer_path: Optional[Path] = None):
 
+    if cache_path is None:
+        cache_path = cache_root()
     this_cache_path = cache_path / dataset
     if use_cached_tensors:
         processor = WyckoffProcessor.from_pretrained(this_cache_path / "tokenisers" / f"{config_name}.json")
@@ -475,7 +478,7 @@ def load_tensors_and_tokenisers(
             raise
         return tensors, tokenisers, token_engineers
     else:
-        cache_path = Path(__file__).resolve().parents[2] / "cache" / dataset
+        cache_path = cache_root() / dataset
         with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
             datasets_pd = pickle.load(f)
         return tokenise_dataset(

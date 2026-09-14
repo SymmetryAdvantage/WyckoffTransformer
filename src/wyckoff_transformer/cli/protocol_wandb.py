@@ -44,6 +44,7 @@ from typing import Optional
 
 import torch
 
+from wyckoff_transformer.paths import runs_root, wandb_dir
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.cli import describe_condition, resolve_condition_values
 from wyckoff_transformer.cli import protocol as protocol_cli
@@ -142,7 +143,7 @@ def generate_genes(
     import wandb  # noqa: PLC0415
 
     run = wandb.Api().run(wandb_run_path(run_id, entity, project))
-    ensure_run_files(run, Path.cwd() / "runs" / run_id)
+    ensure_run_files(run, runs_root() / run_id)
 
     trainer = load_trainer(
         device=device,
@@ -277,6 +278,7 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
 
     out = args.output_dir
     run = wandb.init(
+        dir=wandb_dir(),
         entity=args.wandb_entity,
         project=args.wandb_project,
         id=args.wandb_run,

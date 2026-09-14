@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 import torch
 from omegaconf import OmegaConf
 
+from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.chemical_system import (
     chemical_system_vector,
@@ -63,7 +64,7 @@ def load_trainer(
         # necessarily the one the run was logged under.
         run = wandb.Api().run(wandb_run_path(wandb_run, wandb_entity, wandb_project))
         config = OmegaConf.create(dict(run.config))
-        run_path = Path.cwd() / "runs" / wandb_run
+        run_path = runs_root() / wandb_run
     elif model_path:
         run_path = model_path
         config = OmegaConf.load(run_path / "config.yaml")
