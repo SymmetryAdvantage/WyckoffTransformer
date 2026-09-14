@@ -71,3 +71,4 @@ generated/protocol_smoke/
 # machine but the one that wrote it. Removed twice before (72248e9, and this); it came
 # back both times because nothing was ignoring it. Do not drop this line.
 uv.lock
+docs/2511.05178v1.pdf
