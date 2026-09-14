@@ -549,6 +549,16 @@ class TestCheckpointMirror(_RunDirTestCase):
         # new version of a 1-40 MB file on every checkpoint.
         wandb_mock.log_artifact.assert_not_called()
 
+    def test_the_first_mirror_does_not_wait_on_the_host_uptime(self):
+        """The monotonic clock starts at boot; a fresh CI runner or node is up for minutes."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=4)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock, \
+                patch("wyckoff_transformer.trainer.time.monotonic", return_value=60.0):
+            wandb_mock.run.id = self.RUN_ID
+            trainer.save_training_checkpoint(1, 0.5, 1)
+        wandb_mock.save.assert_called_once()
+
     def test_the_mirror_is_rate_limited_but_the_local_write_is_not(self):
         """`checkpoint_period` is commonly 10 against tens of thousands of epochs."""
         run_path = self.run_dir("run")

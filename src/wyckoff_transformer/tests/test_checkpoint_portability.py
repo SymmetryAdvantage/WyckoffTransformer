@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
 import torch
 from torch import nn
 
@@ -114,6 +115,7 @@ class TestGenerationOnlySchedule(unittest.TestCase):
         self.assertIsNone(trainer.scheduler)
         self.assertFalse(trainer.scheduler_steps_per_batch)
 
+    @pytest.mark.needs_cache
     def test_the_schedule_is_still_sized_when_the_training_set_is_loaded(self):
         """Sampling is the only exemption; a run that loads its data still gets a schedule."""
         from wyckoff_transformer.trainer import WyckoffTrainer
