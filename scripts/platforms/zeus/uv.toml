@@ -23,7 +23,6 @@ format = "flat"
 # triton dependency at all. Without this constraint a resolver is otherwise
 # free to take whatever triton series pairs with the next torch bump; pin it
 # to what the wheel in hand actually declares.
-# The `compile` extra is what puts triton in the graph at all.
 constraint-dependencies = ["triton ==3.8.0"]
 
 # Extras are deliberately NOT set here. `extra = [...]` is honoured by the

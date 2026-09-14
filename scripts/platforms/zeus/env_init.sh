@@ -15,8 +15,7 @@
 # Docs: docs/platforms/zeus/environment.md
 set -euo pipefail
 
-# dev = pytest + ruff; relax = MACE/ASE/ORB; compile = triton, for torch.compile.
-WYFORMER_EXTRAS=${WYFORMER_EXTRAS:-"dev relax compile"}
+WYFORMER_EXTRAS=${WYFORMER_EXTRAS:-"dev relax nep"}
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$repo_root"
