@@ -287,8 +287,7 @@ the lock to catch up instead.
 ## Adding dependencies
 
 ```bash
-source .venv/bin/activate
-uv pip install <package>
+uv pip install <package>    # from inside the checkout; uv finds its .venv, no activation
 ```
 
 torch lives inside the venv, so uv can see it and will not try to reinstall it;

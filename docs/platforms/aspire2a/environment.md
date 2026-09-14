@@ -44,8 +44,13 @@ command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh && 
 module load singularity
 cd /scratch/users/nus/kna/WyckoffTransformer
 singularity run --nv ~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \
-    bash scripts/build_singularity_venv.sh
+    env WYFORMER_PLATFORM=aspire2a bash scripts/build_singularity_venv.sh
 ```
+
+`WYFORMER_PLATFORM=aspire2a` also links `CLAUDE.local.md` to
+[agent_brief.md](agent_brief.md); see [../README.md](../README.md). The venv
+build is the expensive way to get it -- `bash scripts/platforms/link_agent_brief.sh
+aspire2a` from a login node does only that, and needs nothing but bash.
 
 Four steps, all inside the container:
 

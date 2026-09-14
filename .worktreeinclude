@@ -12,3 +12,6 @@
 # checkout runs.
 uv.toml
 uv.lock
+# The platform brief, so a new worktree's first session already has it; the
+# worktree's own env init re-links it (scripts/platforms/link_agent_brief.sh).
+CLAUDE.local.md

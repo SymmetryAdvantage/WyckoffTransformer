@@ -20,6 +20,8 @@ WYFORMER_EXTRAS=${WYFORMER_EXTRAS:-"dev relax nep"}
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 cd "$repo_root"
 
+scripts/platforms/link_agent_brief.sh zeus
+
 # uv reads uv.toml from the project root only. It is gitignored: this copy is
 # the tracked source of truth.
 cp scripts/platforms/zeus/uv.toml uv.toml
@@ -37,7 +39,8 @@ uv sync "${extra_args[@]}" "$@"
 cat <<MSG
 
 Environment synced with extras: ${WYFORMER_EXTRAS}
-Activate it with:
+Run from ${repo_root} with its own interpreter, no activation needed:
 
-    source ${repo_root}/.venv/bin/activate
+    .venv/bin/python scripts/...
+    uv run python scripts/...
 MSG

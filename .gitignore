@@ -52,6 +52,9 @@ generated_public
 generated.tar.gz
 generated_public.tar.gz
 /uv.toml
+# A symlink to docs/platforms/<platform>/agent_brief.md, made per checkout by
+# scripts/platforms/link_agent_brief.sh. Anchored: the name is Claude Code's.
+/CLAUDE.local.md
 dist/
 relax/
 mp_20_test.json.gz

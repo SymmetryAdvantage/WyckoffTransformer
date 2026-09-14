@@ -30,8 +30,11 @@ docker run --rm -it \
     -v "$PWD:/workspace" \
     -w /workspace \
     pytorch:2.14.0-cuda11.8-py312-universal \
-    bash -lc 'REPO_DIR=/workspace UV="$(command -v uv)" bash scripts/build_singularity_venv.sh'
+    bash -lc 'REPO_DIR=/workspace WYFORMER_PLATFORM=iapetus UV="$(command -v uv)" bash scripts/build_singularity_venv.sh'
 ```
+
+`WYFORMER_PLATFORM=iapetus` also links `CLAUDE.local.md` to
+[agent_brief.md](agent_brief.md); see [../README.md](../README.md).
 
 The build script compiles a fully pinned requirements file, removes torch and
 its CUDA stack, then installs those requirements and the editable project with

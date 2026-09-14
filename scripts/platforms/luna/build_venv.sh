@@ -35,6 +35,8 @@ if [[ ! -e "$WYFORMER_CONTAINER" ]]; then
     exit 1
 fi
 
+"$PLATFORM_DIR/../link_agent_brief.sh" luna
+
 rm -rf "$WYFORMER_VENV"
 
 apptainer exec --nv "$WYFORMER_CONTAINER" bash -euo pipefail -c '

@@ -25,14 +25,18 @@ count.
 
 ## Quick start
 
-Everything is already built. Activate the venv and run:
+Everything is already built for the main checkout. From the root of the checkout
+you are working in — `/home/kna/WyckoffTransformer`, or a git worktree after
+building its own venv with `env_init.sh` below — run its interpreter directly:
 
 ```bash
-cd /home/kna/WyckoffTransformer
-source .venv/bin/activate
-CUDA_VISIBLE_DEVICES=1 python scripts/train.py \
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py \
     yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
 ```
+
+Agents: don't `source .venv/bin/activate` and don't `cd` to the main checkout
+from a worktree. A worktree-isolated Claude Code session refuses the first, and
+the second runs the main checkout's code. See [usage.md](usage.md).
 
 To create or repair the environment, one command does it:
 
@@ -55,8 +59,10 @@ Two things to know before your first run:
 
 | Path | What |
 | --- | --- |
-| `/home/kna/WyckoffTransformer` | The working checkout |
-| `<repo>/.venv` | The venv — a plain host venv, python 3.12.3 |
+| `/home/kna/WyckoffTransformer` | The main checkout |
+| `<repo>/.claude/worktrees/<name>` | Git worktrees made by Claude Code, each with its own `.venv` |
+| `<repo>/.venv` | The venv — a plain host venv, python 3.12.3. One per checkout, never shared |
+| `/home/kna/.local/share/wyformer/` | The data store: untracked `data/`, `cache/`, `runs/` and `wandb/`, shared by all checkouts. Set in `~/.config/wyformer/paths.env`; see [data_store.md](../../data_store.md) |
 | `<repo>/uv.toml` | Declares the local wheel index. **Untracked**; copied from the file below |
 | `scripts/platforms/zeus/uv.toml` | Tracked source of truth for the above |
 | `<repo>/uv.lock` | Pins torch to `/mnt/hdd/torch_wheels/`. **Untracked** by design |
@@ -68,7 +74,7 @@ Storage:
 
 | Mount | Device | Size | Free | Holds |
 | --- | --- | --- | --- | --- |
-| `/` | `nvme0n1p3` | 3.4 T | 889 G | home, the checkout, `.venv`, `cache/`, `runs/`, `~/.cache/huggingface` (279 G) |
+| `/` | `nvme0n1p3` | 3.4 T | 712 G | home, the checkouts and their `.venv`s, the data store (45 G), `~/.cache/huggingface` (279 G) |
 | `/mnt/hdd` | `sda1` | 15 T | 4.5 T | `torch_wheels/`, bulk data |
 
 ---

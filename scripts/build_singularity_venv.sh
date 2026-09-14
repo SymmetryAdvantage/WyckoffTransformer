@@ -25,6 +25,15 @@ export UV_PYTHON_DOWNLOADS=never
 export UV_LINK_MODE=copy
 
 cd "$REPO_DIR"
+
+# The host's agent brief, as CLAUDE.local.md. This script serves more than one
+# platform and the container's hostname identifies none, so the caller names it.
+if [[ -n "${WYFORMER_PLATFORM:-}" ]]; then
+    scripts/platforms/link_agent_brief.sh "$WYFORMER_PLATFORM"
+else
+    echo "note: WYFORMER_PLATFORM unset; CLAUDE.local.md not linked (see docs/platforms/README.md)" >&2
+fi
+
 REQ_FULL="$REPO_DIR/.venv-requirements.txt"
 REQ_NOTORCH="$REPO_DIR/.venv-requirements.no-torch.txt"
 

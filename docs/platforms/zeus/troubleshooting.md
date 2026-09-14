@@ -23,9 +23,8 @@ Symptoms seen on this machine, and what they mean.
 ## Health check
 
 ```bash
-cd /home/kna/WyckoffTransformer
-source .venv/bin/activate
-python -c "
+# from the root of the checkout under test
+.venv/bin/python -c "
 import torch
 print('torch    ', torch.__version__, '/ cuda', torch.version.cuda)
 print('file     ', torch.__file__)

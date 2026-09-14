@@ -4,17 +4,32 @@ zeus is an interactive, shared machine with **no scheduler**: no `sbatch`, no
 `squeue`, no queue to wait in. You get the resources you take, which means the
 etiquette of picking a GPU and capping your worker count is on you.
 
-Everything runs from the activated venv:
+Everything runs with the venv of the checkout you are working in — the main
+checkout at `/home/kna/WyckoffTransformer`, or a git worktree, which has its own
+(see [environment.md](environment.md#git-worktrees-one-venv-each)). Stay in that
+checkout, and call its interpreter directly or go through uv:
 
 ```bash
-cd /home/kna/WyckoffTransformer
-source .venv/bin/activate
+.venv/bin/python scripts/train.py ...
+uv run python scripts/train.py ...
 ```
 
-`uv run python scripts/...` also works and is what the write-ups in `docs/`
-use. Be aware that `uv run` reconciles the venv against `uv.lock` first, so it
-can move packages under you — see
-[environment.md](environment.md#syncing-the-environment).
+Neither needs activation. `uv run` and `uv pip` find the `.venv` by searching
+upward from the working directory, so they also work from a subdirectory;
+`.venv/bin/python` is relative and needs the checkout root. The write-ups in
+`docs/` use `uv run`. Be aware that `uv run` reconciles the venv against
+`uv.lock` first, so it can move packages under you — see
+[environment.md](environment.md#syncing-the-environment). It adds and upgrades
+but removes nothing unless given `--exact`, so the extras `env_init.sh`
+installed survive it.
+
+**Agents: do not `source .venv/bin/activate`.** A Claude Code session isolated
+in a worktree refuses the whole command, because it cannot see what a sourced
+file runs; the same goes for a program named by a variable. See
+[AGENTS.md](../../../AGENTS.md#shell-commands-in-agent-worktrees). Activating
+in your own interactive shell is fine. The examples below spell out
+`.venv/bin/...` so that they run as written from the checkout root, activated or
+not; a bare `python` without activation is the system Python.
 
 If the venv is missing or has been pruned, rebuild it with one command:
 
@@ -42,7 +57,7 @@ default `FASTEST_FIRST` ordering has nothing to reorder. Re-verify by UUID if a
 card is ever replaced:
 
 ```bash
-python -c "
+.venv/bin/python -c "
 import torch
 for i in range(torch.cuda.device_count()):
     print(i, torch.cuda.get_device_properties(i).uuid)"
@@ -61,7 +76,7 @@ use is the normal state, not a fault. Always select explicitly rather than
 letting torch grab `cuda:0`:
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 python scripts/train.py ... cuda
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py ... cuda
 ```
 
 Inside the process the selected device is `cuda:0`, so pass `cuda` as the
@@ -117,7 +132,7 @@ workers each running a multi-threaded BLAS is far slower than a pool of
 single-threaded ones. Set both:
 
 ```bash
-NP=16 OMP_NUM_THREADS=1 python scripts/cryspr_chgnet.py ...
+NP=16 OMP_NUM_THREADS=1 .venv/bin/python scripts/cryspr_chgnet.py ...
 ```
 
 **16 is the established figure** for CPU MLIP work on this box — it fits inside
@@ -164,21 +179,23 @@ against a locally built torch, which is untested here — see
 Pilot training run, end to end:
 
 ```bash
-source .venv/bin/activate
-python scripts/cache_a_dataset.py mp_20
-python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
-CUDA_VISIBLE_DEVICES=1 python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
+.venv/bin/python scripts/cache_a_dataset.py mp_20
+.venv/bin/python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
 ```
 
-Much of this is already cached — `cache/` holds `mp_20`, `alex_mp_20`,
-`lemat_bulk_ehull`, `lemat_bulk_fmax1`, `mp_2022`, `mpts_52`, `carbon_24`,
-`perov_5` and others, 24 GB in total. Check before recomputing.
+Much of this is already cached. The cache is shared by every checkout on the
+machine and lives outside all of them, at `/home/kna/.local/share/wyformer/cache`
+(`.venv/bin/python -m wyckoff_transformer.paths` prints it; see
+[data_store.md](../../data_store.md)). It holds `mp_20`, `alex_mp_20`,
+`lemat_bulk_fmax1_stress`, `mp_2022`, `mpts_52`, `carbon_24`, `perov_5` and
+others, 28 GB in total. Check before recomputing.
 
 Generation from the published checkpoint (weights cached under
 `~/.cache/huggingface`):
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 wyformer-generate out.json.gz \
+CUDA_VISIBLE_DEVICES=1 .venv/bin/wyformer-generate out.json.gz \
     --hf-model SymmetryAdvantage/WyFormer-Alex-MP20 --device cuda
 ```
 
@@ -191,9 +208,9 @@ one card without a `TritonMissing` error.
 Tests:
 
 ```bash
-pytest                 # 594 passed, 40 skipped in 100 s
-pytest -m slow         # opt-in slow diagnostics
-pytest --run-relax     # needs network and a MACE model
+.venv/bin/python -m pytest                 # 594 passed, 40 skipped in 100 s
+.venv/bin/python -m pytest -m slow         # opt-in slow diagnostics
+.venv/bin/python -m pytest --run-relax     # needs network and a MACE model
 ```
 
 ---
@@ -207,7 +224,7 @@ visible teams are `kazeev`, `hse_lambda`, `symmetry-advantage` and `ai4x`.
 Log real runs to the shared team, which is the project convention:
 
 ```bash
-WANDB_ENTITY=symmetry-advantage CUDA_VISIBLE_DEVICES=1 python scripts/train.py ...
+WANDB_ENTITY=symmetry-advantage CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py ...
 ```
 
 `WANDB_MODE=disabled` is for throwaway smoke tests only — a run started with it
@@ -222,15 +239,16 @@ the session that started it:
 
 ```bash
 nohup env CUDA_VISIBLE_DEVICES=1 WANDB_ENTITY=symmetry-advantage \
-    python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda \
+    .venv/bin/python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda \
     > train.log 2>&1 &
 ```
 
 or run it inside `tmux`/`screen`. `*.log` is gitignored.
 
-Disk is the thing to watch on multi-day runs: `/` has 889 GB free but also
-holds a 279 GB HuggingFace cache belonging partly to unrelated work, plus
-`cache/` (24 GB) and `runs/` (611 MB). `/mnt/hdd` has 4.5 TB free and is the
+Disk is the thing to watch on multi-day runs: `/` has 712 GB free but also
+holds a 279 GB HuggingFace cache belonging partly to unrelated work, plus the
+data store under `/home/kna/.local/share/wyformer` — `cache/` (28 GB), `data/`
+(16 GB) and `runs/` (743 MB). `/mnt/hdd` has 4.5 TB free and is the
 right place for bulk output.
 
 ---

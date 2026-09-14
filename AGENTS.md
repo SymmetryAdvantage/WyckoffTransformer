@@ -69,3 +69,22 @@ or `scripts/`:
 Before setting up an environment, check whether `docs/platforms/<platform>/` exists
 and follow it instead of improvising. When you learn something host-specific, record
 it there rather than in the generic docs.
+
+Each platform's `agent_brief.md` is the short version, and its environment
+initialisation symlinks it to the gitignored `CLAUDE.local.md` at the checkout root,
+which Claude Code loads into every session. If a session starts without it, run
+`scripts/platforms/link_agent_brief.sh <platform>`. See `docs/platforms/README.md`.
+
+## Shell commands in agent worktrees
+A Claude Code session isolated in a git worktree refuses any shell command it cannot
+statically show stays out of another checkout's git. It does not run the command at
+all. What trips it, none of which needs to involve git:
+ - `source` or `.` of a file -- so `source .venv/bin/activate`;
+ - a program named by a variable -- `PY=.venv/bin/python; $PY -c ...`;
+ - a wrapper such as `time` or `env` given variable arguments;
+ - `cd` to a computed path, e.g. `cd "$(dirname ...)"`, in a command that also runs git.
+
+Write program names and paths literally, and run from the worktree itself -- never
+`cd` to the main checkout, whose venv imports the main checkout's code. Call the
+checkout's interpreter by path, or the launcher your platform documents; which one
+applies is host-specific and lives in `docs/platforms/<platform>/`.
