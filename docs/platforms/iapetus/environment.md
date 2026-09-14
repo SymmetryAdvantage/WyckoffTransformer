@@ -14,8 +14,9 @@ the image.
 
 ## Creating or repairing the venv
 
-`scripts/build_singularity_venv.sh` implements this workflow despite its
-historic filename; it works when invoked from the Docker image as well. It
+`scripts/platforms/iapetus/build_venv.sh` implements this workflow. It is a copy
+of ASPIRE 2A's `build_singularity_venv.sh` with the iapetus defaults
+(`REPO_DIR=/workspace`, the image's `uv`); change both when the recipe changes. It
 creates `.venv` with `--system-site-packages`, resolves all non-torch
 dependencies, and explicitly excludes torch and CUDA distributions so uv
 cannot replace the container's torch.
@@ -30,7 +31,7 @@ docker run --rm -it \
     -v "$PWD:/workspace" \
     -w /workspace \
     pytorch:2.14.0-cuda11.8-py312-universal \
-    bash -lc 'REPO_DIR=/workspace UV="$(command -v uv)" bash scripts/build_singularity_venv.sh'
+    bash -lc 'bash scripts/platforms/iapetus/build_venv.sh'
 ```
 
 The build script compiles a fully pinned requirements file, removes torch and
@@ -54,7 +55,7 @@ docker run --rm --runtime=nvidia --ipc=host \
 ### Moving a single pinned dependency into the venv
 
 The venv is built from a compiled requirements file, so re-running
-`build_singularity_venv.sh` to pick up one changed pin costs a full rebuild and
+`build_venv.sh` to pick up one changed pin costs a full rebuild and
 throws away the CPU-only Warp wheel below. For a single package — the pinned
 PyXtal fork in `[tool.uv.sources]` is the standing example — compile just the
 direct requirements and install that one line, so `pyproject.toml` stays the

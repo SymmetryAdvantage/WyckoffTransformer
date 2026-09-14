@@ -34,6 +34,7 @@ from wyckoff_transformer.formula_energy import screen as screening
 from wyckoff_transformer.formula_energy import train as T
 from wyckoff_transformer.formula_energy.dataset import DEFAULT_TABLE, formula_key
 from wyckoff_transformer.formula_energy.features import SystemDensity
+from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,8 @@ def formulas_from_genes(path: Path) -> List[str]:
     those rows in the denominator as the misses they are, instead of quietly
     improving every rate by dropping them.
     """
-    import gzip, json  # noqa: PLC0415
+    import gzip  # noqa: PLC0415
+    import json
 
     opener = gzip.open if str(path).endswith(".gz") else open
     with opener(path, "rt") as handle:
@@ -130,6 +132,7 @@ def hull_energies(
 def load_reference(path: Path = DEFAULT_REFERENCE,
                    tolerance: float = REFERENCE_TOLERANCE) -> pd.DataFrame:
     """The hull-defining subset of the archive, in the shape a phase diagram wants."""
+    path = resolve_store_path(path)
     frame = pd.read_csv(
         path, usecols=["immutable_id", "full_formula", "chemsys", "energy_corrected", "e_hull"],
         low_memory=False,
@@ -162,7 +165,9 @@ def score_structures(
         feature_names: The provenance features the ensemble expects, from
             :func:`~.train.load_ensemble`.
     """
-    from wyckoff_transformer.formula_energy.features import PROVENANCE_FEATURES  # noqa: PLC0415
+    from wyckoff_transformer.formula_energy.features import (
+        PROVENANCE_FEATURES,  # noqa: PLC0415
+    )
 
     feature_names = list(feature_names or PROVENANCE_FEATURES)
     device = device or torch.device("cpu")
@@ -302,6 +307,7 @@ def main() -> None:
 
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     structures = pd.read_csv(args.structures)
+    args.table = resolve_store_path(args.table)
     table = pd.read_parquet(args.table, columns=["e_hull_at_composition"])
     reference = load_reference(args.reference, args.reference_tolerance)
 

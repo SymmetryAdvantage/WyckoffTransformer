@@ -106,26 +106,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wyckoff_transformer.paths import cache_root, data_root
+from wyckoff_transformer.paths import cache_root, data_path
 
 logger = logging.getLogger("build_lemat_bulk_fmax")
 
 REPO = Path(__file__).resolve().parent.parent
 #: ``max_force`` and the CIFs. The energy CSV has a ``max_force`` column too, and it is
 #: NaN in every one of its rows.
-DEFAULT_STRUCTURE_CSV = data_root() / "lemat-bulk" / "lemat_pbe.csv.gz"
+DEFAULT_STRUCTURE_CSV = data_path("lemat-bulk", "lemat_pbe.csv.gz")
 #: Written by ``scripts/build_lemat_bulk_fmax.py --labels-only`` (or the scratch probe):
 #: one row per structure with the reduced formula, cell size and energies, no CIF.
-DEFAULT_LABELS = data_root() / "lemat-bulk" / "labels.parquet"
+DEFAULT_LABELS = data_path("lemat-bulk", "labels.parquet")
 DEFAULT_SPLIT_IDS = cache_root() / "lemat_bulk_ehull" / "split_ids.json"
 #: LeMat-Bulk as downloaded: per-atom ``forces`` (eV/A) and ``stress_tensor`` (kBar, VASP
 #: sign), which the structure CSV only summarises as ``max_force``.
-DEFAULT_RAW = data_root() / "lemat-bulk" / "raw" / "data.parquet"
+DEFAULT_RAW = data_path("lemat-bulk", "raw", "data.parquet")
 #: Written by ``scripts/recover_mp_forces.py``: forces and stress for the MP rows whose
 #: archived arrays are empty, read from the last ionic step of the very task LeMat took the
 #: energy from.
 DEFAULT_RECOVERED = cache_root() / "mp_forces_recovery" / "runs" / "full" / "results.parquet"
-DEFAULT_CONVERGENCE_LABELS = data_root() / "lemat-bulk" / "convergence_labels.parquet"
+DEFAULT_CONVERGENCE_LABELS = data_path("lemat-bulk", "convergence_labels.parquet")
 
 #: Formation energies outside this window are corrupt rather than exotic -- the archive
 #: runs to -37.9 and +650.7 eV/atom. It matters more here than in a mean-fitting model:
@@ -287,16 +287,29 @@ def attach_convergence_labels(labels: pd.DataFrame, convergence: pd.DataFrame) -
     return labels
 
 
-def label_rows(labels: pd.DataFrame, max_force: float) -> pd.DataFrame:
+def label_rows(labels: pd.DataFrame, max_force: float, max_stress: float | None = None,
+               exclude: pd.Index | None = None) -> pd.DataFrame:
     """Filter to the trainable rows and attach the conditioning labels."""
     kept = labels
     logger.info("rows                      : %9d", len(kept))
+    if exclude is not None and len(exclude):
+        kept = kept[~kept["immutable_id"].isin(exclude)]
+        logger.info("  & not excluded          : %9d", len(kept))
     # NaN fails every comparison, so `max_force <= X` would silently take the rows with
     # no forces reported out with the unconverged ones. They are a different thing and
     # are kept, flagged by `max_force_missing`.
     kept = kept[kept["max_force"].isna() | (kept["max_force"] <= max_force)]
     logger.info("max_force <= %-12g: %9d", max_force, len(kept))
     logger.info("  of which force is absent: %9d", int(kept["max_force"].isna().sum()))
+    if max_stress is not None:
+        # A corruption guard, not a convergence filter -- the same role MAX_ABS_E_FORM
+        # plays for energies. Nine OQMD rows carry a hydrostatic stress of exactly 1e9 kBar
+        # and a von Mises of exactly 3e9, which are sentinels rather than measurements, and
+        # no `max_force` cut reaches them because their force is identically zero. Rows
+        # genuinely 50 GPa off a zero-pressure relaxation are broken too, not unconverged.
+        stress = kept[["stress_hydrostatic", "stress_von_mises"]].abs().max(axis=1)
+        kept = kept[stress.isna() | (stress <= max_stress)]
+        logger.info("max |stress| <= %-9g: %9d", max_stress, len(kept))
     kept = kept[kept["e_hull"].notna()]
     logger.info("  & e_hull is not NaN     : %9d", len(kept))
     kept = kept[kept["e_form"].abs() <= MAX_ABS_E_FORM]
@@ -335,9 +348,17 @@ def label_rows(labels: pd.DataFrame, max_force: float) -> pd.DataFrame:
     return kept
 
 
-def assign_split(ids: pd.Index, split_ids: Path, seed: int, val_size: int, test_size: int):
-    """val/test inherited from the previous dataset where possible, random otherwise."""
-    if split_ids.exists():
+def assign_split(ids: pd.Index, split_ids: Path | None, seed: int, val_size: int, test_size: int):
+    """val/test inherited from the previous dataset where possible, random otherwise.
+
+    ``split_ids=None`` forces a fresh uniform draw. Inheriting keeps a comparison against
+    an earlier run honest, but only while the two datasets cover the same population: the
+    ids in ``cache/lemat_bulk_ehull/split_ids.json`` were drawn from a ``max_force <= 0.02``
+    dataset, so inheriting them gives held-out sets in which no row exceeds 0.02 and
+    Materials Project is under-represented threefold. A model is then validated on a
+    cleaner, more Alexandria-heavy population than it trains on.
+    """
+    if split_ids is not None and split_ids.exists():
         payload = json.loads(split_ids.read_text())
         held = {}
         for name in ("val", "test"):
@@ -352,7 +373,10 @@ def assign_split(ids: pd.Index, split_ids: Path, seed: int, val_size: int, test_
             raise ValueError(f"{len(overlap)} ids are in both the inherited val and test sets")
         return held["val"], held["test"]
 
-    logger.warning("%s is missing; falling back to a fresh random split", split_ids)
+    if split_ids is None:
+        logger.info("drawing a fresh uniform split, seed %d", seed)
+    else:
+        logger.warning("%s is missing; falling back to a fresh random split", split_ids)
     rng = np.random.default_rng(seed)
     shuffled = ids.to_numpy().copy()
     rng.shuffle(shuffled)
@@ -368,7 +392,7 @@ def main():
                         help="Keep structures whose largest force component is at most this, eV/A.")
     parser.add_argument("--structure-csv", type=Path, default=DEFAULT_STRUCTURE_CSV)
     parser.add_argument("--energy-csv", type=Path,
-                        default=data_root() / "lemat-bulk" / "lemat_pbe_ehull.csv.gz")
+                        default=data_path("lemat-bulk", "lemat_pbe_ehull.csv.gz"))
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS,
                         help="Cached label table; rebuilt from the CSVs when absent.")
     parser.add_argument("--rebuild-labels", action="store_true")
@@ -382,10 +406,20 @@ def main():
     parser.add_argument("--convergence-labels", type=Path, default=DEFAULT_CONVERGENCE_LABELS,
                         help="Cached per-row max_force and stress table; rebuilt when absent.")
     parser.add_argument("--rebuild-convergence-labels", action="store_true")
-    parser.add_argument("--split-ids", type=Path, default=DEFAULT_SPLIT_IDS,
-                        help="JSON of {split: [immutable_id]} to inherit val/test from.")
+    parser.add_argument("--split-ids", type=lambda s: None if s.lower() == "none" else Path(s),
+                        default=DEFAULT_SPLIT_IDS,
+                        help="JSON of {split: [immutable_id]} to inherit val/test from. "
+                             "'none' draws a fresh uniform split instead; inherit only from "
+                             "a dataset covering the same population.")
+    parser.add_argument("--max-stress", type=float, default=500.0,
+                        help="Drop rows whose |hydrostatic| or von Mises stress exceeds this, "
+                             "kBar. A corruption guard, not a convergence cut: 0 disables it.")
+    parser.add_argument("--exclude-ids", type=Path, default=None,
+                        help="JSON list of immutable_ids to drop before splitting, e.g. the "
+                             "rows a later --max-sites would remove at cache time. Without "
+                             "it those rows land in val/test and vanish during caching.")
     parser.add_argument("--seed", type=int, default=20260906,
-                        help="Only used when --split-ids is missing.")
+                        help="Only used when the split is drawn rather than inherited.")
     parser.add_argument("--val-size", type=int, default=100000)
     parser.add_argument("--test-size", type=int, default=100000)
     parser.add_argument("--chunk-size", type=int, default=250000,
@@ -415,7 +449,13 @@ def main():
     labels = attach_convergence_labels(labels, convergence)
     del convergence
 
-    kept = label_rows(labels, args.max_force)
+    exclude = None
+    if args.exclude_ids is not None:
+        exclude = pd.Index(json.loads(args.exclude_ids.read_text()))
+        logger.info("excluding %d ids listed in %s", len(exclude), args.exclude_ids)
+    kept = label_rows(labels, args.max_force,
+                      max_stress=args.max_stress if args.max_stress > 0 else None,
+                      exclude=exclude)
     del labels
     kept = kept.set_index("immutable_id")
     if not kept.index.is_unique:
@@ -430,8 +470,15 @@ def main():
     split_of[test_ids] = "test"
     logger.info("split sizes: %s", split_of.value_counts().to_dict())
 
-    out_dir = data_root() / args.name
+    out_dir = data_path(args.name)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Record the held-out ids next to the cache the way lemat_bulk_ehull did, so a later
+    # variant can inherit this split instead of redrawing one.
+    written_split_ids = cache_root() / args.name / "split_ids.json"
+    written_split_ids.parent.mkdir(parents=True, exist_ok=True)
+    written_split_ids.write_text(json.dumps(
+        {"val": sorted(val_ids), "test": sorted(test_ids)}))
+    logger.info("wrote %s", written_split_ids)
     handles = {
         name: gzip.open(out_dir / f"{name}.csv.gz", "wt", newline="",
                         compresslevel=args.compresslevel)

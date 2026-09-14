@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 import os
 import subprocess
-from pathlib import Path
 from datasets import load_dataset
 import pandas as pd
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 import numpy as np
 from pandarallel import pandarallel
+
+from wyckoff_transformer.paths import data_path
 
 def run_command(cmd):
     print(f"Running: {cmd}")
@@ -25,7 +26,7 @@ def count_wyckoffs(cif_str):
         return 9999
 
 def main():
-    base_dir = Path("data/lemat-bulk")
+    base_dir = data_path("lemat-bulk")
     raw_dir = base_dir / "raw"
     cif_dir = base_dir / "cif_prepared"
     output_dir = base_dir / "20_wyckoffs"

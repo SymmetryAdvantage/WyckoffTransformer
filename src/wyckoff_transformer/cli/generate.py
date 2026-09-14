@@ -12,7 +12,7 @@ import torch
 import wandb
 from omegaconf import OmegaConf
 
-from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, paths, wandb_run_path
 from wyckoff_transformer.chemical_system import (
     chemical_system_vector,
     parse_chemical_system,
@@ -27,7 +27,7 @@ from wyckoff_transformer.wyckoff_processor import WyckoffProcessor
 def _resolve_sg_cache_path(dataset_name: str, cache_root: Path | None = None) -> Path:
     """Resolve dataset path inside cache directory."""
     if cache_root is None:
-        cache_root = Path.cwd() / "cache"
+        cache_root = paths.cache_root()
     candidates = [dataset_name]
     if "-" in dataset_name:
         candidates.append(dataset_name.replace("-", "_"))
@@ -369,6 +369,7 @@ def main():
         if args.wandb_run:
             if args.update_wandb:
                 wandb_run = wandb.init(
+                    dir=paths.wandb_dir(),
                     entity=args.wandb_entity, project=args.wandb_project,
                     id=args.wandb_run, resume=True)
             else:
@@ -377,7 +378,7 @@ def main():
                 wandb_run = wandb.Api().run(
                     wandb_run_path(args.wandb_run, args.wandb_entity, args.wandb_project))
             config = OmegaConf.create(dict(wandb_run.config))
-            run_path = Path.cwd() / "runs" / args.wandb_run
+            run_path = paths.runs_root() / args.wandb_run
         elif args.model_path:
             run_path = args.model_path
             config = OmegaConf.load(run_path / "config.yaml")

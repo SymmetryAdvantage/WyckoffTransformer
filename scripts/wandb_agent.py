@@ -4,12 +4,13 @@ import wandb
 from pathlib import Path
 from omegaconf import OmegaConf
 import torch
+from wyckoff_transformer.paths import runs_root, wandb_dir
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT
 from wyckoff_transformer.trainer import train_from_config
 
 
 def agent_function(device, run_path):
-    wandb.init()
+    wandb.init(dir=wandb_dir())
     base_config_name = wandb.config.base_config
     base_config = OmegaConf.load(Path(__file__).parent.parent.resolve() / "yamls" / "models" / f"{base_config_name}.yaml")
     final_config = OmegaConf.merge(base_config, dict(wandb.config))
@@ -27,9 +28,12 @@ def main():
     parser.add_argument("--entity", type=str, default=WANDB_ENTITY,
                         help="W&B entity the sweep and its runs belong to")
     parser.add_argument("--count", type=int, default=2, help="The number of sweep config trials to try")
-    parser.add_argument("--run-path", type=Path, default=Path("runs"), help="Set the path for saving run data")
+    parser.add_argument("--run-path", type=Path, default=None,
+                        help="Set the path for saving run data (default: the runs store)")
     parser.add_argument("--torch-num-thread", type=int, default=19, help="Number of threads for torch")
     args = parser.parse_args()
+    if args.run_path is None:
+        args.run_path = runs_root()
     if args.device.type == "cuda":
         # UserWarning: TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled. Consider setting `torch.set_float32_matmul_precision('high')` for better performance.
         torch.set_float32_matmul_precision('high')

@@ -49,6 +49,7 @@ from collections import Counter
 from functools import reduce
 from math import gcd
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -639,6 +640,8 @@ class ConstrainedDecoder:
         max_sequence_len: Hard cap on sites per gene.
         device: Defaults to the model's.
         max_atoms: Reachability table size; see `MAX_ATOMS_PER_ELEMENT`.
+        model_dir: The model's directory, whose own Wyckoff mappings are used; the
+            package's when None.
     """
 
     def __init__(
@@ -653,8 +656,10 @@ class ConstrainedDecoder:
         max_sequence_len: int,
         device: Optional[torch.device] = None,
         max_atoms: int = MAX_ATOMS_PER_ELEMENT,
+        model_dir: Optional[Path] = None,
     ):
         self.model = model
+        self.model_dir = model_dir
         self.cascade_order = tuple(cascade_order)
         self.cascade_is_target = dict(cascade_is_target)
         self.tokenisers = tokenisers
@@ -694,7 +699,8 @@ class ConstrainedDecoder:
     def letter_index(self) -> Dict:
         """Wyckoff letter by space group, site symmetry and enumeration token."""
         if self._letter_index is None:
-            self._letter_index = self.tokenisers["sites_enumeration"].get_letter_from_ss_enum_idx()
+            self._letter_index = self.tokenisers["sites_enumeration"].get_letter_from_ss_enum_idx(
+                self.model_dir)
         return self._letter_index
 
     def combinatorics(self, sg_number: int, sg_token) -> SpaceGroupCombinatorics:

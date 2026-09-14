@@ -41,6 +41,8 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.paths import cache_root, data_path, resolve_store_path
+
 warnings.filterwarnings("ignore")
 
 DOF_BINS = [-1, 0, 2, 5, 10, 10**6]
@@ -61,7 +63,7 @@ def dof_bins(dof: pd.Series) -> pd.Series:
 
 
 def load_cache(dataset: str) -> dict[str, pd.DataFrame]:
-    with gzip.open(Path("cache") / dataset / "data.pkl.gz", "rb") as f:
+    with gzip.open(cache_root() / dataset / "data.pkl.gz", "rb") as f:
         return pickle.load(f)
 
 
@@ -131,7 +133,7 @@ def _uniform_measure(denominators: Iterable[int], tol: float) -> float:
 
 
 def cmd_priors(args: argparse.Namespace) -> None:
-    df = pd.read_csv(Path("data") / args.dataset / "train.csv", index_col=0)
+    df = pd.read_csv(data_path(args.dataset, "train.csv"), index_col=0)
     rng = np.random.default_rng(args.seed)
     cifs = df["cif"].iloc[rng.choice(len(df), size=min(args.n, len(df)), replace=False)].tolist()
     with Pool(args.workers) as pool:
@@ -238,8 +240,8 @@ def _transfer_worker(task: tuple) -> tuple:
 def cmd_prototype_transfer(args: argparse.Namespace) -> None:
     cache = load_cache(args.dataset)
     train, test = cache["train"], cache["test"]
-    train_cifs = pd.read_csv(Path("data") / args.dataset / "train.csv", index_col=0)["cif"]
-    test_cifs = pd.read_csv(Path("data") / args.dataset / "test.csv", index_col=0)["cif"]
+    train_cifs = pd.read_csv(data_path(args.dataset, "train.csv"), index_col=0)["cif"]
+    test_cifs = pd.read_csv(data_path(args.dataset, "test.csv"), index_col=0)["cif"]
     by_proto: dict[tuple, list] = defaultdict(list)
     for index, row in train.iterrows():
         by_proto[_record_prototype_key(row)].append(index)
@@ -282,7 +284,7 @@ def cmd_prototype_coverage(args: argparse.Namespace) -> None:
     from wyckoff_transformer.evaluation.protocol import GeneFingerprinter, load_genes
 
     t = time.time()
-    with gzip.open(args.reference_cache, "rb") as f:
+    with gzip.open(resolve_store_path(args.reference_cache), "rb") as f:
         reference = pickle.load(f)
     print(f"reference fingerprints: {len(reference)}, loaded in {time.time() - t:.0f} s")
     t = time.time()

@@ -15,6 +15,14 @@ from wyckoff_transformer.wyckoff_processor import (
 N_3D_SPACEGROUPS = 230
 WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
 _PACKAGE_MAPPINGS_PATH = Path(__file__).parent / WYCKOFF_MAPPINGS_FILENAME
+#: Harmonic signatures are rounded to this many decimals. Unrounded, they carry ~1e-16 of
+#: floating-point noise that moves with the numpy/scipy/libm build, and that noise is
+#: what used to decide which of two degenerate Wyckoff positions got which cluster.
+SIGNATURE_DECIMALS = 12
+#: Distances to cluster centres closer than this are a tie. KMeans' multithreaded
+#: reductions move the centres by ~1e-15 from one run to the next, so exact comparison
+#: of distances is not reproducible even within one environment.
+CLUSTER_DISTANCE_TIE_TOLERANCE = 1e-9
 
 
 def generate_wyckoff_mappings(
@@ -139,10 +147,16 @@ def enumerate_wychoffs_by_ss(
             print(signatures.shape)
             signatures = signatures.reshape(
                 spherical_harmonics_degree + 1, len(opres_by_enum), len(reference_vectors))
-            assert np.unique(signatures, axis=1).shape == signatures.shape
+            # Signatures are NOT always unique within a site symmetry. 16 pairs of
+            # positions, in space groups 195, 200, 207, 208, 218, 221 and 223, share one
+            # up to rounding -- e.g. 6c (1/4, 1/2, 0) and 6d (1/4, 0, 1/2) in 218. An
+            # exact-uniqueness assert used to pass on those only because of float noise.
+            # clasterize_harmonics breaks such ties by enumeration order.
             for enum in opres_by_enum.keys():
-                signature_by_sg_ss_enum[(spacegroup_number, ss, enum)] = \
-                    np.concatenate([signatures[:, enum, :].real.ravel(), signatures[:, enum, :].imag.ravel()])
+                # + 0.0 turns -0.0 into 0.0, so that it serialises identically
+                signature_by_sg_ss_enum[(spacegroup_number, ss, enum)] = np.round(
+                    np.concatenate([signatures[:, enum, :].real.ravel(), signatures[:, enum, :].imag.ravel()]),
+                    SIGNATURE_DECIMALS) + 0.0
 
     generate_wyckoff_mappings(output_file)
 
@@ -367,15 +381,23 @@ def build_site_symmetry_ops_id_engineer(
 
 
 def assign_to_clusters(
-    distances: pd.DataFrame):
+    distances: pd.DataFrame,
+    tie_tolerance: float = CLUSTER_DISTANCE_TIE_TOLERANCE):
+    """Greedily give each enumeration of one (sg, site symmetry) its own cluster.
 
+    The closest remaining (enumeration, cluster) pair is taken first. Pairs within
+    ``tie_tolerance`` of the closest are a tie, resolved to the lowest enumeration and
+    then the lowest cluster -- never by floating-point noise, which differs between runs.
+    """
     remaining_distances = distances.copy().droplevel((0, 1), axis=0)
     assert (remaining_distances.index == np.arange(remaining_distances.shape[0])).all()
     assert (remaining_distances.columns == np.arange(remaining_distances.shape[1])).all()
     mapping = np.empty(distances.shape[0], dtype=int)
 
     while not remaining_distances.empty:
-        row, col = np.unravel_index(np.argmin(remaining_distances.values), remaining_distances.shape)
+        values = remaining_distances.values
+        # argwhere is row-major, and the labels increase along both axes
+        row, col = np.argwhere(values <= values.min() + tie_tolerance)[0]
         row_label = remaining_distances.index[row]
         col_label = remaining_distances.columns[col]
         # enum -> cluster
@@ -407,7 +429,11 @@ def clasterize_harmonics(
     as enumeration can genuinly take several values, especially in the beginning.
     """
     n_enums = len(harmonic_engineer.db.index.get_level_values("sites_enumeration").unique())
-    clusters = KMeans(n_clusters=n_enums, random_state=random_state).fit(
+    # Every setting that shapes the result is spelled out, so that a change of
+    # scikit-learn's defaults (n_init became "auto" in 1.4) cannot move the clusters.
+    clusters = KMeans(
+        n_clusters=n_enums, init="k-means++", n_init=1, algorithm="lloyd",
+        max_iter=300, tol=1e-4, random_state=random_state).fit(
         harmonic_engineer.db.to_list())
     cluster_distances = clusters.transform(np.array(harmonic_engineer.db.to_list()))
     cluster_db = pd.DataFrame(cluster_distances, index=harmonic_engineer.db.index)

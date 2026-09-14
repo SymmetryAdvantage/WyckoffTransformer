@@ -51,10 +51,17 @@ for _k, _v in _SINGLE_THREAD_ENV.items():
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.paths import resolve_store_path
+
 logger = logging.getLogger("oracle")
 
 DEFAULT_ROOT = Path("generated/oracle_reconstruction")
 LEMAT_CSV = Path("data/lemat-bulk/lemat_pbe_ehull.csv.gz")
+
+
+def _lemat_csv() -> Path:
+    """:data:`LEMAT_CSV` inside the configured data store."""
+    return resolve_store_path(LEMAT_CSV)
 
 #: Conventional-cell atom cap.  ORB on one CPU thread costs roughly linear time
 #: per optimiser step in the atom count, and the >10-dof bin is already the
@@ -273,7 +280,7 @@ def sample_pool(root: Path, pool_size: int, chunksize: int = 200_000) -> Path:
     t0 = time.time()
     qualifying: list[np.ndarray] = []
     offset = 0
-    for chunk in pd.read_csv(LEMAT_CSV, chunksize=chunksize, usecols=["e_hull"]):
+    for chunk in pd.read_csv(_lemat_csv(), chunksize=chunksize, usecols=["e_hull"]):
         mask = (chunk["e_hull"] <= E_HULL_MAX).to_numpy()
         qualifying.append(np.flatnonzero(mask) + offset)
         offset += len(chunk)
@@ -288,7 +295,7 @@ def sample_pool(root: Path, pool_size: int, chunksize: int = 200_000) -> Path:
     wanted = set(take.tolist())
 
     frames, offset = [], 0
-    for chunk in pd.read_csv(LEMAT_CSV, chunksize=chunksize):
+    for chunk in pd.read_csv(_lemat_csv(), chunksize=chunksize):
         idx = [i for i in range(len(chunk)) if offset + i in wanted]
         if idx:
             sub = chunk.iloc[idx].copy()

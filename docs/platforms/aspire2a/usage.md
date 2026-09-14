@@ -46,11 +46,11 @@ with `myusage`, both in `/app/apps/local/bin`.
 
 ## Submitting a training run
 
-`scripts/train_in_pb.sh` is the entry point for anything that trains. It takes a
+`scripts/platforms/aspire2a/train_in_pb.sh` is the entry point for anything that trains. It takes a
 model config and a dataset, and it is both the submitter and the job:
 
 ```bash
-bash scripts/train_in_pb.sh yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull
+bash scripts/platforms/aspire2a/train_in_pb.sh yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull
 ```
 
 A full config is far more epochs than 24 h, so the job **chains itself**. Each
@@ -81,20 +81,21 @@ Options worth knowing (`--help` prints them all):
 Re-submitting the same config+dataset after a stop continues the pinned run from
 its last checkpoint with a fresh attempt budget.
 
-`scripts/train_ehull_5x.pbs`, `scripts/train_ehull_ssops.pbs` and
-`scripts/train_formula_energy.pbs` are the older single-purpose versions of the
-same scheme, kept because chains launched from them are still running.
+`train_in_pb.sh` launches `scripts/train.py` only. The composition-floor ensemble
+has its own trainer and its own one-slot job,
+`scripts/platforms/aspire2a/train_formula_energy.pbs`; see its header for the
+`-v` overrides.
 
 ---
 
 ## Submitting a relaxation / scoring pool
 
-`scripts/protocol_relax.pbs` runs the expensive half of
+`scripts/platforms/aspire2a/protocol_relax.pbs` runs the expensive half of
 `docs/de_novo_ranking_protocol.md` — `--stage relax` over every unique gene, then
 `--stage score` — for one generated pool, chaining the same way:
 
 ```bash
-qsub -v POOL=generated/<run> scripts/protocol_relax.pbs
+qsub -v POOL=generated/<run> scripts/platforms/aspire2a/protocol_relax.pbs
 ```
 
 `POOL` is a directory holding `wyckoff_genes.json.gz`; output lands in
@@ -114,7 +115,7 @@ finished:
 
 ```bash
 qsub -v "POOL=generated/<run>,POST=python scripts/analyse_dft_screen_uplift.py" \
-     scripts/protocol_relax.pbs
+     scripts/platforms/aspire2a/protocol_relax.pbs
 ```
 
 Quote the whole `-v` list when `POST` has spaces in it; PBS splits it on commas
@@ -135,11 +136,11 @@ hours. Two such jobs at a time. Then, on the node:
 ```bash
 cd /scratch/users/nus/kna/WyckoffTransformer
 module load singularity                      # or singularity/4.3.1
-bash scripts/run_in_singularity.sh python scripts/train.py \
+bash scripts/platforms/aspire2a/run_in_singularity.sh python scripts/train.py \
     yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull cuda --pilot
 ```
 
-`scripts/run_in_singularity.sh` is the only supported way to run anything:
+`scripts/platforms/aspire2a/run_in_singularity.sh` is the only supported way to run anything:
 it puts `.venv/bin` on `PATH` inside the image, binds the repo and `/raid`, and
 sets `SINGULARITY_NO_EVAL=1` so `python -c` snippets with parentheses survive.
 Override `SIF=` or `REPO_DIR=` if you need a different image or checkout, and
@@ -155,7 +156,7 @@ Only `wyformer-generate`, `wyformer-cryspr` and `wyformer-protocol` are in
 `[project.scripts]`. Everything else runs as a module:
 
 ```bash
-bash scripts/run_in_singularity.sh python -m wyckoff_transformer.cli.protocol_wandb --help
+bash scripts/platforms/aspire2a/run_in_singularity.sh python -m wyckoff_transformer.cli.protocol_wandb --help
 ```
 
 `screen`, `gene_screen`, `dft_screen`, `csp` and `protocol_wandb` all work this

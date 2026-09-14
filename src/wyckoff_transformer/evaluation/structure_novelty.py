@@ -28,6 +28,8 @@ from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 
+from wyckoff_transformer.paths import resolve_store_path
+
 logger = logging.getLogger(__name__)
 
 #: LeMat-Bulk export carrying ``immutable_id`` and ``cif``.  The Wyckoff cache
@@ -67,7 +69,7 @@ def collect_reference_ids(
     )
     from wyckoff_transformer.evaluation.novelty import record_to_augmented_fingerprint
 
-    cache = Path(cache) if cache is not None else DEFAULT_REFERENCE_CACHE
+    cache = resolve_store_path(cache if cache is not None else DEFAULT_REFERENCE_CACHE)
     splits = splits if splits is not None else DEFAULT_REFERENCE_SPLITS
 
     wanted = set(fingerprints)
@@ -122,7 +124,7 @@ def load_reference_structures(
     from pymatgen.core import Structure
 
     lemat_cif_csv = (
-        Path(lemat_cif_csv) if lemat_cif_csv is not None else DEFAULT_LEMAT_CIF_CSV
+        resolve_store_path(lemat_cif_csv if lemat_cif_csv is not None else DEFAULT_LEMAT_CIF_CSV)
     )
     wanted = set(ids)
     if not wanted:

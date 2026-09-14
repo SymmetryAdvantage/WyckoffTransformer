@@ -106,7 +106,7 @@ stops being a free choice once it follows the element vocabulary, so
 `from_config` derives it (95 for `lemat_bulk_fmax1`: three energy columns, then
 92 element columns) and refuses a config that hardcodes a different number.
 
-    bash scripts/train_in_pb.sh \
+    bash scripts/platforms/aspire2a/train_in_pb.sh \
         yamls/models/lemat_bulk_fmax1/chemsys_e_all_adamw_wsd.yaml lemat_bulk_fmax1
 
 No re-cache is needed. `chemical_system_conditioning` reads the

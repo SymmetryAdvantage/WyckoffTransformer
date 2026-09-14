@@ -81,10 +81,10 @@ python scripts/slice_dataset_by_ehull.py \
     --ehull-cutoff 0.1
 ```
 
-If the cache directory is in a non-default location, set `WYCKOFF_CACHE_DIR`:
+The cache is found through `wyckoff_transformer.paths.cache_root()` (see `docs/data_store.md`); to use a different one, set `WYFORMER_CACHE` or pass `--cache-dir`:
 
 ```bash
-WYCKOFF_CACHE_DIR=/path/to/cache python scripts/slice_dataset_by_ehull.py \
+WYFORMER_CACHE=/path/to/cache python scripts/slice_dataset_by_ehull.py \
     --source-dataset lemat_bulk_fmax1_stress \
     --target-dataset lemat_bulk_fmax1_stress_ehull01 \
     --tokeniser-name lemat_bulk_fmax1_sg_multiplicity \

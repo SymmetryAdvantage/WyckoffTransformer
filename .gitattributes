@@ -1,3 +1,6 @@
 data/alex_mp_20/train.csv.gz filter=lfs diff=lfs merge=lfs -text
 data/alex_mp_20/test.csv.gz filter=lfs diff=lfs merge=lfs -text
 data/alex_mp_20/val.csv.gz filter=lfs diff=lfs merge=lfs -text
+# Committed package data, pinned byte for byte by tests/test_package_data.py
+src/wyckoff_transformer/wyckoffs_enumerated_by_ss.json -text
+src/wyckoff_transformer/engineers/*.json -text

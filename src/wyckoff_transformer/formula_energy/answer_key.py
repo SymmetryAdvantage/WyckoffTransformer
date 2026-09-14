@@ -49,6 +49,7 @@ import pandas as pd
 
 from wyckoff_transformer.formula_energy import dataset as ds
 from wyckoff_transformer.formula_energy import hull_table as ht
+from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -238,8 +239,8 @@ def main() -> None:
         compute_shallow_energies(workers=args.workers)
 
     shallow = ds.build(energy_csv=SHALLOW_ENERGIES, provenance_csv=args.provenance)
-    shallow.to_parquet(SHALLOW_TABLE)
-    deep = pd.read_parquet(args.deep_table)
+    shallow.to_parquet(resolve_store_path(SHALLOW_TABLE))
+    deep = pd.read_parquet(resolve_store_path(args.deep_table))
 
     shallow_ids = set(pd.read_csv(SHALLOW_ROWS, usecols=["immutable_id"])["immutable_id"])
     delta = (elemental_references(args.energy_csv)
@@ -248,7 +249,7 @@ def main() -> None:
                 int((delta.abs() > 1e-3).sum()), delta.abs().max())
 
     key = build_answer_key(deep, shallow, delta=delta)
-    key.to_parquet(ANSWER_KEY)
+    key.to_parquet(resolve_store_path(ANSWER_KEY))
     width = max(len(name) for name in describe(key))
     for name, value in describe(key).items():
         print(f"  {name:<{width}}  {value:,.4f}" if isinstance(value, float) else f"  {name:<{width}}  {value:,}")

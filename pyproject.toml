@@ -101,14 +101,15 @@ mp = [
 ]
 
 [build-system]
-requires = ["hatchling", "pyxtal>=1.1.3", "numpy>=1.26.0,<2", "scipy", "scikit-learn>=1.5.0", "pydantic", "pandas"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wyckoff_transformer"]
 
-[tool.hatch.build.hooks.custom]
-
+# The Wyckoff mappings and engineers are committed package data, not generated at build
+# time: a model is only meaningful against the exact tables it was trained with, and a
+# rebuild must not be able to change them. tests/test_package_data.py holds them fixed.
 [tool.hatch.build]
 ignore-vcs = true
 include = [
@@ -140,10 +141,6 @@ include = [
 # `tool.uv.sources` is uv-only and is stripped from the published metadata, so
 # the PyPI wheel keeps the plain `pyxtal ~=1.1` requirement -- which also means
 # an install from PyPI does *not* get this fix.
-#
-# The `pyxtal` in [build-system].requires stays on PyPI on purpose: sources do
-# not reach a PEP 517 build environment anyway, and the build hook only walks
-# the Wyckoff tables, which the fork does not touch.
 pyxtal = { url = "https://github.com/kazeevn/PyXtal/archive/c0e62f7fbb9187e8a712ac61b6fce3a01b8fd1e7.tar.gz" }
 # Test oracle only; see the genbench-oracle dependency group.
 material-hasher = { git = "https://github.com/LeMaterial/material-hasher.git" }

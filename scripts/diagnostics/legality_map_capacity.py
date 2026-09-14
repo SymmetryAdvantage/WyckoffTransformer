@@ -7,12 +7,13 @@ multi-hot indicator of which site symmetries exist in the group. If linear suffi
 import sys
 import numpy as np, torch, json
 from pathlib import Path
+from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer.tokenization import SpaceGroupEncoder, load_wyckoff_mappings
 from pyxtal.symmetry import Group
 from collections import Counter
 
 # Any run directory works: only its `wyckoffs_enumerated_by_ss.json` is read.
-RUN = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("runs/upi73i4k")
+RUN = Path(sys.argv[1]) if len(sys.argv) > 1 else runs_root() / "upi73i4k"
 maps = load_wyckoff_mappings(RUN)
 sgs = sorted(int(k) for k in maps.ss_from_letter.keys())
 enc = SpaceGroupEncoder.from_sg_set(set(sgs))

@@ -37,6 +37,7 @@ from typing import Optional
 
 import pandas as pd
 
+from wyckoff_transformer.paths import cache_root, data_path
 from wyckoff_transformer.data import (
     LEGACY_SCALAR_COLUMNS, get_composition_from_symmetry_sites, read_cif, structure_to_sites)
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
@@ -44,7 +45,6 @@ from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger("cache_a_dataset_reusing")
 
-REPO = Path(__file__).resolve().parent.parent
 #: Everything `compute_symmetry_sites` derives from the structure alone, and therefore
 #: everything that may be copied from another cache built at the same tolerances.
 SYMMETRY_COLUMNS = (
@@ -234,7 +234,7 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    data_dir = REPO / "data" / args.dataset
+    data_dir = data_path(args.dataset)
     reuse = load_reuse_frame(args.reuse)
 
     result = {}
@@ -258,7 +258,7 @@ def main():
 
         add_observed_gene_minimum(result)
 
-    out = REPO / "cache" / args.dataset / "data.pkl.gz"
+    out = cache_root() / args.dataset / "data.pkl.gz"
     out.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(out, "wb") as handle:
         pickle.dump(result, handle)

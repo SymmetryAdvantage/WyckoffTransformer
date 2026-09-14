@@ -15,6 +15,7 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
+from wyckoff_transformer.paths import resolve_store_path
 from wyckoff_transformer.cli import parse_condition_assignments
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 
@@ -41,7 +42,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate matched WyFormer samples at an e-hull target grid."
     )
-    parser.add_argument("--run-path", type=Path, default=Path("runs/upi73i4k"))
+    parser.add_argument("--run-path", type=Path, default=Path("runs/upi73i4k"),
+                        help="Resolved against the runs store when relative.")
     parser.add_argument(
         "--output-dir", type=Path, default=None,
         help="Defaults to generated/<run name>/<swept channel>_conditioning_audit, so a "
@@ -65,6 +67,7 @@ def main() -> None:
                              "relaxations and scores downstream of it describing samples "
                              "that no longer exist.")
     args = parser.parse_args()
+    args.run_path = resolve_store_path(args.run_path)
     if args.output_dir is None:
         args.output_dir = (Path("generated") / args.run_path.name
                            / f"{_feature_tag(args.sweep_feature)}_conditioning_audit")

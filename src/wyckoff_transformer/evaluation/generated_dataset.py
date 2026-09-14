@@ -22,6 +22,7 @@ import numpy as np
 import torch
 import pandas as pd
 from .novelty import record_to_augmented_fingerprint
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.data import (
     compute_symmetry_sites,
     pyxtal_notation_to_sites,
@@ -531,8 +532,10 @@ class GeneratedDataset():
         cls,
         transformations: Iterable[str],
         dataset: str = "mp_20",
-        cache_path: Path = Path(__file__).resolve().parents[3] / "cache"):
+        cache_path: Optional[Path] = None):
 
+        if cache_path is None:
+            cache_path = cache_root()
         cache_location = cache_path.joinpath(
             dataset, "analysis_datasets", *transformations).with_suffix(".pkl.gz")
         with gzip.open(cache_location, "rb") as f:
@@ -546,9 +549,11 @@ class GeneratedDataset():
         dataset: str = "mp_20",
         config_path: Path = Path(__file__).resolve().parents[3] / "generated" / "datasets.yaml",
         root_path: Path = Path(__file__).resolve().parents[3] / "generated",
-        cache_path: Path = Path(__file__).resolve().parents[3] / "cache",
+        cache_path: Optional[Path] = None,
         sort: bool = True):
 
+        if cache_path is None:
+            cache_path = cache_root()
         result = cls(dataset, cache_path.joinpath(dataset, "analysis_datasets", *transformations).with_suffix(".pkl.gz"))
         data_config = OmegaConf.load(config_path)[dataset]
 

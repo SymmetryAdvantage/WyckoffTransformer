@@ -1,5 +1,6 @@
 from typing import Tuple, List, Optional
 import logging
+from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
@@ -94,6 +95,7 @@ class CascadeEmbedding(nn.Module):
     def __init__(self,
                  cascade,
                  dropout: Optional[float] = None,
+                 engineers_dir: Optional[Path] = None,
                  **kwargs):
         """
         Arguments:
@@ -102,14 +104,15 @@ class CascadeEmbedding(nn.Module):
                 d_i is the dimensionality of the i-th token embedding
                 - If d_i is None, the token is deemed to be a scalar and is passed through
                 - If d_i has the key "frozen_table", the token is an integer id, expanded
-                    into a fixed vector by the named lookup table (package data written by
-                    preprocess_wychoffs), which is not learned
+                    into a fixed vector by the named lookup table, which is not learned
                 - If d_i has the operator [], it must also have the key "pass_through_vector",
                     and the token is deemed to be a vector and is passed through
                 - If d_i is 0, the token is not embedded and is not supplied to the model
                 - If d_i is a scalar, the token is embedded using torch.nn.Embedding
                 pad_i is padding_idx to be passed to torch.nn.Embedding
             dropout: dropout probability to be passed to torch.nn.Dropout
+            engineers_dir: where frozen tables are read from; the package's engineers when
+                None. Pass the model's own copy (engineers_dir_for) when loading a model.
             kwargs: additional arguments to be passed to torch.nn.Embedding
         """
         super().__init__()
@@ -125,7 +128,7 @@ class CascadeEmbedding(nn.Module):
                 # Checked before the generic dict branch below: a config node with a
                 # "frozen_table" key also answers to __getitem__.
                 table_name = d["frozen_table"]
-                table = torch.from_numpy(load_frozen_table(table_name))
+                table = torch.from_numpy(load_frozen_table(table_name, engineers_dir=engineers_dir))
                 if table.size(0) < n:
                     raise ValueError(
                         f"Frozen table {table_name} has {table.size(0)} rows, too few for "
@@ -227,7 +230,7 @@ def get_pyramid_perceptron(
 class CascadeTransformer(nn.Module):
     @classmethod
     def from_config_and_tokenisers(cls, config: OmegaConf,
-        tokenisers: dict, device: torch.device):
+        tokenisers: dict, device: torch.device, engineers_dir: Optional[Path] = None):
 
         # TODO hasn't it been relaxed, and field renamed?
         if len(config.tokeniser.get("augmented_token_fields", [])) > 1:
@@ -269,6 +272,7 @@ class CascadeTransformer(nn.Module):
         return cls(
             n_start=n_start,
             cascade=full_cascade.values(),
+            engineers_dir=engineers_dir,
             **model_args
             ).to(device)
 
@@ -297,7 +301,8 @@ class CascadeTransformer(nn.Module):
                  prediction_perceptron_dropout: Optional[float] = None,
                  concat_start_to_prediction_input_embedding_dim: Optional[int] = None,
                  condition_dim: Optional[int] = None,
-                 relational_attention_bias: Optional[dict] = None):
+                 relational_attention_bias: Optional[dict] = None,
+                 engineers_dir: Optional[Path] = None):
         """
         Expects tokens in the following format:
         START_k -> [] -> STOP -> PAD
@@ -345,9 +350,10 @@ class CascadeTransformer(nn.Module):
                 biases to the attention logits; see wyckoff_transformer.cascade.relational.
                 Beyond the hyperparameters of `RelationalAttentionBias` the dict carries
                 `tokenisers` and `cascade_order`, which `from_config_and_tokenisers` fills in.
+            engineers_dir: where frozen tables are read from, see CascadeEmbedding.
         """
         super().__init__()
-        self.embedding = CascadeEmbedding(cascade, dropout=emebdding_dropout)
+        self.embedding = CascadeEmbedding(cascade, dropout=emebdding_dropout, engineers_dir=engineers_dir)
         self.d_model = self.embedding.total_embedding_dim
         if "nhead" in TransformerEncoderLayer_args and self.d_model % TransformerEncoderLayer_args["nhead"]:
             logger.warning("d_model is not divisible by nhead, padding to the next multiple")

@@ -197,8 +197,8 @@ python scripts/analyse_dft_screen_uplift.py generated/<run>
 
 which reads `dft_screen.csv` and `protocol/structures.csv` and reports each
 arm's MetaSUN and SUN rate at a fixed budget against a random draw of the same
-size. `scripts/protocol_relax.pbs` runs the relaxation half as a self-chaining
-PBS job (`qsub -v POOL=generated/<run> scripts/protocol_relax.pbs`).
+size. `scripts/platforms/aspire2a/protocol_relax.pbs` runs the relaxation half as a self-chaining
+PBS job (`qsub -v POOL=generated/<run> scripts/platforms/aspire2a/protocol_relax.pbs`).
 
 This is a proxy and not the claim: the screen's estimators and its hull are PBE,
 while the protocol's energies and hull are ORB, so a candidate can clear one and

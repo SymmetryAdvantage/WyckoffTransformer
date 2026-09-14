@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 
 from wyckoff_transformer.csp import parse_formula, reduce_formula
+from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,10 @@ def load_rows(
         One row per usable structure, with ``formula``, ``cell_size``, ``kind``
         and ``max_force`` added.
     """
+    energy_csv = resolve_store_path(energy_csv)
+    provenance_csv = resolve_store_path(provenance_csv)
+    if force_csv is not None:
+        force_csv = resolve_store_path(force_csv)
     frame = pd.read_csv(energy_csv, usecols=list(ENERGY_COLUMNS), low_memory=False)
     logger.info("read %d rows from %s", len(frame), energy_csv)
 
@@ -424,7 +429,7 @@ def main() -> None:
         print(f"  {name:<{width}}  {value:,.4f}" if isinstance(value, float) else f"  {name:<{width}}  {value:,}")
     if not args.check:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        table.to_parquet(args.out)
+        table.to_parquet(resolve_store_path(args.out))
         print(f"wrote {args.out}")
 
 

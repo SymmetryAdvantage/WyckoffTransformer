@@ -3,7 +3,7 @@
 | Symptom | Cause and resolution |
 | --- | --- |
 | `ModuleNotFoundError: No module named 'torch'` from `.venv/bin/python` | The venv was created without `--system-site-packages`, or it was created on the host. Rebuild it through the container command in [environment.md](environment.md). |
-| `torch.__file__` points into `.venv` | uv installed a second torch instead of inheriting the image's custom build. Rebuild with `scripts/build_singularity_venv.sh`; do not run `uv sync` or bare `uv pip install` in the venv. |
+| `torch.__file__` points into `.venv` | uv installed a second torch instead of inheriting the image's custom build. Rebuild with `scripts/platforms/iapetus/build_venv.sh`; do not run `uv sync` or bare `uv pip install` in the venv. |
 | `torch.cuda.is_available()` is false | Ensure the command uses Docker's `--runtime=nvidia` and `NVIDIA_VISIBLE_DEVICES=all`, then check `nvidia-smi` inside the same container. An empty `CUDA_VISIBLE_DEVICES` deliberately hides GPUs. |
 | `CUDA driver version is insufficient` or `no kernel image is available` | A stock PyPI CUDA torch has replaced the image build. Rebuild the venv; do not install torch from PyPI. |
 | `IndexError: list index out of range` in `warp/_src/torch.py` while ORB uses CUDA | The CPU-only Warp override has no CUDA devices. Keep Warp on CPU for graph construction, then transfer the graph to the CUDA ORB model with `build_patched_orb_calculator(device="cuda")` from `scripts/run_cryspr_reconstruction_study.py`. |

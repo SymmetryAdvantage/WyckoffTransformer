@@ -13,6 +13,7 @@ import json
 import logging
 from pathlib import Path
 
+from wyckoff_transformer import paths
 from wyckoff_transformer.system_prior import (
     DEFAULT_SG_KAPPA,
     SystemSpaceGroupPrior,
@@ -25,7 +26,7 @@ DEFAULT_ARTIFACT_NAME = "system_prior.npz"
 
 
 def default_artifact_path(dataset: str, cache_root: Path | None = None) -> Path:
-    root = Path.cwd() / "cache" if cache_root is None else Path(cache_root)
+    root = paths.cache_root() if cache_root is None else Path(cache_root)
     return root / dataset / DEFAULT_ARTIFACT_NAME
 
 

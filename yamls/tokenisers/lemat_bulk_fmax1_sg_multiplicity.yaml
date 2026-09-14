@@ -47,6 +47,7 @@ sequence_fields:
     # for this augmentation-invariant Wyckoff gene. It is the scalar target of
     # the gene-energy screener, not a conditioning channel.
     - gene_min_formation_energy_per_atom
+    - band_gap
   # converts a Counter into tokens, uses the specified field name embedding
   # Basically, aimed at e. g.
   # {Element Nd: 1.0, Element Al: 8.0, Element Cu: 4.0}

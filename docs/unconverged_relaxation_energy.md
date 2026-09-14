@@ -11,7 +11,9 @@ worth correcting.
 Neither holds. The conclusions, in the order they were established:
 
 1. **`max_force` is a provenance label, not a convergence label.** It separates source
-   databases far more sharply than it separates converged from unconverged rows.
+   databases far more sharply than it separates converged from unconverged rows, and
+   Materials Project — the source it penalises hardest — never applied a force criterion
+   in the first place.
 2. **The 30,679 rows with no forces were never missing at the source.** They are
    recoverable from Materials Project, and the imputation that stood in for them was
    wrong by a factor of two.
@@ -220,15 +222,146 @@ ever worth acting on, the operation is to *recompute* — relax and re-derive th
 ~2.3% of rows predicted to move more than 0.1 Å, which is predictable from force and stress
 analytically and is provenance-neutral — not to delete a third of MP.
 
+### What retaining `0.02 < max_force <= 1` actually costs
+
+That band is 10.3% of the dataset. Enumerated, the harms are:
+
+| | scale | removed by cutting at 0.02? |
+| --- | --- | :-: |
+| noisier conditioning energy | δ, 0.08 meV/atom median | no — δ is negligible either way |
+| duplicate rows of one gene, at different energies | 9.4% of rows share a gene | no — and already absorbed, below |
+| **wrong Wyckoff gene** | ~1% of rows | no — flat in force |
+| genuinely broken structures | sentinels, the 10⁴ eV/Å tail | already gone: `max_force <= 1`, `--max-stress 500` |
+| losing 31.7% of Materials Project | certain | this is what the cut costs |
+
+**Duplicate energies are absorbed by construction.** `--observed-gene-minimum-target`
+collapses each gene to its minimum energy over the rows carrying it — 5,327,342 rows across
+4,826,004 augmentation-invariant genes, so 9.4% of rows share a gene — and extra rows make
+that minimum better, not worse. The large same-gene energy spreads that do exist (the
+LeMat-Bulk paper finds 1% of same-fingerprint pairs above 0.25 eV/atom) are polymorphism and
+settings differences, uncorrelated with residual force; no `max_force` cut reaches them.
+
+**And most of the band is not unconverged.** 87% of the 31,176 recovered MP rows, and 90%
+of the independent 1,040-task trajectory sample, ran with a **positive `EDIFFG`** — VASP's
+energy-change criterion — so no force threshold was ever imposed. Not one row hit its `NSW`
+ionic step limit, and the median final force under that criterion is 0.106 eV/Å. An MP entry
+at `max_force = 0.1` is a relaxation that ran to completion and met the criterion it was
+given. Even MP's force-criterion minority targets `EDIFFG = -0.05`, itself above the 0.02
+cut that the `ehull` family applied.
+
+So the only real risk in the band is the gene error, it is not force-correlated, and the cut
+that would supposedly address it removes a third of the experimentally grounded rows instead.
+
 ## 7. What this leaves
 
 `lemat_bulk_fmax1_stress` (see [`dirty_data_conditioning.md`](dirty_data_conditioning.md))
-carries the recovered forces and the stress invariants, keeps the 1 eV/Å cut, and drops the
-356 rows that only survived it through a fabricated `max_force`. The recommendation for the
-next conditioned run is **two channels, `energy_above_hull` and `delta_e_polymorph`, and no
-convergence channel at all** — which also removes the original defect: asking for
-`max_force = 0` at generation time selected against Materials Project and towards genes
-with no free positional degrees of freedom.
+carries the recovered forces and the stress invariants, keeps the 1 eV/Å cut, drops the 356
+rows that only survived it through a fabricated `max_force` and the 161 the
+`--max-stress 500` corruption guard removes, and draws its val/test split uniformly instead
+of inheriting the 0.02-cut one. The recommendation for the next conditioned run is **two
+channels, `energy_above_hull` and `delta_e_polymorph`, and no convergence channel at all** —
+which also removes the original defect: asking for `max_force = 0` at generation time
+selected against Materials Project and towards genes with no free positional degrees of
+freedom.
+
+`max_force` and the stress invariants stay in the cache as *diagnostics*: they are what
+`--max-stress` and the 1 eV/Å guard are computed from, and what any later decision to
+recompute the ~2.3% of rows predicted to move would be targeted with. Building a model on
+them is the thing this study rules out, not keeping them on disk.
+
+What remains open is not about convergence: the two-channel run needs its own tokeniser and
+model config, and the ~1% of rows whose Wyckoff gene would change under further relaxation
+is a label-noise floor that no filter on this dataset can lower.
+
+## 8. Cross-reference: what the LeMat-Bulk paper says
+
+Siron et al., *LeMat-Bulk: aggregating, and de-duplicating quantum chemistry materials
+databases* ([arXiv:2511.05178](https://arxiv.org/abs/2511.05178)) was read after this study
+was complete. It names the mechanism behind §4, attaches it to the wrong two databases, and
+never mentions the missing forces.
+
+**Appendix L names the mechanism §4 inferred, and attaches it to the wrong databases.** It
+says: "For OQMD and Materials Project, a static calculation is typically performed following
+structure relaxation, utilizing a denser k-point grid. For LeMat-Bulk, we selected the
+outputs of the static calculations to extract energy, forces, magnetic moments, charge
+information, and the final structure." Alexandria is exempted — "each calculation
+corresponds to a single material with a unique material ID" — implying its row is the
+relaxation itself. This is the right mechanism, with Materials Project and Alexandria
+swapped:
+
+| | what the paper says | what the data says |
+| --- | --- | --- |
+| MP | static after relaxation | **relaxation's own final ionic step** |
+| Alexandria | the relaxation itself | **a separate calculation at its final geometry** |
+| OQMD | static after relaxation | consistent, not directly verified |
+
+- **Materials Project.** Of 31,176 rows whose forces were recovered by matching LeMat's
+  energy to a task document, 98.6% match the last ionic step of a `relax2` run (NSW ≥ 99,
+  IBRION 1–2, ISIF 3); 428 are true statics (NSW 0, IBRION −1). In the independent
+  1,040-task trajectory sample — drawn by stress bin, not by recovery status — 966 end in
+  `relax2` and 16 in a static, and all 1,040 reproduce LeMat's forces and stress to
+  `dF = dS = 0` exactly. MP's `max_force` therefore **is** the relaxation's own residual and
+  not a settings artefact, which is why its residual pressure is sign-symmetric around
+  +0.02 kBar (§3) where OQMD's is one-signed at +7.5. It is still not evidence of a failed
+  calculation: those relaxations converged on energy, not force (§6).
+- **Alexandria.** LeMat's energy, forces and stress match **0 of 500** steps of Alexandria's
+  own published `geo_opt_paths` while sitting at exactly the final geometry of **500 of 500**,
+  and the reported pressure tracks the calculation-to-path jump (Spearman 0.993), not the
+  path's own final pressure (0.04). It is the separate re-evaluation the paper attributes to
+  MP.
+- **OQMD.** No trajectories were extracted, but one-signed compressive stress that scales
+  with pseudopotential hardness and is uncorrelated with residual force (Spearman 0.09) is
+  the signature Appendix L describes, so for OQMD the paper's account stands.
+
+The correction does not change the conclusion — δ stays at 0.08 meV/atom either way — but it
+changes what `max_force` means per source, and therefore why conditioning on it is a
+provenance channel: it is a genuine convergence residual for Materials Project and a
+settings artefact for the other two. One label, two meanings, split along the source axis.
+(§2 of the paper says "for both we utilized the final relaxation", which is what the MP data
+actually show; the SI contradicts it.)
+
+**The no-filtering policy is explicit, and this study says it is the right one.** From §2:
+"Despite differences in k-point sampling and plane-wave cutoff energy settings, no materials
+were excluded on this basis, as all databases were assumed to operate within convergence."
+That assumption is what §5 tests, and it survives: population-weighted median δ of
+0.08 meV/atom against a 100 meV threshold (250 meV/atom in the paper's own metastability
+heuristic). Nothing needs excluding on convergence grounds.
+
+**Their Fig. 11–12 is our provenance skew, read as a data-quality observation.** "Most well
+converged structures by force appear to be those of Alexandria. Meanwhile a significant
+amount of structures with high force vectors (likely not fully converged structures) come
+from OQMD and Materials Project" — the same fact as §6's 0.006% / 31.7% / 3.1% above
+0.1 eV/Å. For a database paper this is a caveat; for a conditioned generative model it is
+the whole problem, because sampling at `f_max = 0` then means sampling away from Materials
+Project.
+
+**Their Fig. 12 shows the sentinel family, on the axis where we cannot use it.** Its x-axis
+runs to 10⁹ eV/Å. In the `compatible_pbe` subset we actually consume, the force tail stops
+at 1.28 × 10⁴ eV/Å (15 rows above 10³, all OQMD), and the 10⁹ sentinels appear on the
+*stress* side instead: 9 OQMD rows at exactly 1e9 kBar hydrostatic and 3e9 von Mises, with
+force identically zero. No force-based histogram shows them and no `max_force` cut removes
+them; `--max-stress 500` does (161 rows, 0.003%).
+
+**The missing forces are the gap.** The paper never mentions that 30,679 Materials Project
+rows — 22.1% of MP — carry an empty `forces` array: MP's 2013–2017 legacy tasks leave the
+task document's top-level `output.forces` empty while keeping it in the last ionic step of
+the same calculation, and the fetcher reads the top level. Anyone reproducing Fig. 11 from
+the released parquet is silently missing a fifth of Materials Project, and any `max_force <= X`
+filter drops all of them, for every X. `scripts/recover_mp_forces.py` recovers 30,676 of
+them from MP's S3 task documents.
+
+**Their duplicate re-relaxation is not a measurement of δ, and bounds it from above.**
+Table 2 reports mean energy differences between same-fingerprint duplicates falling from
+10 eV to 0.07 eV (35 large-difference pairs) and from 0.21 eV to 0.03 eV (150 pairs chosen
+as the most EqV2-dissimilar) after DFT relaxation. Those relaxations used a *different*
+parameter set — ENCUT 600, EDIFF 2×10⁻⁷, D3 dispersion, symmetry off — so the drop mixes
+the settings change with the unfinished relaxation, on pairs selected as the worst case.
+δ as defined here is the drop on the label's own energy surface for a random row, and is
+three orders of magnitude smaller. The two are consistent, and both sit below the threshold
+that matters.
+
+**Row counts agree.** The paper's Table 6 gives LeMaterial (Compatible, PBE) = 5,335,299,
+which is exactly the row count of the `compatible_pbe` parquet the pipeline starts from.
 
 ## Reproducing
 
@@ -244,6 +377,11 @@ python scripts/extract_alexandria_trajectories.py all
 CUDA_VISIBLE_DEVICES="" python scripts/validate_curvature_on_trajectories.py \
     --trajectories cache/mp_trajectories --workers 12
 ```
+
+The INCAR claims in §6 and §8 need no new run: `cache/mp_forces_recovery/runs/full/results.parquet`
+carries `NSW`, `IBRION`, `ISIF`, `EDIFFG`, `last_calc_name` and `hit_nsw` per recovered row,
+and `cache/mp_trajectories/tasks/<task_id>.json.gz` carries the full INCAR of every calc in
+the independent sample.
 
 ORB finite-difference Hessians in float64 cost ~26 MiB per atom and will exhaust a shared
 GPU; run them on CPU. Results land under `cache/gradient_matched/`, `cache/mp_forces_recovery/`,

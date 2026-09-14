@@ -13,6 +13,7 @@ from omegaconf import OmegaConf
 import sys
 sys.path.append(str(Path(__file__).parent.parent.resolve()))
 
+from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.data import (
     read_cif,
@@ -98,7 +99,7 @@ def load_wandb_model(
     project: str = WANDB_PROJECT) -> Tuple[WyckoffTrainer, OmegaConf]:
 
     wandb_run = wandb.Api().run(wandb_run_path(run_id, entity, project))
-    run_dir = Path(__file__).parent.parent / "runs" / run_id
+    run_dir = runs_root() / run_id
     ensure_run_artifacts(wandb_run, run_dir)
     config = load_config_from_run(wandb_run)
     trainer = WyckoffTrainer.from_config(

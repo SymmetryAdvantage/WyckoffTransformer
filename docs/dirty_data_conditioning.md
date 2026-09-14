@@ -14,7 +14,10 @@ convergence filter. It is closer to a provenance filter.
 `wyckoff_transformer.formula_energy.dataset` already measured what it removes: the cut
 keeps 95.6% of Alexandria rows and 35.5% of the ICSD-backed Materials Project ones,
 because MP reports forces from a different protocol whose median is 0.028 — above the
-cut. `scripts/pull_mp_provenance.py` records the same thing from the other end: 138,931
+cut. That protocol never imposed a force criterion at all: 87–90% of MP's relaxations
+stopped on a positive `EDIFFG`, VASP's energy-change criterion, and none hit their ionic
+step limit, so the cut discards calculations that converged exactly as they were asked to
+(see [unconverged_relaxation_energy.md](unconverged_relaxation_energy.md) §6). `scripts/pull_mp_provenance.py` records the same thing from the other end: 138,931
 MP rows in the energy CSV against 31,794 in the cache. The rows a de-novo generator would
 most like to imitate are the ones the filter is most likely to drop.
 
@@ -254,6 +257,13 @@ the original audit still lands on its historical path, so the five shell scripts
 
 ## Building it again
 
+> **This recipe rebuilds `lemat_bulk_fmax1` as `19qbxo6l` trained on it, which is no longer
+> how the dataset should be built.** It predates `scripts/recover_mp_forces.py`, so it
+> leaves 30,676 Materials Project rows carrying an imputed `max_force` of 0.0415 against a
+> true median of 0.088, and keeps 356 rows its own cut would exclude. For a current build
+> follow [lemat_bulk_pipeline.md](lemat_bulk_pipeline.md); the recipe below is kept because
+> it documents an existing artifact.
+
 ```
 python -m wyckoff_transformer.formula_energy.hull_table --workers 16 \
   --input-file data/lemat-bulk/lemat_pbe.csv.gz \
@@ -322,14 +332,22 @@ against 0.042 imputed.
 
 | | `lemat_bulk_fmax1` | `lemat_bulk_fmax1_stress` |
 | --- | ---: | ---: |
-| train / val / test | 5,133,142 / 99,985 / 99,987 | 5,132,786 / 99,985 / 99,987 |
+| train / val / test | 5,133,142 / 99,985 / 99,987 | 5,127,342 / 100,000 / 100,000 |
 | `max_force` imputed | 30,676 | 3 |
 | stress labels | — | `stress_hydrostatic`, `stress_von_mises`, `stress_missing` |
 
-The 356 rows that leave train are recovered rows above the 1 eV/Å cut, all previously
-imputed. Otherwise the two agree exactly on `energy_above_hull` and
-`formation_energy_per_atom`; `delta_e_polymorph` moves on 160 rows, by at most 8 meV/atom,
-where a dropped row had been its formula's minimum. Val and test are unchanged.
+The 356 rows that leave are recovered rows above the 1 eV/Å cut, all previously imputed;
+161 more go to the `--max-stress 500` guard and the 5,258 over the 61-site cap are now
+excluded before the split rather than at cache time. Otherwise the two agree exactly on
+`energy_above_hull` and `formation_energy_per_atom`; `delta_e_polymorph` moves on 160 rows,
+by at most 8 meV/atom, where a dropped row had been its formula's minimum.
+
+**The split is redrawn, and is not comparable to the old one.** `lemat_bulk_fmax1_stress`
+first inherited the val/test ids of the `ehull` family, which had been cut at
+`max_force <= 0.02` — so val and test contained no row above 0.02 eV/Å at all against 10.8%
+of train, and 0.77–0.79% Materials Project against train's 2.66%. It is now drawn fresh and
+uniform (`--split-ids none`), agreeing with train to within 0.1 pp on source mix, median
+force and recovered rows. Runs on the inherited split are comparable only with each other.
 
 **Stress labels.** kBar, in the archive's VASP sign (positive: compressed, wants to
 expand): the hydrostatic part `tr(σ)/3` and the von Mises equivalent of the deviator.

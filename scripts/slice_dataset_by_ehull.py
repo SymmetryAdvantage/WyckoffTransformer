@@ -12,19 +12,13 @@ import logging
 import pickle
 import shutil
 import time
-import os
 from pathlib import Path
 import torch
 
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.tokenization import load_tensor_cache, save_tensor_cache
 
 logger = logging.getLogger("slice_dataset_by_ehull")
-
-
-def get_cache_root() -> Path:
-    if "WYCKOFF_CACHE_DIR" in os.environ:
-        return Path(os.environ["WYCKOFF_CACHE_DIR"])
-    return Path(__file__).resolve().parent.parent / "cache"
 
 
 def slice_safetensors(
@@ -123,7 +117,7 @@ def main():
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    root = args.cache_dir if args.cache_dir is not None else get_cache_root()
+    root = args.cache_dir if args.cache_dir is not None else cache_root()
     source_dir = root / args.source_dataset
     target_dir = root / args.target_dataset
 

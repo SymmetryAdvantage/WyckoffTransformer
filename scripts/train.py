@@ -7,6 +7,7 @@ import wandb
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
+from wyckoff_transformer.paths import runs_root, wandb_dir
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: E402
 from wyckoff_transformer.trainer import train_from_config  # noqa: E402
 # from wyckoff_transformer.bigtrainer import train_from_config
@@ -19,8 +20,8 @@ def main():
     parser.add_argument("device", type=torch.device, help="Device to train on")
     parser.add_argument("--pilot", action="store_true", help="Run a pilot run by setting epochs to 3")
     parser.add_argument("--debug", action="store_true", help="Debug mode")
-    parser.add_argument("--run-path", type=Path, default=Path(__file__).parent.parent / "runs",
-                        help="Set the path for saving run data")
+    parser.add_argument("--run-path", type=Path, default=None,
+                        help="Set the path for saving run data (default: the runs store)")
     parser.add_argument("--torch-num-thread", type=int, help="Number of threads for torch")
     parser.add_argument("--production", action="store_true", help="Train on the combined train+val+test dataset")
     parser.add_argument("--no-test", action="store_true", help="Skip loading and evaluating the test dataset")
@@ -44,6 +45,8 @@ def main():
                              "depend on the shell's W&B configuration.")
     parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
     args = parser.parse_args()
+    if args.run_path is None:
+        args.run_path = runs_root()
     
     if args.debug:
         torch.autograd.set_detect_anomaly(True)
@@ -79,6 +82,7 @@ def main():
     wandb_config = OmegaConf.to_container(config)
     args.run_path.mkdir(parents=True, exist_ok=True)
     with wandb.init(
+        dir=wandb_dir(),
         entity=args.wandb_entity,
         project=args.wandb_project,
         job_type="train",

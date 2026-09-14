@@ -9,19 +9,17 @@ from typing import Optional
 import argparse
 import gzip
 import pickle
-from pathlib import Path
 
 from wyckoff_transformer.data import read_all_MP_csv
+from wyckoff_transformer.paths import cache_root, data_path
 
-
-cache_folder = Path(__file__).parent.parent / "cache"  # Adjusted path
 
 def get_cache_data_file_name(dataset:str):
-    return cache_folder / dataset / "data.pkl.gz"
+    return cache_root() / dataset / "data.pkl.gz"
 
 
 def get_cache_tensors_file_name(dataset:str):
-    return cache_folder / dataset / "tensors.pkl.gz"
+    return cache_root() / dataset / "tensors.pkl.gz"
 
 
 def cache_dataset(
@@ -37,7 +35,7 @@ def cache_dataset(
             "the gene while leaving its energy label attached. Drop over-long rows "
             "instead, as cache_a_dataset_reusing.py --max-sites does.")
     datasets_pd = read_all_MP_csv(
-        Path(__file__).parent.parent.resolve() / "data" / dataset,
+        data_path(dataset),
         n_jobs=n_jobs, symmetry_precision=symmetry_precision,
         symmetry_a_tol=symmetry_a_tol, max_wp=max_wp, scalar_columns=scalar_columns,
         sort_by_letter=sort_by_letter)

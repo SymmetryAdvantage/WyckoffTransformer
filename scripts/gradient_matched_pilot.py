@@ -38,10 +38,10 @@ import pandas as pd
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from wyckoff_transformer.paths import cache_root, data_root
+from wyckoff_transformer.paths import cache_root, data_path
 
-RAW = data_root() / "lemat-bulk" / "raw" / "data.parquet"
-FMAX1 = data_root() / "lemat_bulk_fmax1"
+RAW = data_path("lemat-bulk", "raw", "data.parquet")
+FMAX1 = data_path("lemat_bulk_fmax1")
 logger = logging.getLogger("gradient_matched_pilot")
 
 #: eV/A. The first bin is exactly zero: rows with no free positional parameter.

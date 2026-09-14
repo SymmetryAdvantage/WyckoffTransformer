@@ -36,6 +36,7 @@ from wyckoff_transformer.formula_energy.dataset import DEFAULT_TABLE
 from wyckoff_transformer.formula_energy.features import SYSTEM_FEATURES, SystemDensity
 from wyckoff_transformer.formula_energy.metrics import probability_below_hull
 from wyckoff_transformer.formula_energy.prefilter import reduced_keys
+from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -354,7 +355,7 @@ def main() -> None:
         device,
     )
     formula_table = pd.read_parquet(
-        args.formula_table,
+        resolve_store_path(args.formula_table),
         columns=["e_form_min", "e_hull_at_composition", "chemsys"],
     )
     scored = score_dft_genes(

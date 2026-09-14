@@ -28,6 +28,7 @@ from torch import Tensor
 
 from torch import nn
 
+from wyckoff_transformer.paths import resolve_store_path, wandb_dir
 from wyckoff_transformer.censored import CensoredMinLoss
 from wyckoff_transformer.formula_energy.encoder import FormulaEnergyModel
 from wyckoff_transformer.formula_energy.features import PROVENANCE_FEATURES, composition_tensors, provenance_tensor
@@ -470,7 +471,7 @@ def main() -> None:
 
     spec = load_training_spec(args.config)
     table_path = args.table or spec.table
-    out_path = args.out or spec.out
+    out_path = resolve_store_path(args.out or spec.out)
     n_models = spec.models if args.models is None else args.models
     if n_models <= 0:
         raise ValueError(f"The ensemble needs at least one model, got {n_models}")
@@ -485,7 +486,7 @@ def main() -> None:
         overrides["location_features"] = tuple(args.location_features)
     config = replace(spec.train, **overrides)
 
-    table = pd.read_parquet(table_path)
+    table = pd.read_parquet(resolve_store_path(table_path))
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     max_elements = max(len(parse_formula(formula)) for formula in table.index)
     train = prepare(table[table["split"] == "train"], max_elements=max_elements,
@@ -501,6 +502,7 @@ def main() -> None:
         import wandb  # noqa: PLC0415
 
         run = wandb.init(
+            dir=wandb_dir(),
             entity=args.wandb_entity,
             project=args.wandb_project,
             job_type="formula-energy-train",
@@ -558,6 +560,7 @@ def load_ensemble(
     set grew keeps loading, and so a caller cannot silently hand it a vector of
     the wrong width in the wrong order.
     """
+    path = resolve_store_path(path)
     payload = torch.load(path, map_location=device, weights_only=False)
     config = TrainConfig(**payload["config"])
     models = []

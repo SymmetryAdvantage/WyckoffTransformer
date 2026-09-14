@@ -7,23 +7,23 @@
 # Submit:
 #     cd /scratch/users/nus/kna/WyckoffTransformer
 #     mkdir -p logs
-#     qsub scripts/train_formula_energy.pbs
+#     qsub scripts/platforms/aspire2a/train_formula_energy.pbs
 #
 # Override the config or the output without editing the file:
-#     qsub -v CONFIG=yamls/models/formula_energy/mse_floor.yaml scripts/train_formula_energy.pbs
-#     qsub -v OUT=runs/formula_energy/ablation.pt scripts/train_formula_energy.pbs
-#     qsub -v EXTRA_ARGS="--drop-provenance has_icsd" scripts/train_formula_energy.pbs
+#     qsub -v CONFIG=yamls/models/formula_energy/mse_floor.yaml scripts/platforms/aspire2a/train_formula_energy.pbs
+#     qsub -v OUT=runs/formula_energy/ablation.pt scripts/platforms/aspire2a/train_formula_energy.pbs
+#     qsub -v EXTRA_ARGS="--drop-provenance has_icsd" scripts/platforms/aspire2a/train_formula_energy.pbs
 #
 # WHY NOT `uv run`
 #
 # The requested command is `uv run python -m wyckoff_transformer.formula_energy.train`.
 # On this cluster the environment is $REPO/.venv, built by
-# scripts/build_singularity_venv.sh with --system-site-packages against the base
+# scripts/platforms/aspire2a/build_singularity_venv.sh with --system-site-packages against the base
 # PyTorch image: Torch (and the CUDA stack under it) comes from the container,
 # not from the lockfile, and .venv/bin has no python of its own outside the
 # image. `uv run` would resolve the project's dependencies and reinstall a CPU
 # Torch over that arrangement, so the launch path here is
-# scripts/run_in_singularity.sh, which puts .venv/bin on PATH inside the image
+# scripts/platforms/aspire2a/run_in_singularity.sh, which puts .venv/bin on PATH inside the image
 # and runs the same module. It is what `uv run --no-sync` would do, minus the
 # risk of a sync. Outside the container this is just
 # `uv run python -m wyckoff_transformer.formula_energy.train --config ... --device cuda`.
@@ -37,7 +37,7 @@
 # the job in aiq1 rather than aidev: the `ai` routing queue dispatches
 # walltime <= 2h to aidev, and (02:00:01, 24:00:00] with ngpus=1 to aiq1.
 #
-# There is no chaining here, unlike scripts/train_ehull_5x.pbs: this trainer
+# There is no chaining here, unlike scripts/platforms/aspire2a/train_in_pb.sh: this trainer
 # writes no intermediate checkpoints, so a killed job has nothing to resume
 # from. It only has to fit inside one slot, and it does.
 # ---------------------------------------------------------------------------
@@ -88,11 +88,11 @@ if [ -f "$OUT_PATH" ]; then
 fi
 
 # --- environment for the container -----------------------------------------
-# Put singularity on PATH without relying on the module system in a batch shell.
+# The module system is not always initialised in a batch shell, so source it first.
 if ! command -v singularity >/dev/null 2>&1; then
-    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load singularity
 fi
-command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
 singularity --version
 
 export SIF
@@ -102,7 +102,7 @@ export SINGULARITYENV_OMP_NUM_THREADS=${NCPUS:-8}
 
 # --- train -----------------------------------------------------------------
 set +e
-bash "$REPO/scripts/run_in_singularity.sh" \
+bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" \
     python -m wyckoff_transformer.formula_energy.train \
         --config "$CONFIG" \
         ${OUT:+--out "$OUT"} \

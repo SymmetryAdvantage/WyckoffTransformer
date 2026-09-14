@@ -23,7 +23,7 @@ from wyckoff_transformer.cascade.dataset import (
 from wyckoff_transformer.schedules import warmup_stable_decay
 from wyckoff_transformer.trainer import (
     CHECKPOINT_FILENAME, CHECKPOINT_FORMAT_VERSION, WyckoffTrainer, atomic_torch_save,
-    check_resume_config, train_from_config)
+    check_resume_config, restore_checkpoint_from_wandb, train_from_config)
 # The module logs under logging.getLogger(__file__), so its name is a path rather than
 # "wyckoff_transformer.trainer"; assertLogs takes the object and spares the test the detail.
 from wyckoff_transformer.trainer import logger as trainer_logger
@@ -35,6 +35,41 @@ SEED = 7
 
 class _Crash(RuntimeError):
     """Stands in for whatever actually kills a run: OOM, a pre-empted node, a power cut."""
+
+
+#: Sentinel for "W&B holds no mirrored checkpoint for this run".
+_NO_MIRROR = object()
+
+
+class _RemoteFile:
+    """A file on a W&B run, as `Api().run(...).file(name)` returns it.
+
+    `size` is how absence is reported: a file the run never uploaded comes back as a
+    zero-sized entry rather than an error.
+    """
+
+    def __init__(self, size: int = 1024, writes: Path | None = None, fails: bool = False):
+        self.size = size
+        self._writes = writes
+        self._fails = fails
+
+    def download(self, root, replace=False):
+        if self._fails:
+            raise OSError("no space left on device")
+        Path(root).mkdir(parents=True, exist_ok=True)
+        if self._writes is not None:
+            assert Path(root) == self._writes, (root, self._writes)
+            (Path(root) / CHECKPOINT_FILENAME).write_bytes(b"checkpoint")
+
+
+def _patch_remote(wandb_mock, remote):
+    """Point the mocked `wandb.Api()` at *remote*, or make the lookup fail."""
+    wandb_mock.run.entity = "ent"
+    wandb_mock.run.project = "proj"
+    if remote is _NO_MIRROR:
+        wandb_mock.Api.return_value.run.side_effect = RuntimeError("no such run")
+    else:
+        wandb_mock.Api.return_value.run.return_value.file.return_value = remote
 
 
 class _TinyModel(nn.Module):
@@ -443,17 +478,34 @@ class TestTrainFromConfigResumeBranch(_RunDirTestCase):
         self.this_run = self.runs / self.RUN_ID
         self.config = OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 4}})
 
-    def _call(self, resume: bool):
+    def _call(self, resume: bool, remote=_NO_MIRROR):
+        """Run the gate. By default W&B holds no mirrored checkpoint for the run."""
         with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
             wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, remote)
             train_from_config(self.config, torch.device("cpu"), run_path=self.runs, resume=resume)
 
-    def test_resuming_a_run_with_no_checkpoint_is_refused(self):
+    def test_resuming_a_run_with_no_checkpoint_anywhere_is_refused(self):
         """The one case a resume cannot rescue, and it must say so rather than start over."""
         self.this_run.mkdir(parents=True)
         OmegaConf.save(self.config, self.this_run / "config.yaml")
         with self.assertRaisesRegex(FileNotFoundError, "no checkpoint"):
             self._call(resume=True)
+
+    def test_a_purged_local_checkpoint_is_recovered_from_wandb(self):
+        """`runs/` on purge-policy scratch must not silently restart the run.
+
+        Getting as far as the config check proves the checkpoint gate was satisfied by
+        the download -- there is no local file for it to have used.
+        """
+        self.this_run.mkdir(parents=True)
+        OmegaConf.save(
+            OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 8}}),
+            self.this_run / "config.yaml")
+        self.assertFalse((self.this_run / CHECKPOINT_FILENAME).exists())
+        with self.assertRaisesRegex(ValueError, "optimisation.epochs"):
+            self._call(resume=True, remote=_RemoteFile(writes=self.this_run))
+        self.assertTrue((self.this_run / CHECKPOINT_FILENAME).is_file())
 
     def test_resuming_under_a_different_config_is_refused_before_training(self):
         self.this_run.mkdir(parents=True)
@@ -470,6 +522,114 @@ class TestTrainFromConfigResumeBranch(_RunDirTestCase):
         with self.assertRaises(FileExistsError):
             self._call(resume=False)
 
+
+
+class TestCheckpointMirror(_RunDirTestCase):
+    """`runs/` is per-machine and may be purged, so the checkpoint is mirrored to W&B.
+
+    Before this it was the one part of a run that existed in exactly one place: the
+    trainer logs artifacts for the best weights, the processors, the config and the
+    space-group distribution, but never `last_checkpoint.pt`. Losing it restarted
+    multi-day PBS chains from epoch 0 without an error.
+    """
+
+    RUN_ID = "mirror01"
+
+    def test_saving_a_checkpoint_mirrors_it_to_the_run_files(self):
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=1)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            trainer.save_training_checkpoint(1, best_val_loss=0.5, best_val_epoch=1)
+        wandb_mock.save.assert_called_once()
+        args, kwargs = wandb_mock.save.call_args
+        self.assertEqual(Path(args[0]), run_path / CHECKPOINT_FILENAME)
+        self.assertEqual(Path(kwargs["base_path"]), run_path)
+        # A file, not an artifact: one slot that later uploads overwrite, rather than a
+        # new version of a 1-40 MB file on every checkpoint.
+        wandb_mock.log_artifact.assert_not_called()
+
+    def test_the_mirror_is_rate_limited_but_the_local_write_is_not(self):
+        """`checkpoint_period` is commonly 10 against tens of thousands of epochs."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=4)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            for epoch in (1, 2, 3):
+                written = trainer.save_training_checkpoint(epoch, 0.5, epoch)
+                self.assertTrue(written.is_file())
+        self.assertEqual(wandb_mock.save.call_count, 1)
+
+    def test_the_final_save_of_the_loop_always_mirrors(self):
+        """Whatever the interval, the last word on a run reaches W&B."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=2)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            trainer.save_training_checkpoint(1, 0.5, 1)          # mirrors: first of the process
+            trainer.save_training_checkpoint(2, 0.5, 1)          # epoch >= epochs -> forced
+        self.assertEqual(wandb_mock.save.call_count, 2)
+
+    def test_a_failed_upload_never_costs_the_trained_epoch(self):
+        """Best effort: the local checkpoint is what the next resume needs either way."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=1)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            wandb_mock.save.side_effect = RuntimeError("network down")
+            written = trainer.save_training_checkpoint(1, best_val_loss=0.5, best_val_epoch=1)
+        self.assertTrue(written.is_file())
+
+    def test_a_failed_upload_is_retried_rather_than_counting_as_done(self):
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=9)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            wandb_mock.save.side_effect = RuntimeError("network down")
+            trainer.save_training_checkpoint(1, 0.5, 1)
+            trainer.save_training_checkpoint(2, 0.5, 1)
+        self.assertEqual(wandb_mock.save.call_count, 2)
+
+    def test_restore_returns_none_when_the_run_has_no_mirror(self):
+        """Distinct from a failure: it means there is genuinely nothing to resume."""
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile(size=0))
+            self.assertIsNone(restore_checkpoint_from_wandb(run_path))
+
+    def test_restore_returns_none_when_wandb_cannot_be_reached(self):
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _NO_MIRROR)
+            self.assertIsNone(restore_checkpoint_from_wandb(run_path))
+
+    def test_restore_writes_the_checkpoint_and_returns_it(self):
+        run_path = self.tmp_path / "not-yet-there"
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile(writes=run_path))
+            restored = restore_checkpoint_from_wandb(run_path)
+        self.assertEqual(restored, run_path / CHECKPOINT_FILENAME)
+        self.assertTrue(restored.is_file())
+
+    def test_a_mirror_that_cannot_be_downloaded_raises(self):
+        """Never degrade to starting over: those epochs exist only in W&B."""
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile(fails=True))
+            with self.assertRaisesRegex(RuntimeError, "could not be downloaded"):
+                restore_checkpoint_from_wandb(run_path)
+
+    def test_a_download_that_leaves_no_file_raises(self):
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile())      # succeeds, writes nothing
+            with self.assertRaisesRegex(RuntimeError, "no such file"):
+                restore_checkpoint_from_wandb(run_path)
 
 
 class TestRescheduleOntoANewHorizon(_RunDirTestCase):

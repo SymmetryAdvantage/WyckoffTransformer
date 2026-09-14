@@ -4,12 +4,12 @@
 # dataset, and runs the whole training to completion on the AI partition,
 # chaining itself across as many 24 h jobs as it needs.
 #
-#     bash scripts/train_in_pb.sh yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1
+#     bash scripts/platforms/aspire2a/train_in_pb.sh yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1
 #
-# This is the generalisation of scripts/train_ehull_5x.pbs and
-# scripts/train_ehull_ssops.pbs: everything those two hardcoded (config,
-# dataset, tokeniser, W&B id file, job name) is now derived from the two
-# arguments, and the parts that were argued once there are kept verbatim.
+# It generalises the single-purpose train_ehull_5x.pbs and train_ehull_ssops.pbs
+# it replaced: everything those two hardcoded (config, dataset, tokeniser, W&B id
+# file, job name) is derived from the two arguments, and the parts that were
+# argued once there are kept verbatim.
 #
 # ONE FILE, TWO ROLES
 #
@@ -63,7 +63,7 @@
 #
 # USAGE
 #
-#   bash scripts/train_in_pb.sh [options] <model-config.yaml> <dataset>
+#   bash scripts/platforms/aspire2a/train_in_pb.sh [options] <model-config.yaml> <dataset>
 #
 #   --run-id ID        continue this W&B run id (default: the one pinned for
 #                      this config+dataset, else a new one)
@@ -78,7 +78,8 @@
 #                      (default: walltime - 30 min)
 #   --tokenise-timeout SEC  ceiling on the one-off cache build (default: 14400)
 #   --device DEV       train.py device       (default: cuda)
-#   --cache-dir DIR    dataset cache root    (default: <repo>/cache)
+#   --cache-dir DIR    dataset cache root    (default: WYFORMER_CACHE, see
+#                      docs/data_store.md)
 #   --sif PATH         container image
 #   --offline          run W&B offline (sync the run dir afterwards)
 #   --allow-duplicate  submit even though a chain for this config+dataset is
@@ -109,7 +110,19 @@ submit_mode() {
     local SCRIPT
     SCRIPT=$(readlink -f "${BASH_SOURCE[0]}")
     local REPO
-    REPO=$(cd "$(dirname "$SCRIPT")/.." && pwd)
+    REPO=$(cd "$(dirname "$SCRIPT")/../../.." && pwd)
+    # The stores may live outside the checkout; resolved here from
+    # ~/.config/wyformer/paths.env (docs/data_store.md), with the checkout as the
+    # fallback only when there is no config file. Resolved ONCE, at submission, and
+    # written into the job spec: every link of a chain then uses the same
+    # locations, even if the config is edited while the chain is queued.
+    # shellcheck source=scripts/wyformer_paths.sh
+    . "$REPO/scripts/wyformer_paths.sh"
+    DATA_DIR=$(wyformer_path WYFORMER_DATA "$REPO/data") || exit 1
+    CACHE_DIR=$(wyformer_path WYFORMER_CACHE "$REPO/cache") || exit 1
+    RUNS_DIR=$(wyformer_path WYFORMER_RUNS "$REPO/runs") || exit 1
+    WANDB_ROOT=$(wyformer_path WANDB_DIR "$REPO") || exit 1
+
 
     # --- defaults ----------------------------------------------------------
     local SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
@@ -117,7 +130,7 @@ submit_mode() {
     local WALLTIME=23:59:59 NGPUS=1 NCPUS=16 MEM=64gb
     local MAX_ATTEMPTS=8 JOB_BUDGET= TOKENISE_TIMEOUT=14400
     local DEVICE=cuda JOB_NAME= RUN_ID= FRESH=0 PILOT=0 OFFLINE=0 DRY_RUN=0 ALLOW_DUP=0
-    local CACHE_DIR=${WYCKOFF_CACHE_DIR:-}
+    local CACHE_OVERRIDE=
     local -a TRAIN_EXTRA=()
     local -a POSITIONAL=()
 
@@ -137,7 +150,7 @@ submit_mode() {
             --job-budget)       JOB_BUDGET=${2:?--job-budget needs a value}; shift 2 ;;
             --tokenise-timeout) TOKENISE_TIMEOUT=${2:?--tokenise-timeout needs a value}; shift 2 ;;
             --device)           DEVICE=${2:?--device needs a value}; shift 2 ;;
-            --cache-dir)        CACHE_DIR=${2:?--cache-dir needs a value}; shift 2 ;;
+            --cache-dir)        CACHE_OVERRIDE=${2:?--cache-dir needs a value}; shift 2 ;;
             --sif)              SIF=${2:?--sif needs a value}; shift 2 ;;
             --offline)          OFFLINE=1; shift ;;
             --allow-duplicate)  ALLOW_DUP=1; shift ;;
@@ -179,11 +192,11 @@ submit_mode() {
     local TOKENISER_YAML="$REPO/yamls/tokenisers/$TOKENISER.yaml"
     [ -f "$TOKENISER_YAML" ] || die "config asks for tokeniser '$TOKENISER', but $TOKENISER_YAML does not exist"
 
-    if [ -n "$CACHE_DIR" ]; then
-        CACHE_DIR=$(readlink -f "$CACHE_DIR")
+    # Written into the job spec like the resolved location, so the job exports it
+    # as WYFORMER_CACHE and every link of the chain reads the same cache.
+    if [ -n "$CACHE_OVERRIDE" ]; then
+        CACHE_DIR=$(readlink -f "$CACHE_OVERRIDE")
         [ -d "$CACHE_DIR" ] || die "cache directory does not exist: $CACHE_DIR"
-    else
-        CACHE_DIR="$REPO/cache"
     fi
 
     local DATA_PKL="$CACHE_DIR/$DATASET/data.pkl.gz"
@@ -197,7 +210,7 @@ submit_mode() {
 
     # The ops lookup table is read at model construction time, so a missing file is a
     # hard failure rather than a silent fallback. Comments are stripped before the
-    # grep; a false positive only costs the ~1 min idempotent build.
+    # grep; a false positive only costs a file existence check.
     local NEEDS_OPS_TABLE=0
     if sed 's/#.*//' "$TOKENISER_YAML" "$CONFIG_ABS" | grep -q 'site_symmetry_ops'; then
         NEEDS_OPS_TABLE=1
@@ -222,10 +235,10 @@ submit_mode() {
 
     # Empty for a pilot: a smoke test must neither adopt nor pin a run id.
     RUNID_FILE=
-    [ "$PILOT" -eq 1 ] || RUNID_FILE="$REPO/runs/.$KEY.runid"
-    JOBID_FILE="$REPO/runs/.$KEY.jobid"
+    [ "$PILOT" -eq 1 ] || RUNID_FILE="$RUNS_DIR/.$KEY.runid"
+    JOBID_FILE="$RUNS_DIR/.$KEY.jobid"
 
-    mkdir -p "$REPO/logs" "$REPO/runs" "$REPO/runs/.jobspec"
+    mkdir -p "$REPO/logs" "$RUNS_DIR" "$RUNS_DIR/.jobspec"
 
     if [ "$FRESH" -eq 1 ]; then
         [ -n "$RUN_ID" ] && die "--fresh and --run-id contradict each other"
@@ -235,15 +248,16 @@ submit_mode() {
         fi
     elif [ -z "$RUN_ID" ] && [ -n "$RUNID_FILE" ] && [ -f "$RUNID_FILE" ]; then
         RUN_ID=$(cat "$RUNID_FILE")
-        if [ -f "$REPO/runs/$RUN_ID/COMPLETED" ]; then
+        if [ -f "$RUNS_DIR/$RUN_ID/COMPLETED" ]; then
             die "$KEY is pinned to $RUN_ID, which is already COMPLETED; submit with --fresh to start a new run"
         fi
-        if [ -f "$REPO/runs/$RUN_ID/last_checkpoint.pt" ]; then
+        if [ -f "$RUNS_DIR/$RUN_ID/last_checkpoint.pt" ]; then
             echo "continuing the pinned run $RUN_ID from its last checkpoint"
         else
-            # Nothing to resume, and the id has already been logged to; the job mints a
-            # new one rather than opening a second run on top of the first.
-            echo "pinned run $RUN_ID has no checkpoint -- the job will start over under a fresh id"
+            # No *local* checkpoint. The job asks W&B whether the run has one mirrored
+            # there before deciding, so this is not yet a verdict.
+            echo "pinned run $RUN_ID has no local checkpoint -- the job will look for one"
+            echo "in W&B and resume from it; it starts over only if there is none anywhere"
         fi
     fi
     # Left empty, the job invents the id on the node and pins it there.
@@ -278,7 +292,7 @@ submit_mode() {
     # --- the spec every link of the chain sources ---------------------------
     # Timestamped, so a resubmission cannot rewrite the parameters a chain already in
     # flight will read on its next link; .latest.sh points at the newest for reading.
-    local SPEC="$REPO/runs/.jobspec/$KEY-$(date +%Y%m%d-%H%M%S).sh"
+    local SPEC="$RUNS_DIR/.jobspec/$KEY-$(date +%Y%m%d-%H%M%S).sh"
     local -a QSUB_ARGS=(
         -N "$JOB_NAME"
         -q "$QUEUE"
@@ -290,16 +304,19 @@ submit_mode() {
     )
 
     {
-        echo "# Generated by scripts/train_in_pb.sh on $(date -Is); sourced by every link of the chain."
+        echo "# Generated by scripts/platforms/aspire2a/train_in_pb.sh on $(date -Is); sourced by every link of the chain."
         echo "# Regenerated on each submission -- edit the submission, not this file."
         printf 'REPO=%q\n'             "$REPO"
+        printf 'DATA_DIR=%q\n'         "$DATA_DIR"
+        printf 'CACHE_DIR=%q\n'        "$CACHE_DIR"
+        printf 'RUNS_DIR=%q\n'         "$RUNS_DIR"
+        printf 'WANDB_ROOT=%q\n'       "$WANDB_ROOT"
         printf 'SCRIPT=%q\n'           "$SCRIPT"
         printf 'SIF=%q\n'              "$SIF"
         printf 'CONFIG=%q\n'           "$CONFIG"
         printf 'DATASET=%q\n'          "$DATASET"
         printf 'CONFIG_STEM=%q\n'      "$CONFIG_STEM"
         printf 'TOKENISER=%q\n'        "$TOKENISER"
-        printf 'CACHE_DIR=%q\n'        "$CACHE_DIR"
         printf 'NEEDS_OPS_TABLE=%q\n'  "$NEEDS_OPS_TABLE"
         printf 'RUNID_FILE=%q\n'       "$RUNID_FILE"
         printf 'JOBID_FILE=%q\n'       "$JOBID_FILE"
@@ -319,7 +336,7 @@ submit_mode() {
         fi
         printf 'QSUB_ARGS=('; printf ' %q' "${QSUB_ARGS[@]}"; printf ' )\n'
     } > "$SPEC"
-    ln -sfn "$(basename "$SPEC")" "$REPO/runs/.jobspec/$KEY.latest.sh"
+    ln -sfn "$(basename "$SPEC")" "$RUNS_DIR/.jobspec/$KEY.latest.sh"
 
     local -a SUBMIT=("$QSUB" "${QSUB_ARGS[@]}" -v "JOB_SPEC=$SPEC,ATTEMPT=1${RUN_ID:+,RUN_ID=$RUN_ID}" "$SCRIPT")
 
@@ -398,6 +415,12 @@ job_mode() {
     [ -f "$JOB_SPEC" ] || die "job spec $JOB_SPEC is gone -- resubmit from a shell to regenerate it"
     # shellcheck disable=SC1090
     source "$JOB_SPEC"
+    [ -n "${RUNS_DIR:-}" ] && [ -n "${CACHE_DIR:-}" ] \
+        || die "job spec $JOB_SPEC predates store locations -- resubmit from a shell to regenerate it"
+    # Hand the pinned locations to everything the job starts, container included:
+    # the environment tier wins over the config file, so the chain cannot drift.
+    export WYFORMER_DATA="$DATA_DIR" WYFORMER_CACHE="$CACHE_DIR" WYFORMER_RUNS="$RUNS_DIR" \
+           WANDB_DIR="$WANDB_ROOT"
 
     local ATTEMPT=${ATTEMPT:-1}
     local MIN_TRAIN_SECONDS=1800   # below this, chain instead of starting a stub epoch
@@ -407,7 +430,7 @@ job_mode() {
     local TOKENISE_JOBS=${NCPUS:-$NCPUS_REQUESTED}
 
     cd "$REPO" || die "cannot cd to $REPO"
-    mkdir -p logs runs
+    mkdir -p logs "$RUNS_DIR"
 
     # --- the W&B run id this chain is pinned to -----------------------------
     if [ -n "${RUN_ID:-}" ]; then
@@ -417,33 +440,64 @@ job_mode() {
     else
         RUN_ID="$(sanitise_id "$CONFIG_STEM")-$(date +%Y%m%d-%H%M%S)"
     fi
-    local RUN_DIR="$REPO/runs/$RUN_ID"
+    local RUN_DIR="$RUNS_DIR/$RUN_ID"
 
     if [ -f "$RUN_DIR/COMPLETED" ]; then
         echo "run $RUN_ID is already marked COMPLETED -- nothing to do"
         exit 0
     fi
 
+    # `timeout` execs its argument, so every call below goes through the launcher
+    # script directly rather than a shell function it could not exec.
+    local -a IN_CONTAINER=(bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh")
+
     # --- resume that id, or mint a new one ----------------------------------
-    # An id is resumable only while a checkpoint stands behind it. Without one there is
-    # nothing to continue, and reusing the id would be worse than useless: wandb.init
-    # without resume "always starts a new run", so a second link under the same id opens
-    # a second run on top of the first and their histories interleave. So: resume when
-    # there is a checkpoint; otherwise, if anything was already logged under this id (a
-    # run directory, or a wandb run directory carrying it), it is spent -- mint a fresh
-    # one and re-pin. A first link, whose id nothing has touched yet, keeps it.
+    # An id is resumable only while a checkpoint stands behind it, and reusing a spent
+    # id would be worse than useless: wandb.init without resume "always starts a new
+    # run", so a second link under the same id opens a second run on top of the first
+    # and their histories interleave.
+    #
+    # But "no checkpoint in $RUN_DIR" does NOT mean "no checkpoint". `runs/` is
+    # per-machine and may be purge-policy scratch (docs/data_store.md), so the trainer
+    # mirrors last_checkpoint.pt to W&B. Ask before giving up: a purged run has trained
+    # epochs that exist nowhere else, and quietly starting over used to throw away
+    # multi-day chains without a single line of warning.
     local -a RESUME_ARGS=()
     local RESUME_NOTE="fresh run"
     if [ -f "$RUN_DIR/last_checkpoint.pt" ]; then
         RESUME_ARGS=(--resume "$RUN_ID")
         RESUME_NOTE="resuming from $RUN_DIR/last_checkpoint.pt"
-    elif [ -d "$RUN_DIR" ] || wandb_dir_exists "$REPO" "$RUN_ID"; then
-        local spent=$RUN_ID
-        RUN_ID="$(sanitise_id "$CONFIG_STEM")-$(date +%Y%m%d-%H%M%S)"
-        RESUME_NOTE="$spent got nowhere (no checkpoint) -> starting over as $RUN_ID"
-        # It holds no checkpoint, and train.py refuses to mkdir over an existing dir.
-        rm -rf "$RUN_DIR"
-        RUN_DIR="$REPO/runs/$RUN_ID"
+    elif [ -d "$RUN_DIR" ] || wandb_dir_exists "$WANDB_ROOT" "$RUN_ID"; then
+        local probe_out probe_rc=0
+        probe_out=$("${IN_CONTAINER[@]}" python -m wyckoff_transformer.cli.resume_probe \
+                        "$RUN_ID" --runs-path "$RUNS_DIR" 2>&1) || probe_rc=$?
+        if [ "$probe_rc" -eq 0 ]; then
+            # train.py downloads the artifact itself; nothing to stage here.
+            RESUME_ARGS=(--resume "$RUN_ID")
+            RESUME_NOTE="no local checkpoint -> recovering from W&B: $probe_out"
+        elif [ "$probe_rc" -eq 1 ] || [ "$WANDB_OFFLINE" -eq 1 ]; then
+            if [ "$probe_rc" -ne 1 ]; then
+                echo "warning: --offline, so W&B cannot be asked whether $RUN_ID has a" >&2
+                echo "warning: checkpoint. Treating it as spent. If it had one, stop now" >&2
+                echo "warning: and resubmit online rather than losing its epochs." >&2
+            fi
+            local spent=$RUN_ID
+            RUN_ID="$(sanitise_id "$CONFIG_STEM")-$(date +%Y%m%d-%H%M%S)"
+            RESUME_NOTE="$spent has no resume state anywhere -> starting over as $RUN_ID"
+            # train.py refuses to mkdir over an existing directory. Move it aside rather
+            # than deleting it: it can still hold the only local copy of
+            # best_model_params.pt and config.yaml.
+            if [ -d "$RUN_DIR" ]; then
+                local spent_dir="$RUN_DIR.spent-$(date +%Y%m%d-%H%M%S)"
+                mv "$RUN_DIR" "$spent_dir"
+                echo "note: moved $RUN_DIR aside to $spent_dir" >&2
+            fi
+            RUN_DIR="$RUNS_DIR/$RUN_ID"
+        else
+            die "cannot tell whether $RUN_ID has resume state ($probe_out).
+  Refusing to start over: if it has trained epochs, they exist only in W&B.
+  Fix W&B access and resubmit, or pass --fresh to abandon $RUN_ID deliberately."
+        fi
     fi
     [ -n "$RUNID_FILE" ] && echo "$RUN_ID" > "$RUNID_FILE"
 
@@ -461,11 +515,11 @@ job_mode() {
     nvidia-smi || true
 
     # --- environment for the container -------------------------------------
-    # Put singularity on PATH without relying on the module system in a batch shell.
+    # The module system is not always initialised in a batch shell, so source it first.
     if ! command -v singularity >/dev/null 2>&1; then
-        export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+        type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+        module load singularity
     fi
-    command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
     singularity --version
 
     export REPO_DIR="$REPO" SIF
@@ -474,27 +528,16 @@ job_mode() {
     export SINGULARITYENV_HF_HUB_OFFLINE=1
     export SINGULARITYENV_TOKENIZERS_PARALLELISM=false
     export SINGULARITYENV_OMP_NUM_THREADS=${NCPUS:-$NCPUS_REQUESTED}
-    CACHE_DIR=${CACHE_DIR:-$REPO/cache}
-    export SINGULARITYENV_WYCKOFF_CACHE_DIR="$CACHE_DIR"
     if [ "$WANDB_OFFLINE" -eq 1 ]; then
         export SINGULARITYENV_WANDB_MODE=offline   # `wandb sync $RUN_DIR` afterwards
     fi
 
-    # `timeout` execs its argument, so every call below goes through the launcher
-    # script directly rather than a shell function it could not exec.
-    local -a IN_CONTAINER=(bash "$REPO/scripts/run_in_singularity.sh")
-
     # --- one-off: the operations engineer and its lookup table --------------
     local OPS_TABLE="$REPO/src/wyckoff_transformer/engineers/site_symmetry_ops_id_table.json"
+    # Committed package data: missing means a broken checkout, and regenerating it here
+    # would hide that.
     if [ "$NEEDS_OPS_TABLE" -eq 1 ] && [ ! -f "$OPS_TABLE" ]; then
-        echo "site_symmetry_ops_id table missing -> building the engineers ($(date -Is))"
-        "${IN_CONTAINER[@]}" python -c "
-from wyckoff_transformer.preprocess_wychoffs import (
-    build_site_symmetry_ops_engineer, build_site_symmetry_ops_id_engineer)
-build_site_symmetry_ops_engineer()
-build_site_symmetry_ops_id_engineer()
-print('engineers built')
-" || die "failed to build the site_symmetry_ops engineers"
+        die "$OPS_TABLE is missing; it is committed, so restore it from git"
     fi
 
     # --- one-off: the tensor cache for this tokeniser -----------------------
@@ -535,7 +578,7 @@ print('engineers built')
     local rc
     timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
         "${IN_CONTAINER[@]}" python scripts/train.py "$CONFIG" "$DATASET" "$DEVICE" \
-            --run-path "$REPO/runs" \
+            --run-path "$RUNS_DIR" \
             ${TRAIN_EXTRA[@]+"${TRAIN_EXTRA[@]}"} \
             ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
     rc=$?

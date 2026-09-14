@@ -63,6 +63,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.paths import data_path
+
 logger = logging.getLogger("build_mp_gga_band_gap")
 
 REPO = Path(__file__).resolve().parent.parent
@@ -259,7 +261,7 @@ def write_splits(frame: pd.DataFrame, name: str, seed: int,
     split_of[shuffled[:n_val]] = "val"
     split_of[shuffled[n_val:n_val + n_test]] = "test"
 
-    out_dir = REPO / "data" / name
+    out_dir = data_path(name)
     out_dir.mkdir(parents=True, exist_ok=True)
     written = {}
     for split in ("train", "val", "test"):
@@ -294,7 +296,7 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    work_dir = args.work_dir or (REPO / "data" / args.name / ".raw")
+    work_dir = args.work_dir or data_path(args.name, ".raw")
     work_dir.mkdir(parents=True, exist_ok=True)
     mpr = _rester(args.api_key)
     version = mpr.db_version

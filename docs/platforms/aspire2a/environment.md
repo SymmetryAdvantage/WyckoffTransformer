@@ -26,15 +26,19 @@ The node driver is 570.124.06 (CUDA 12.8), which runs the cu126 build fine.
 ### Getting singularity
 
 `module load singularity` gives 3.10.0; `singularity/4.3.1` is also available.
-Batch scripts should not rely on the module system being initialised, so they do
-what `scripts/train_in_pb.sh` does:
+Batch scripts should not rely on the module system being initialised, so they
+source it first when `module` is undefined, as
+`scripts/platforms/aspire2a/run_in_singularity.sh` does:
 
 ```bash
 if ! command -v singularity >/dev/null 2>&1; then
-    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load singularity
 fi
-command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh && module load singularity; }
 ```
+
+Do not put `/app/apps/singularity/...` on `PATH` by hand instead; the module is the
+interface, and the paths behind it change with the installed version.
 
 ---
 
@@ -44,7 +48,7 @@ command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh && 
 module load singularity
 cd /scratch/users/nus/kna/WyckoffTransformer
 singularity run --nv ~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \
-    bash scripts/build_singularity_venv.sh
+    bash scripts/platforms/aspire2a/build_singularity_venv.sh
 ```
 
 Four steps, all inside the container:
@@ -81,7 +85,7 @@ by every running job, so see the live-risk warning below — compile the direct
 requirements and install the one line:
 
 ```bash
-bash scripts/run_in_singularity.sh bash -c '
+bash scripts/platforms/aspire2a/run_in_singularity.sh bash -c '
   export UV_CACHE_DIR=$PWD/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
   ~/.local/bin/uv pip compile --no-deps --no-annotate --no-header pyproject.toml \
       | grep "^pyxtal " > .venv-requirements.pyxtal.txt
@@ -99,7 +103,7 @@ Re-running only step 4 is safe and cheap, and is what you want after adding a
 console script to `[project.scripts]` or changing package data:
 
 ```bash
-bash scripts/run_in_singularity.sh \
+bash scripts/platforms/aspire2a/run_in_singularity.sh \
     ~/.local/bin/uv pip install --python .venv/bin/python --no-deps -e .
 ```
 
@@ -114,7 +118,7 @@ The base build has **no** `orb-models` or `mace-torch`, so
 with `ModuleNotFoundError: No module named 'orb_models'`. Add it with:
 
 ```bash
-bash scripts/run_in_singularity.sh bash -c '
+bash scripts/platforms/aspire2a/run_in_singularity.sh bash -c '
   export UV_CACHE_DIR=$PWD/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
   ~/.local/bin/uv pip compile --python /usr/bin/python3.12 --emit-index-url \
       --no-annotate --no-header --extra relax -o .venv-requirements.relax.txt pyproject.toml
@@ -124,7 +128,7 @@ bash scripts/run_in_singularity.sh bash -c '
       -r .venv-requirements.relax.no-torch.txt'
 ```
 
-~30 min on a login node. `scripts/protocol_relax.pbs` does this automatically
+~30 min on a login node. `scripts/platforms/aspire2a/protocol_relax.pbs` does this automatically
 when `orb_models` is missing. It is currently installed (orb-models 0.7.0,
 mace-torch 0.3.16) and it also pulled in pytest 9.1.1, torchmetrics, warp-lang
 and e3nn.
@@ -151,7 +155,7 @@ at the container's interpreter. uv reports
 > Ignoring existing virtual environment linked to non-existent Python interpreter
 
 **deletes `.venv`**, and rebuilds an empty one. Everything goes through
-`scripts/run_in_singularity.sh`.
+`scripts/platforms/aspire2a/run_in_singularity.sh`.
 
 To recover from that wipe, `.venv-requirements.no-torch.txt` is still there, so
 steps 3-4 alone are enough — inside the container:

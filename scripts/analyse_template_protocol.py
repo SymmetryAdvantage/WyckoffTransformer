@@ -53,6 +53,7 @@ if str(_repo_root / "src") not in sys.path:
 
 import pandas as pd
 
+from wyckoff_transformer.paths import resolve_store_path
 from wyckoff_transformer.cli.protocol import (
     FUNNEL_FILE,
     PYXTAL_COLUMNS,
@@ -562,6 +563,7 @@ def main() -> None:
                         default=Path("data/lemat-bulk/lemat_pbe.csv.gz"))
     parser.add_argument("--output-dir", type=Path, default=None)
     args = parser.parse_args()
+    args.lemat_cif_csv = resolve_store_path(args.lemat_cif_csv)
 
     if args.stage == "arms":
         stage_arms(args)

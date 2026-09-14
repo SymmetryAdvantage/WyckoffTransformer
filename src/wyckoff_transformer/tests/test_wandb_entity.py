@@ -31,6 +31,10 @@ class TestRunPath(unittest.TestCase):
         self.assertEqual(wandb_run_path("abc123", "someone", "proj"), "someone/proj/abc123")
 
 
+#: wandb.init keyword arguments that do not bear on which entity a run lands in.
+NON_IDENTITY_KWARGS = {"dir"}
+
+
 class TestCallSitesNameTheEntity(unittest.TestCase):
     def _calls_named(self, target):
         """Yield (path, lineno, kwargs) for every call to `target` in the shipped sources."""
@@ -46,8 +50,9 @@ class TestCallSitesNameTheEntity(unittest.TestCase):
         found = list(self._calls_named("wandb.init"))
         self.assertTrue(found, "no wandb.init call sites found -- has the scan path moved?")
         for path, lineno, kwargs in found:
-            if not kwargs:
-                # A bare wandb.init() inside a sweep agent inherits the agent's entity.
+            if kwargs <= NON_IDENTITY_KWARGS:
+                # A wandb.init() that names no run identity -- inside a sweep agent --
+                # inherits the agent's entity. `dir` says where files go, not whose run it is.
                 continue
             self.assertIn("entity", kwargs,
                           f"{path.relative_to(REPO)}:{lineno} calls wandb.init without an entity")

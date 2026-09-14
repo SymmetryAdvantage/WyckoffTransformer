@@ -41,13 +41,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wyckoff_transformer.paths import cache_root, data_root
+from wyckoff_transformer.paths import cache_root, data_path
 
 logger = logging.getLogger("recover_mp_forces")
 
 REPO = Path(__file__).resolve().parent.parent
-RAW = data_root() / "lemat-bulk" / "raw" / "data.parquet"
-PROVENANCE = data_root() / "mp_provenance.csv.gz"
+RAW = data_path("lemat-bulk", "raw", "data.parquet")
+PROVENANCE = data_path("mp_provenance.csv.gz")
 WORK = cache_root() / "mp_forces_recovery"
 API = "https://api.materialsproject.org"
 

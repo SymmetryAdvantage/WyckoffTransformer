@@ -3,7 +3,7 @@
 # run *inside* the base PyTorch container:
 #
 #   singularity run --nv pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \
-#       bash scripts/build_singularity_venv.sh
+#       bash scripts/platforms/aspire2a/build_singularity_venv.sh
 #
 # Design
 # ------

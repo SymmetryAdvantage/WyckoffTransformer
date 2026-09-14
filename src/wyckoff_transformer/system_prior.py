@@ -86,6 +86,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+from wyckoff_transformer import paths
+
 logger = logging.getLogger(__name__)
 
 #: How ``Ba-Ti-O`` is spelled on a command line. Shared with `chemical_system`.
@@ -1088,7 +1090,7 @@ class SystemSpaceGroupPrior:
 def _resolve_cache_path(dataset: str, cache_root: Optional[Path] = None) -> Path:
     """`cache/<dataset>`, tolerating the dash/underscore spelling as `generate` does."""
     if cache_root is None:
-        cache_root = Path.cwd() / "cache"
+        cache_root = paths.cache_root()
     for candidate in (dataset, dataset.replace("-", "_"), dataset.replace("_", "-")):
         path = Path(cache_root) / candidate
         if path.exists():

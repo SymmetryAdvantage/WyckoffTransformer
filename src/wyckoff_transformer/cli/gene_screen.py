@@ -28,6 +28,7 @@ from wyckoff_transformer.gene_energy import (
     GENE_MIN_FORMATION_ENERGY_COLUMN,
     build_clean_relaxation_condition,
 )
+from wyckoff_transformer.paths import resolve_store_path
 from wyckoff_transformer.prediction import (
     build_tokenised_prediction_tensors,
     filter_supported_tokens,
@@ -58,6 +59,7 @@ def _formula_from_record(record: dict) -> str:
 
 def load_reference(path: Path) -> pd.DataFrame:
     """Read the PBE entries required to construct convex hulls."""
+    path = resolve_store_path(path)
     reference = pd.read_csv(path, usecols=list(REFERENCE_COLUMNS), low_memory=False)
     reference["energy_corrected"] = pd.to_numeric(
         reference["energy_corrected"],
