@@ -361,10 +361,12 @@ class WyckoffTrainer():
     #: still have a sane default rather than an AttributeError in the training loop.
     scheduler_steps_per_batch = False
 
-    #: `time.monotonic()` of the last checkpoint mirrored to W&B. Zero means "never", so
-    #: the first checkpoint of a process is always mirrored. A class attribute for the
-    #: same reason as the one above.
-    _last_checkpoint_mirror = 0.0
+    #: `time.monotonic()` of the last checkpoint mirrored to W&B, or None for "never", so
+    #: the first checkpoint of a process is always mirrored. Not zero: the monotonic
+    #: clock's origin is unspecified -- on Linux it is boot -- so a host up for less than
+    #: the interval would skip the first mirror. A class attribute for the same reason as
+    #: the one above.
+    _last_checkpoint_mirror: Optional[float] = None
 
     #: Optimiser steps the step-indexed schedule was sized for, or None when the schedule
     #: does not depend on a horizon. train() checks this against the run it is about to do.
@@ -1830,10 +1832,11 @@ class WyckoffTrainer():
         if wandb.run is None:
             return False
         now = time.monotonic()
-        since = now - self._last_checkpoint_mirror
-        if not force and since < CHECKPOINT_MIRROR_INTERVAL_S:
-            logger.debug("Not mirroring the checkpoint yet: %.0fs since the last one", since)
-            return False
+        if not force and self._last_checkpoint_mirror is not None:
+            since = now - self._last_checkpoint_mirror
+            if since < CHECKPOINT_MIRROR_INTERVAL_S:
+                logger.debug("Not mirroring the checkpoint yet: %.0fs since the last one", since)
+                return False
         try:
             wandb.save(str(self.checkpoint_path), base_path=str(self.run_path), policy="now")
         except Exception:
