@@ -36,9 +36,11 @@ platform's environment initialisation makes it, by calling
 scripts/platforms/link_agent_brief.sh <platform>
 ```
 
--- `scripts/platforms/zeus/env_init.sh` and `scripts/platforms/luna/build_venv.sh`
-do so with their own name; `scripts/build_singularity_venv.sh` serves iapetus and
-ASPIRE 2A alike, so it links only when given `WYFORMER_PLATFORM=<platform>`. Run
+-- `scripts/platforms/zeus/env_init.sh`, `scripts/platforms/luna/build_venv.sh`
+and `scripts/platforms/iapetus/build_venv.sh` do so with their own name;
+`scripts/build_singularity_venv.sh` builds venvs for distributable container
+images rather than for one host, so it links only when given
+`WYFORMER_PLATFORM=<platform>`. Run
 the helper by hand to link a checkout without rebuilding its environment. It is
 idempotent and leaves a hand-written `CLAUDE.local.md` alone. Claude Code copies
 the link into new worktrees through `.worktreeinclude`.

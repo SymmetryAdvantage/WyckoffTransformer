@@ -20,6 +20,16 @@
 # without them the container has neither the host's caches -- and re-downloads
 # the 102 MB ORB checkpoint and the LeMat-Bulk hull parquet on every invocation
 # -- nor its W&B credentials, which fail as `No API key configured`.
+#
+# The data store, cache, runs and W&B directories are outside the checkout (see
+# docs/data_store.md). The container cannot read the host's
+# ~/.config/wyformer/paths.env, so they are resolved here, passed in the
+# environment tier, and mounted at their host paths so the values mean the same
+# inside.
+#
+# In a git worktree `.git` is a file naming the main checkout's .git directory by
+# its host path, so that directory is mounted too, read-only, or git (and W&B's
+# commit capture) fails inside the container.
 set -euo pipefail
 
 WYFORMER_IMAGE="${WYFORMER_IMAGE:-pytorch:2.14.0-cuda11.8-py312-universal}"
@@ -30,7 +40,8 @@ if ! docker image inspect "$WYFORMER_IMAGE" >/dev/null 2>&1; then
     echo "error: image $WYFORMER_IMAGE not found; see docs/platforms/iapetus/environment.md" >&2
     exit 1
 fi
-if [[ ! -d "$WYFORMER_VENV" ]]; then
+# build_venv.sh runs through here before the venv exists.
+if [[ ! -d "$WYFORMER_VENV" && -z "${WYFORMER_BUILDING_VENV:-}" ]]; then
     echo "error: venv $WYFORMER_VENV not found; see docs/platforms/iapetus/environment.md" >&2
     exit 1
 fi
@@ -72,6 +83,35 @@ fi
 if [[ -f "$HOME/.netrc" ]]; then
     docker_args+=(--volume "$HOME/.netrc:$HOME/.netrc:ro")
 fi
+
+# The stores, at their host paths. Created first: docker would make a missing
+# mount point root-owned.
+. "$WYFORMER_REPO/scripts/wyformer_paths.sh"
+declare -A mounted=()
+for key in WYFORMER_DATA WYFORMER_CACHE WYFORMER_RUNS WANDB_DIR; do
+    dir=$(wyformer_path "$key") || exit 1
+    if [[ -z "$dir" ]]; then
+        echo "error: $key is not configured; see docs/platforms/iapetus/environment.md" >&2
+        exit 1
+    fi
+    mkdir -p "$dir"
+    docker_args+=(--env "$key=$dir")
+    if [[ -z "${mounted[$dir]:-}" ]]; then
+        docker_args+=(--volume "$dir:$dir")
+        mounted[$dir]=1
+    fi
+done
+
+git_common_dir=$(git -C "$WYFORMER_REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
+if [[ -n "$git_common_dir" && "$git_common_dir" != "$WYFORMER_REPO/.git" ]]; then
+    docker_args+=(--volume "$git_common_dir:$git_common_dir:ro")
+fi
+
+# Extra bind mounts, space-separated docker --volume specs; build_venv.sh uses
+# this for the Warp wheel.
+for spec in ${WYFORMER_EXTRA_MOUNTS:-}; do
+    docker_args+=(--volume "$spec")
+done
 
 # Forward these only when actually set. Passing CUDA_VISIBLE_DEVICES="" does not
 # mean "no preference", it means *no GPUs are visible*, and

@@ -1,4 +1,10 @@
 #!/usr/bin/env bash
+# NOTE: this script is for building container images for distribution. It is not a
+# host's environment setup. A host sets itself up with its own script under
+# scripts/platforms/<platform>/, which may call this one and must not rely on more
+# than that. Keep host-specific paths, workarounds and checks in those scripts and
+# out of this file.
+#
 # Build the WyFormer virtual environment for the locally checked-out repo, to be
 # run *inside* the base PyTorch container:
 #
@@ -16,10 +22,16 @@
 #   `uv sync` is avoided on purpose: it writes a universal uv.lock that also has to
 #   resolve the genbench-oracle group's `material-hasher` git dependency, which is
 #   not wanted here and the container has no working git.
+# * BASE_PYTHON is the image's torch-carrying interpreter. When it is itself a venv
+#   (some images keep torch in a venv of their own), --system-site-packages reaches only
+#   the interpreter *beneath* that venv, so its site-packages are added by a .pth.
+# * UV_CACHE_DIR defaults to the checkout. Point it somewhere shared when several
+#   checkouts on one machine each build a venv.
 set -euo pipefail
 
 REPO_DIR=${REPO_DIR:-/scratch/users/nus/kna/WyckoffTransformer}
 UV=${UV:-$HOME/.local/bin/uv}
+BASE_PYTHON=${BASE_PYTHON:-/usr/bin/python3.12}
 export UV_CACHE_DIR=${UV_CACHE_DIR:-$REPO_DIR/.uv-cache}
 export UV_PYTHON_DOWNLOADS=never
 export UV_LINK_MODE=copy
@@ -38,12 +50,12 @@ REQ_FULL="$REPO_DIR/.venv-requirements.txt"
 REQ_NOTORCH="$REPO_DIR/.venv-requirements.no-torch.txt"
 
 "$UV" --version
-python --version
-python -c 'import torch; print("base torch:", torch.__version__, torch.version.cuda)'
+"$BASE_PYTHON" --version
+"$BASE_PYTHON" -c 'import torch; print("base torch:", torch.__version__, torch.version.cuda)'
 
 # 1. Resolve the runtime dependency set (no dev group, no optional extras, no
 #    dependency groups -> the material-hasher git source is never referenced).
-"$UV" pip compile --python /usr/bin/python3.12 \
+"$UV" pip compile --python "$BASE_PYTHON" \
     --emit-index-url --no-annotate --no-header \
     -o "$REQ_FULL" pyproject.toml
 
@@ -54,7 +66,11 @@ grep -viE '^(torch|nvidia-[a-z0-9-]+|pytorch-triton|triton|triton-[a-z]+)([[:spa
 # 3. Fresh venv that can see the container's dist-packages, then install the
 #    compiled closure verbatim (--no-deps: the file is already fully pinned, and
 #    without it uv would re-add torch as schedulefree's dependency).
-"$UV" venv --clear --system-site-packages --python /usr/bin/python3.12 .venv
+"$UV" venv --clear --system-site-packages --python "$BASE_PYTHON" .venv
+if "$BASE_PYTHON" -c 'import sys; sys.exit(sys.prefix == sys.base_prefix)'; then
+    "$BASE_PYTHON" -c 'import site; print(*site.getsitepackages(), sep="\n")' \
+        > "$(.venv/bin/python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')/container-base.pth"
+fi
 "$UV" pip install --python .venv/bin/python --no-deps -r "$REQ_NOTORCH"
 
 # 4. The project itself, editable, without touching the dependency set again.
@@ -66,8 +82,11 @@ from importlib.metadata import version
 import torch, wyckoff_transformer
 from wyckoff_transformer.trainer import train_from_config  # noqa: F401
 import wandb, datasets, schedulefree, pyxtal, smact, matminer, omegaconf  # noqa: F401
-import pymatgen.core, triton  # noqa: F401
-import inspect
+import pymatgen.core  # noqa: F401
+import importlib.util, inspect
+# Triton comes with the image's torch or not at all -- an image for GPUs below
+# Triton's minimum compute capability has none. When present it must import.
+triton = importlib.import_module("triton") if importlib.util.find_spec("triton") else None
 from pyxtal.crystal import random_crystal
 # The pinned fork from [tool.uv.sources]; stock PyXtal hands check_wp a single
 # tolerance. A resolution that silently fell back to PyPI is a wrong-science
@@ -76,7 +95,7 @@ assert "pair_tol" in inspect.getsource(random_crystal.check_wp), \
     "pyxtal is not the patched fork -- see [tool.uv.sources] in pyproject.toml"
 print("torch          :", torch.__version__, torch.version.cuda, "cuda_ok=", torch.cuda.is_available())
 print("torch from     :", torch.__file__)
-print("triton from    :", triton.__file__)
+print("triton from    :", triton.__file__ if triton else "not in the image")
 print("wyckoff_transf :", wyckoff_transformer.__file__, version("wyckoff-transformer"))
 print("pymatgen       :", version("pymatgen"))
 print("pyxtal         :", version("pyxtal"), "(patched fork)")

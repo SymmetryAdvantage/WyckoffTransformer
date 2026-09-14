@@ -1,8 +1,11 @@
 # Running WyFormer on iapetus
 
 iapetus has no scheduler. Run every WyFormer command through the custom PyTorch
-container; `.venv` is valid only inside it. Create the venv first as described
-in [environment.md](environment.md).
+container; `.venv` is valid only inside it. Create the venv first with
+`scripts/platforms/iapetus/build_venv.sh`, as described in
+[environment.md](environment.md). Worktrees work the same way: build a venv in
+the worktree, then run the worktree's own `scripts/platforms/iapetus/run.sh`
+from inside it, never the main checkout's.
 
 [`scripts/platforms/iapetus/run.sh`](../../../scripts/platforms/iapetus/run.sh)
 does this; the examples below abbreviate it as `run`:
@@ -19,7 +22,15 @@ from the image's `/opt/venv312` through `--system-site-packages`), and mounts
 `$HOME/.cache` and `$HOME/.netrc`. Those last two matter: the image builds its
 own `/home/kna` rather than inheriting the host's, so without them every
 invocation re-downloads the ORB checkpoint and the LeMat-Bulk hull parquet, and
-anything that talks to W&B fails with `No API key configured`.
+anything that talks to W&B fails with `No API key configured`. It also resolves
+the data store, cache, runs and W&B directories from
+`~/.config/wyformer/paths.env`, passes them in and mounts them at their host
+paths, and in a worktree mounts the main checkout's `.git` read-only so git
+works; see [environment.md](environment.md#data-store-cache-and-runs).
+
+Only the command's first word is resolved. Inside `run.sh bash -c '...'` a bare
+`python` is still the image's interpreter; write `/workspace/.venv/bin/python`
+there.
 
 Resolving the command is not the same as setting `PATH`: the image's entrypoint
 prepends `/opt/venv312/bin` to whatever `PATH` it is given, so a bare `python`
