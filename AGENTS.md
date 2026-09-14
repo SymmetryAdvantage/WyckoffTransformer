@@ -72,7 +72,8 @@ it there rather than in the generic docs.
 
 Each platform's `agent_brief.md` is the short version, and its environment
 initialisation symlinks it to the gitignored `CLAUDE.local.md` at the checkout root,
-which Claude Code loads into every session. If a session starts without it, run
+which Claude Code and Gemini CLI / Antigravity (via `.gemini/settings.json`) load
+into every session. If a session starts without it, run
 `scripts/platforms/link_agent_brief.sh <platform>`. See `docs/platforms/README.md`.
 
 ## Shell commands in agent worktrees

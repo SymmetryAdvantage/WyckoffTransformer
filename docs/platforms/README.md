@@ -28,9 +28,10 @@ Every platform directory has an `agent_brief.md`: a screenful of what an agent
 must know before running anything on that host -- how to invoke Python, which GPU
 to take, what never to run. The pages beside it stay the full reference.
 
-Claude Code loads `<repo>/CLAUDE.local.md` into every session, and that file is
-gitignored, so each checkout carries a relative symlink to its host's brief. The
-platform's environment initialisation makes it, by calling
+Claude Code and Gemini CLI / Antigravity (via `.gemini/settings.json`) load
+`<repo>/CLAUDE.local.md` into every session, and that file is gitignored, so each
+checkout carries a relative symlink to its host's brief. The platform's
+environment initialisation makes it, by calling
 
 ```bash
 scripts/platforms/link_agent_brief.sh <platform>
