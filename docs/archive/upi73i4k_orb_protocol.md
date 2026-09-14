@@ -182,9 +182,10 @@ LeMat-GenBench. MetaSUN per generated gene barely moves — 0.1160 here against
 
 Three things differ at once, so this is not a model-to-model comparison:
 
-- the potential and its hull (ORB against ORB's, MACE against `mace_mp`'s,
-  whose checkpoint is unidentified — see the [protocol
-  doc](de_novo_ranking_protocol.md));
+- the potential and its hull (ORB against ORB's, MACE against `mace_mp`'s —
+  which, it later turned out, is MACE-MP-0b3-medium while GenBench scores with
+  MACE-MPA-0-medium, see the [rationale
+  doc](de_novo_ranking_protocol_rationale.md));
 - the relaxation budget: 1 trial at `fmax 0.05` with two stages here, 3 trials
   there, and GenBench re-relaxed at `fmax 0.02` before scoring;
 - novelty: `StructureMatcher` here, structure-matcher-based novelty in the

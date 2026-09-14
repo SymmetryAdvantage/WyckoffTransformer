@@ -114,11 +114,21 @@ class TestHullMlips(unittest.TestCase):
             signature = inspect.signature(getattr(pretrained, function_name))
             self.assertEqual(signature.parameters["weights_path"].default, expected)
 
-    def test_ambiguous_mace_checkpoint_is_flagged_and_named_explicitly(self):
-        self.assertIn("UNIDENTIFIED CHECKPOINT", HULL_MLIPS["mace_mp"].note)
+    def test_mace_mp_hull_is_paired_with_mace_mp_0b3(self):
         # Named outright rather than left to mace-torch's version-dependent
-        # mace_mp(model=None) alias, which is what made it ambiguous.
-        self.assertEqual(HULL_MLIPS["mace_mp"].checkpoint, "MACE-MP-0a-medium")
+        # mace_mp(model=None) alias, which is not what built the hull.
+        self.assertEqual(HULL_MLIPS["mace_mp"].checkpoint, "MACE-MP-0b3")
+
+    def test_mace_checkpoint_urls_match_mace_torch_registry(self):
+        """The hull pairings were identified against mace-torch's own URLs."""
+        foundations = pytest.importorskip("mace.calculators.foundations_models")
+        from wyckoff_transformer.cryspr.mace_urls import MODEL_URLS
+
+        for name, alias in (
+            (HULL_MLIPS["mace_mp"].checkpoint, "medium-0b3"),
+            (HULL_MLIPS["mace_omat"].checkpoint, "medium-omat-0"),
+        ):
+            self.assertEqual(MODEL_URLS[name], foundations.mace_mp_urls[alias])
 
     def test_cpu_only_warp_uses_cpu_neighbors_for_cuda_orb(self):
         calculator = MagicMock()

@@ -73,19 +73,16 @@ ORB_DIRECT_20_CHECKPOINT = (
 ORB_PRECISION = "float32-high"
 
 _MACE_MP_NOTE = (
-    "UNIDENTIFIED CHECKPOINT. LeMat-GenBench built this hull by calling "
-    "mace_mp() with no 'model' argument, whose meaning changed in mace-torch "
-    "0.3.10: before, it resolved to 'medium' (MACE-MP-0a-medium, MP-only); "
-    "after, to 'medium-mpa-0' (MACE-MPA-0-medium, MPtrj+Alexandria). The paper "
-    "describes MACE-MP as 'trained exclusively on Materials Project' (the "
-    "former); the project's lock file pins mace-torch 0.3.13 (the latter). "
-    "Neither reproduces the published mace_mp_energy: measured on 4 LeMat-Bulk "
-    "structures, MACE-MP-0a-medium is off by mean +0.0010 eV/atom (max 0.0223) "
-    "and MACE-MPA-0-medium by mean +0.0046 (max 0.0140), with float32 and "
-    "float64 agreeing to 1e-6 so dtype is not the cause. For scale, ORB "
-    "reproduces its own hull through the identical code path to within "
-    "9e-5 eV/atom. Treat any e_above_hull from this hull as carrying a few "
-    "meV/atom of unexplained systematic error, and prefer orb_conserv_inf."
+    "The published mace_mp_energy is MACE-MP-0b3-medium, identified by "
+    "reproducing it: median |delta| 3.5e-7 eV/atom and max 3.8e-5 over 3350 "
+    "LeMat-Bulk structures, 3000 of them uniform over all 5.3M rows, float32 "
+    "and float64 alike -- float32 storage rounding, with no row off. Every "
+    "other mace-torch MACE-MP checkpoint misses by a median 14-30 meV/atom. "
+    "This is NOT what LeMat-GenBench scores with: its calculator calls "
+    "mace_mp() with no 'model', which under its locked mace-torch 0.3.13 is "
+    "MACE-MPA-0-medium, 20 meV/atom (median |delta|, sd 0.11) away from the "
+    "hull it is compared against. GenBench's own mace_mp e_above_hull is "
+    "therefore not self-consistent; ours is."
 )
 
 #: Every split published in ``LeMaterial/LeMat-Bulk-MLIP-Hull``.
@@ -118,9 +115,9 @@ HULL_MLIPS: dict[str, HullMlipSpec] = {
         hull_type="mace_mp",
         energy_column="mace_mp_energy",
         builder="mace",
-        # Resolves to the same weights file as mace-torch's 'medium' alias, but
-        # names it, so the identity does not depend on the installed version.
-        checkpoint="MACE-MP-0a-medium",
+        # The same weights file as mace-torch's 'medium-0b3' alias, named
+        # outright so the identity does not depend on the installed version.
+        checkpoint="MACE-MP-0b3",
         note=_MACE_MP_NOTE,
     ),
     "mace_omat": HullMlipSpec(
@@ -248,8 +245,9 @@ def verify_hull_energies(
     """Check that our calculator reproduces the published per-structure energies.
 
     This is the only way to establish which checkpoint built a given hull:
-    LeMat-GenBench pins no model versions, and for ``mace_mp`` the identity is
-    genuinely ambiguous (see :data:`HULL_MLIPS`).  A checkpoint mismatch shows up
+    LeMat-GenBench pins no model versions, and for ``mace_mp`` neither of the
+    checkpoints its code could have loaded is the one that built the hull (see
+    :data:`HULL_MLIPS`).  A checkpoint mismatch shows up
     as a large systematic offset, which would otherwise propagate silently into
     every ``e_above_hull`` derived from that hull.
 
