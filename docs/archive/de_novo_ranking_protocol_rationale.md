@@ -248,13 +248,26 @@ The effect size we are chasing is 0.023 eV/atom, so a model/hull mismatch is
 - `verify_hull_energies("orb_conserv_inf")` reproduces the published energies to
   **90 µeV/atom**, so the pairing is confirmed, not assumed.
 
-**Open item — the `mace_mp` hull's checkpoint is unidentified.** LeMat-GenBench
-built it by calling `mace_mp()` with no `model` argument, whose meaning changed
-in mace-torch 0.3.10. Neither candidate reproduces the published energies:
-MACE-MP-0a-medium is off by mean +1.0 meV/atom (max 22), MACE-MPA-0-medium by
-+4.6 (max 14); float32 and float64 agree to 1e-6, so dtype is not the cause.
-Treat anything from that hull as carrying a few meV/atom of unexplained
-systematic error. Recorded in `HULL_MLIPS["mace_mp"].note`.
+**Resolved — the `mace_mp` hull is MACE-MP-0b3-medium.** Every MACE-MP-family
+checkpoint in mace-torch 0.3.16's registry was run as a single point on
+LeMat-Bulk geometry. MACE-MP-0b3-medium reproduces the published
+`mace_mp_energy` to a median 3.5e-7 eV/atom, max 3.8e-5, over 3350
+structures: 350 stratified by source and 3000 uniform over all 5.3M rows of
+`LeMat-Bulk-MLIP-Hull-All`, with no row off. That bounds any other model's
+share below ~0.1%. Every other checkpoint misses by a median 14–30 meV/atom:
+0a small/medium/large, 0b, 0b2, MPA-0, OMAT-0 and MatPES. Two controls ran
+alongside it: MACE-OMAT-0-medium reproduces `mace_omat_energy` to the same
+precision, and ORB-v3-conservative-inf reproduces its column to 1e-4 on these
+geometries.
+
+The earlier "unidentified" verdict tested only the two checkpoints
+`mace_mp()`'s default can resolve to, on 4 structures. Neither is the one
+used. That default is the catch: LeMat-GenBench scores with
+`mace_mp(model=None)`, which under its locked mace-torch 0.3.13 is
+MACE-MPA-0-medium. So GenBench compares MPA-0 energies against an MP-0b3 hull,
+20 meV/atom apart per structure (median |Δ|, sd 0.11 eV/atom). Its own
+`mace_mp` stability numbers are not self-consistent. Ours, built with
+`HULL_MLIPS["mace_mp"]`, are.
 
 ## The reference hull is the whole one LeMat publishes
 
