@@ -41,6 +41,37 @@ inspect a scratch venv, pass `--python /tmp/venv-test/bin/python`.
 
 ---
 
+## Git worktrees: one venv each
+
+Give every worktree its own venv, built by the same command from inside it:
+
+```bash
+scripts/platforms/zeus/env_init.sh
+```
+
+It is cheap here. uv hardlinks packages out of `~/.cache/uv`, which is on the same
+NVMe as the checkouts: measured on 2026-09-14, a worktree venv took **19 s** and
+**29 MB** of new disk, downloading 3 packages.
+
+Do not borrow the main checkout's venv instead. Its editable install points at
+`/home/kna/WyckoffTransformer/src`, so a worktree running that interpreter imports
+the main checkout's code, and `uv run` from the worktree repoints that install at
+the worktree -- changing what the main checkout imports. A copied `.venv` has the
+same problem: its scripts and `.pth` name the checkout it was built in.
+
+`uv.lock` and `uv.toml` are untracked (see below), so a fresh worktree has neither.
+Claude Code copies them from the main checkout through `.worktreeinclude`; a worktree
+made with a bare `git worktree add` needs `cp /home/kna/WyckoffTransformer/uv.lock .`
+before `env_init.sh`, or the sync resolves afresh and can install versions the main
+checkout does not run. `env_init.sh` supplies `uv.toml` itself.
+
+What a worktree venv gives you, verified: `import wyckoff_transformer` and every
+repository-relative path (`yamls/`, `generated/`) resolve inside the worktree; the
+main checkout's venv is untouched; torch is the locally built wheel. The one package
+missing compared with the main venv is the hand-installed `calorine` (see below).
+
+---
+
 ## Where the data, cache and runs live
 
 zeus keeps them under XDG's data directory, on the NVMe root, as recorded in

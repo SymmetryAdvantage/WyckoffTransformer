@@ -1,0 +1,14 @@
+# Untracked files a new Claude Code worktree copies from the main checkout. gitignore
+# syntax; only files that git ignores are copied.
+#
+# Not .venv: a venv is not relocatable -- its scripts' shebangs and the editable
+# install's .pth name the checkout it was built in, so a copy would import the main
+# checkout's src. Build one per worktree instead (docs/platforms/<host>/).
+
+# MP_API_KEY for the Materials Project scripts
+.env
+# The host's uv configuration and the lock resolved against it. Without the lock a
+# worktree's `uv sync` resolves afresh and can install other versions than the main
+# checkout runs.
+uv.toml
+uv.lock
