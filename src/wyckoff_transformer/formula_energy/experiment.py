@@ -207,9 +207,10 @@ def main() -> None:
     parser.add_argument("--quick", action="store_true",
                         help="one small model and three epochs, to check the wiring")
     args = parser.parse_args()
+    args.out = resolve_store_path(args.out)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
-    device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device =args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("device: %s", device)
     frame = run(
         pd.read_parquet(resolve_store_path(args.shallow_table)),

@@ -2,11 +2,13 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import torch
 from omegaconf import OmegaConf
 
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.schedules import warmup_stable_decay
 from wyckoff_transformer.trainer import WyckoffTrainer
 
@@ -172,7 +174,7 @@ class TestTheScheduleIsConsumedExactlyByARealRun(unittest.TestCase):
     EPOCHS = 7
 
     def setUp(self):
-        if not (Path("cache") / "lemat_bulk_ehull_pilot" / "tensors").exists():
+        if not (cache_root() / "lemat_bulk_ehull_pilot" / "tensors").exists():
             self.skipTest("lemat_bulk_ehull_pilot cache not present")
 
     def _run(self):
@@ -196,19 +198,25 @@ class TestTheScheduleIsConsumedExactlyByARealRun(unittest.TestCase):
                 cfg, torch.device("cpu"), run_path=Path(tmp), no_test=True)
             counts = {"opt": 0, "sched": 0}
             lrs = []
-            real_opt, real_sched = trainer.optimizer.step, trainer.scheduler.step
+            real_opt = trainer.optimizer.step
+            scheduler_class = type(trainer.scheduler)
+            real_sched = scheduler_class.step
 
             def opt_step(*a, **kw):
                 counts["opt"] += 1
                 lrs.append(trainer.optimizer.param_groups[0]["lr"])
                 return real_opt(*a, **kw)
 
-            def sched_step(*a, **kw):
-                counts["sched"] += 1
-                return real_sched(*a, **kw)
+            def sched_step(scheduler, *a, **kw):
+                if scheduler is trainer.scheduler:
+                    counts["sched"] += 1
+                return real_sched(scheduler, *a, **kw)
 
-            trainer.optimizer.step, trainer.scheduler.step = opt_step, sched_step
-            trainer.train()
+            trainer.optimizer.step = opt_step
+            # Patched on the class: the resume checkpoint pickles scheduler.state_dict(),
+            # which is the instance __dict__, and a local function there cannot be pickled.
+            with mock.patch.object(scheduler_class, "step", sched_step):
+                trainer.train()
             return trainer, counts, lrs, cfg
 
     def test_the_step_count_matches_epochs_times_batches_per_epoch(self):

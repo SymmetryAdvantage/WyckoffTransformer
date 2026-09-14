@@ -4,13 +4,13 @@ At site 0 there is no occupancy confound and no dead-sequence confound: the only
 model has to know is which site symmetries exist in the group it was handed.
 """
 import sys, logging, json, pickle, gzip
-from pathlib import Path
 import numpy as np, torch
 from omegaconf import OmegaConf
+from wyckoff_transformer.paths import cache_root, resolve_store_path
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.cli import single_channel_condition
 logging.basicConfig(level=logging.ERROR)
-RUN = Path(sys.argv[1]); DATA = sys.argv[2]; COND = float(sys.argv[3]) if len(sys.argv) > 3 else None
+RUN = resolve_store_path(sys.argv[1]); DATA = sys.argv[2]; COND = float(sys.argv[3]) if len(sys.argv) > 3 else None
 cfg = OmegaConf.load(RUN / "config.yaml")
 tr = WyckoffTrainer.from_config(cfg, torch.device("cpu"), use_cached_tensors=False,
                                 run_path=RUN, load_datasets=False)
@@ -22,7 +22,7 @@ ss_to_id = {toks["site_symmetries"].to_token[i]: i for i in range(n_ss)}
 sgtok = toks["spacegroup_number"]
 sgs = sorted(sgtok.keys())
 
-d = pickle.load(gzip.open(f"cache/{DATA}/data.pkl.gz", "rb"))
+d = pickle.load(gzip.open(cache_root() / DATA / "data.pkl.gz", "rb"))
 from collections import Counter
 freq = Counter()
 for split in d.values():

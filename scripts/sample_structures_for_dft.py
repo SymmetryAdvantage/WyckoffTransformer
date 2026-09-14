@@ -8,6 +8,7 @@ from pymatgen.io.cif import CifWriter
 from pymatgen.core import Structure
 from wyckoff_transformer.evaluation.generated_dataset import GeneratedDataset, load_all_from_config
 from wyckoff_transformer.evaluation.novelty import NoveltyFilter, filter_by_unique_structure
+from wyckoff_transformer.paths import cache_root
 
 from collections import Counter
 from operator import itemgetter
@@ -16,7 +17,7 @@ from itertools import chain
 class TopElements():
     def __init__(self, dataset="mp_20"):
         self.dataset = dataset
-        self.cache_path = Path(__file__).parent.parent.joinpath("cache", dataset, "top_elements.pkl") # Adjusted path
+        self.cache_path = cache_root() / dataset / "top_elements.pkl"
         if self.cache_path.exists():
             with self.cache_path.open("rb") as f:
                 self.data = pickle.load(f)

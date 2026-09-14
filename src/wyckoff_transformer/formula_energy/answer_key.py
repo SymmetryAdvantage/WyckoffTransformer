@@ -82,6 +82,9 @@ def extract_shallow_rows(
     Returns:
         ``out_csv``.
     """
+    energy_csv = resolve_store_path(energy_csv)
+    provenance_csv = resolve_store_path(provenance_csv)
+    out_csv = resolve_store_path(out_csv)
     frame = pd.read_csv(energy_csv, usecols=list(SHALLOW_COLUMNS), low_memory=False)
     provenance = pd.read_csv(provenance_csv, index_col="material_id")
     kinds = ds._kinds(frame["immutable_id"], provenance)
@@ -112,7 +115,7 @@ def compute_shallow_energies(
     Returns:
         *out_csv*.
     """
-    return ht.annotate_csv(rows_csv, out_csv, workers=workers)
+    return ht.annotate_csv(resolve_store_path(rows_csv), resolve_store_path(out_csv), workers=workers)
 
 
 def elemental_references(
@@ -130,7 +133,7 @@ def elemental_references(
             get the shallow world's references from the same file.
     """
     frame = pd.read_csv(
-        energy_csv, usecols=["immutable_id", "full_formula", "chemsys", "energy_corrected"],
+        resolve_store_path(energy_csv), usecols=["immutable_id", "full_formula", "chemsys", "energy_corrected"],
         low_memory=False,
     )
     frame["energy_corrected"] = pd.to_numeric(frame["energy_corrected"], errors="coerce")
@@ -242,7 +245,7 @@ def main() -> None:
     shallow.to_parquet(resolve_store_path(SHALLOW_TABLE))
     deep = pd.read_parquet(resolve_store_path(args.deep_table))
 
-    shallow_ids = set(pd.read_csv(SHALLOW_ROWS, usecols=["immutable_id"])["immutable_id"])
+    shallow_ids = set(pd.read_csv(resolve_store_path(SHALLOW_ROWS), usecols=["immutable_id"])["immutable_id"])
     delta = (elemental_references(args.energy_csv)
              - elemental_references(args.energy_csv, ids=shallow_ids)).dropna()
     logger.info("%d elemental references moved by more than 1 meV/atom (worst %.4f)",
@@ -253,7 +256,7 @@ def main() -> None:
     width = max(len(name) for name in describe(key))
     for name, value in describe(key).items():
         print(f"  {name:<{width}}  {value:,.4f}" if isinstance(value, float) else f"  {name:<{width}}  {value:,}")
-    print(f"wrote {SHALLOW_TABLE} and {ANSWER_KEY}")
+    print(f"wrote {resolve_store_path(SHALLOW_TABLE)} and {resolve_store_path(ANSWER_KEY)}")
 
 
 if __name__ == "__main__":

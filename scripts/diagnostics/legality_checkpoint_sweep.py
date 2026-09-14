@@ -5,7 +5,7 @@ from collections import Counter
 import numpy as np, torch
 from omegaconf import OmegaConf
 logging.basicConfig(level=logging.CRITICAL); warnings.filterwarnings("ignore")
-from wyckoff_transformer.paths import runs_root
+from wyckoff_transformer.paths import cache_root, runs_root
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.cli import single_channel_condition
 
@@ -13,7 +13,7 @@ R = 24
 _freq_cache = {}
 def freq_for(ds):
     if ds not in _freq_cache:
-        d = pickle.load(gzip.open(f"cache/{ds}/data.pkl.gz", "rb"))
+        d = pickle.load(gzip.open(cache_root() / ds / "data.pkl.gz", "rb"))
         c = Counter()
         for split in d.values():
             c.update(split["spacegroup_number"])

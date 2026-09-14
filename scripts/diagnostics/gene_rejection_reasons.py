@@ -2,10 +2,10 @@
 import sys, json, logging
 from collections import Counter, defaultdict
 from copy import deepcopy
-from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
+from wyckoff_transformer.paths import resolve_store_path
 from wyckoff_transformer.trainer import WyckoffTrainer, load_model_weights
 from wyckoff_transformer.cli import single_channel_condition
 from wyckoff_transformer.generator import WyckoffGenerator
@@ -13,7 +13,7 @@ from wyckoff_transformer.tokenization import get_wp_index
 
 logging.basicConfig(level=logging.WARNING)
 
-RUN = Path(sys.argv[1] if len(sys.argv) > 1 else "runs/upi73i4k")
+RUN = resolve_store_path(sys.argv[1] if len(sys.argv) > 1 else "runs/upi73i4k")
 N = int(sys.argv[2]) if len(sys.argv) > 2 else 2000
 COND = float(sys.argv[3]) if len(sys.argv) > 3 else 0.0
 
