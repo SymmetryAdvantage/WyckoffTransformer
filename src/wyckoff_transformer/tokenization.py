@@ -3,6 +3,7 @@ import json
 import gzip
 import logging
 import pickle
+import shutil
 from itertools import chain
 from operator import attrgetter, itemgetter
 from collections import defaultdict, UserDict
@@ -17,7 +18,10 @@ from pandarallel import pandarallel
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.wyckoff_processor import (
+    ENGINEERS_DIR,
+    MODEL_ENGINEERS_DIRNAME,
     FeatureEngineer,
     WyckoffProcessor,
     argsort_multiple,
@@ -61,6 +65,24 @@ def load_wyckoff_mappings(path: Optional[Path] = None) -> WyckoffMappings:
         },
         ss_from_letter={int(sg): v for sg, v in raw["ss_from_letter"].items()},
     )
+
+
+def save_package_data(model_dir: Path) -> List[Path]:
+    """Copy the Wyckoff mappings and every engineer into a model directory.
+
+    A model is only meaningful against the exact tables it was trained with. With its
+    own copies -- the mappings next to its wyckoff_processor.json, the engineers and
+    frozen tables under ``engineers/`` -- it keeps working whatever the installed
+    package holds later. Returns the files written.
+    """
+    model_dir = Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    written = [Path(shutil.copy2(_PACKAGE_MAPPINGS_PATH, model_dir / WYCKOFF_MAPPINGS_FILENAME))]
+    engineers_dir = model_dir / MODEL_ENGINEERS_DIRNAME
+    engineers_dir.mkdir(exist_ok=True)
+    for source in sorted(ENGINEERS_DIR.glob("*.json")):
+        written.append(Path(shutil.copy2(source, engineers_dir / source.name)))
+    return written
 
 
 # Order is important here, as we can use it to sort the tokens
@@ -137,6 +159,13 @@ class EnumeratingTokeniser(dict):
         self.mask_token: Optional[int] = mask_token
         self.include_stop: bool = include_stop
         self.to_token: List = [token for token, idx in sorted(self.items(), key=itemgetter(1))]
+
+    def __missing__(self, key):
+        # A saved tokeniser holds enum tokens -- pymatgen's Element -- by their value,
+        # because that is what they serialise to; the data still holds the enum members.
+        if isinstance(key, Enum) and key.value in self:
+            return self[key.value]
+        raise KeyError(key)
 
     @classmethod
     def from_token_set(cls,
@@ -433,7 +462,7 @@ def tokenise_engineer(
 
 
 def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
-                     config: DictConfig,
+                     config: Optional[DictConfig],
                      tokenizer_path: Optional[Path|str] = None,
                      n_jobs: Optional[int] = None) -> \
                         Tuple[Dict[str, Dict[str, torch.Tensor|List[List[torch.Tensor]]]],
@@ -444,7 +473,9 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
         datasets_pd: A dict with the dataset name as key and the dataset as a pandas DataFrame as value. We must pass the all the data to ensure that
             every possible token is included in the tokeniser, even if it is not present in a specific split.
         config: The config for the tokenisation, see the yamls/tokenisers folder for examples.
+            Ignored when tokenizer_path is given: the saved processor carries its own.
         tokenizer_path: The path to the tokenisers. If None, new tokenisers are created.
+            If given, the saved tokenisers are used, with the engineers saved next to them.
         n_jobs: The number of jobs to use for parallel processing. If None, it uses the default number of physical cores.
     Returns:
         A tuple with the tokenised tensors and the tokenisers.
@@ -452,16 +483,21 @@ def tokenise_dataset(datasets_pd: Dict[str, DataFrame],
             The tokenisers are a dict with the field name as key and the tokeniser as value.
     """
     processor = WyckoffProcessor.from_config(config, tokenizer_path=tokenizer_path)
-    return processor.tokenise_dataset(datasets_pd=datasets_pd, n_jobs=n_jobs)
+    # tokenizer_path again: without it the processor would build fresh tokenisers from
+    # this data and read the package's engineers, whatever it was loaded from
+    return processor.tokenise_dataset(
+        datasets_pd=datasets_pd, tokenizer_path=tokenizer_path, n_jobs=n_jobs)
 
 
 def load_tensors_and_tokenisers(
     dataset: str,
     config_name: str,
     use_cached_tensors: bool = True,
-    cache_path: Path = Path(__file__).resolve().parents[2] / "cache",
+    cache_path: Optional[Path] = None,
     tokenizer_path: Optional[Path] = None):
 
+    if cache_path is None:
+        cache_path = cache_root()
     this_cache_path = cache_path / dataset
     if use_cached_tensors:
         processor = WyckoffProcessor.from_pretrained(this_cache_path / "tokenisers" / f"{config_name}.json")
@@ -475,13 +511,16 @@ def load_tensors_and_tokenisers(
             raise
         return tensors, tokenisers, token_engineers
     else:
-        cache_path = Path(__file__).resolve().parents[2] / "cache" / dataset
+        cache_path = cache_root() / dataset
         with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
             datasets_pd = pickle.load(f)
+        # A saved processor carries its own config; the repository's YAML, which may
+        # have changed or gone since, is only for building new tokenisers.
+        config = None if tokenizer_path is not None else OmegaConf.load(
+            Path(__file__).resolve().parents[2] / 'yamls' / 'tokenisers' / f'{config_name}.yaml')
         return tokenise_dataset(
             datasets_pd=datasets_pd,
-            config=OmegaConf.load(
-                Path(__file__).resolve().parents[2] / 'yamls' / 'tokenisers' / f'{config_name}.yaml'),
+            config=config,
             tokenizer_path=tokenizer_path,
         )
 

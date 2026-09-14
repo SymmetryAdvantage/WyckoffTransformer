@@ -29,7 +29,7 @@ jobs:
       - name: Build release distributions
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-          cp uv.toml.cpu uv.toml
+          cp scripts/platforms/cpu/uv.toml uv.toml
           uv run --extra publish python -m build
 
       - name: Upload distributions

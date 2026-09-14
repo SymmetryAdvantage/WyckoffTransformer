@@ -5,6 +5,7 @@ Usage:
     push_to_hub.py <repo_id> --model-path <path>
 """
 import argparse
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -18,6 +19,9 @@ REQUIRED_FILES = [
     "spacegroup_distribution.json",
     "wyckoffs_enumerated_by_ss.json",
 ]
+# The engineers and frozen tables the model was trained with. Runs that predate models
+# carrying them have none, and load against the package's.
+ENGINEERS_DIRNAME = "engineers"
 
 
 def download_wandb_artifacts(run_path: str, target_dir: Path) -> None:
@@ -56,6 +60,10 @@ def download_wandb_artifacts(run_path: str, target_dir: Path) -> None:
                 src = matches[0]
             (target_dir / filename).write_bytes(src.read_bytes())
             print(f"  Downloaded {filename} from {artifact_name}")
+        engineers = artifact_dir / ENGINEERS_DIRNAME
+        if artifact_type == "processors" and engineers.is_dir():
+            shutil.copytree(engineers, target_dir / ENGINEERS_DIRNAME, dirs_exist_ok=True)
+            print(f"  Downloaded {ENGINEERS_DIRNAME}/ from {artifact_name}")
 
 
 def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
@@ -66,6 +74,9 @@ def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
             raise FileNotFoundError(
                 f"Required file '{filename}' not found in '{model_dir}'."
             )
+    if not (model_dir / ENGINEERS_DIRNAME).is_dir():
+        print(f"Warning: '{model_dir}' has no {ENGINEERS_DIRNAME}/; the published model "
+              "will load against whichever engineers the installed package holds.")
 
     api = HfApi()
     api.create_repo(repo_id=repo_id, repo_type="model", exist_ok=True)
@@ -73,7 +84,7 @@ def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
         folder_path=str(model_dir),
         repo_id=repo_id,
         repo_type="model",
-        allow_patterns=REQUIRED_FILES,
+        allow_patterns=REQUIRED_FILES + [f"{ENGINEERS_DIRNAME}/*.json"],
     )
     print(f"Model pushed to https://huggingface.co/{repo_id}")
 

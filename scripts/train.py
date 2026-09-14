@@ -7,6 +7,8 @@ import wandb
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
+from wyckoff_transformer.paths import runs_root, wandb_dir
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: E402
 from wyckoff_transformer.trainer import train_from_config  # noqa: E402
 # from wyckoff_transformer.bigtrainer import train_from_config
 
@@ -18,8 +20,8 @@ def main():
     parser.add_argument("device", type=torch.device, help="Device to train on")
     parser.add_argument("--pilot", action="store_true", help="Run a pilot run by setting epochs to 3")
     parser.add_argument("--debug", action="store_true", help="Debug mode")
-    parser.add_argument("--run-path", type=Path, default=Path(__file__).parent.parent / "runs",
-                        help="Set the path for saving run data")
+    parser.add_argument("--run-path", type=Path, default=None,
+                        help="Set the path for saving run data (default: the runs store)")
     parser.add_argument("--torch-num-thread", type=int, help="Number of threads for torch")
     parser.add_argument("--production", action="store_true", help="Train on the combined train+val+test dataset")
     parser.add_argument("--no-test", action="store_true", help="Skip loading and evaluating the test dataset")
@@ -27,7 +29,24 @@ def main():
                         help="Force WyckoffTrainer_args.compile_model=true")
     parser.add_argument("--no-compile", dest="compile_model", action="store_false", default=None,
                         help="Force WyckoffTrainer_args.compile_model=false")
+    parser.add_argument("--resume", type=str, metavar="RUN_ID", default=None,
+                        help="Continue the W&B run with this id from the last checkpoint in its "
+                             "run directory, instead of starting a new one. The config given "
+                             "must be the one that run started with.")
+    parser.add_argument("--reschedule", action="store_true",
+                        help="Allow a resumed run to change its learning-rate horizon: the "
+                             "epoch count and the scheduler's own settings may differ from the "
+                             "ones the run started with, and the run's config.yaml is rewritten "
+                             "to the new schedule. Every other config difference is still "
+                             "refused. Use it to land a run on a deadline -- bringing the decay "
+                             "forward -- not to change what is being trained.")
+    parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
+                        help="W&B entity to log under. Pinned by default so a run's home does not "
+                             "depend on the shell's W&B configuration.")
+    parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
     args = parser.parse_args()
+    if args.run_path is None:
+        args.run_path = runs_root()
     
     if args.debug:
         torch.autograd.set_detect_anomaly(True)
@@ -63,26 +82,34 @@ def main():
     wandb_config = OmegaConf.to_container(config)
     args.run_path.mkdir(parents=True, exist_ok=True)
     with wandb.init(
-        project="WyckoffTransformer",
+        dir=wandb_dir(),
+        entity=args.wandb_entity,
+        project=args.wandb_project,
         job_type="train",
         tags=tags,
         config=wandb_config,
+        # Log back into the same run rather than opening a second one, so the loss curve of a
+        # resumed run is continuous and its run directory is the one holding the checkpoint.
+        # "must" rather than "allow": a typo in the id has to fail, not silently start afresh.
+        id=args.resume,
+        resume="must" if args.resume else None,
         settings=wandb.Settings(
                 init_timeout=180
             )
         ):
 
-        configuration_artifact = wandb.Artifact(name=f"config_{config.name}_{wandb.run.id}", type="config")
-        configuration_artifact.add_file(args.config, name="model.yaml")
-        configuration_artifact.add_file(tokeniser_config_path, name="tokeniser.yaml")
-        wandb.log_artifact(configuration_artifact)
+        if not args.resume:
+            configuration_artifact = wandb.Artifact(name=f"config_{config.name}_{wandb.run.id}", type="config")
+            configuration_artifact.add_file(args.config, name="model.yaml")
+            configuration_artifact.add_file(tokeniser_config_path, name="tokeniser.yaml")
+            wandb.log_artifact(configuration_artifact)
 
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule)
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule)
 
 
 if __name__ == '__main__':

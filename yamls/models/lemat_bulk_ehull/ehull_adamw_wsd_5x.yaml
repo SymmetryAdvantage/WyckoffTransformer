@@ -1,0 +1,175 @@
+# LeMat-Bulk e_hull-conditioned WyFormer: ehull_adamw_wsd.yaml at 5x the parameter count,
+# with a decay phase covering 20% of the run instead of 10%. Everything else -- optimiser,
+# peak lr, batch size, tokeniser, dropout, clipping -- is held at the values of the smaller
+# run so that the two are comparable.
+#
+# Capacity. The baseline is 144185 parameters; this file is 723350, a factor of 5.02.
+# The growth is entirely in width, with depth left at 3 layers, so the comparison against
+# ehull_adamw_wsd.yaml moves along a single axis:
+#
+#   embeddings 16/16/8 -> 48/48/24, i.e. d_model 40 -> 120, exactly 3x. The embeddings are
+#     concatenated, so d_model is their sum; there is no separate d_model knob to set, and
+#     it must stay divisible by nhead or the model silently pads it.
+#   nhead 4 -> 8. Head dimension goes 10 -> 15 rather than 10 -> 30: at these sizes a head
+#     of 10 is already small, and tripling the width into four heads would make each head
+#     wider than the whole baseline model.
+#   dim_feedforward 128 -> 320, i.e. 2.5x. Not 3x: a uniform 3x on every width knob lands
+#     at 785046 parameters (5.44x), and the FFN is the cheapest place to give back the 9%.
+#     The FFN-to-model ratio therefore drops from 3.2 to 2.67.
+#
+# The prediction heads are a pyramid from (d_model + vocabulary) down to the vocabulary, so
+# they grow roughly linearly in d_model, not quadratically: 66785 -> 143886, only 2.15x.
+# The encoder carries the rest, 51864 -> 408840 (7.9x). That asymmetry is why the width
+# multiplier needed to reach 5x total is 3 rather than sqrt(5).
+#
+# Two numbers inherited from the baseline are now on weaker ground, both deliberately left
+# alone so that this run isolates capacity, and both worth a sweep afterwards:
+#
+#   dropout 0. The baseline's case for it was 28 training examples per parameter and a
+#     *negative* train-val gap. At 4.0M structures against 723k parameters that ratio is
+#     5.5. The argument still points the same way, but with a fifth of the margin -- watch
+#     loss.epoch.train against loss.epoch.val, and reach for dropout only if the gap turns
+#     positive and grows.
+#   lr 3e-3. Under muP-style width scaling a 3x wider model would want roughly a third of
+#     the rate, i.e. ~1e-3. AdamW's per-parameter normalisation makes it much less than a
+#     full 3x effect in practice, and the baseline file already flags 3e-3 as its least
+#     established number, so changing both capacity and rate at once would confound the
+#     result. If this run is unstable in the stable phase, 1e-3 is the first thing to try.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    # 3x the baseline, preserving the 2:2:1 split between the three cascade fields.
+    # These sum to d_model = 120.
+    embedding_size:
+      elements: 48
+      site_symmetries: 48
+      sites_enumeration: 24
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature: energy_above_hull
+    # e_hull spans 0-37 eV/atom while the median is 0.235 and p99 is 2.73, so a handful of
+    # outliers would otherwise set the scale of the AdaLN modulation input. log1p is near-linear
+    # over the 0-0.1 band we actually sample from and compressive in the tail (37 -> 3.65).
+    # The data stays in eV/atom; the transform is applied on the way into the model.
+    condition_transform: log1p
+    # Unchanged from the baseline, so that examples-seen per epoch is identical and the two
+    # loss curves can be read against each other directly. Peak memory will be higher: the
+    # baseline's 10.4 GiB was almost entirely the resident dataset, which is unchanged, but
+    # activations scale with d_model, so expect roughly 1-3 GiB more at 50000. If it does not
+    # fit alongside another job, halve to 25000 rather than touching anything else.
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 1
+    TransformerEncoderLayer_args:
+      # 120 / 8 = 15 per head; see the capacity note at the top.
+      nhead: 8
+      dim_feedforward: 320
+      # Zero, not merely reduced: see the dropout note at the top.
+      dropout: 0.0
+    TransformerEncoder_args:
+      # Held at the baseline's depth on purpose: this file varies width only.
+      num_layers: 3
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      # We also don't need them as we ensure that batches all have the same length in WychoffTrainer
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      # Held at the baseline's value; see the lr note at the top for why it is not scaled down
+      # with the width, and what to try if the stable phase misbehaves.
+      lr: 0.003
+      # AdamW decouples the decay from the gradient, so this is a true weight-norm constraint.
+      # Deliberately at torch's default rather than the 0.1 used in LLM pretraining: this model
+      # is underfitting, so decay is here to bound the weight-norm growth that fed the
+      # averaging failure (|x| grew 2.5e-6 per step in t1c9ehzp), not to regularise.
+      weight_decay: 0.01
+      # Left at torch's defaults, recorded explicitly so a change is visible in a diff. The
+      # 0.9/0.95 pair common in LLM pretraining exists for runs of ~1e5 steps; at 3.2M steps
+      # beta2=0.999 is still a very short window.
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      # total_steps is injected by the trainer as epochs * batches_per_epoch; do not set it
+      # here, or it will silently disagree with the run length.
+      #
+      # 0.2% of 3.2M steps is ~6400 steps of warmup. Kept as a fraction rather than raised to
+      # match the baseline's absolute 13600: warmup exists to let the Adam moment estimates
+      # settle before the peak rate arrives, and that is a matter of a few thousand steps, not
+      # a fixed share of a budget.
+      warmup_fraction: 0.002
+      # 20% rather than the baseline's 10%, as requested: ~640000 steps. In WSD the decay is
+      # where nearly all of the improvement lands, and a 5x model has more to gain from a
+      # longer anneal at the cost of a shorter stable phase (79.8% of the run rather than
+      # 89.8%). Do not kill the run before the decay completes -- with this setting the loss
+      # will look flat for four fifths of the wall clock and only then fall.
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      # Hägele et al. 2024 (arXiv:2405.18392) found 1-sqrt to beat linear and cosine at equal
+      # budget. It lies below linear for the whole decay: steepest right at the start, then
+      # flattening towards zero, so most of the decay phase is spent at a small rate rather
+      # than easing down gradually. That is the intended behaviour, not a misconfiguration.
+      decay_shape: 1-sqrt
+  # Halved along with `epochs`, so the loss curve keeps the baseline's ~80 validation points
+  # and the two runs plot at the same resolution.
+  validation_period: 500
+  # Above `epochs`, so it can never fire. With WSD that is deliberate: the loss is expected to
+  # sit flat through the stable phase and only fall in the last 20%, which is exactly the shape
+  # patience-based stopping would cut short.
+  early_stopping_patience_epochs: 1000000
+  # A spike guard, not a step-size control. Roughly twice the largest gradient norm seen at any
+  # model state measured, so it fires only on a genuine outlier. Watch the `grad_norm` metric:
+  # if it sits at this value the threshold has become the learning rate, which is how run
+  # lu4xqw0w spent 100k epochs degrading while its loss weighting was silently normalised away.
+  # Gradient norms are not scale-free in the parameter count, so re-read `grad_norm` on this
+  # model before trusting the threshold inherited from the 144k one.
+  clip_grad_norm: 10.
+  # PROVISIONAL -- this is the one number in the file that has not been measured.
+  #
+  # The baseline's 85000 came from 2.976 s per epoch measured on an RTX 6000 Ada at 144k
+  # parameters, where the comment records the step as kernel-launch-bound rather than
+  # arithmetic-bound. This model does 5x the arithmetic through the same number of kernel
+  # launches, so its step time should rise by well under 5x, but by how much is not something
+  # that can be derived -- it has to be timed. 40000 assumes a 2.1x step time (6.35 s/epoch,
+  # 70.6 h), chosen to err short: overshooting the budget is the expensive failure, because a
+  # run killed at 72 h in the stable phase never reaches the decay that produces its gains,
+  # while undershooting merely leaves wall clock on the table.
+  #
+  # Time one short run, then set this to floor(72 * 3600 * 0.98 / measured_s_per_epoch) --
+  # do not adjust it by eye, and re-check it if the batch size changes.
+  #
+  # 4007729 // 50000 = 80 steps per epoch, so 40000 epochs is 3.2M optimiser steps.
+  epochs: 40000
+tokeniser:
+  name: lemat_bulk_ehull_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000

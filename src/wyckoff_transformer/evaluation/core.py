@@ -14,6 +14,7 @@ import smact.screening
 import wandb
 import logging
 
+from wyckoff_transformer.paths import resolve_store_path, runs_root
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
@@ -431,7 +432,7 @@ def main():
     import gzip
     import json
     for run in ("je9sllnx", "aik4ie80", "uoz22ycs", "d9b2y4ke"):
-        with gzip.open(f"runs/{run}/gnerated_wp_no_calibration.json.gz", "rb") as f:
+        with gzip.open(runs_root() / run / "gnerated_wp_no_calibration.json.gz", "rb") as f:
             generated_structures = json.load(f)
         # print("Testing naive and optimised SMACT validity functions")
         optimised_validity = list(map(partial(smact_validity_from_record, apply_gcd=False), generated_structures))
@@ -440,7 +441,7 @@ def main():
         print(f"Run {run} non-GCD validity is {sum(optimised_validity) / len(generated_structures)}")
         gcd_validity_generated = list(map(partial(smact_validity_from_record, apply_gcd=True), generated_structures))
         print(f"Run {run} GCD validity is {sum(gcd_validity_generated) / len(generated_structures)}")
-    with gzip.open("cache/mp_20_biternary/data.pkl.gz", "rb") as f:
+    with gzip.open(resolve_store_path("cache/mp_20_biternary/data.pkl.gz"), "rb") as f:
         dataset_pd = pd.read_pickle(f)
     test_dataset = dataset_pd['test']
     # Compute SMACT for the test dataset

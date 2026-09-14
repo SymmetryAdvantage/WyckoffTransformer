@@ -21,9 +21,14 @@ token_fields:
       - site_symmetries
       - sites_enumeration
     # Binary vector indicating which symmetry operations the site symmetry
-    # contains, mirroring SpaceGroupEncoder's per-SG operation matrix. Replaces
+    # contains, mirroring SpaceGroupEncoder's per-SG operation matrix, plus a
+    # flag separating a real site symmetry from a service token. Replaces
     # the categorical site_symmetries embedding (model yaml sets
     # embedding_size.site_symmetries: 0 alongside this field).
+    #
+    # This dense form stores the vector on every token, which only fits a small
+    # dataset; site_symmetry_ops_id carries the same encoding as an id into a
+    # lookup table held once inside the model.
     site_symmetry_ops:
       dtype: float32
       type: map

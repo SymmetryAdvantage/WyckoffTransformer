@@ -1,0 +1,781 @@
+"""A crashed run picks up where it left off, and lands where it would have without the crash.
+
+Before this, the only thing a run wrote was `best_model_params.pt` -- weights, and only on
+epochs that improved. The optimiser moments, the schedule's step counter, the RNG, the loader's
+shuffle position and the early-stopping bookkeeping all lived in locals of `train()`, so a
+crash cost the whole run. The tests here hold `last_checkpoint.pt` to the standard that makes
+`--resume` worth having: continuing from it must produce the same weights as never having
+stopped, not merely weights of the same quality.
+"""
+import random
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import schedulefree
+import torch
+from omegaconf import OmegaConf
+from torch import nn
+
+from wyckoff_transformer.cascade.dataset import (
+    AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass)
+from wyckoff_transformer.schedules import warmup_stable_decay
+from wyckoff_transformer.trainer import (
+    CHECKPOINT_FILENAME, CHECKPOINT_FORMAT_VERSION, WyckoffTrainer, atomic_torch_save,
+    check_resume_config, restore_checkpoint_from_wandb, train_from_config)
+# The module logs under logging.getLogger(__file__), so its name is a path rather than
+# "wyckoff_transformer.trainer"; assertLogs takes the object and spares the test the detail.
+from wyckoff_transformer.trainer import logger as trainer_logger
+
+MAX_SEQ = 6
+N_CLASSES = 8
+SEED = 7
+
+
+class _Crash(RuntimeError):
+    """Stands in for whatever actually kills a run: OOM, a pre-empted node, a power cut."""
+
+
+#: Sentinel for "W&B holds no mirrored checkpoint for this run".
+_NO_MIRROR = object()
+
+
+class _RemoteFile:
+    """A file on a W&B run, as `Api().run(...).file(name)` returns it.
+
+    `size` is how absence is reported: a file the run never uploaded comes back as a
+    zero-sized entry rather than an error.
+    """
+
+    def __init__(self, size: int = 1024, writes: Path | None = None, fails: bool = False):
+        self.size = size
+        self._writes = writes
+        self._fails = fails
+
+    def download(self, root, replace=False):
+        if self._fails:
+            raise OSError("no space left on device")
+        Path(root).mkdir(parents=True, exist_ok=True)
+        if self._writes is not None:
+            assert Path(root) == self._writes, (root, self._writes)
+            (Path(root) / CHECKPOINT_FILENAME).write_bytes(b"checkpoint")
+
+
+def _patch_remote(wandb_mock, remote):
+    """Point the mocked `wandb.Api()` at *remote*, or make the lookup fail."""
+    wandb_mock.run.entity = "ent"
+    wandb_mock.run.project = "proj"
+    if remote is _NO_MIRROR:
+        wandb_mock.Api.return_value.run.side_effect = RuntimeError("no such run")
+    else:
+        wandb_mock.Api.return_value.run.return_value.file.return_value = remote
+
+
+class _TinyModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.head = nn.Linear(1, N_CLASSES)
+
+    def forward(self, start_tokens, masked_data, padding_mask, known_cascade_len, cond=None):
+        return self.head(start_tokens.float().unsqueeze(-1))
+
+
+def _make_dataset(batch_size):
+    lengths = [1, 1, 2, 2, 3, 3, 4, 5] * 4
+    n = len(lengths)
+    rows = []
+    for length in lengths:
+        row = torch.randint(0, 5, (MAX_SEQ,))
+        row[length] = 7
+        row[length + 1:] = 5
+        rows.append(row)
+    data = {"field1": torch.stack(rows).to(torch.int64),
+            "spacegroup": torch.arange(n, dtype=torch.int64) % 3,
+            "pure_sequence_length": torch.tensor(lengths, dtype=torch.int64)}
+    return AugmentedCascadeDataset(
+        data=data, cascade_order=("field1",), masks={"field1": 6}, pads={"field1": 5},
+        stops={"field1": 7}, num_classes={"field1": N_CLASSES}, start_field="spacegroup",
+        augmented_fields=None, batch_size=batch_size)
+
+
+def _make_trainer(run_path: Path, epochs: int, resume: bool = False,
+                  optimiser: str = "adamw", scheduled: bool = True,
+                  checkpoint_period: int = 1, validation_period: int = 1,
+                  decay_fraction: float = 0.1, reschedule: bool = False) -> WyckoffTrainer:
+    """A trainer whose whole state is small enough to compare exactly, seeded reproducibly.
+
+    Seeding here rather than in the tests is what makes two separately built trainers start
+    from the same weights, the same shuffle order and the same RNG stream -- without which
+    "the resumed run matches the uninterrupted one" would not be a statement about resuming.
+    """
+    torch.manual_seed(SEED)
+    random.seed(SEED)
+    trainer = WyckoffTrainer.__new__(WyckoffTrainer)
+    trainer.target = TargetClass.NextToken
+    trainer.multiclass_next_token_with_order_permutation = True
+    trainer.condition_feature = None
+    trainer.cascade_len = 1
+    trainer.cascade_target_count = 1
+    trainer.cascade_target_indices = (0,)
+    trainer.cascade_order = ("field1",)
+    trainer.evaluation_samples = 1
+    trainer.device = torch.device("cpu")
+    trainer.clip_grad_norm = None
+    trainer.criterion = nn.CrossEntropyLoss(reduction="sum")
+    trainer.model = _TinyModel()
+    trainer.train_dataset = _make_dataset(batch_size=8)
+    trainer.val_dataset = _make_dataset(batch_size=8)
+    trainer.test_dataset = None
+    trainer.train_loader = AugmentedCascadeLoader.from_dataset(trainer.train_dataset)
+    trainer.val_loader = AugmentedCascadeLoader.from_dataset(trainer.val_dataset)
+    trainer.test_loader = None
+    trainer.max_sequence_length = trainer.train_dataset.max_sequence_length
+    if optimiser == "adamw":
+        trainer.optimizer = torch.optim.AdamW(trainer.model.parameters(), lr=0.05)
+    elif optimiser == "schedule_free":
+        trainer.optimizer = schedulefree.AdamWScheduleFree(
+            trainer.model.parameters(), lr=0.05, warmup_steps=2)
+    else:
+        raise ValueError(optimiser)
+    if scheduled:
+        total_steps = epochs * trainer.train_loader.batches_per_epoch
+        trainer.scheduler = warmup_stable_decay(
+            trainer.optimizer, total_steps=total_steps, decay_fraction=decay_fraction)
+        trainer.scheduler_steps_per_batch = True
+        trainer.scheduler_total_steps = total_steps
+    else:
+        trainer.scheduler = None
+        trainer.scheduler_steps_per_batch = False
+        trainer.scheduler_total_steps = None
+    trainer.epochs = epochs
+    trainer.validation_period = validation_period
+    trainer.checkpoint_period = checkpoint_period
+    trainer.early_stopping_patience_epochs = epochs * 10
+    trainer.production_training = False
+    trainer.run_path = run_path
+    trainer.resume = resume
+    trainer.reschedule = reschedule
+    # Bypasses the dataset scan; the file it writes plays no part in resuming.
+    trainer.start_token_distribution = {"start_name": "spacegroup", "start_type": "categorial",
+                                        "max_sequence_length": MAX_SEQ, "counts": [1, 1, 1]}
+    return trainer
+
+
+def _crash_after(trainer: WyckoffTrainer, completed_epochs: int) -> None:
+    """Make `train_epoch` raise once `completed_epochs` of them have finished."""
+    original = trainer.train_epoch
+    remaining = [completed_epochs]
+
+    def train_epoch():
+        if remaining[0] <= 0:
+            raise _Crash("the node went away")
+        remaining[0] -= 1
+        original()
+
+    trainer.train_epoch = train_epoch
+
+
+def _run(trainer: WyckoffTrainer):
+    with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+        wandb_mock.run.id = "testrunid"
+        trainer.train()
+
+
+def _weights(trainer: WyckoffTrainer):
+    return {key: value.clone() for key, value in trainer.model.state_dict().items()}
+
+
+class _RunDirTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp_path = Path(self._tmp.name)
+
+    def run_dir(self, name: str) -> Path:
+        path = self.tmp_path / name
+        path.mkdir()
+        return path
+
+
+class TestResumeReproducesAnUninterruptedRun(_RunDirTestCase):
+    """The property the whole feature rests on, for each optimiser we train with."""
+
+    def _uninterrupted_then_resumed(self, epochs=6, crash_after=3, **kwargs):
+        uninterrupted = _make_trainer(self.run_dir("uninterrupted"), epochs=epochs, **kwargs)
+        _run(uninterrupted)
+
+        crashed_path = self.run_dir("crashed")
+        crashed = _make_trainer(crashed_path, epochs=epochs, **kwargs)
+        _crash_after(crashed, crash_after)
+        with self.assertRaises(_Crash):
+            _run(crashed)
+        self.assertTrue((crashed_path / CHECKPOINT_FILENAME).exists())
+
+        resumed = _make_trainer(crashed_path, epochs=epochs, resume=True, **kwargs)
+        _run(resumed)
+        return uninterrupted, resumed
+
+    def assert_same_weights(self, expected: WyckoffTrainer, actual: WyckoffTrainer):
+        expected_weights, actual_weights = _weights(expected), _weights(actual)
+        self.assertEqual(sorted(expected_weights), sorted(actual_weights))
+        for key, value in expected_weights.items():
+            # Exactly, not approximately: the same steps in the same order on the same data.
+            # Anything else means some piece of the state was re-derived rather than restored.
+            torch.testing.assert_close(actual_weights[key], value, rtol=0, atol=0)
+
+    def test_adamw_with_a_step_indexed_schedule(self):
+        """The moments and the schedule's step counter both have to survive the gap."""
+        uninterrupted, resumed = self._uninterrupted_then_resumed()
+        self.assert_same_weights(uninterrupted, resumed)
+        self.assertEqual(resumed.scheduler.last_epoch, uninterrupted.scheduler.last_epoch)
+        self.assertEqual(resumed.optimizer.param_groups[0]["lr"],
+                         uninterrupted.optimizer.param_groups[0]["lr"])
+
+    def test_schedule_free(self):
+        """`z` lives in the optimiser state and never touches `best_model_params.pt`."""
+        uninterrupted, resumed = self._uninterrupted_then_resumed(optimiser="schedule_free")
+        self.assert_same_weights(uninterrupted, resumed)
+
+    def test_without_a_schedule(self):
+        uninterrupted, resumed = self._uninterrupted_then_resumed(scheduled=False)
+        self.assert_same_weights(uninterrupted, resumed)
+
+    def test_a_checkpoint_cadence_coarser_than_the_crash(self):
+        """Resuming rewinds to the last checkpoint, which is behind where the crash happened."""
+        uninterrupted, resumed = self._uninterrupted_then_resumed(
+            epochs=8, crash_after=5, checkpoint_period=2, validation_period=2)
+        # The last checkpoint was at epoch 4, so epoch 5 is repeated rather than skipped: the
+        # same eight epochs of training happen, and the weights land in the same place.
+        self.assert_same_weights(uninterrupted, resumed)
+
+    def test_the_best_weights_and_their_epoch_survive(self):
+        uninterrupted, resumed = self._uninterrupted_then_resumed()
+        best = torch.load(resumed.run_path / "best_model_params.pt", weights_only=True)
+        reference = torch.load(
+            uninterrupted.run_path / "best_model_params.pt", weights_only=True)
+        for key, value in reference.items():
+            torch.testing.assert_close(best[key], value, rtol=0, atol=0)
+
+
+class TestCheckpointContents(_RunDirTestCase):
+    def test_round_trip_restores_optimiser_schedule_and_bookkeeping(self):
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=4)
+        _run(trainer)
+        expected_optimizer = trainer.optimizer.state_dict()
+
+        restored = _make_trainer(run_path, epochs=4, resume=True)
+        state = restored.load_training_checkpoint()
+
+        self.assertEqual(state["epoch"], 4)
+        self.assertGreaterEqual(state["best_val_epoch"], 0)
+        self.assertLess(state["best_val_loss"], float("inf"))
+        self.assertEqual(restored.scheduler.state_dict()["last_epoch"],
+                         trainer.scheduler.state_dict()["last_epoch"])
+        for group_index, group in enumerate(expected_optimizer["param_groups"]):
+            self.assertEqual(restored.optimizer.state_dict()["param_groups"][group_index]["lr"],
+                             group["lr"])
+        for key, value in expected_optimizer["state"].items():
+            for name, tensor in value.items():
+                if isinstance(tensor, torch.Tensor):
+                    torch.testing.assert_close(
+                        restored.optimizer.state_dict()["state"][key][name], tensor,
+                        rtol=0, atol=0)
+
+    def test_the_cuda_rng_is_restored_as_a_cpu_byte_tensor(self):
+        """The checkpoint is read with `map_location=self.device`, so on a GPU run the CUDA
+        RNG snapshot comes back on the GPU -- and `set_rng_state_all` takes CPU ByteTensors
+        only. Every test here runs on the CPU, where that branch is skipped, so the mismatch
+        only ever showed up on the cluster: two chained runs spent their whole retry budget
+        crashing one line into the resume.
+        """
+        run_path = self.run_dir("run")
+        _run(_make_trainer(run_path, epochs=2))
+        path = run_path / CHECKPOINT_FILENAME
+        checkpoint = torch.load(path, weights_only=True)
+        # Stands in for what `map_location` hands back on a GPU host: not a CPU ByteTensor.
+        checkpoint["rng"]["cuda"] = [torch.arange(16, dtype=torch.int64)]
+        atomic_torch_save(checkpoint, path)
+
+        restored = _make_trainer(run_path, epochs=2, resume=True)
+        restored.device = torch.device("cuda")
+        real_load = torch.load
+        received = []
+        with patch("torch.load", lambda p, map_location=None, **kw: real_load(p, **kw)), \
+             patch("torch.cuda.device_count", return_value=1), \
+             patch("torch.cuda.set_rng_state_all", side_effect=received.append):
+            restored.load_training_checkpoint()
+
+        self.assertEqual(len(received), 1)
+        state, = received[0]
+        self.assertEqual(state.dtype, torch.uint8)
+        self.assertEqual(state.device.type, "cpu")
+
+    def test_it_loads_without_executing_pickled_objects(self):
+        """`weights_only=True` is the reason the RNG snapshot leaves numpy out."""
+        run_path = self.run_dir("run")
+        _run(_make_trainer(run_path, epochs=2))
+        loaded = torch.load(run_path / CHECKPOINT_FILENAME, weights_only=True)
+        self.assertEqual(loaded["format_version"], CHECKPOINT_FORMAT_VERSION)
+        self.assertIn("python", loaded["rng"])
+        self.assertNotIn("numpy", loaded["rng"])
+
+    def test_a_completed_run_resumes_with_nothing_left_to_train(self):
+        """So a crash in the generation that follows training does not cost a training run."""
+        run_path = self.run_dir("run")
+        _run(_make_trainer(run_path, epochs=3))
+        self.assertEqual(
+            torch.load(run_path / CHECKPOINT_FILENAME, weights_only=True)["epoch"], 3)
+
+        resumed = _make_trainer(run_path, epochs=3, resume=True)
+        _crash_after(resumed, 0)  # any training at all now raises
+        _run(resumed)
+
+    def test_early_stopping_records_the_run_as_finished(self):
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=20, scheduled=False)
+        trainer.early_stopping_patience_epochs = 0
+        _run(trainer)
+        self.assertEqual(
+            torch.load(run_path / CHECKPOINT_FILENAME, weights_only=True)["epoch"], 20)
+
+
+class TestCheckpointRefusals(_RunDirTestCase):
+    def _write_run(self, epochs=4) -> Path:
+        run_path = self.run_dir("run")
+        _run(_make_trainer(run_path, epochs=epochs))
+        return run_path
+
+    def test_a_different_epoch_count_is_refused(self):
+        """It would put the schedule and the patience budget on a horizon neither run has."""
+        run_path = self._write_run()
+        resumed = _make_trainer(run_path, epochs=5, resume=True)
+        with self.assertRaisesRegex(ValueError, "4-epoch run"):
+            resumed.load_training_checkpoint()
+
+    def test_a_different_step_budget_is_refused(self):
+        run_path = self._write_run()
+        resumed = _make_trainer(run_path, epochs=4, resume=True)
+        resumed.scheduler_total_steps += 1
+        with self.assertRaisesRegex(ValueError, "optimiser steps"):
+            resumed.load_training_checkpoint()
+
+    def test_an_unreadable_format_version_is_refused(self):
+        run_path = self._write_run()
+        path = run_path / CHECKPOINT_FILENAME
+        checkpoint = torch.load(path, weights_only=True)
+        checkpoint["format_version"] = CHECKPOINT_FORMAT_VERSION + 1
+        torch.save(checkpoint, path)
+        resumed = _make_trainer(run_path, epochs=4, resume=True)
+        with self.assertRaisesRegex(ValueError, "cannot be resumed"):
+            resumed.load_training_checkpoint()
+
+    def test_a_dataset_of_a_different_size_is_refused(self):
+        """The shuffle order is indexed by example, so it cannot be reused across a reshape."""
+        run_path = self._write_run()
+        resumed = _make_trainer(run_path, epochs=4, resume=True)
+        resumed.train_loader.num_examples += 1
+        with self.assertRaisesRegex(ValueError, "dataset changed under the run"):
+            resumed.load_training_checkpoint()
+
+
+class TestAtomicSave(_RunDirTestCase):
+    def test_a_crash_mid_write_leaves_the_previous_checkpoint_intact(self):
+        """The failure the whole feature exists for must not take the checkpoint with it."""
+        path = self.tmp_path / CHECKPOINT_FILENAME
+        atomic_torch_save({"epoch": torch.tensor(1)}, path)
+
+        def die(*args, **kwargs):
+            raise _Crash("out of disk")
+
+        with patch("wyckoff_transformer.trainer.torch.save", side_effect=die), \
+             self.assertRaises(_Crash):
+            atomic_torch_save({"epoch": torch.tensor(2)}, path)
+        self.assertEqual(torch.load(path, weights_only=True)["epoch"].item(), 1)
+
+
+class TestLoaderStateRoundTrip(unittest.TestCase):
+    """The shuffle position, which `get_next_batch` reads and the Scalar-target path uses.
+
+    Restoring the RNG alone is not enough there: it would put the loader at the start of a
+    *new* permutation rather than partway through the one the run was drawing from.
+    """
+
+    @staticmethod
+    def _batches(loader, count):
+        return [loader.get_next_batch().clone() for _ in range(count)]
+
+    def test_a_restored_loader_continues_the_same_permutation(self):
+        torch.manual_seed(SEED)
+        dataset = _make_dataset(batch_size=8)
+        reference = AugmentedCascadeLoader.from_dataset(dataset)
+        self._batches(reference, 2)
+        state, rng = reference.state_dict(), torch.get_rng_state()
+        # Long enough to run past the end of the shuffle order, where the loader draws a fresh
+        # permutation: the restored RNG has to take over exactly there.
+        expected = self._batches(reference, 6)
+
+        restored = AugmentedCascadeLoader.from_dataset(dataset)
+        self.assertFalse(torch.equal(restored.this_shuffle_order, state["this_shuffle_order"]),
+                         "a fresh loader should start on a different order, or this proves nothing")
+        restored.load_state_dict(state)
+        torch.set_rng_state(rng)
+        for expected_batch, actual_batch in zip(expected, self._batches(restored, 6)):
+            torch.testing.assert_close(actual_batch, expected_batch, rtol=0, atol=0)
+
+    def test_a_dataset_of_a_different_size_is_refused(self):
+        torch.manual_seed(SEED)
+        dataset = _make_dataset(batch_size=8)
+        loader = AugmentedCascadeLoader.from_dataset(dataset)
+        state = loader.state_dict()
+        loader.num_examples += 1
+        with self.assertRaisesRegex(ValueError, "dataset changed under the run"):
+            loader.load_state_dict(state)
+
+
+class TestResumeConfigCheck(_RunDirTestCase):
+    BASE = {"dataset": "mp_20",
+            "model": {"WyckoffTrainer_args": {"train_batch_size": 100}},
+            "optimisation": {"optimiser": {"config": {"lr": 0.1}}, "epochs": 10}}
+
+    def _saved(self, config=None) -> Path:
+        path = self.tmp_path / "config.yaml"
+        OmegaConf.save(OmegaConf.create(config or self.BASE), path)
+        return path
+
+    def test_the_same_config_passes(self):
+        check_resume_config(OmegaConf.create(self.BASE), self._saved())
+
+    def test_a_changed_value_is_reported_by_key(self):
+        changed = OmegaConf.create(self.BASE)
+        changed.optimisation.optimiser.config.lr = 0.2
+        with self.assertRaises(ValueError) as caught:
+            check_resume_config(changed, self._saved())
+        self.assertIn("optimisation.optimiser.config.lr", str(caught.exception))
+        self.assertIn("0.1", str(caught.exception))
+
+    def test_an_added_key_is_reported(self):
+        changed = OmegaConf.create(self.BASE)
+        changed.model.WyckoffTrainer_args.compile_model = True
+        with self.assertRaises(ValueError) as caught:
+            check_resume_config(changed, self._saved())
+        self.assertIn("model.WyckoffTrainer_args.compile_model", str(caught.exception))
+
+    def test_a_missing_saved_config_is_refused(self):
+        with self.assertRaises(FileNotFoundError):
+            check_resume_config(OmegaConf.create(self.BASE), self.tmp_path / "absent.yaml")
+
+
+class TestTrainFromConfigResumeBranch(_RunDirTestCase):
+    """What `--resume` checks before it loads a dataset or touches the GPU."""
+
+    RUN_ID = "abcd1234"
+
+    def setUp(self):
+        super().setUp()
+        self.runs = self.tmp_path / "runs"
+        self.this_run = self.runs / self.RUN_ID
+        self.config = OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 4}})
+
+    def _call(self, resume: bool, remote=_NO_MIRROR):
+        """Run the gate. By default W&B holds no mirrored checkpoint for the run."""
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, remote)
+            train_from_config(self.config, torch.device("cpu"), run_path=self.runs, resume=resume)
+
+    def test_resuming_a_run_with_no_checkpoint_anywhere_is_refused(self):
+        """The one case a resume cannot rescue, and it must say so rather than start over."""
+        self.this_run.mkdir(parents=True)
+        OmegaConf.save(self.config, self.this_run / "config.yaml")
+        with self.assertRaisesRegex(FileNotFoundError, "no checkpoint"):
+            self._call(resume=True)
+
+    def test_a_purged_local_checkpoint_is_recovered_from_wandb(self):
+        """`runs/` on purge-policy scratch must not silently restart the run.
+
+        Getting as far as the config check proves the checkpoint gate was satisfied by
+        the download -- there is no local file for it to have used.
+        """
+        self.this_run.mkdir(parents=True)
+        OmegaConf.save(
+            OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 8}}),
+            self.this_run / "config.yaml")
+        self.assertFalse((self.this_run / CHECKPOINT_FILENAME).exists())
+        with self.assertRaisesRegex(ValueError, "optimisation.epochs"):
+            self._call(resume=True, remote=_RemoteFile(writes=self.this_run))
+        self.assertTrue((self.this_run / CHECKPOINT_FILENAME).is_file())
+
+    def test_resuming_under_a_different_config_is_refused_before_training(self):
+        self.this_run.mkdir(parents=True)
+        (self.this_run / CHECKPOINT_FILENAME).touch()
+        OmegaConf.save(
+            OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 8}}),
+            self.this_run / "config.yaml")
+        with self.assertRaisesRegex(ValueError, "optimisation.epochs"):
+            self._call(resume=True)
+
+    def test_without_resume_an_existing_run_directory_is_still_refused(self):
+        """Overwriting a previous run's directory stays an error; --resume is the way in."""
+        self.this_run.mkdir(parents=True)
+        with self.assertRaises(FileExistsError):
+            self._call(resume=False)
+
+
+
+class TestCheckpointMirror(_RunDirTestCase):
+    """`runs/` is per-machine and may be purged, so the checkpoint is mirrored to W&B.
+
+    Before this it was the one part of a run that existed in exactly one place: the
+    trainer logs artifacts for the best weights, the processors, the config and the
+    space-group distribution, but never `last_checkpoint.pt`. Losing it restarted
+    multi-day PBS chains from epoch 0 without an error.
+    """
+
+    RUN_ID = "mirror01"
+
+    def test_saving_a_checkpoint_mirrors_it_to_the_run_files(self):
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=1)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            trainer.save_training_checkpoint(1, best_val_loss=0.5, best_val_epoch=1)
+        wandb_mock.save.assert_called_once()
+        args, kwargs = wandb_mock.save.call_args
+        self.assertEqual(Path(args[0]), run_path / CHECKPOINT_FILENAME)
+        self.assertEqual(Path(kwargs["base_path"]), run_path)
+        # A file, not an artifact: one slot that later uploads overwrite, rather than a
+        # new version of a 1-40 MB file on every checkpoint.
+        wandb_mock.log_artifact.assert_not_called()
+
+    def test_the_mirror_is_rate_limited_but_the_local_write_is_not(self):
+        """`checkpoint_period` is commonly 10 against tens of thousands of epochs."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=4)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            for epoch in (1, 2, 3):
+                written = trainer.save_training_checkpoint(epoch, 0.5, epoch)
+                self.assertTrue(written.is_file())
+        self.assertEqual(wandb_mock.save.call_count, 1)
+
+    def test_the_final_save_of_the_loop_always_mirrors(self):
+        """Whatever the interval, the last word on a run reaches W&B."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=2)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            trainer.save_training_checkpoint(1, 0.5, 1)          # mirrors: first of the process
+            trainer.save_training_checkpoint(2, 0.5, 1)          # epoch >= epochs -> forced
+        self.assertEqual(wandb_mock.save.call_count, 2)
+
+    def test_a_failed_upload_never_costs_the_trained_epoch(self):
+        """Best effort: the local checkpoint is what the next resume needs either way."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=1)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            wandb_mock.save.side_effect = RuntimeError("network down")
+            written = trainer.save_training_checkpoint(1, best_val_loss=0.5, best_val_epoch=1)
+        self.assertTrue(written.is_file())
+
+    def test_a_failed_upload_is_retried_rather_than_counting_as_done(self):
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=9)
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            wandb_mock.save.side_effect = RuntimeError("network down")
+            trainer.save_training_checkpoint(1, 0.5, 1)
+            trainer.save_training_checkpoint(2, 0.5, 1)
+        self.assertEqual(wandb_mock.save.call_count, 2)
+
+    def test_restore_returns_none_when_the_run_has_no_mirror(self):
+        """Distinct from a failure: it means there is genuinely nothing to resume."""
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile(size=0))
+            self.assertIsNone(restore_checkpoint_from_wandb(run_path))
+
+    def test_restore_returns_none_when_wandb_cannot_be_reached(self):
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _NO_MIRROR)
+            self.assertIsNone(restore_checkpoint_from_wandb(run_path))
+
+    def test_restore_writes_the_checkpoint_and_returns_it(self):
+        run_path = self.tmp_path / "not-yet-there"
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile(writes=run_path))
+            restored = restore_checkpoint_from_wandb(run_path)
+        self.assertEqual(restored, run_path / CHECKPOINT_FILENAME)
+        self.assertTrue(restored.is_file())
+
+    def test_a_mirror_that_cannot_be_downloaded_raises(self):
+        """Never degrade to starting over: those epochs exist only in W&B."""
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile(fails=True))
+            with self.assertRaisesRegex(RuntimeError, "could not be downloaded"):
+                restore_checkpoint_from_wandb(run_path)
+
+    def test_a_download_that_leaves_no_file_raises(self):
+        run_path = self.run_dir("run")
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock:
+            wandb_mock.run.id = self.RUN_ID
+            _patch_remote(wandb_mock, _RemoteFile())      # succeeds, writes nothing
+            with self.assertRaisesRegex(RuntimeError, "no such file"):
+                restore_checkpoint_from_wandb(run_path)
+
+
+class TestRescheduleOntoANewHorizon(_RunDirTestCase):
+    """`--reschedule`: moving a running run's horizon on purpose.
+
+    The schedule is a pure function of (step, horizon), so handing a resumed run a new horizon
+    is well defined -- the weights, the optimiser moments and the step counter are still its
+    own, and only the curve the rate follows changes. That is what lands a run on a deadline:
+    cut the horizon and the decay, where the improvement is, starts at the resume instead of
+    days out. It is off by default, because the same machinery pointed at `lr` or
+    `train_batch_size` would silently produce a run that is neither the one on disk nor the
+    one on the command line.
+    """
+
+    PEAK_LR = 0.05          # _make_trainer's optimiser lr
+
+    def _crashed_run(self, epochs=8, completed=2) -> Path:
+        """A run of `epochs` that got `completed` epochs in and left a checkpoint."""
+        run_path = self.run_dir("run")
+        trainer = _make_trainer(run_path, epochs=epochs)
+        _crash_after(trainer, completed)
+        with self.assertRaises(_Crash):
+            _run(trainer)
+        return run_path
+
+    def test_a_different_horizon_is_accepted_when_rescheduling(self):
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=4, resume=True, reschedule=True)
+        self.assertEqual(resumed.load_training_checkpoint()["epoch"], 2)
+
+    def test_a_different_horizon_is_still_refused_without_it(self):
+        """The default has to stay the refusal; this is the guard the opt-in is carved out of."""
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=4, resume=True)
+        with self.assertRaisesRegex(ValueError, "8-epoch run"):
+            resumed.load_training_checkpoint()
+
+    def test_the_rate_follows_the_new_horizon_from_the_step_it_resumes_at(self):
+        """The point of the whole thing: same step counter, new curve.
+
+        Two epochs into an 8-epoch run the rate is still at its peak and would stay there for
+        another five. Resumed onto a 4-epoch horizon whose decay covers the last three, the
+        same step is a third of the way down that decay, and the run anneals from there.
+        """
+        run_path = self._crashed_run(epochs=8, completed=2)
+
+        unchanged = _make_trainer(run_path, epochs=8, resume=True)
+        unchanged.load_training_checkpoint()
+        unchanged.scheduler.step()
+        self.assertAlmostEqual(unchanged.optimizer.param_groups[0]["lr"], self.PEAK_LR,
+                               msg="the original horizon should still be in its stable phase")
+
+        rescheduled = _make_trainer(run_path, epochs=4, resume=True, reschedule=True,
+                                    decay_fraction=0.75)
+        rescheduled.load_training_checkpoint()
+        batches = rescheduled.train_loader.batches_per_epoch
+        self.assertEqual(rescheduled.scheduler.last_epoch, 2 * batches,
+                         "the step counter is the run's own and must carry over untouched")
+        rescheduled.scheduler.step()
+        # The decay covers the last 3 of the 4 epochs, so the step after the resume sits
+        # (2*batches + 1 - batches) / (3*batches) of the way through it, decaying linearly.
+        expected = self.PEAK_LR * (1.0 - (2 * batches + 1 - batches) / (3 * batches))
+        self.assertAlmostEqual(rescheduled.optimizer.param_groups[0]["lr"], expected, places=6)
+        self.assertLess(rescheduled.optimizer.param_groups[0]["lr"], self.PEAK_LR)
+
+    def test_a_step_budget_that_moved_is_accepted_loudly(self):
+        """Rescheduling is not silent: the horizon it walked past goes into the log."""
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=8, resume=True, reschedule=True)
+        resumed.scheduler_total_steps += 1
+        with self.assertLogs(trainer_logger, level="WARNING") as logs:
+            resumed.load_training_checkpoint()
+        self.assertIn("RESCHEDULING", "\n".join(logs.output))
+
+
+class TestRescheduleConfigCheck(_RunDirTestCase):
+    BASE = {"dataset": "mp_20",
+            "model": {"WyckoffTrainer_args": {"train_batch_size": 100}},
+            "optimisation": {"optimiser": {"config": {"lr": 0.1}},
+                             "scheduler": {"config": {"decay_fraction": 0.2}},
+                             "epochs": 10}}
+
+    def _saved(self) -> Path:
+        path = self.tmp_path / "config.yaml"
+        OmegaConf.save(OmegaConf.create(self.BASE), path)
+        return path
+
+    def _changed(self, **overrides):
+        config = OmegaConf.create(OmegaConf.to_container(OmegaConf.create(self.BASE)))
+        for dotted, value in overrides.items():
+            OmegaConf.update(config, dotted.replace("__", "."), value)
+        return config
+
+    def test_the_horizon_and_the_schedule_shape_may_change(self):
+        changed = self._changed(optimisation__epochs=4,
+                                optimisation__scheduler__config__decay_fraction=0.75)
+        reported = check_resume_config(changed, self._saved(), reschedule=True)
+        self.assertEqual(len(reported), 2, reported)
+        self.assertTrue(any("optimisation.epochs" in line for line in reported))
+
+    def test_nothing_else_may(self):
+        """The keys that change what is being trained, rather than for how long."""
+        for dotted, value in (("optimisation__optimiser__config__lr", 0.2),
+                              ("model__WyckoffTrainer_args__train_batch_size", 50),
+                              ("dataset", "mp_20_something_else")):
+            with self.subTest(key=dotted):
+                with self.assertRaises(ValueError) as caught:
+                    check_resume_config(self._changed(**{dotted: value}),
+                                        self._saved(), reschedule=True)
+                self.assertIn(dotted.replace("__", "."), str(caught.exception))
+
+    def test_an_unchanged_config_reports_nothing_to_reschedule(self):
+        self.assertEqual(check_resume_config(OmegaConf.create(self.BASE),
+                                             self._saved(), reschedule=True), [])
+
+
+class TestRescheduleRewritesTheRunConfig(_RunDirTestCase):
+    """Whatever the run is actually on has to be what its own config.yaml says.
+
+    Otherwise the link after this one diffs against a horizon nothing is following any more,
+    and needs `--reschedule` to get past a change that already happened.
+    """
+
+    RUN_ID = "abcd1234"
+
+    def test_the_saved_config_becomes_the_new_schedule(self):
+        runs = self.tmp_path / "runs"
+        this_run = runs / self.RUN_ID
+        this_run.mkdir(parents=True)
+        (this_run / CHECKPOINT_FILENAME).touch()
+        saved = OmegaConf.create({"dataset": "mp_20", "optimisation": {"epochs": 8},
+                                  "model": {"WyckoffTrainer_args": {"target": "Scalar"}},
+                                  "evaluation": {"n_structures_to_generate": 0}})
+        OmegaConf.save(saved, this_run / "config.yaml")
+        wanted = OmegaConf.create(OmegaConf.to_container(saved))
+        wanted.optimisation.epochs = 4
+
+        with patch("wyckoff_transformer.trainer.wandb") as wandb_mock, \
+             patch.object(WyckoffTrainer, "from_config") as from_config:
+            wandb_mock.run.id = self.RUN_ID
+            wandb_mock.run.summary = {}
+            train_from_config(wanted, torch.device("cpu"), run_path=runs,
+                              resume=True, reschedule=True)
+            from_config.assert_called_once()
+            self.assertIs(from_config.call_args.kwargs["reschedule"], True)
+        self.assertEqual(OmegaConf.load(this_run / "config.yaml").optimisation.epochs, 4)
+
+if __name__ == "__main__":
+    unittest.main()

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from wyckoff_transformer.cli.relax import main
+from wyckoff_transformer.cryspr.mlips import MLIP_REGISTRY
 
 
 _NACL_GENE = {
@@ -34,7 +35,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
         with self.assertRaises(SystemExit):
             main()
 
-    @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
+    @patch("wyckoff_transformer.cli.relax._build")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_basic_run_writes_csv(self, mock_func_run, mock_build_calc):
         mock_func_run.return_value = (MagicMock(), "NaCl", -10.0, -1.25, "data_\nCIF content")
@@ -57,7 +58,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
         self.assertIn("cif", df.columns)
         self.assertEqual(len(df), 1)
 
-    @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
+    @patch("wyckoff_transformer.cli.relax._build")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_model_name_used_as_csv_stem(self, mock_func_run, mock_build_calc):
         mock_func_run.return_value = (None, None, None, None, None)
@@ -75,7 +76,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
 
         self.assertTrue((out_dir / "mymace_results.csv").exists())
 
-    @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
+    @patch("wyckoff_transformer.cli.relax._build")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_start_end_slices_input(self, mock_func_run, mock_build_calc):
         # Write a 3-element input file
@@ -100,7 +101,7 @@ class TestCLIArgumentParsing(unittest.TestCase):
         called_id = mock_func_run.call_args.kwargs["id_gene"]
         self.assertEqual(called_id, 1)
 
-    @patch("wyckoff_transformer.cli.relax.build_mace_calculator")
+    @patch("wyckoff_transformer.cli.relax._build")
     @patch("wyckoff_transformer.cli.relax.func_run")
     def test_url_model_name_derived_from_stem(self, mock_func_run, mock_build_calc):
         mock_func_run.return_value = (None, None, None, None, None)
@@ -117,6 +118,29 @@ class TestCLIArgumentParsing(unittest.TestCase):
         main()
 
         self.assertTrue((out_dir / "my-mace-model_results.csv").exists())
+
+    @patch("wyckoff_transformer.cli.relax.build_calculator")
+    @patch("wyckoff_transformer.cli.relax.func_run")
+    def test_mlip_routes_to_the_registry_and_names_the_csv(self, mock_func_run, mock_build):
+        """--mlip picks a registered backend; --model is then only a checkpoint override."""
+        mock_func_run.return_value = (None, None, None, None, None)
+        mock_build.return_value = MagicMock()
+
+        out_dir = self.tmp_path / "out5"
+        mlip = sorted(MLIP_REGISTRY)[0]
+        sys.argv = [
+            "wyformer-cryspr",
+            str(self.input_file),
+            "--mlip", mlip,
+            "--output-dir", str(out_dir),
+        ]
+        main()
+
+        mock_build.assert_called_once()
+        self.assertEqual(mock_build.call_args.kwargs["mlip"], mlip)
+        # No --model given, so the registry default checkpoint is used.
+        self.assertIsNone(mock_build.call_args.kwargs["checkpoint"])
+        self.assertTrue((out_dir / f"{mlip}_results.csv").exists())
 
 
 if __name__ == "__main__":

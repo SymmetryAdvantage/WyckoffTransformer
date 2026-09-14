@@ -22,6 +22,65 @@ The different symlinks in `data` allow to define variants of the datasets to be 
 
 Tolerance didn't (2024) have a significant impact. Hence, for further experiments, just `mp_2022` seems to be a reasonable choice.
 
+# LeMat-Bulk
+
+Rebuilding any LeMat variant: follow
+[docs/lemat_bulk_pipeline.md](../docs/lemat_bulk_pipeline.md), which is the canonical
+order and also records which variant currently on disk was built with which rules. The
+step that is easy to miss and silently wrong to skip is `scripts/recover_mp_forces.py`:
+30,679 rows (22.1% of Materials Project) reach us with an empty `forces` array, and a
+build without it either drops them or substitutes a fabricated `max_force` at half the
+true value. `lemat_bulk_fmax1` and the whole `lemat_bulk_ehull` family predate it.
+
+# Provenance
+
+Where each entry came from, for the case where every copy is lost. This is
+documentation, not how a machine gets its data -- see
+[docs/data_store.md](../docs/data_store.md): the stores are replicated by
+`scripts/store_sync.sh`, because transferring beats both re-downloading (the
+internet is the slow link) and rebuilding (CPU is scarce on iapetus, and
+ASPIRE2a needs PBS for preprocessing).
+
+Tracked in git, so a fresh clone has them:
+
+| Entry | Origin |
+| --- | --- |
+| `mp_20`, `perov_5`, `carbon_24` | CDVAE; cited below |
+| `mpts_52` | [DiffCSP](https://github.com/jiaor17/DiffCSP/tree/main/data/mpts_52) |
+| `alex_mp_20` | [MatterGen](https://github.com/microsoft/mattergen/tree/main/data-release/alex-mp) (git-LFS) |
+| `mp_20_biternary` | `scripts/select_from_mp_20.py`, from `mp_20` |
+| `wbm` | matbench-discovery; test only |
+| `matbench_discovery_mp_2022` | `scripts/data_preprocesssing/mp_2022.ipynb` |
+| `matbench_discovery_mp_trj_full` | `scripts/data_preprocesssing/mptrj_extract_all.ipynb` |
+| `mp_provenance.csv.gz` | `scripts/pull_mp_provenance.py` |
+| `mp_2026_gga_gap` | `scripts/build_mp_gga_band_gap.py`; see its own README |
+
+Not tracked -- too large for git, and replicated by `store_sync.sh` instead:
+
+| Entry | Origin |
+| --- | --- |
+| `lemat-bulk/raw/data.parquet` | HuggingFace `LeMaterial/LeMat-Bulk`, config `compatible_pbe` |
+| `lemat-bulk/convergence_labels.parquet` | `scripts/build_lemat_bulk_fmax.py`; per-row `max_force` and stress, MP gaps filled by `scripts/recover_mp_forces.py` |
+| `lemat-bulk/cif_prepared` | `scripts/prepare_cif.py`, from `raw` |
+| `lemat-bulk/lemat_pbe.csv.gz` | `scripts/process_lemat.py`, from `cif_prepared` |
+| `lemat-bulk/lemat_pbe_ehull.csv.gz` | `wyckoff_transformer.formula_energy.hull_table` |
+| `lemat-bulk/labels.parquet` | `scripts/build_lemat_bulk_fmax.py --labels-only` |
+| `lemat-bulk/20_wyckoffs` | `scripts/pipeline_lemat_20wyckoffs.py` |
+| `lemat_bulk_fmax1` | `scripts/build_lemat_bulk_fmax.py --recovered-forces none`; superseded, see below |
+| `lemat_bulk_fmax1_stress` | `scripts/build_lemat_bulk_fmax.py` |
+| `formula_energy/` | `wyckoff_transformer.formula_energy.dataset` |
+| `unique_fingerprints.parquet` | BAWL novelty reference, copied from LeMat-GenBench; see `wyckoff_transformer.evaluation.bawl_reference` |
+| every `cache/<dataset>` | `scripts/cache_a_dataset.py`, then `scripts/tokenise_a_dataset.py` |
+
+Two entries have **no** recorded provenance and no producer in this repository.
+Establish it before relying on either, and do not assume they can be rebuilt:
+
+- `all_compositions.npz` (24 MB) -- nothing in `src/` or `scripts/` reads it; the
+  only mention of the name is a comment in
+  `wyckoff_transformer/evaluation/hull_energy.py` about LeMat-GenBench. It may
+  simply be an orphan.
+- `lemat-bulk/train.csv.gz` (926 MB) -- no code writes it.
+
 # Citation
 Perov_5:
 

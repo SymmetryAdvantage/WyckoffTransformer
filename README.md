@@ -34,7 +34,14 @@ Crystal symmetry plays a fundamental role in determining its physical, chemical,
 2. Run `uv venv --python 3.12`
 3. Install the dependencies, including torch. There are several options:
   - Manually install torch with your local flavour, e.g., `uv pip install torch --index-url https://download.pytorch.org/whl/cu130`, then run `uv pip install -e`
-  - Configure `uv.toml` with your desired indices, see `uv.toml.local` and `uv.toml.cpu`
+  - Configure `uv.toml` with your desired indices, see `scripts/platforms/zeus/uv.toml` and `scripts/platforms/cpu/uv.toml`
+
+   Either route installs PyXtal from the pinned fork declared in
+   `[tool.uv.sources]`, which fixes `check_wp` applying one species' like-like
+   distance tolerance to every pair. `uv` applies that source to `uv sync`,
+   `uv pip compile pyproject.toml` and `uv pip install -e .` alike, so no host
+   needs to do anything special. It is *not* part of the published metadata:
+   `pip install wyckoff-transformer` gets stock PyXtal from PyPI.
 4. `wandb` library is used extensively and must be installed. Logging can be disabled via `WANDB_MODE=disabled`. Otherwise, log into Wandb. Internally, we use `WANDB_ENTITY=symmetry-advantage`.
 ## Running a pilot model
 To verify that the installation is working, run a pilot model. Next token prediction:
@@ -75,6 +82,19 @@ python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --t
 python scripts/train.py <path-to-model-yaml> <dataset-name> <device>
 ```
 The model weights are saved to `runs/<run-id>`, and to WanDB, along with the processor metadata. See [here](yamls/models/README.md) for the list of configs. Adding `--pilot` will run the model for a small number of epochs.
+### Resuming an interrupted run
+Training writes `runs/<run-id>/last_checkpoint.pt` every `optimisation.checkpoint_period` epochs
+(defaulting to `validation_period`) and once more when the loop ends. It holds the weights, the
+optimiser and schedule state, the RNG and the loaders' shuffle position, so a run continued from
+it takes the same steps it would have taken had it never stopped -- unlike
+`best_model_params.pt`, which holds weights alone and restarts the optimiser cold.
+```bash
+python scripts/train.py <path-to-model-yaml> <dataset-name> <device> --resume <run-id>
+```
+This logs back into the same W&B run rather than opening a second one, and refuses to start if
+the config given differs from the one that run recorded, since the schedule and the optimiser
+are carried over from the checkpoint. A run that died before writing its first checkpoint has to
+be started over.
 ## Preparing Representative Checkpoints
 To train and prepare representative checkpoints for datasets like `alex_mp_20` or `mp_20`, you can follow this end-to-end pipeline. Please replace `<dataset-name>` with your target dataset (e.g., `alex_mp_20` or `mp_20`).
 
@@ -157,6 +177,8 @@ Output layout is identical to the CHGNet variant below. Key options:
 - `--device auto|cpu|cuda` — PyTorch device selection (default: auto)
 - `--workers W` — number of parallel worker processes; each worker builds its own calculator (default 1)
 
+Each PyXtal trial is relaxed in stages: first with a `FixSymmetry` constraint (a fix-cell warm-up, then cell + positions), then without it, and finally a *rattle* — positions and cell perturbed by a finite amount and relaxed again unconstrained, kept only if it wins 1 meV/atom. The rattle is what lets a structure leave a symmetric stationary point at all: the forces along symmetry-breaking modes vanish identically there, so gradient descent alone cannot, and the unconstrained stage took zero steps in 78% of trials. Per-trial CIFs are numbered by stage; `${full_formula}_kept.cif` is the structure the trial kept, `rattle.json` records what the rattle did, and `min_e_strc.cif` links to the kept CIF of the lowest-energy trial.
+
 ### CHGNet relaxation
 The structures from all models can be optionally relaxed with CHGNet.
 ```bash
@@ -180,6 +202,75 @@ wylm-dcpp,8,Na4Lu4F16,-149.18192
 - `${reduced_formula}_${full_formula}_cell+pos.cif` is the CHGNet relaxed structure.
 ### DFT relaxation
 We followed the [Materials Project protocol](https://docs.materialsproject.org/methodology/materials-methodology/calculation-details), [`atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker`](https://materialsproject.github.io/atomate2/reference/atomate2.vasp.flows.mp.MPGGADoubleRelaxStaticMaker.html). There isn't much to add, as the rest of the details of running DFT, unfortunately, depend on the HPC setup, and VASP is not open source. [Here](https://github.com/kazeevn/NSCC-VASP-computer) is the code to run at ASPIRE2.
+
+### DFT fixed-hull screening
+
+`wyformer-dft-screen` ranks generated genes before an expensive DFT campaign. It
+combines the provenance-aware composition-floor ensemble with the gene attainable-
+energy critic, comparing both independently to the same immutable LeMat-Bulk PBE
+hull:
+
+```bash
+uv run wyformer-dft-screen generated/<run>/wyckoff_genes.json.gz \
+    --formula-ensemble runs/formula_energy/ensemble.pt \
+    --regressor-path runs/<gene-energy-run> \
+    --top 1000 --out generated/<run>/dft_screen.csv
+```
+
+This command uses no MLIP energies and performs no relaxation or active learning;
+the shortlist feeds the external DFT workflow. See the
+[DFT fixed-hull adversarial screening design](docs/dft_fixed_hull_attack.md) for
+the objective, estimator boundaries, ablations, and reporting protocol.
+
+### Generative novelty screening
+
+The energy screen trades novelty for stability, so it pairs with a second lever
+read off the generator itself. `wyformer-gene-novelty` scores each gene by
+`-log p(gene)` under the model that produced it -- a continuous novelty estimator
+that needs no reference set (AUC 0.93 against the fingerprint lookup, 0.81
+against post-relaxation structure novelty):
+
+```bash
+uv run wyformer-gene-novelty generated/<run>/wyckoff_genes.json.gz \
+    --model-path runs/<run> --condition energy_above_hull=0 \
+    --permutation-samples 64 --device cuda \
+    --out generated/<run>/gene_novelty.csv
+```
+
+Score the pool at the condition it was generated at. See
+[generative novelty screening](docs/generative_novelty_screen.md) for what the
+density is, how the two levers combine, and what the combination is worth.
+
+## Ranking model variants (`wyformer-protocol`)
+
+For comparing WyFormer variants during development, `wyformer-protocol` runs the
+whole funnel from sampled Wyckoff genes to MetaSUN in one command:
+
+```bash
+uv run wyformer-protocol generated/<run>/wyckoff_genes.json.gz \
+    --output-dir generated/<run>/protocol \
+    --cores 20            # or --devices cuda:0,cuda:1
+```
+
+Filters that need no potential — validity, uniqueness, novelty against
+LeMat-Bulk — run first, so only gene-novel structures are relaxed, and the
+relaxation itself uses one PyXtal trial and two stages. That is about 3.5×
+cheaper than the full CrySPR protocol at equal statistical power. The headline
+number is `metasun_per_sampled_gene` in `<output-dir>/funnel.json`.
+
+`--mlip` is restricted to potentials LeMat-Bulk publishes a convex hull for
+(ORB by default), because `e_above_hull` is only meaningful when the energy and
+the hull come from the same model. Structure validity, BAWL fingerprinting and
+the hull energy are implemented in `wyckoff_transformer.evaluation` and pinned
+to LeMat-GenBench's own implementations by tests, so nothing imports that
+package at runtime.
+
+See [the de novo ranking protocol](docs/de_novo_ranking_protocol.md) for the
+measurement rationale, the sample sizes it can resolve, required reference data,
+and known limitations, and [every `e_hull` in this
+repository](docs/e_hull_definitions.md) before comparing a hull energy from one
+part of the codebase with one from another — six things carry that name, and
+they differ in reference set, energy source and sign convention.
 ## Generated Data Analysis
 ### Storage
 #### Public Figshare

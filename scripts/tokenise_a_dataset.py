@@ -6,6 +6,7 @@ import pickle
 import gzip
 import logging
 
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, WyckoffProcessor, save_tensor_cache
 
 logger = logging.getLogger(__name__)
@@ -16,15 +17,16 @@ def main():
     parser.add_argument("config_file", type=Path, help="The tokeniser configuration file")
     parser.add_argument("--debug", action="store_true", help="Set the logging level to debug")
     parser.add_argument('--pilot', action='store_true', help="Run a pilot experiment")
-    parser.add_argument("--n-jobs", type=int, help="Number of jobs to use")
+    parser.add_argument("--n-jobs", type=int,
+        help="Pandarallel workers. Left unset, pandarallel sizes its pool from the machine's "
+             "physical cores, which is wrong inside a cgroup-limited batch job: on a 128-core "
+             "node holding 16 CPUs it forks 128 workers over a 5.8 GB frame and gets OOM-killed. "
+             "Set it to the CPUs the job actually owns.")
     tokenizer_source = parser.add_mutually_exclusive_group(required=True)
     tokenizer_source.add_argument("--tokenizer-path", type=Path, help="Load a saved WyckoffProcessor (.json)")
     tokenizer_source.add_argument("--new-tokenizer", action="store_true",
         help="Generate a new tokenizer, potentially overwriting files")
     args = parser.parse_args()
-    if args.n_jobs is not None:
-        raise NotImplementedError("n_jobs is not implemented yet"
-            "Pandarallel will consume what it likes")
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     config = omegaconf.OmegaConf.load(args.config_file)
@@ -32,7 +34,7 @@ def main():
     tokenizer_full_name = args.config_file.resolve().relative_to(tokenizer_root_path).with_suffix('')
     if config.name != str(tokenizer_full_name):
         raise ValueError(f"Config inside file {config.name} does not match the file name {tokenizer_full_name}")
-    cache_path = Path(__file__).parent.parent.resolve() / "cache" / args.dataset
+    cache_path = cache_root() / args.dataset
     cache_path.mkdir(parents=True, exist_ok=True)
     with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
         datasets_pd = pickle.load(f)
@@ -43,8 +45,10 @@ def main():
         datasets_pd = {name: dataset.sample(100) for name, dataset in datasets_pd.items()}
         print("Piloting with 100 samples")
     processor = WyckoffProcessor.from_config(config, tokenizer_path=args.tokenizer_path)
+    # tokenizer_path again: without it the processor builds fresh tokenisers from this
+    # data, whatever it was loaded from
     tensors, _, token_engineers = processor.tokenise_dataset(
-        datasets_pd, n_jobs=args.n_jobs)
+        datasets_pd, tokenizer_path=args.tokenizer_path, n_jobs=args.n_jobs)
     if args.debug and "multiplicity" in token_engineers:
         index = 0
         multiplicities_from_tokens = token_engineers["multiplicity"].get_feature_from_token_batch(

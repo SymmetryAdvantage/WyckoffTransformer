@@ -2,6 +2,7 @@ import json
 import torch
 from pathlib import Path
 from omegaconf import OmegaConf
+from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.trainer import WyckoffTrainer
 
 def main():
@@ -48,7 +49,7 @@ def main():
     
     import gzip
     import pickle
-    data_cache_path = Path(__file__).resolve().parents[1] / "cache" / config.dataset / "data.pkl.gz"
+    data_cache_path = cache_root() / config.dataset / "data.pkl.gz"
     with gzip.open(data_cache_path, "rb") as f:
         datasets_pd = pickle.load(f)
         

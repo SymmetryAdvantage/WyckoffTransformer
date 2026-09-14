@@ -1,9 +1,8 @@
 """WyckoffProcessor, FeatureEngineer, and their serialization helpers.
 
-Kept in a separate module from tokenization.py so that the hatchling build
-hook (and preprocess_wychoffs.py) can import FeatureEngineer and the JSON
-serialization helpers without pulling in heavy runtime dependencies such as
-torch, pandarallel, or omegaconf.
+Kept in a separate module from tokenization.py so that preprocess_wychoffs.py can
+import FeatureEngineer and the JSON serialization helpers without pulling in heavy
+runtime dependencies such as torch, pandarallel, or omegaconf.
 
 Heavy imports (torch, omegaconf, pandarallel, tokenizer classes) are done
 lazily inside the methods that need them.
@@ -15,6 +14,7 @@ from functools import partial
 from itertools import chain
 from operator import itemgetter
 from enum import Enum
+import json
 import logging
 from pathlib import Path
 import numpy as np
@@ -25,6 +25,70 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 generation_modes = Enum('GenerationModes', ["SiteSymmetry", "WyckoffLetters", "HarmonicCluster"])
+
+# Engineered field definitions and the frozen lookup tables that go with them are
+# committed package data, written by preprocess_wychoffs and held fixed by
+# tests/test_package_data.py. Never regenerate them as a side effect of installing.
+ENGINEERS_DIR = Path(__file__).parent / "engineers"
+FROZEN_TABLE_SUFFIX = "_table.json"
+#: A saved model keeps its own copy of ENGINEERS_DIR under this name, next to its
+#: wyckoff_processor.json, so that loading it never depends on the installed package.
+MODEL_ENGINEERS_DIRNAME = "engineers"
+
+
+def engineers_dir_for(model_dir: Optional[Path]) -> Path:
+    """The engineers a model was trained with: its own copy, or else the package's.
+
+    Models saved before they carried a copy fall back to the package data, which is what
+    they were trained with as long as that data has not changed since.
+    """
+    if model_dir is not None:
+        own = Path(model_dir) / MODEL_ENGINEERS_DIRNAME
+        if own.is_dir():
+            return own
+        logger.info("%s has no %s/; using the package's engineers", model_dir, MODEL_ENGINEERS_DIRNAME)
+    return ENGINEERS_DIR
+
+
+def frozen_table_path(name: str, engineers_dir: Optional[Path] = None) -> Path:
+    """Path of the lookup table belonging to the engineered field ``name``."""
+    directory = ENGINEERS_DIR if engineers_dir is None else Path(engineers_dir)
+    return directory / f"{name}{FROZEN_TABLE_SUFFIX}"
+
+
+def save_frozen_table(name: str, table: np.ndarray, engineers_dir: Optional[Path] = None) -> Path:
+    """Write a [n_ids, n_features] lookup table for the engineered field ``name``.
+
+    Row i is the vector the model substitutes for id i, so the row count must cover the
+    service tokens as well as the real values.
+    """
+    if table.ndim != 2:
+        raise ValueError(f"A frozen table must be 2-D, got shape {table.shape}")
+    destination = frozen_table_path(name, engineers_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps({
+        "name": name,
+        "n_ids": table.shape[0],
+        "n_features": table.shape[1],
+        "table": table.tolist()}), encoding="utf-8")
+    return destination
+
+
+def load_frozen_table(name: str, engineers_dir: Optional[Path] = None) -> np.ndarray:
+    """Load the [n_ids, n_features] lookup table of the engineered field ``name``."""
+    source = frozen_table_path(name, engineers_dir)
+    if not source.exists():
+        raise FileNotFoundError(
+            f"No frozen lookup table for {name!r} at {source}. The package's tables are "
+            "committed to git; a model directory's are copied there when it is trained.")
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    table = np.asarray(payload["table"], dtype=np.float32)
+    if table.shape != (payload["n_ids"], payload["n_features"]):
+        raise ValueError(
+            f"Frozen table {source} declares shape "
+            f"{(payload['n_ids'], payload['n_features'])} but holds {table.shape}")
+    return table
+
 
 JsonPrimitive = str | int | float | bool | None
 JsonContainer = Dict[str, object] | List[object]
@@ -418,6 +482,21 @@ class WyckoffProcessor:
             },
         )
 
+    @classmethod
+    def _check_engineer_unchanged(cls, name: str, source: Path, saved, rebuilt) -> None:
+        """Refuse to tokenise with engineers that disagree with the ones a model saved.
+
+        The saved processor holds the tokenised engineer the model was trained with. A
+        rebuild from other raw data would tokenise the dataset differently and silently
+        feed the model inputs it has never seen.
+        """
+        if (cls._serialise_feature_engineer(saved).model_dump_json()
+                != cls._serialise_feature_engineer(rebuilt).model_dump_json()):
+            raise ValueError(
+                f"The engineer {name!r} rebuilt from {source} differs from the one saved "
+                f"with the model. The model was trained with other engineer data; copy its "
+                f"own engineers/ next to its wyckoff_processor.json instead of using these.")
+
     def tokenise_dataset(
         self,
         datasets_pd: Dict[str, DataFrame],
@@ -457,6 +536,10 @@ class WyckoffProcessor:
         else:
             preloaded_processor = WyckoffProcessor.from_pretrained(tokenizer_path)
             tokenisers = preloaded_processor.tokenisers
+        # Re-tokenising for an existing model has to use the engineers that model was
+        # trained with, not whatever the installed package holds now.
+        engineers_dir = ENGINEERS_DIR if tokenizer_path is None else engineers_dir_for(
+            self._normalise_path(tokenizer_path).parent)
         raw_engineers = {}
         token_engineers = {}
         if "engineered" in config.token_fields:
@@ -467,7 +550,7 @@ class WyckoffProcessor:
                     raise NotImplementedError(
                         "At least 2 inputs are required (one sequence-level field "
                         "followed by per-token cascade fields)")
-                engineer_json = Path(__file__).parent / "engineers" / f"{engineered_field_name}.json"
+                engineer_json = engineers_dir / f"{engineered_field_name}.json"
                 raw_engineer = WyckoffProcessor._deserialise_feature_engineer(
                     _SerialisedFeatureEngineer.model_validate_json(
                         engineer_json.read_text(encoding="utf-8")))
@@ -475,6 +558,11 @@ class WyckoffProcessor:
                 # Now we need to convert the token values to token indices
                 # And adjust include_stop
                 token_engineers[engineered_field_name] = tokenise_engineer(raw_engineer, tokenisers)
+                if tokenizer_path is not None and engineered_field_name in preloaded_processor.token_engineers:
+                    self._check_engineer_unchanged(
+                        engineered_field_name, engineer_json,
+                        saved=preloaded_processor.token_engineers[engineered_field_name],
+                        rebuilt=token_engineers[engineered_field_name])
                 raw_engineers[engineered_field_name].include_stop = token_engineers[engineered_field_name].include_stop
                 # The values haven't changed, only the keys, so we can reuse the stop, pad, and mask tokens
                 if token_engineers[engineered_field_name].db.dtype == 'O':
@@ -629,17 +717,23 @@ class WyckoffProcessor:
         ss_pyxtal_cascde_order = ("elements", "site_symmetries", "sites_enumeration")
         letters_pyxtal_cascade_order = ("elements", "wyckoff_letters")
         harmonic_pyxtal_cascade_order = ("elements", "site_symmetries", "harmonic_cluster")
-        if set(cascade_order) == set(ss_pyxtal_cascde_order):
-            pyxtal_cascade_order = ss_pyxtal_cascde_order
-            mode = generation_modes.SiteSymmetry
-        elif set(cascade_order) == set(letters_pyxtal_cascade_order):
-            pyxtal_cascade_order = letters_pyxtal_cascade_order
-            mode = generation_modes.WyckoffLetters
-        elif set(cascade_order) == set(harmonic_pyxtal_cascade_order):
-            pyxtal_cascade_order = harmonic_pyxtal_cascade_order
-            mode = generation_modes.HarmonicCluster
-        else:
-            raise NotImplementedError("Unsupported cascade")
+        # A subset rather than an equality: a cascade may carry auxiliary fields that a
+        # structure is not decoded from, such as site_symmetry_ops_id, which is a
+        # deterministic function of fields already present. Requiring equality here would
+        # reject those cascades after they had trained perfectly well.
+        candidates = [
+            (order, mode) for order, mode in (
+                (ss_pyxtal_cascde_order, generation_modes.SiteSymmetry),
+                (letters_pyxtal_cascade_order, generation_modes.WyckoffLetters),
+                (harmonic_pyxtal_cascade_order, generation_modes.HarmonicCluster))
+            if set(order).issubset(cascade_order)]
+        if not candidates:
+            raise NotImplementedError(f"Unsupported cascade: {tuple(cascade_order)}")
+        if len(candidates) > 1:
+            raise NotImplementedError(
+                f"Ambiguous cascade {tuple(cascade_order)}: it supports "
+                f"{[mode.name for _, mode in candidates]}")
+        pyxtal_cascade_order, mode = candidates[0]
 
         cascade_permutation = [cascade_order.index(field) for field in pyxtal_cascade_order]
         cononical_wp_tensor = wp_tensor[:, cascade_permutation]

@@ -1,4 +1,4 @@
-from typing import Tuple, List, Dict, Optional, Set, Union
+from typing import Any, Callable, Tuple, List, Dict, Optional, Set, Union
 import logging
 import torch
 from torch import nn, Tensor
@@ -63,15 +63,23 @@ class WyckoffGenerator():
         self.token_engineers = token_engineers
 
 
-    def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100, condition_feature: Optional[str] = None):
+    def calibrate(self, dataset: AugmentedCascadeDataset, calibration_element_count_threshold: int = 100,
+                  cond_builder: Optional[Callable[[AugmentedCascadeDataset, Any], Optional[Tensor]]] = None):
         """
         The calibraiton is going to be per cascade field.
         We will generate p_predicted and p_true for each cascade field for each
         known sequence length.
+
+        Args:
+            cond_builder: Called as ``cond_builder(dataset, indices)`` to assemble the
+                conditioning vector for the examples being calibrated on, or None for an
+                unconditional model. `WyckoffTrainer.build_cond` is the intended argument:
+                how the conditioning is put together -- which features, in what order,
+                under which transform -- belongs to the trainer, not here, and the
+                generator having its own opinion is how a composition-conditioned model
+                came to be handed a one-column vector.
         """
         assert dataset.cascade_order == self.cascade_order
-
-        full_cond = dataset.data[condition_feature] if condition_feature is not None else None
 
         with torch.no_grad():
             self.model.eval()
@@ -96,7 +104,7 @@ class WyckoffGenerator():
                             known_seq_len, known_cascade_len,
                             target_type=TargetClass.NextToken, multiclass_target=False,
                             return_chosen_indices=True)
-                    iter_cond = full_cond[chosen_indices] if full_cond is not None else None
+                    iter_cond = None if cond_builder is None else cond_builder(dataset, chosen_indices)
                     model_output = self.model(start_tokens, masked_data, None, known_cascade_len, cond=iter_cond)
                     # Enought data for separate calibration
                     if target.size(0) >= calibration_element_count_threshold:
@@ -131,7 +139,8 @@ class WyckoffGenerator():
         max_length: Optional[int] = None,
         elements_vocab: Optional[Dict] = None,
         delimiter: str = "-",
-        cond: Optional[Tensor] = None
+        cond: Optional[Tensor] = None,
+        allowed_element_mask: Optional[Tensor] = None
     ) -> List[Tensor] | Tuple[List[Tensor], List[float], List[float]]:
         """
         Generates a sequence of tokens.
@@ -142,21 +151,42 @@ class WyckoffGenerator():
             compute_validity: Whether to compute the validity of the generated sequences
             required_element_set : A set of required element token IDs or a dash-separated string.
                 If provided (including an empty set), activates element-constrained generation.
-            allowed_element_set : Controls the pool of allowed elements.
+            allowed_element_set : Controls the pool of allowed elements. One set for the
+                whole batch; see `allowed_element_mask` for the per-row form.
             max_length : Maximum number of sequence sites to generate. Defaults to self.max_sequence_len.
             elements_vocab : Vocabulary dict mapping element keys to token IDs.
             delimiter : Delimiter for parsing the string form, default "-".
+            allowed_element_mask : [batch_size, element vocabulary] boolean mask saying which
+                elements each row may place, activating element-constrained generation on its
+                own. This is what a batch whose rows were drawn from
+                `wyckoff_transformer.system_prior` needs: every row asks for a different
+                chemical system, so one set for the whole batch would re-admit the rest of the
+                palette and undo the sampling. Mutually exclusive with a non-default
+                `allowed_element_set`, which says the same thing for every row at once.
+                Every row must permit STOP, and at least one element besides it.
         Returns:
             The generated sequence of tokens. It has shape [batch_size, max_len, len(cascade_order)].
                 It doesn't include the start token.
             If compute_validity is True, also returns the formal validity of the generated sequences
                 for the site symmetries and the enumeration (if applicable) for each known sequence length.
+                Measured over structures that are still generating real sites: a structure is dropped
+                from the average at the position where any cascade field emits STOP, and at every
+                position after it. Requires `stops`.
         """
-        element_constrained = required_element_set is not None
+        element_constrained = required_element_set is not None or allowed_element_mask is not None
+        per_row_element_mask = allowed_element_mask is not None
         device = start.device
         batch_size = start.size(0)
         if max_length is None:
             max_length = self.max_sequence_len
+        if compute_validity and self.stops is None:
+            # Without stop tokens a finished sequence is indistinguishable from a live one,
+            # and every STOP would be counted as an invalid Wyckoff position, since STOP is
+            # not a key of the multiplicity table. That reads as validity collapsing with
+            # sequence length when it is really the stop rate.
+            raise ValueError(
+                "compute_validity requires `stops`; construct WyckoffGenerator with "
+                "stops={field: tokeniser.stop_token}.")
 
         if element_constrained:
             if elements_vocab is not None and 'STOP' in elements_vocab:
@@ -183,12 +213,45 @@ class WyckoffGenerator():
                     raise ValueError("Empty element string provided.")
                 return { _symbol_to_id(x) for x in syms }
 
-            if isinstance(required_element_set, str):
+            if required_element_set is None:
+                required_id_set = set()
+            elif isinstance(required_element_set, str):
                 required_id_set = _parse_string_to_ids(required_element_set)
             else:
                 required_id_set = set(required_element_set)
 
-            if allowed_element_set == "all":
+            if per_row_element_mask:
+                if allowed_element_set != "all":
+                    raise ValueError(
+                        "allowed_element_mask and allowed_element_set both restrict the "
+                        "elements; pass one. The mask is the per-row form of the set.")
+                allowed_element_mask = allowed_element_mask.to(device=device, dtype=torch.bool)
+                if allowed_element_mask.dim() != 2 or allowed_element_mask.size(0) != batch_size:
+                    raise ValueError(
+                        f"allowed_element_mask has shape {tuple(allowed_element_mask.shape)}, "
+                        f"expected [{batch_size}, element vocabulary]")
+                if allowed_element_mask.size(1) <= stop_id:
+                    raise ValueError(
+                        f"allowed_element_mask is {allowed_element_mask.size(1)} wide, too "
+                        f"narrow to carry the STOP token at {stop_id}; it must be one column "
+                        "per element token.")
+                if not bool(allowed_element_mask[:, stop_id].all()):
+                    # A row that cannot stop runs to max_length and decodes as a structure
+                    # nobody asked for, which is a worse failure than this one.
+                    raise ValueError(
+                        "Every row of allowed_element_mask must permit the STOP token")
+                if not bool((allowed_element_mask.sum(dim=1) > 1).all()):
+                    raise ValueError(
+                        "Every row of allowed_element_mask must permit at least one element "
+                        "besides STOP")
+                if required_id_set:
+                    required_columns = torch.tensor(
+                        sorted(required_id_set), dtype=torch.long, device=device)
+                    if not bool(allowed_element_mask[:, required_columns].all()):
+                        raise ValueError(
+                            "Some row of allowed_element_mask forbids a required element; "
+                            "forcing it in would place a token the mask says is not allowed.")
+            elif allowed_element_set == "all":
                 if elements_vocab is None:
                     raise ValueError("elements_vocab must be provided when allowed_element_set is 'all'.")
                 allowed_id_set = {v for k, v in elements_vocab.items()
@@ -203,10 +266,11 @@ class WyckoffGenerator():
             else:
                 raise ValueError(f"Invalid value for allowed_element_set: {allowed_element_set}")
 
-            allowed_id_set.add(stop_id)
-
-            if not required_id_set.issubset(allowed_id_set):
-                raise ValueError("The required_element_set must be a subset of the allowed_element_set.")
+            if not per_row_element_mask:
+                allowed_id_set.add(stop_id)
+                if not required_id_set.issubset(allowed_id_set):
+                    raise ValueError(
+                        "The required_element_set must be a subset of the allowed_element_set.")
 
             placed_required = [set() for _ in range(batch_size)]
             elements_stop_generated = np.zeros(batch_size, dtype=bool)
@@ -264,17 +328,29 @@ class WyckoffGenerator():
                             logits = self.tail_calibrators[known_cascade_len](logits)
                             
                     if element_constrained and cascade_name == "elements":
-                        logits_masked = torch.full_like(logits, float("-inf"))
-                        allowed_idx_tensor = torch.tensor(
-                            sorted(list(allowed_id_set)), dtype=torch.long, device=device
-                        )
-                        logits_masked[:, allowed_idx_tensor] = logits[:, allowed_idx_tensor]
-                        logits = logits_masked
+                        if per_row_element_mask:
+                            if allowed_element_mask.size(1) != logits.size(1):
+                                raise ValueError(
+                                    f"allowed_element_mask is {allowed_element_mask.size(1)} "
+                                    f"wide against {logits.size(1)} element logits")
+                            logits = logits.masked_fill(~allowed_element_mask, float("-inf"))
+                        else:
+                            logits_masked = torch.full_like(logits, float("-inf"))
+                            allowed_idx_tensor = torch.tensor(
+                                sorted(list(allowed_id_set)), dtype=torch.long, device=device
+                            )
+                            logits_masked[:, allowed_idx_tensor] = logits[:, allowed_idx_tensor]
+                            logits = logits_masked
 
                     logits = logits / temperature
                     calibrated_probas = torch.nn.functional.softmax(logits, dim=1)
                     
-                    if element_constrained and cascade_name == "elements":
+                    # The per-row loop below exists only to force the required elements in.
+                    # With none required -- which is what conditioning on a chemical system
+                    # asks for, an allowed set and no obligation -- the masked distribution
+                    # is already the one to draw from, and the batched multinomial does it
+                    # in one call instead of `batch_size` of them per site.
+                    if element_constrained and required_id_set and cascade_name == "elements":
                         next_tokens = torch.empty(batch_size, dtype=torch.long, device=device)
                         for b in range(batch_size):
                             if elements_stop_generated[b]:
@@ -303,16 +379,23 @@ class WyckoffGenerator():
                             torch.multinomial(calibrated_probas, num_samples=1).squeeze()
                             
                     if self.stops is not None:
-                        stop_mask = (generated[known_cascade_len][:, known_seq_len] == self.stops[cascade_name]).cpu().numpy()
-                        stop_generated |= stop_mask
+                        this_stop = self.stops.get(cascade_name)
+                        if this_stop is not None:
+                            stop_mask = (generated[known_cascade_len][:, known_seq_len] == this_stop).cpu().numpy()
+                            stop_generated |= stop_mask
                 else:
-                    if known_cascade_len != len(self.cascade_order) - 1:
-                        raise NotImplementedError("Only the last cascade field can be non-target")
+                    # A non-target field is filled from fields already decided for this
+                    # token, so it may sit anywhere after them -- and has to, when a later
+                    # target must see it. WyckoffTrainer checks that ordering at setup.
                     if self.token_engineers[cascade_name].inputs[0] != 'spacegroup_number':
                         raise NotImplementedError("Only engineers with spacegroup_number first input are supported")
                     this_engineer_input = []
                     for input_field in self.token_engineers[cascade_name].inputs[1:]:
                         if input_field in cascade_index_by_name:
+                            if cascade_index_by_name[input_field] > known_cascade_len:
+                                raise ValueError(
+                                    f"Engineer for {cascade_name} reads {input_field}, which "
+                                    "is generated later in the cascade and is still MASK here")
                             this_cascade_input = generated[cascade_index_by_name[input_field]][:, known_seq_len]
                         elif cascade_name == 'harmonic_site_symmetries' and input_field == 'sites_enumeration':
                             # Since we don't natively support either two engineers for one field or

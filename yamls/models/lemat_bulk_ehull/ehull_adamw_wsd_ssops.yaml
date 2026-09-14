@@ -1,0 +1,226 @@
+# ehull_adamw_wsd.yaml with the site symmetry given to the model the way the space group is
+# given to it, rather than as a learned one-hot embedding. Everything else -- optimiser,
+# schedule, batch size, dropout, conditioning -- is copied unchanged from that file, so the
+# pair is a controlled comparison of the site-symmetry representation alone. Read the header
+# of ehull_adamw_wsd.yaml for the reasoning behind the shared parts; only the differences are
+# argued here.
+#
+# WHAT CHANGES
+#
+# SpaceGroupEncoder (tokenization.py) hands the model the space group as
+# get_spg_symmetry_object().to_matrix_representation(), ravelled, plus a one-hot for the
+# centering letter, with the columns that are constant across the groups present dropped.
+# site_symmetry_ops_vectors (preprocess_wychoffs.py) does the same one level down: for
+# each of the 1146 (sg, site symmetry) pairs it takes the canonical Wyckoff position's
+# get_site_symmetry_object().to_matrix_representation().ravel() and drops the columns constant
+# over the whole 230-group enumeration, leaving 46 binary ones, and appends a 47th column
+# flagging a real site symmetry against a service token. That flag is not cosmetic: the
+# general position, site symmetry "1", has no operations at all, so without it the commonest
+# site symmetry in the dataset encodes identically to STOP and PAD. Within a space group the
+# vectors are pairwise distinct, which is the scope that matters: the space group arrives
+# separately, through the start token.
+#
+# So site_symmetries keeps its head (it is still predicted, still a target, and the head is
+# still sized by the tokeniser, not by the embedding) but loses its *input* embedding --
+# embedding_size 0 -- and the ops vector becomes the sole input representation of the site
+# symmetry. Two site symmetries that share operations now start out close together instead of
+# being 78 mutually orthogonal rows of a learned table; that shared structure is the entire
+# point of the experiment.
+#
+# site_symmetry_ops_id is not a target: the engineer fills it from (sg, site_symmetries) after
+# each cascade step, during generation as during training. The token is an integer id; the
+# 47-wide vector it stands for is expanded by a frozen [1149, 47] lookup table inside the
+# model, so the encoder sees exactly what the dense site_symmetry_ops field would give it
+# while the dataset stores one number per token.
+#
+# Its POSITION -- straight after site_symmetries, ahead of sites_enumeration -- is
+# load-bearing. When a head predicts cascade field k, every field from k onwards is masked at
+# the current position, so a field at the end of the cascade is never seen for the token being
+# decoded, only for earlier ones. With it last and site_symmetries at embedding_size 0, the
+# enumeration head would have no representation of the site symmetry it is enumerating within.
+# Moving it to the end, everything else held fixed, costs exactly the head the mechanism
+# predicts: enumeration validity 0.88 -> 0.80 while site-symmetry validity is untouched at
+# 0.91 -> 0.89 (that head runs before this field either way), and 123 -> 63 valid structures
+# out of 256 as the per-token losses compound. See the measurement note at the foot of this
+# header for the setup.
+#
+# CONSEQUENCES TO WATCH
+#
+# 1. d_model is not a free parameter here: it is the sum of the cascade embedding widths,
+#    rounded up to a multiple of nhead. This config gives 16 + 0 + 8 + 47 = 71, rounded to 72,
+#    against 16 + 16 + 8 = 40 in the reference -- roughly 268k parameters against 144k, both
+#    counted by instantiating the two configs against the LeMat-Bulk tokenisers. That 1.86x is
+#    inherent to a 47-wide fixed vector standing in for a 16-wide learned one, and it means a
+#    loss difference is *not* attributable to the representation alone. The control that does
+#    separate them is embedding_size.site_symmetries: 46 with no ops field (learned, one-hot
+#    input, same d_model); run it before reading anything into a win.
+#
+# 2. `epochs` is inherited from the reference, where it was derived from a measured 2.976 s per
+#    epoch to fill 72 hours. This model is bigger, so that derivation no longer holds. The WSD
+#    schedule places its decay as a fraction of the total, so an epoch count that overruns the
+#    wall clock gets the run killed mid-stable-phase, before the decay where most of the
+#    improvement appears. Measure s/epoch on the first pilot and re-derive this number before
+#    committing the full run.
+#
+# 3. Resident memory is why this config uses the id form and not the dense site_symmetry_ops
+#    field. AugmentedCascadeDataset holds every cascade field on the training device, cast to
+#    int64 (trainer.py sets dtype=torch.int64 unconditionally), so the dense field would be
+#    [4007729, 62, 46] = 11.4e9 elements, 85 GiB, against the reference run's 10.4 GiB peak --
+#    and its tensor cache would not fit in host RAM to begin with. As an id it is one more
+#    [4007729, 62] int64 field, ~2 GB, and the vectors live once in the model's frozen table.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      # Before sites_enumeration, so the enumeration head sees it -- see the header.
+      - site_symmetry_ops_id
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      # Deterministic given (spacegroup_number, site_symmetries); nothing to predict.
+      site_symmetry_ops_id: false
+      sites_enumeration: true
+    embedding_size:
+      elements: 16
+      # Zero, not reduced: the ops vector below replaces this embedding rather than
+      # supplementing it. Set it to 16 to have both, or to 46 for the same-d_model control
+      # described in note 1.
+      site_symmetries: 0
+      # Names the lookup table in engineers/, not a width: the model takes the width from
+      # site_symmetry_ops_id_table.json, which is 46 columns for the full 230-group
+      # enumeration. The table is a registered buffer, so it is not trained, carries no
+      # optimiser state, and travels with the checkpoint.
+      site_symmetry_ops_id:
+        frozen_table: site_symmetry_ops_id
+      sites_enumeration: 8
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature: energy_above_hull
+    # e_hull spans 0-37 eV/atom while the median is 0.235 and p99 is 2.73, so a handful of
+    # outliers would otherwise set the scale of the AdaLN modulation input. log1p is near-linear
+    # over the 0-0.1 band we actually sample from and compressive in the tail (37 -> 3.65).
+    # The data stays in eV/atom; the transform is applied on the way into the model.
+    condition_transform: log1p
+    # Inherited from the reference, where 25000 -> 50000 was free because per-step cost was
+    # dominated by kernel launches at 144k parameters. This model is larger; if it turns out to
+    # be arithmetic-bound, the batch is the first thing to reconsider -- but changing it changes
+    # the step count and hence the schedule, so re-derive `epochs` with it.
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    # Applies to the categorical heads. The model logs a warning and skips it for a
+    # pass_through_vector field, which has no head here anyway.
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 1
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      # Zero, not merely reduced: see note 1 in the header of ehull_adamw_wsd.yaml.
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      # We also don't need them as we ensure that batches all have the same length in WychoffTrainer
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      # NOT the reference's 0.003. That value was chosen for a 144k-parameter model at
+      # d_model 40, and at d_model 72 it is too hot -- measurably, and not because of the ops
+      # encoding: on a 4k-structure LeMat-Bulk subset trained 300 epochs, the *learned*
+      # control at embedding_size.site_symmetries: 46 (same width, no ops field) fell to 0.54
+      # site-symmetry validity against the reference's 0.96, and this config to 0.34. At
+      # 0.0003 this config returned to 0.87-0.94, i.e. the width needed a smaller step, not a
+      # different representation.
+      #
+      # The caveat that comes with that number: it was measured over 1200 steps on 1/1000th
+      # of the data, and the full run is 6.8M steps under warmup-stable-decay. Treat 0.0003
+      # as the value known to train rather than as a tuned optimum, and sweep it against
+      # 0.001 early, reading loss.epoch.val -- the schedule makes the early curve comparable.
+      lr: 0.0003
+      # AdamW decouples the decay from the gradient, so this is a true weight-norm constraint.
+      # Deliberately at torch's default rather than the 0.1 used in LLM pretraining: this model
+      # is underfitting, so decay is here to bound the weight-norm growth that fed the
+      # averaging failure (|x| grew 2.5e-6 per step in t1c9ehzp), not to regularise.
+      weight_decay: 0.01
+      # Left at torch's defaults, recorded explicitly so a change is visible in a diff. The
+      # 0.9/0.95 pair common in LLM pretraining exists for runs of ~1e5 steps; at 6.8M steps
+      # beta2=0.999 is still a very short window.
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      # total_steps is injected by the trainer as epochs * batches_per_epoch; do not set it
+      # here, or it will silently disagree with the run length.
+      #
+      # 0.2% of 6.8M steps is ~13600 steps of warmup -- generous in absolute terms, and the
+      # usual fractions (1-2%) would spend over a hundred thousand steps ramping up.
+      warmup_fraction: 0.002
+      # ~680000 steps, about 7 hours. The decay is where most of the improvement appears in
+      # WSD; it is not a cool-down formality, so do not kill the run before it completes.
+      decay_fraction: 0.1
+      final_lr_fraction: 0.0
+      # Hägele et al. 2024 (arXiv:2405.18392) found 1-sqrt to beat linear and cosine at equal
+      # budget. It lies below linear for the whole decay: steepest right at the start, then
+      # flattening towards zero, so most of the decay phase is spent at a small rate rather
+      # than easing down gradually. That is the intended behaviour, not a misconfiguration.
+      decay_shape: 1-sqrt
+  validation_period: 1000
+  # Above `epochs`, so it can never fire. With WSD that is deliberate: the loss is expected to
+  # sit flat through the stable phase and only fall in the last 10%, which is exactly the shape
+  # patience-based stopping would cut short.
+  early_stopping_patience_epochs: 1000000
+  # A spike guard, not a step-size control. Roughly twice the largest gradient norm seen at any
+  # model state measured, so it fires only on a genuine outlier. Watch the `grad_norm` metric:
+  # if it sits at this value the threshold has become the learning rate, which is how run
+  # lu4xqw0w spent 100k epochs degrading while its loss weighting was silently normalised away.
+  clip_grad_norm: 10.
+  # Inherited from the reference and NOT re-derived for this model: see note 2 in the header.
+  # 4007729 // 50000 = 80 steps per epoch, so 6.8M optimiser steps at this value.
+  epochs: 85000
+# MEASUREMENT NOTE. The numbers quoted above come from one pilot setup: a 4000-structure
+# LeMat-Bulk subset (val and test 500 each), 300 epochs at batch 1000 -- 1200 optimiser steps,
+# against the full run's 6.8M -- generating 256 structures, on one A100. Validity figures are
+# the first few sequence positions of the ss_validity / enumeration_validity curves the
+# trainer logs; "valid" is structures that decode. Run-to-run spread on a fixed arm was around
+# 10% of the valid-structure count, so read differences below that as noise.
+#
+#   arm                                    d_model    lr   ss    enum   valid/256
+#   reference (site_symmetries: 16)             40  3e-3  0.96   0.95     175
+#   learned control (site_symmetries: 46)       72  3e-3  0.54   0.48      56
+#   this config                                 72  3e-3  0.34   0.25      19
+#   learned control (site_symmetries: 46)       72  3e-4  0.89   0.86     120
+#   this config                                 72  3e-4  0.91   0.88   109-123
+#   this config, ops field last in the cascade  72  3e-4  0.89   0.80      63
+#
+# Two things follow. The lr, not the representation, is what the extra width broke: the
+# learned control at the same d_model fails just as badly at 3e-3. And at a workable lr the
+# ops encoding and the learned one-hot are indistinguishable at this budget -- which is the
+# expected null result for 1200 steps on 1/1000th of the data, not evidence either way about
+# the full run. What it does establish is that the config trains and generates.
+tokeniser:
+  name: lemat_bulk_ehull_sg_multiplicity_ssops
+evaluation:
+  n_structures_to_generate: 10000
