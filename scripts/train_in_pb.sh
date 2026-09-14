@@ -78,6 +78,7 @@
 #                      (default: walltime - 30 min)
 #   --tokenise-timeout SEC  ceiling on the one-off cache build (default: 14400)
 #   --device DEV       train.py device       (default: cuda)
+#   --cache-dir DIR    dataset cache root    (default: <repo>/cache)
 #   --sif PATH         container image
 #   --offline          run W&B offline (sync the run dir afterwards)
 #   --allow-duplicate  submit even though a chain for this config+dataset is
@@ -116,6 +117,7 @@ submit_mode() {
     local WALLTIME=23:59:59 NGPUS=1 NCPUS=16 MEM=64gb
     local MAX_ATTEMPTS=8 JOB_BUDGET= TOKENISE_TIMEOUT=14400
     local DEVICE=cuda JOB_NAME= RUN_ID= FRESH=0 PILOT=0 OFFLINE=0 DRY_RUN=0 ALLOW_DUP=0
+    local CACHE_DIR=${WYCKOFF_CACHE_DIR:-}
     local -a TRAIN_EXTRA=()
     local -a POSITIONAL=()
 
@@ -135,6 +137,7 @@ submit_mode() {
             --job-budget)       JOB_BUDGET=${2:?--job-budget needs a value}; shift 2 ;;
             --tokenise-timeout) TOKENISE_TIMEOUT=${2:?--tokenise-timeout needs a value}; shift 2 ;;
             --device)           DEVICE=${2:?--device needs a value}; shift 2 ;;
+            --cache-dir)        CACHE_DIR=${2:?--cache-dir needs a value}; shift 2 ;;
             --sif)              SIF=${2:?--sif needs a value}; shift 2 ;;
             --offline)          OFFLINE=1; shift ;;
             --allow-duplicate)  ALLOW_DUP=1; shift ;;
@@ -176,8 +179,15 @@ submit_mode() {
     local TOKENISER_YAML="$REPO/yamls/tokenisers/$TOKENISER.yaml"
     [ -f "$TOKENISER_YAML" ] || die "config asks for tokeniser '$TOKENISER', but $TOKENISER_YAML does not exist"
 
-    local DATA_PKL="$REPO/cache/$DATASET/data.pkl.gz"
-    local TENSOR_CACHE="$REPO/cache/$DATASET/tensors/$TOKENISER.safetensors"
+    if [ -n "$CACHE_DIR" ]; then
+        CACHE_DIR=$(readlink -f "$CACHE_DIR")
+        [ -d "$CACHE_DIR" ] || die "cache directory does not exist: $CACHE_DIR"
+    else
+        CACHE_DIR="$REPO/cache"
+    fi
+
+    local DATA_PKL="$CACHE_DIR/$DATASET/data.pkl.gz"
+    local TENSOR_CACHE="$CACHE_DIR/$DATASET/tensors/$TOKENISER.safetensors"
     if [ ! -f "$TENSOR_CACHE" ] && [ ! -f "$DATA_PKL" ]; then
         die "neither the tensor cache ($TENSOR_CACHE) nor the raw dataset cache ($DATA_PKL) exists -- there is nothing to train on; cache the dataset first (scripts/cache_a_dataset.py)"
     fi
@@ -289,6 +299,7 @@ submit_mode() {
         printf 'DATASET=%q\n'          "$DATASET"
         printf 'CONFIG_STEM=%q\n'      "$CONFIG_STEM"
         printf 'TOKENISER=%q\n'        "$TOKENISER"
+        printf 'CACHE_DIR=%q\n'        "$CACHE_DIR"
         printf 'NEEDS_OPS_TABLE=%q\n'  "$NEEDS_OPS_TABLE"
         printf 'RUNID_FILE=%q\n'       "$RUNID_FILE"
         printf 'JOBID_FILE=%q\n'       "$JOBID_FILE"
@@ -463,6 +474,8 @@ job_mode() {
     export SINGULARITYENV_HF_HUB_OFFLINE=1
     export SINGULARITYENV_TOKENIZERS_PARALLELISM=false
     export SINGULARITYENV_OMP_NUM_THREADS=${NCPUS:-$NCPUS_REQUESTED}
+    CACHE_DIR=${CACHE_DIR:-$REPO/cache}
+    export SINGULARITYENV_WYCKOFF_CACHE_DIR="$CACHE_DIR"
     if [ "$WANDB_OFFLINE" -eq 1 ]; then
         export SINGULARITYENV_WANDB_MODE=offline   # `wandb sync $RUN_DIR` afterwards
     fi
@@ -485,7 +498,7 @@ print('engineers built')
     fi
 
     # --- one-off: the tensor cache for this tokeniser -----------------------
-    local TENSOR_CACHE="$REPO/cache/$DATASET/tensors/$TOKENISER.safetensors"
+    local TENSOR_CACHE="$CACHE_DIR/$DATASET/tensors/$TOKENISER.safetensors"
     if [ ! -f "$TENSOR_CACHE" ]; then
         echo "tensor cache missing -> tokenising $DATASET with $TOKENISER ($(date -Is))"
         echo "this is a one-off pass over the whole dataset; later links skip it"

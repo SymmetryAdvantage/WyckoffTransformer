@@ -544,6 +544,17 @@ class TestRescheduleOntoANewHorizon(_RunDirTestCase):
             resumed.load_training_checkpoint()
         self.assertIn("RESCHEDULING", "\n".join(logs.output))
 
+    def test_loader_size_mismatch_is_handled_when_rescheduling(self):
+        """When dataset size changes under a run, rescheduling reshuffles the loader instead of crashing."""
+        run_path = self._crashed_run()
+        resumed = _make_trainer(run_path, epochs=8, resume=True, reschedule=True)
+        resumed.scheduler_total_steps += 1
+        # Artificially alter the loader's num_examples to simulate a dataset that grew
+        resumed.train_loader.num_examples += 10
+        with self.assertLogs(trainer_logger, level="WARNING") as logs:
+            resumed.load_training_checkpoint()
+        self.assertIn("could not restore train loader state", "\n".join(logs.output))
+
 
 class TestRescheduleConfigCheck(_RunDirTestCase):
     BASE = {"dataset": "mp_20",

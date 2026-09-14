@@ -1788,7 +1788,15 @@ class WyckoffTrainer():
             self.scheduler.load_state_dict(checkpoint["scheduler"])
         for name, loader in self._loaders().items():
             if name in checkpoint["loaders"]:
-                loader.load_state_dict(checkpoint["loaders"][name])
+                try:
+                    loader.load_state_dict(checkpoint["loaders"][name])
+                except ValueError as exc:
+                    if self.reschedule:
+                        logger.warning(
+                            "RESCHEDULING: could not restore %s loader state (%s); reshuffling it.",
+                            name, exc)
+                    else:
+                        raise
             else:
                 logger.warning("The checkpoint holds no %s loader state; reshuffling it.", name)
         random.setstate(checkpoint["rng"]["python"])
@@ -2378,7 +2386,8 @@ def train_from_config(
 
         evaluator: Optional[StatisticalEvaluator] = None
         if not no_test:
-            data_cache_path = Path(__file__).resolve().parents[2] / "cache" / config.dataset / "data.pkl.gz"
+            cache_root = Path(os.environ.get("WYCKOFF_CACHE_DIR", Path(__file__).resolve().parents[2] / "cache"))
+            data_cache_path = cache_root / config.dataset / "data.pkl.gz"
             with gzip.open(data_cache_path, "rb") as f:
                 datasets_pd = pickle.load(f)
             datasets_pd.pop("train", None)

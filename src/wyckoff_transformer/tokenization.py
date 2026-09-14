@@ -1,5 +1,6 @@
 from typing import Any, Dict, Iterable, NamedTuple, Set, FrozenSet, Optional, List, Tuple
 import json
+import os
 import gzip
 import logging
 import pickle
@@ -459,8 +460,14 @@ def load_tensors_and_tokenisers(
     dataset: str,
     config_name: str,
     use_cached_tensors: bool = True,
-    cache_path: Path = Path(__file__).resolve().parents[2] / "cache",
+    cache_path: Optional[Path] = None,
     tokenizer_path: Optional[Path] = None):
+
+    if cache_path is None:
+        if "WYCKOFF_CACHE_DIR" in os.environ:
+            cache_path = Path(os.environ["WYCKOFF_CACHE_DIR"])
+        else:
+            cache_path = Path(__file__).resolve().parents[2] / "cache"
 
     this_cache_path = cache_path / dataset
     if use_cached_tensors:
@@ -475,8 +482,7 @@ def load_tensors_and_tokenisers(
             raise
         return tensors, tokenisers, token_engineers
     else:
-        cache_path = Path(__file__).resolve().parents[2] / "cache" / dataset
-        with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
+        with gzip.open(this_cache_path / 'data.pkl.gz', "rb") as f:
             datasets_pd = pickle.load(f)
         return tokenise_dataset(
             datasets_pd=datasets_pd,

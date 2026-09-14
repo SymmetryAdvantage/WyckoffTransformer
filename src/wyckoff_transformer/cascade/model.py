@@ -8,6 +8,7 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 from omegaconf import OmegaConf
 
 from wyckoff_transformer.cascade.dataset import batched_bincount
+from wyckoff_transformer.cascade.relational import relational_bias_from_tokenisers
 from wyckoff_transformer.wyckoff_processor import load_frozen_table
 
 logger = logging.getLogger(__name__)
@@ -255,10 +256,20 @@ class CascadeTransformer(nn.Module):
         # full_cascade = {'elements': (92, 16, 89, True), 'site_symmetries': (78, 16, 75, True), 'sites_enumeration': (11, 8, 8, True)}
         # n_start = 109
 
+        model_args = dict(config.model.CascadeTransformer_args)
+        # The relational bias is the one submodule that needs the tokenisers themselves:
+        # it reads the element vocabulary to build its table of physical pair descriptors,
+        # and the cascade order to know which cascade fields carry elements and site
+        # symmetries. Both are resolved here so that __init__ stays a pure constructor.
+        relational_args = model_args.get("relational_attention_bias")
+        if relational_args is not None:
+            model_args["relational_attention_bias"] = dict(
+                relational_args, tokenisers=tokenisers, cascade_order=cascade_order)
+
         return cls(
             n_start=n_start,
             cascade=full_cascade.values(),
-            **config.model.CascadeTransformer_args
+            **model_args
             ).to(device)
 
 
@@ -285,7 +296,8 @@ class CascadeTransformer(nn.Module):
                  emebdding_dropout: Optional[float] = None,
                  prediction_perceptron_dropout: Optional[float] = None,
                  concat_start_to_prediction_input_embedding_dim: Optional[int] = None,
-                 condition_dim: Optional[int] = None):
+                 condition_dim: Optional[int] = None,
+                 relational_attention_bias: Optional[dict] = None):
         """
         Expects tokens in the following format:
         START_k -> [] -> STOP -> PAD
@@ -329,6 +341,10 @@ class CascadeTransformer(nn.Module):
             compile_perceptrons: If True, compile the perceptrons using torch.compile.
             emebdding_dropout: Dropout probability to be passed to torch.nn.Dropout.
             prediction_perceptron_dropout: Dropout probability to be passed to the prediction perceptron.
+            relational_attention_bias: If not None, add crystallographic and chemical pairwise
+                biases to the attention logits; see wyckoff_transformer.cascade.relational.
+                Beyond the hyperparameters of `RelationalAttentionBias` the dict carries
+                `tokenisers` and `cascade_order`, which `from_config_and_tokenisers` fills in.
         """
         super().__init__()
         self.embedding = CascadeEmbedding(cascade, dropout=emebdding_dropout)
@@ -337,6 +353,20 @@ class CascadeTransformer(nn.Module):
             logger.warning("d_model is not divisible by nhead, padding to the next multiple")
             self.d_model += TransformerEncoderLayer_args["nhead"] - self.d_model % TransformerEncoderLayer_args["nhead"]
         
+        # Built before the encoder so a bad field name fails before any weight is allocated.
+        if relational_attention_bias is None:
+            self.relational_bias = None
+        else:
+            if "nhead" not in TransformerEncoderLayer_args:
+                raise ValueError("relational_attention_bias needs an explicit nhead")
+            (self.relational_bias,
+             self.relational_element_index,
+             self.relational_site_symmetry_index) = relational_bias_from_tokenisers(
+                nhead=TransformerEncoderLayer_args["nhead"],
+                n_start=n_start,
+                start_type=start_type,
+                **relational_attention_bias)
+
         self.condition_dim = condition_dim
         if condition_dim is not None:
             self.encoder_layers = AdaLNTransformerEncoderLayer(
@@ -473,12 +503,37 @@ class CascadeTransformer(nn.Module):
         data = torch.cat([self.start_embedding(start).unsqueeze(1), cascade_embedding], dim=1)
         logger.debug("Data size: %s", data.size())
         logger.debug("Padding mask size: %s", padding_mask.size() if padding_mask is not None else "None")
+        # The relational bias rides in as the encoder's attention mask: it is additive on the
+        # logits, which is exactly what a float `attn_mask` is, so the padding mask and
+        # everything else about the attention stay untouched.
+        if getattr(self, "relational_bias", None) is None:
+            attention_bias = None
+        else:
+            attention_bias = self.relational_bias(
+                cascade[self.relational_element_index],
+                cascade[self.relational_site_symmetry_index],
+                start)
+            if attention_bias.size(0) == 0:
+                # An empty batch is a real input: `WyckoffGenerator.calibrate` sweeps every
+                # sequence length, including ones no structure in the split is long enough
+                # for. Torch reshapes a 3-D `attn_mask` by [batch, nhead, -1, src_len],
+                # which is ambiguous when the batch is empty, and there is nothing to bias
+                # anyway, so the mask is dropped rather than passed on.
+                attention_bias = None
+            elif padding_mask is not None and padding_mask.dtype == torch.bool:
+                # Torch deprecates a bool padding mask alongside a float attention mask,
+                # though it merges them by doing exactly this. Doing it here keeps the
+                # merge out of the deprecation path.
+                padding_mask = torch.zeros_like(padding_mask, dtype=data.dtype).masked_fill_(
+                    padding_mask, float("-inf"))
         if getattr(self, "condition_dim", None) is not None:
             if cond is None:
                 raise ValueError("condition_dim is set but cond is not provided")
-            transformer_output = self.transformer_encoder(data, src_key_padding_mask=padding_mask, cond=cond)
+            transformer_output = self.transformer_encoder(
+                data, src_key_padding_mask=padding_mask, cond=cond, mask=attention_bias)
         else:
-            transformer_output = self.transformer_encoder(data, src_key_padding_mask=padding_mask)
+            transformer_output = self.transformer_encoder(
+                data, src_key_padding_mask=padding_mask, mask=attention_bias)
 
         logging.debug("Transformer output size: %s", transformer_output.size())
         if self.aggregate_after_encoder:
