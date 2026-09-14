@@ -267,7 +267,14 @@ used. That default is the catch: LeMat-GenBench scores with
 MACE-MPA-0-medium. So GenBench compares MPA-0 energies against an MP-0b3 hull,
 20 meV/atom apart per structure (median |Δ|, sd 0.11 eV/atom). Its own
 `mace_mp` stability numbers are not self-consistent. Ours, built with
-`HULL_MLIPS["mace_mp"]`, are.
+`HULL_MLIPS["mace_mp"]`, are. `scripts/verify_mace_hull_checkpoint.py`
+reproduces the comparison from HuggingFace data alone.
+
+MPA-0-medium is still the right model for one thing in GenBench: its
+Fréchet-distance reference, `LeMaterial/LeMat-GenBench-embeddings`. Those
+embeddings match MPA-0-medium to a relative L2 error of 2e-7, and MP-0b3 misses
+by ~150%. A correct GenBench MACE therefore needs both checkpoints: MP-0b3 for
+energies and MPA-0 for embeddings.
 
 ## The reference hull is the whole one LeMat publishes
 
