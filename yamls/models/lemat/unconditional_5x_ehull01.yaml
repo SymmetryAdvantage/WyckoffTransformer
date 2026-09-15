@@ -65,11 +65,18 @@ optimisation:
       decay_fraction: 0.2
       final_lr_fraction: 0.0
       decay_shape: 1-sqrt
-  validation_period: 500
+  # Scaled with `epochs` to validate every ~51k steps, the same cadence as unconditional_5x
+  # (500 epochs x 102 steps), so the two loss curves line up step for step.
+  validation_period: 1645
   early_stopping_patience_epochs: 1000000
   clip_grad_norm: 10.
-  # 1,576,041 // 50,000 = 31 steps per epoch.
-  epochs: 40000
+  # Matched to unconditional_5x in optimiser steps, not epochs: that run does
+  # 5,127,342 // 50,000 = 102 steps x 40,000 epochs = 4,080,000 steps. Here
+  # 1,576,041 // 50,000 = 31 steps per epoch, so 131,613 epochs = 4,080,003 steps.
+  # The fraction-based warmup (8,160 steps) and decay (816k steps) then match too.
+  # At 40,000 epochs (run unconditional_5x_ehull01-20260913-210123) warmup was only
+  # 2,480 steps, and the trunk collapsed at peak LR until the decay phase.
+  epochs: 131613
 tokeniser:
   name: lemat_bulk_fmax1_sg_multiplicity
 evaluation:
