@@ -127,6 +127,23 @@ exceeded the 300 s `--relax-timeout` there, a handicap GPU arms would not share.
    that gene), so the share of known genes on the hull measures how well the
    cohort follows `e_hull = 0` without relaxing anything
    (`scripts/analyse_guidance_sweep.py index`, then `table`).
+
+   The null to read it against is a model that ignores its condition and
+   reproduces training genes in proportion to their frequency. Over
+   `lemat_bulk_fmax1_stress` (4,826,004 fingerprints, 5,327,342 rows; computed
+   2026-09-16 from `gene_ehull_index.pkl.gz`), row-weighted:
+
+   | archive min e_hull of the row's gene | share |
+   |---|---|
+   | = 0 (on the hull) | 0.032 |
+   | ≤ 0.1 eV/atom | 0.314 |
+   | median | 0.205 eV/atom |
+
+   For scale, the known genes of an existing e_hull = 0 cohort
+   (`relational_e_all_adamw_wsd-20260909-234259`, three-channel, not part of
+   this study) come out at 0.092 on the hull, 0.584 within 0.1, and a median of
+   0.080: conditioning moves the distribution, but most known genes stay off
+   the hull.
 3. **Relaxed arms**: the baseline, CFG w = 1, and the two most promising guided
    scales from step 2, through the full protocol. The readouts are MetaSUN,
    SUN, metastable, stable and novel structure, each per sampled gene.
