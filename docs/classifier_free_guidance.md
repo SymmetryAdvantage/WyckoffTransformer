@@ -135,6 +135,39 @@ difference at w = 1 carries replicate noise: MetaSUN replicate pairs differed by
 such noise.** w = 1, 2, 3 are cohorts from one checkpoint, so that is where the
 effect of guidance itself is read.
 
+## Early readings, epoch 500 of 40,000
+
+Not results -- the model is 1.25% trained and its cohorts are nothing like a finished
+model's -- but enough to say the machinery works and what it does.
+
+| at epoch 500 | baseline | CFG | CFG, presence flag (stopped) |
+|---|---|---|---|
+| val NLL total | 20.45 | 21.24 | 25.38 |
+| elements / site symmetries / enumerations | 15.98 / 2.72 / 1.74 | 16.25 / 3.07 / 1.92 | 16.88 / 5.50 / 3.00 |
+| val NLL, unconditional | — | 22.01 | — |
+
+The CFG run is 0.8 nats behind the baseline, spread across all three heads. Some of that
+is the 10% of steps that train the unconditional branch, some is seed and hardware; whether
+it closes by the end of the decay is one of the things the run is for. The conditional and
+unconditional losses differ by **0.77 nats per structure**, which is what the model thinks
+knowing e_hull is worth.
+
+Guidance moves the cohort, monotonically and in the direction a sharper sampler does
+(400 draws per scale from the epoch-500 checkpoint, at `energy_above_hull = 0`):
+
+| w | 0 | 1 | 2 | 3 | 5 |
+|---|---|---|---|---|---|
+| formally valid | 0.78 | 0.67 | 0.50 | 0.37 | 0.18 |
+| mean orbits per gene | 4.26 | 5.43 | 7.03 | 9.89 | 17.89 |
+| mean atoms per gene | 16.0 | 21.6 | 29.7 | 38.8 | 67.7 |
+| mean distinct elements | 3.19 | 3.32 | 3.49 | 3.58 | 4.09 |
+
+Two things follow. Conditioning on `e_hull = 0` lengthens genes (w = 1 against w = 0), and
+guidance amplifies that, exactly as sharpening the sampler does in [the temperature
+sweep](temperature_sweep.md) -- where the cold arms' runaway tail was what made them
+expensive. And formal validity falls with w, so the high-w arms need a larger `--oversample`
+to fill a 1000-gene cohort; `run_guidance_sweep.sh` scales it with w for that reason.
+
 ## Evaluation plan
 
 All arms are drawn at `--condition energy_above_hull=0` with 1000 genes, and

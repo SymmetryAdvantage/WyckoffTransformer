@@ -69,6 +69,20 @@ wait_finished() {
     done
 }
 
+# oversample <scale>: how many genes to draw per gene kept.
+#
+# The cohort is truncated to the first --n-genes *formally valid* ones, and guidance costs
+# validity: on the epoch-500 checkpoint of ehull_adamw_wsd_5x_cfg-20260916-055000 it ran
+# 0.78 at w=0, 0.67 at w=1, 0.50 at w=2, 0.37 at w=3 and 0.18 at w=5. A mature model starts
+# far higher (~0.95), so these are upper bounds on the cost, but a fixed 1.4 would still
+# leave the high-w arms short of a cohort -- and an arm that falls short is not comparable.
+oversample() {
+    .venv/bin/python -c "
+import sys
+w = float(sys.argv[1])
+print(max(1.4, min(6.0, 1.4 * (1 + 0.8 * max(0.0, w - 1)))))" "$1"
+}
+
 # screen_arm <run> <scale> <dir>: draw the cohort and screen it, on the CPU.
 screen_arm() {
     local run=$1 scale=$2 dir=$3
@@ -81,10 +95,12 @@ screen_arm() {
         # Sampling again would replace the cohort; screen the one that is there.
         generate=(--skip-generate)
     fi
-    log "$dir: cohort at guidance scale $scale, then screen"
+    local over
+    over=$(oversample "$scale")
+    log "$dir: cohort at guidance scale $scale (oversample $over), then screen"
     CUDA_VISIBLE_DEVICES="" .venv/bin/wyformer-protocol-wandb "$run" --output-dir "$dir" \
         --condition "$condition" --guidance-scale "$scale" --arm "$(arm_name "$scale")" \
-        --oversample 1.4 --gen-device cpu "${generate[@]}" --stages screen --no-upload
+        --oversample "$over" --gen-device cpu "${generate[@]}" --stages screen --no-upload
 }
 
 # relax_arm <run> <scale> <dir>: PyXtal, relax on the GPU, score, upload under the arm.
