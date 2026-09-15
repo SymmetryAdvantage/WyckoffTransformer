@@ -209,6 +209,18 @@ Drop `--condition` for an unconditional run.
   `manifest.json` as `sampling_temperature` / `formal_gene_validity`. What a
   sweep over it costs and buys is in [the temperature
   sweep](temperature_sweep.md).
+- **`--guidance-scale` is classifier-free guidance**, for a run trained with
+  `condition_dropout`; any other run refuses a value other than 1. Like the
+  temperature it leaves the space group alone. It goes into `manifest.json` as
+  `guidance_scale`, beside `generation_condition` -- the condition the cohort was
+  drawn under, in physical units, which cohorts before 2026-09-16 do not record.
+  See [classifier-free guidance](classifier_free_guidance.md).
+- **`--arm NAME` keeps a sweep off the run's headline numbers.** Without it the
+  funnel overwrites `protocol/` in `run.summary` and the outputs become a new
+  version of `protocol_<run-id>`, so every arm of a sweep over the temperature or
+  the guidance scale would replace the last. With it they go under
+  `protocol_NAME/` and into `protocol_<run-id>.NAME`, and `--from-artifact` reads
+  that arm's artifact back.
 - **The run's model files must be reachable.** `runs/<run-id>/` is used if it
   already holds `best_model_params.pt`, `wyckoff_processor.json` and
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.
@@ -433,4 +445,5 @@ entries (~25 GB resident while it does).
 - [Conditioning on the chemical system and the space group](chemical_system_conditioning.md) — what the accumulated protocol artifacts say about where the budget should go
 - [Protocol evaluation at E_hull=0.05](ehull_adamw_wsd_5x_ehull005_protocol.md) — ranking protocol evaluated on ehull_adamw_wsd_5x-20260912-115321 at target e_hull=0.05
 - [The `lemat_bulk_ehull` re-score](archive/lemat_bulk_ehull_rescore.md) — the one-time reference migration of 2026-09-15/16, and what it moved
+- [Classifier-free guidance](classifier_free_guidance.md) — the guidance scale, and what it does to the e_hull-conditioned model
 - [Every `e_hull` in this repository](e_hull_definitions.md) — the six definitions, which agree, and which must never be mixed

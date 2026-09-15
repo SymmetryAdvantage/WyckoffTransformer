@@ -244,6 +244,30 @@ nohup env CUDA_VISIBLE_DEVICES=1 WANDB_ENTITY=symmetry-advantage \
 
 or run it inside `tmux`/`screen`. `*.log` is gitignored.
 
+A run of more than a day should go through the supervisor instead, since nothing
+else restarts it when an attempt dies -- a colleague's job taking the card's
+memory is the usual cause here:
+
+```bash
+WANDB_ENTITY=symmetry-advantage nohup scripts/platforms/zeus/train_supervised.sh \
+    yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x_cfg.yaml lemat_bulk_fmax1_stress 1 \
+    > /home/kna/.local/share/wyformer/runs/.logs/<run-id>.log 2>&1 &
+```
+
+It pins one W&B run id (`<config stem>-<YYYYmmdd-HHMMSS>` unless given a fourth
+argument, the scheme the aspire2a PBS chain uses), resumes from the run's
+`last_checkpoint.pt` after a failed attempt, and gives up rather than guessing
+when an attempt died before its first checkpoint or the checkpoint stops
+advancing. The checkpoint is written every `validation_period` epochs, so a
+crash costs at most that much. The job runs the code of the checkout it was
+started from, and so does every resume: do not change the training code in that
+checkout while it runs.
+
+Measured 2026-09-16 on GPU 1, shared with another user's job:
+`ehull_adamw_wsd_5x` (723k parameters, batch 50000, `lemat_bulk_fmax1_stress`)
+trains at 16.7-17.4 s per epoch, 102 steps each -- about 8 days for its 40000
+epochs, against ~12 s per epoch on an aspire2a A100.
+
 Disk is the thing to watch on multi-day runs: `/` has 712 GB free but also
 holds a 279 GB HuggingFace cache belonging partly to unrelated work, plus the
 data store under `/home/kna/.local/share/wyformer` — `cache/` (28 GB), `data/`
