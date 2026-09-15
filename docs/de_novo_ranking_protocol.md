@@ -54,8 +54,8 @@ none of them waits on another's resource:
 |---|---|---|---|
 | `screen` | one core, 4M fingerprints in RAM | ~2 min cached, ~8 min cold | `screen.json` |
 | `generate` | every CPU core, no potential | seconds per draw | `pyxtal.extxyz`, `pyxtal.csv` |
-| `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `cifs/` |
-| `score` | the hull parquet and LeMat-Bulk geometry in RAM | ~1 min | `funnel.json` |
+| `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `cifs/`, `cifs_fixed_symmetry/` |
+| `score` | the hull parquet and LeMat-Bulk geometry in RAM | ~1 min | `funnel.json`, updated `structures*.csv` |
 
 Two further stages are optional, and neither is part of `--stage all`. Both are
 alternative *sources of starting structures* rather than steps of the cascade,
@@ -100,16 +100,19 @@ and `--no-resume` starts over.
 | `screen.json` | validity, uniqueness with counts, gene novelty |
 | `pyxtal.extxyz` | every generated draw, tagged with its gene and trial |
 | `pyxtal.csv` | per trial: PyXtal status (`ok`/`failed`/`timeout`), formula, DoF, seconds |
-| `relaxations.csv` | per trial: status, energy, device, seconds, kept CIF, and the error if it failed |
-| `structures.csv` | per gene: the lowest-energy trial, plus validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials`, `gene_novel`, `novel_by_sampled_gene`, `relaxed_fingerprint_resolved`, `relaxed_fingerprint_changed` |
-| `funnel.json` | the whole cascade, as rates per *sampled* gene, plus `gene_known_became_novel` / `gene_novel_became_known` |
+| `relaxations.csv` | per trial: status, energy, device, seconds, kept CIFs (both free and fixed symmetry), and error if failed |
+| `structures.csv` | per gene: lowest-energy trial chosen after rattling and symmetry release (free), plus validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials`, `gene_novel`, `novel_by_sampled_gene`, `relaxed_fingerprint_resolved`, `relaxed_fingerprint_changed` |
+| `structures_fixed_symmetry.csv` | per gene: lowest-energy trial relaxed under fixed symmetry (pre-rattling), scored identically to `structures.csv` |
+| `funnel.json` | hierarchical report containing `gene`, `fixed_symmetry`, and `free` sections, with cascade rates per *sampled* gene |
 | `manifest.json` | MLIP, checkpoint, trial schedule, rattle, devices, timeouts, hull provenance |
-| `cifs/`, `cryspr/` | relaxed structures, relaxation logs, per-trial `rattle.json` |
+| `cifs/`, `cifs_fixed_symmetry/` | kept CIFs: `cifs/` holds free structures post-rattling, `cifs_fixed_symmetry/` holds fixed-symmetry structures pre-rattling |
+| `cryspr/` | per-trial relaxation logs and `rattle.json` |
 
-A gene with no structure carries the reason in `structures.csv`'s `error`
-column, and the trial that produced it is in `relaxations.csv`. This matters:
-a cohort whose potential fails to load and one whose genes PyXtal cannot draw
-both read as `has_structure = 0` in the funnel and nowhere else.
+A gene with no structure carries the reason in `structures.csv`'s and
+`structures_fixed_symmetry.csv`'s `error` column, and the trial that produced
+it is in `relaxations.csv`. This matters: a cohort whose potential fails to load
+and one whose genes PyXtal cannot draw both read as `has_structure = 0` in the
+funnel and nowhere else.
 
 ## Evaluating a W&B run
 
@@ -146,14 +149,12 @@ Drop `--condition` for an unconditional run.
 - **The run's model files must be reachable.** `runs/<run-id>/` is used if it
   already holds `best_model_params.pt`, `wyckoff_processor.json` and
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.
-- **What lands on the run.** Every key in `funnel.json` is flattened into
-  `run.summary` under a `protocol/` prefix (`protocol/metasun_per_sampled_gene`,
-  `protocol/valid_gene_rate`, `protocol/gene_known_became_novel`, …). `screen.json`, `pyxtal.extxyz`,
-  `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `funnel.json`,
-  `manifest.json` and `cifs/` go into an artifact named
-  `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything
-  and skips only the write-back; `--entity` / `--project` override where the
-  run is looked up.
+- **What lands on the run.** Summary metrics are written into `run.summary` with a hierarchical `protocol/` layout:
+  - `protocol/gene/`: Gene-level metrics from the initial screen: `sampled`, `valid_gene`, `unique_gene`, `novel_gene`, `validity_rate`, `uniqueness_rate`, `novelty_rate`, and `vun_per_sampled_gene`.
+  - `protocol/fixed_symmetry/`: Structure-based metrics evaluated on the lowest-energy structures relaxed under fixed symmetry (pre-rattling): `structure`, `valid_structure`, `unique_structure`, `novel_structure`, `metastable`, `stable`, `metastable_among_novel`, `stable_among_novel`, `sun_per_sampled_gene`, `metasun_per_sampled_gene`, etc.
+  - `protocol/free/`: Structure-based metrics evaluated on the lowest-energy structures chosen after symmetry release and rattling: `structure`, `valid_structure`, `unique_structure`, `novel_structure`, `metastable`, `stable`, `metastable_among_novel`, `stable_among_novel`, `sun_per_sampled_gene`, `metasun_per_sampled_gene`, etc.
+
+  `screen.json`, `pyxtal.extxyz`, `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `funnel.json`, `manifest.json`, `cifs/`, and `cifs_fixed_symmetry/` go into an artifact named `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything and skips only the write-back; `--entity` / `--project` override where the run is looked up.
 
 The same hardware, trial-schedule, MLIP and reference flags as `wyformer-protocol`
 are accepted and passed straight through.
@@ -161,8 +162,8 @@ are accepted and passed straight through.
 - **Re-scoring without re-relaxing.** `--from-artifact --stages score` downloads
   the run's existing `protocol_<run-id>` artifact into `--output-dir` and runs
   only the score stage on it — no cohort is generated, nothing is relaxed. The
-  refreshed `funnel.json` and `structures.csv` go back as a new artifact
-  version and `run.summary` is overwritten. Use it after a change to how
+  refreshed `funnel.json`, `structures.csv`, and `structures_fixed_symmetry.csv` go
+  back as a new artifact version and `run.summary` is overwritten. Use it after a change to how
   novelty or the hull is judged. `--from-artifact v2` pins a version instead of
   taking the latest.
 
@@ -171,10 +172,22 @@ are accepted and passed straight through.
 ```
 sampled → valid gene → unique gene (keep counts)
         → PyXtal + 1–3 trials × 4-stage CrySPR (2 symmetric, free, rattle)
-        → valid structure → unique structure ─┬─→ e_hull ≤ 0.1 (metastable) → ≤ 0 (stable)
-                                              └─→ novel structure (sampled + relaxed fingerprint)
-                                                  → e_hull ≤ 0.1 (MetaSUN) → ≤ 0 (SUN)
+        ┬─→ fixed symmetry (pre-rattling) ─→ valid structure → unique structure ─┬─→ metastable / stable
+        │                                                                        └─→ novel structure → MetaSUN / SUN
+        └─→ free (post-rattling)          ─→ valid structure → unique structure ─┬─→ metastable / stable
+                                                                                 └─→ novel structure → MetaSUN / SUN
 ```
+
+**Structure metrics are computed separately along two tracks:**
+1. **Fixed symmetry (pre-rattling)**: Structures relaxed through the two symmetric stages (`0_fix_cell` and `2_sym_cell+pos`), keeping the sampled space group and Wyckoff orbit constraints intact. Evaluated and scored into `structures_fixed_symmetry.csv`, `cifs_fixed_symmetry/`, and `protocol/fixed_symmetry/`.
+2. **Free (post-rattling)**: Structures chosen after symmetry release (`2b_free_cell+pos`) and rattling (`3_rattle`), which can break symmetry and escape symmetric stationary points. Evaluated and scored into `structures.csv`, `cifs/`, and `protocol/free/`.
+
+Both tracks undergo the same structure scoring pipeline:
+- CIF reading and structural validity (pymatgen check).
+- Structure deduplication via `StructureMatcher` (`unique_structure`).
+- Novelty evaluation against the joint LeMat-Bulk candidate reference (`novel_structure`).
+- Hull energy evaluation with the MLIP hull (`metastable`: $e_{\text{hull}} \le 0.1$ eV/atom, `stable`: $e_{\text{hull}} \le 0.0$ eV/atom).
+- Final success rates: `sun_per_sampled_gene` and `metasun_per_sampled_gene`.
 
 **`metastable` / `stable` are measured before the novelty filter**, over every
 unique structure with a hull energy; `metastable_among_novel` / `stable_among_novel`

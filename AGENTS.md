@@ -89,3 +89,9 @@ Write program names and paths literally, and run from the worktree itself -- nev
 `cd` to the main checkout, whose venv imports the main checkout's code. Call the
 checkout's interpreter by path, or the launcher your platform documents; which one
 applies is host-specific and lives in `docs/platforms/<platform>/`.
+
+# Project conventions
+This is a research project, which means that ideas will be tried and discarded. As such, it is extremly important to avoid confusion. In particular:
+1. When describing the results of an experiment, note the date, git commit hash and applicable WanDB runs
+2. Files in docs/archive/ are not maintained - there is no need to update them, but they might contradict the state of the code base and later findings
+3. In general, files docs/*.md are supposed to be current - correct them if you notice a contradiction

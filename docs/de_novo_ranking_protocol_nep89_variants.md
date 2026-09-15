@@ -339,37 +339,18 @@ millielectronvolts.
 symmetric stationary point can land on a LeMat-Bulk entry the unrattled
 structure was distinct from, which converts a MetaSUN hit into nothing at all.
 
-So every trial now writes **two** structures — `*_kept.cif`, which is what the
-protocol scores, and `*_prerattle.cif`, the structure the rattle stage was
-handed — and the score stage computes validity, uniqueness, novelty and
-`e_above_hull` on each. `funnel.json` carries the kept readout under its
-existing keys and the second under a `prerattle_` prefix, plus an explicit
-account of the crossings:
-
-| key | meaning |
-|---|---|
-| `prerattle_metasun_per_sampled_gene` | MetaSUN if the rattle had not run |
-| `rattle_moved_off_gene` | genes whose pre-rattle structure re-fingerprints to its own gene and whose kept structure does not |
-| `rattle_novel_became_known` / `rattle_known_became_novel` | novelty crossings under the rattle |
-| `rattle_metasun_lost` / `rattle_metasun_gained` | MetaSUN hits the rattle destroyed / created |
-| `rattle_metastable_lost` / `rattle_metastable_gained` | the same at the metastability threshold |
-| `rattle_lowered_energy` | genes where it won at all |
-
-Both directions are counted, not just the loss: the effect runs both ways and
-reporting only the damage would overstate it. Crossings are counted over genes
-that produced a *unique* structure both ways, so a gene the rattle made invalid
-is not charged to novelty.
-
-**This changes no default.** The kept structure is still the rattled one when it
-wins, `metasun_per_sampled_gene` still means what it always meant, and the
-pre-rattle readout costs a second pass of the matcher and the hull rather than a
-second relaxation. `--no-prerattle-metrics` turns it off. The two readouts share
-one novelty reference, built over the union of all four fingerprint sets, so the
-streaming pass over the 1 GB CIF export — the score stage's dominant cost —
-still happens once.
-
-A run relaxed before the pre-rattle CIFs existed has none, and every
-`prerattle_*` and `rattle_*` key is reported as `null` rather than guessed.
+The protocol therefore scores **two** readouts of every trial. The measurements
+below were made with a `prerattle` readout -- `*_prerattle.cif`, the structure
+the rattle stage was handed, reported under `prerattle_*` keys with
+`rattle_*` crossing counts. That readout has since been **replaced** by
+`fixed_symmetry`: the output of the symmetry-constrained stages, before the
+symmetry is released as well as before the rattle, written as
+`*_fixed_symmetry.cif` and scored into `structures_fixed_symmetry.csv`,
+`cifs_fixed_symmetry/` and the `fixed_symmetry` section of the nested funnel
+(see [the protocol](de_novo_ranking_protocol.md)). With `--release-symmetry`
+on, the two are different structures, so the tables below are a record of that
+experiment, not numbers the current code reproduces. The `rattle_*` counts are
+no longer computed.
 
 ### What the rattle actually costs and buys
 

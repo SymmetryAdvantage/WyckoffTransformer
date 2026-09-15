@@ -405,7 +405,7 @@ class TestPreRelaxationStage(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             trial_dir = Path(tmp) / "trial-0"
-            relaxed, energy, prerattle = relax_trial(
+            relaxed, energy, fixed = relax_trial(
                 atoms_in=self._draw(),
                 calculator=SpeciesLennardJones(),
                 trial_dir=trial_dir,
@@ -418,11 +418,11 @@ class TestPreRelaxationStage(unittest.TestCase):
             self.assertTrue(any((trial_dir / PRERELAX_DIR).glob("*.cif")))
             # Exactly one of each, in the trial directory itself.
             self.assertEqual(len(list(trial_dir.glob("*_kept.cif"))), 1)
-            self.assertEqual(len(list(trial_dir.glob("*_prerattle.cif"))), 1)
-            # With no rattle stage the two structures are the same one, and the
-            # pre-rattle CIF is written anyway: a missing file would otherwise
-            # be indistinguishable from a rattle that was never run.
-            self.assertAlmostEqual(prerattle[1], energy, places=9)
+            self.assertEqual(len(list(trial_dir.glob("*_fixed_symmetry.cif"))), 1)
+            # With neither the release nor the rattle the two structures are the
+            # same one, and the fixed-symmetry CIF is written anyway: a missing
+            # file would otherwise be indistinguishable from stages never run.
+            self.assertAlmostEqual(fixed[1], energy, places=9)
 
 
 class TestDigestVerification(unittest.TestCase):

@@ -123,6 +123,10 @@ def load_reference_structures(
     """
     from pymatgen.core import Structure
 
+    from wyckoff_transformer.cli.protocol import _quiet_cif_parser_warnings
+
+    _quiet_cif_parser_warnings()
+
     lemat_cif_csv = (
         resolve_store_path(lemat_cif_csv if lemat_cif_csv is not None else DEFAULT_LEMAT_CIF_CSV)
     )

@@ -24,6 +24,31 @@ class TestFlattenFunnel(unittest.TestCase):
         self.assertNotIn("protocol/no_hull_energy", flat)
         self.assertNotIn("protocol/some_flag", flat)
 
+    def test_hierarchical_funnel(self):
+        funnel = {
+            "gene": {
+                "sampled": 1000,
+                "valid_gene": 900,
+                "none_val": None,
+            },
+            "fixed_symmetry": {
+                "structure": 800,
+                "sun_per_sampled_gene": 0.5,
+            },
+            "free": {
+                "structure": 750,
+                "sun_per_sampled_gene": 0.45,
+            },
+        }
+        flat = pw.flatten_funnel(funnel)
+        self.assertEqual(flat["protocol/gene/sampled"], 1000)
+        self.assertEqual(flat["protocol/gene/valid_gene"], 900)
+        self.assertNotIn("protocol/gene/none_val", flat)
+        self.assertEqual(flat["protocol/fixed_symmetry/structure"], 800)
+        self.assertEqual(flat["protocol/fixed_symmetry/sun_per_sampled_gene"], 0.5)
+        self.assertEqual(flat["protocol/free/structure"], 750)
+        self.assertEqual(flat["protocol/free/sun_per_sampled_gene"], 0.45)
+
 
 class TestBuildStageArgs(unittest.TestCase):
     def test_carries_every_field_the_stages_read(self):
@@ -310,8 +335,10 @@ class TestMainSkipGenerate(unittest.TestCase):
         funnel_on_disk = json.loads(
             (self.out / pw.protocol_cli.FUNNEL_FILE).read_text(encoding="utf-8")
         )
-        self.assertEqual(funnel_on_disk["sampled"], 10)
-        self.assertIsNone(funnel_on_disk["metastable"])
+        self.assertEqual(funnel_on_disk["gene"]["sampled"], 10)
+        self.assertEqual(funnel_on_disk["gene"]["valid_gene"], 2)
+        self.assertIsNone(funnel_on_disk["free"]["metastable"])
+        self.assertIsNone(funnel_on_disk["fixed_symmetry"]["metastable"])
 
 
 class TestGenerateGenes(unittest.TestCase):

@@ -85,7 +85,6 @@ from wyckoff_transformer.evaluation.protocol import (
     GeneFingerprinter,
     funnel,
     load_genes,
-    rattle_effect,
     load_reference_fingerprints,
     parse_trial_schedule,
     positional_dof,
@@ -102,12 +101,13 @@ PYXTAL_FILE = "pyxtal.extxyz"
 PYXTAL_TRIALS_FILE = "pyxtal.csv"
 RELAXATIONS_FILE = "relaxations.csv"
 STRUCTURES_FILE = "structures.csv"
+#: Per gene, the lowest-energy fixed-symmetry structure, scored like the kept one.
+STRUCTURES_FIXED_FILE = "structures_fixed_symmetry.csv"
 FUNNEL_FILE = "funnel.json"
 MANIFEST_FILE = "manifest.json"
 CIF_DIR = "cifs"
+CIF_FIXED_DIR = "cifs_fixed_symmetry"
 
-#: Where the pre-rattle structure of each gene's best trial is collected.
-PRERATTLE_CIF_DIR = "cifs_prerattle"
 CRYSPR_DIR = "cryspr"
 
 #: Every pre-relaxed draw, and the per-trial log of the pre-relaxation.
@@ -193,13 +193,11 @@ PYXTAL_COLUMNS = (
 #: Columns of ``relaxations.csv``: one row per relaxed draw.
 RELAXATION_COLUMNS = (
     "index", "trial", "status", "formula", "energy", "energy_per_atom",
-    "n_atoms", "device", "seconds", "cif",
-    # The rattle stage's two sides.  ``energy`` and ``cif`` are the kept
-    # structure, which is what the protocol scores; these are the structure the
-    # rattle was handed, which is what the pre-rattle metrics score.  Equal to
-    # the kept pair when the rattle did not run or did not win.
-    "energy_prerattle", "energy_per_atom_prerattle", "cif_prerattle",
-    "error",
+    "n_atoms", "device", "seconds", "cif", "error",
+    # The fixed-symmetry readout of the same trial: the output of the
+    # symmetry-constrained stages, before the release and the rattle.  Its own
+    # status, because the clash guard judges the two structures separately.
+    "status_fixed", "energy_fixed", "energy_per_atom_fixed", "cif_fixed",
 )
 
 #: Columns of ``prescreen.csv``: one row per cheaply relaxed draw.
@@ -536,6 +534,7 @@ def _init_generate_worker(debug: bool) -> None:
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ[key] = value
     _init_worker_logging(debug)
+    _quiet_cif_parser_warnings()
 
 
 def claim_device(counter, slots: list[str]) -> str:
@@ -707,6 +706,33 @@ def _quiet_logm_roundoff(threshold: float = LOGM_ROUNDOFF) -> None:
     warnings.showwarning = showwarning
 
 
+_CIF_PARSER_WARNING = "Issues encountered while parsing CIF"
+
+
+def _quiet_cif_parser_warnings() -> None:
+    """Print pymatgen's CIF coordinate-rounding warning at most once per process."""
+    original = warnings.showwarning
+    if getattr(original, "_cif_parser_filter", False):
+        return
+
+    shown = False
+
+    def showwarning(message, category, filename, lineno, file=None, line=None):
+        nonlocal shown
+        text = str(message)
+        if _CIF_PARSER_WARNING in text:
+            if shown:
+                return
+            shown = True
+        original(message, category, filename, lineno, file, line)
+
+    showwarning._cif_parser_filter = True
+    warnings.showwarning = showwarning
+
+
+_quiet_cif_parser_warnings()
+
+
 def _init_relax_worker(
     counter,
     slots: list[str],
@@ -740,6 +766,7 @@ def _init_relax_worker(
         os.environ[key] = value
     _init_worker_logging(debug)
     _quiet_logm_roundoff()
+    _quiet_cif_parser_warnings()
 
     _WORKER_DEVICE = claim_device(counter, slots)
     _WORKER_TORCH_DEVICE = _pin_visible_device(_WORKER_DEVICE)
@@ -1784,19 +1811,21 @@ def _relax_one(
     """
     from wyckoff_transformer.cryspr.generator import (
         KEPT_CIF_SUFFIX,
-        PRERATTLE_CIF_SUFFIX,
+        KEPT_FIXED_CIF_SUFFIX,
         _trial_seed,
         relax_trial,
     )
 
     started = time.time()
+    # relax_trial names its CIFs after the draw's formula.
+    formula_in = atoms.get_chemical_formula(mode="metal")
     row = {
         "index": index, "trial": trial, "status": "failed",
         "device": _WORKER_DEVICE, "n_atoms": len(atoms),
-        "formula": atoms.get_chemical_formula(mode="metal"),
-        "energy": None, "energy_per_atom": None, "cif": None,
-        "energy_prerattle": None, "energy_per_atom_prerattle": None,
-        "cif_prerattle": None, "error": None,
+        "formula": formula_in,
+        "energy": None, "energy_per_atom": None, "cif": None, "error": None,
+        "status_fixed": "failed", "energy_fixed": None,
+        "energy_per_atom_fixed": None, "cif_fixed": None,
     }
     req_mb = estimate_relaxation_memory(atoms)
     budget = _WORKER_BUDGET
@@ -1808,7 +1837,7 @@ def _relax_one(
     try:
         with cm:
             with time_limit(timeout):
-                relaxed, energy, prerattle = relax_trial(
+                relaxed, energy, (relaxed_fixed, energy_fixed) = relax_trial(
                     atoms_in=atoms,
                     calculator=_WORKER_CALCULATOR,
                     trial_dir=Path(trial_dir),
@@ -1822,13 +1851,20 @@ def _relax_one(
                     prerelax_max_expansion=prerelax_max_expansion,
                 )
     except Timeout as exc:
-        row["status"] = "timeout"
+        row["status"] = row["status_fixed"] = "timeout"
         row["error"] = str(exc)
         logger.warning("Gene %d trial %d: relaxation timed out (%s)", index, trial, exc)
     except Exception as exc:  # noqa: BLE001 - one bad trial must not stop the stage
         row["error"] = f"{type(exc).__name__}: {exc}"
         logger.warning("Gene %d trial %d: relaxation failed (%s)", index, trial, exc)
     else:
+        if relaxed_fixed is None:
+            row["status_fixed"] = "clash"
+        else:
+            row["status_fixed"] = "ok"
+            row["energy_fixed"] = energy_fixed
+            row["energy_per_atom_fixed"] = energy_fixed / len(relaxed_fixed)
+            row["cif_fixed"] = str(Path(trial_dir) / f"{formula_in}{KEPT_FIXED_CIF_SUFFIX}")
         if relaxed is None:
             row["status"] = "clash"
             row["error"] = "relaxed structure has atomic clashes"
@@ -1838,13 +1874,7 @@ def _relax_one(
             row["energy_per_atom"] = energy / len(relaxed)
             row["n_atoms"] = len(relaxed)
             row["formula"] = relaxed.get_chemical_formula(mode="metal")
-            row["cif"] = str(Path(trial_dir) / f"{row['formula']}{KEPT_CIF_SUFFIX}")
-            prerattle_atoms, prerattle_energy = prerattle
-            row["energy_prerattle"] = prerattle_energy
-            row["energy_per_atom_prerattle"] = prerattle_energy / len(prerattle_atoms)
-            row["cif_prerattle"] = str(
-                Path(trial_dir) / f"{row['formula']}{PRERATTLE_CIF_SUFFIX}"
-            )
+            row["cif"] = str(Path(trial_dir) / f"{formula_in}{KEPT_CIF_SUFFIX}")
     row["seconds"] = round(time.time() - started, 2)
     return row
 
@@ -2189,14 +2219,79 @@ def stage_relax(args) -> None:
         ) from first_worker_exc
 
 
-def aggregate_structures(output_dir: Path) -> pd.DataFrame:
-    """Reduce the per-trial logs to one row per gene, and collect its CIF.
+def _backfill_fixed_symmetry_from_cryspr(relaxations: pd.DataFrame) -> pd.DataFrame:
+    """Recover the fixed-symmetry CIF and energy from ``cryspr/`` for older runs.
 
-    The kept structure of a gene is the lowest-energy trial that produced one.
-    Genes that produced none keep a row, with the reason in ``error``: a gene
-    that nothing could be built for and one whose relaxations all crashed are
-    different failures, and the funnel's ``has_structure`` alone does not say
-    which happened.
+    A run relaxed before the fixed-symmetry readout was recorded still has every
+    stage's CIF and optimiser log in its trial directories: the
+    ``*_2_sym_cell+pos.cif`` and the last energy of the
+    ``*_sym_cell+positions_relax.log`` are that readout.
+    """
+    for column in ("status_fixed", "energy_fixed", "energy_per_atom_fixed", "cif_fixed"):
+        if column not in relaxations.columns:
+            relaxations[column] = None
+    relaxations["status_fixed"] = relaxations["status_fixed"].astype(object)
+    relaxations["cif_fixed"] = relaxations["cif_fixed"].astype(object)
+    for idx, row in relaxations[relaxations["status"] == "ok"].iterrows():
+        cif_str = str(row.get("cif", ""))
+        if not cif_str or cif_str == "nan":
+            continue
+        cif_path = Path(cif_str)
+        parent = cif_path.parent
+        if not parent.is_dir():
+            continue
+        prefix = cif_path.name.replace("_kept.cif", "")
+        sym_cifs = (
+            list(parent.glob(f"{prefix}_*2_sym_cell+pos.cif"))
+            or list(parent.glob(f"*_{prefix}_2_sym_cell+pos.cif"))
+            or list(parent.glob("*_2_sym_cell+pos.cif"))
+        )
+        if not sym_cifs:
+            continue
+        sym_logs = (
+            list(parent.glob(f"{prefix}*_sym_cell+positions_relax.log"))
+            or list(parent.glob("*_sym_cell+positions_relax.log"))
+        )
+        last_energy = None
+        if sym_logs and sym_logs[0].is_file():
+            with open(sym_logs[0], encoding="utf-8") as handle:
+                for line in handle:
+                    parts = line.strip().split()
+                    if len(parts) >= 4 and parts[0] == "BFGS:":
+                        try:
+                            last_energy = float(parts[3])
+                        except ValueError:
+                            pass
+        if last_energy is None:
+            continue
+        relaxations.at[idx, "status_fixed"] = "ok"
+        relaxations.at[idx, "energy_fixed"] = last_energy
+        relaxations.at[idx, "cif_fixed"] = str(sym_cifs[0])
+        n_atoms = row.get("n_atoms")
+        if pd.notna(n_atoms) and int(n_atoms) > 0:
+            relaxations.at[idx, "energy_per_atom_fixed"] = last_energy / int(n_atoms)
+    return relaxations
+
+
+#: Columns of ``structures.csv`` and ``structures_fixed_symmetry.csv`` before scoring.
+STRUCTURE_COLUMNS = (
+    "index", "dof_positional", "n_trials", "n_drawn", "n_relaxed",
+    "pyxtal_seconds", "relax_seconds", "has_structure", "formula",
+    "energy", "energy_per_atom", "n_atoms", "best_trial", "device", "error",
+)
+
+
+def aggregate_structures(output_dir: Path) -> pd.DataFrame:
+    """Reduce the per-trial logs to one row per gene, for both readouts.
+
+    The kept structure of a gene is the lowest-energy trial that produced one,
+    written to ``structures.csv`` and ``cifs/``.  The fixed-symmetry structure
+    is a separate selection -- the lowest *fixed-symmetry* energy, which need
+    not be the same trial -- written to ``structures_fixed_symmetry.csv`` and
+    ``cifs_fixed_symmetry/``.  Genes that produced none keep a row, with the
+    reason in ``error``: a gene that nothing could be built for and one whose
+    relaxations all crashed are different failures, and the funnel's
+    ``has_structure`` alone does not say which happened.
 
     Returns:
         The frame written to ``structures.csv``, indexed by gene.
@@ -2204,6 +2299,13 @@ def aggregate_structures(output_dir: Path) -> pd.DataFrame:
     output_dir = Path(output_dir)
     draws = read_rows(output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS)
     relaxations = read_rows(output_dir / RELAXATIONS_FILE, RELAXATION_COLUMNS)
+    if (relaxations["status"] == "ok").any() and not (
+        "status_fixed" in relaxations.columns
+        and (relaxations["status_fixed"] == "ok").any()
+    ):
+        relaxations = _backfill_fixed_symmetry_from_cryspr(relaxations)
+        if (relaxations["status_fixed"] == "ok").any():
+            relaxations.to_csv(output_dir / RELAXATIONS_FILE, index=False)
     # Only present in a wide-then-narrow run.  Its per-gene counts and seconds
     # are what make the two arms comparable on cost: without them a run that
     # drew ten times as many starts looks identical to one that drew the usual
@@ -2212,89 +2314,72 @@ def aggregate_structures(output_dir: Path) -> pd.DataFrame:
     by_gene_prescreen = {
         index: group for index, group in prescreened.groupby("index")
     } if len(prescreened) else {}
-    cif_dir = output_dir / CIF_DIR
-    cif_dir.mkdir(parents=True, exist_ok=True)
-    prerattle_dir = output_dir / PRERATTLE_CIF_DIR
-    prerattle_dir.mkdir(parents=True, exist_ok=True)
+    readouts = (
+        # (output, CIF dir, status, energy, energy per atom, CIF column)
+        (STRUCTURES_FILE, CIF_DIR, "status", "energy", "energy_per_atom", "cif"),
+        (STRUCTURES_FIXED_FILE, CIF_FIXED_DIR, "status_fixed", "energy_fixed",
+         "energy_per_atom_fixed", "cif_fixed"),
+    )
+    for _, directory, *_ in readouts:
+        (output_dir / directory).mkdir(parents=True, exist_ok=True)
 
     by_gene = {index: group for index, group in relaxations.groupby("index")}
-    rows = []
+    rows = {name: [] for name, *_ in readouts}
     for index, group in draws.groupby("index"):
         relaxed = by_gene.get(index, relaxations.iloc[:0])
-        succeeded = relaxed[relaxed["status"] == "ok"]
-        row = {
-            "index": int(index),
-            "dof_positional": group["dof_positional"].iloc[0],
-            "n_trials": int(group["n_trials"].iloc[0]),
-            "n_drawn": int((group["status"] == "ok").sum()),
-            "n_relaxed": int(len(succeeded)),
-            "pyxtal_seconds": round(float(group["seconds"].fillna(0).sum()), 2),
-            "relax_seconds": round(float(relaxed["seconds"].fillna(0).sum()), 2)
-            if len(relaxed) else 0.0,
-            "has_structure": False,
-            "formula": None, "energy": None, "energy_per_atom": None,
-            "n_atoms": None, "best_trial": None, "device": None, "error": None,
-            # The pre-rattle readout is a separate selection, not a column of
-            # the same trial: the lowest-energy trial before the rattle need not
-            # be the lowest-energy one after it, and reporting the winner's
-            # pre-rattle energy instead would answer neither question.
-            "has_prerattle": False, "energy_prerattle": None,
-            "energy_per_atom_prerattle": None, "best_trial_prerattle": None,
-        }
-        if by_gene_prescreen:
-            pre = by_gene_prescreen.get(index, prescreened.iloc[:0])
-            row["n_prescreened"] = int((pre["status"] == "ok").sum())
-            row["prescreen_seconds"] = round(float(pre["seconds"].fillna(0).sum()), 2)
-        if len(succeeded):
-            best = succeeded.loc[succeeded["energy"].idxmin()]
-            row.update(
-                has_structure=True,
-                formula=best["formula"],
-                energy=float(best["energy"]),
-                energy_per_atom=float(best["energy_per_atom"]),
-                n_atoms=int(best["n_atoms"]),
-                best_trial=int(best["trial"]),
-                device=best["device"],
-            )
-            source = Path(str(best["cif"]))
-            if source.is_file():
-                (cif_dir / f"{index}.cif").write_text(
-                    source.read_text(encoding="utf-8"), encoding="utf-8"
-                )
-            else:
-                row["error"] = f"kept CIF missing at {source}"
-
-            prerattled = succeeded[succeeded["energy_prerattle"].notna()] \
-                if "energy_prerattle" in succeeded.columns else succeeded.iloc[:0]
-            if len(prerattled):
-                best_pre = prerattled.loc[prerattled["energy_prerattle"].idxmin()]
+        for name, directory, status, energy, energy_per_atom, cif in readouts:
+            succeeded = relaxed[
+                (relaxed[status] == "ok") & relaxed[energy].notna()
+            ] if status in relaxed.columns else relaxed.iloc[:0]
+            row = {
+                "index": int(index),
+                "dof_positional": group["dof_positional"].iloc[0],
+                "n_trials": int(group["n_trials"].iloc[0]),
+                "n_drawn": int((group["status"] == "ok").sum()),
+                "n_relaxed": int(len(succeeded)),
+                "pyxtal_seconds": round(float(group["seconds"].fillna(0).sum()), 2),
+                "relax_seconds": round(float(relaxed["seconds"].fillna(0).sum()), 2)
+                if len(relaxed) else 0.0,
+                "has_structure": False,
+                "formula": None, "energy": None, "energy_per_atom": None,
+                "n_atoms": None, "best_trial": None, "device": None, "error": None,
+            }
+            if by_gene_prescreen:
+                pre = by_gene_prescreen.get(index, prescreened.iloc[:0])
+                row["n_prescreened"] = int((pre["status"] == "ok").sum())
+                row["prescreen_seconds"] = round(float(pre["seconds"].fillna(0).sum()), 2)
+            if len(succeeded):
+                best = succeeded.loc[pd.to_numeric(succeeded[energy]).idxmin()]
                 row.update(
-                    has_prerattle=True,
-                    energy_prerattle=float(best_pre["energy_prerattle"]),
-                    energy_per_atom_prerattle=float(best_pre["energy_per_atom_prerattle"]),
-                    best_trial_prerattle=int(best_pre["trial"]),
+                    has_structure=True,
+                    formula=best["formula"],
+                    energy=float(best[energy]),
+                    energy_per_atom=float(best[energy_per_atom]),
+                    n_atoms=int(best["n_atoms"]),
+                    best_trial=int(best["trial"]),
+                    device=best["device"],
                 )
-                pre_source = Path(str(best_pre["cif_prerattle"]))
-                if pre_source.is_file():
-                    (prerattle_dir / f"{index}.cif").write_text(
-                        pre_source.read_text(encoding="utf-8"), encoding="utf-8"
+                source = Path(str(best[cif]))
+                if source.is_file():
+                    (output_dir / directory / f"{index}.cif").write_text(
+                        source.read_text(encoding="utf-8"), encoding="utf-8"
                     )
-        else:
-            row["error"] = _failure_reason(group, relaxed)
-        rows.append(row)
+                else:
+                    row["error"] = f"kept CIF missing at {source}"
+            else:
+                row["error"] = _failure_reason(group, relaxed)
+            rows[name].append(row)
 
-    if rows:
-        frame = pd.DataFrame(rows).set_index("index").sort_index()
-    else:
-        frame = pd.DataFrame(
-            columns=[
-                "index", "dof_positional", "n_trials", "n_drawn", "n_relaxed",
-                "pyxtal_seconds", "relax_seconds", "has_structure", "formula",
-                "energy", "energy_per_atom", "n_atoms", "best_trial", "device", "error",
-            ]
-        ).set_index("index")
-    frame.to_csv(output_dir / STRUCTURES_FILE)
-    return frame
+    frames = {}
+    for name, *_ in readouts:
+        frame = (
+            pd.DataFrame(rows[name]).set_index("index").sort_index()
+            if rows[name]
+            else pd.DataFrame(columns=list(STRUCTURE_COLUMNS)).set_index("index")
+        )
+        frame.to_csv(output_dir / name)
+        frames[name] = frame
+    return frames[STRUCTURES_FILE]
 
 
 def _failure_reason(draws: pd.DataFrame, relaxations: pd.DataFrame) -> str:
@@ -2333,6 +2418,13 @@ def stage_score(args) -> None:
     carries ``gene_novel`` (the sampled gene), ``novel_by_sampled_gene`` (the
     old sampled-fingerprint-only verdict), ``novel_structure`` (the two-
     fingerprint verdict, which MetaSUN uses), and ``relaxed_fingerprint_*``.
+
+    Two readouts are scored the same way: the kept structures (``cifs/``,
+    ``structures.csv``, the funnel's ``free`` section) and the fixed-symmetry
+    ones (``cifs_fixed_symmetry/``, ``structures_fixed_symmetry.csv``,
+    ``fixed_symmetry``).  Each is a different structure, so every verdict --
+    validity, uniqueness, novelty, the hull -- is recomputed on it rather than
+    inherited.
     """
     from pymatgen.core import Structure
 
@@ -2346,7 +2438,18 @@ def stage_score(args) -> None:
 
     phase = _PhaseTimer()
     screen = read_screen(args.output_dir / SCREEN_FILE)
-    frame = pd.read_csv(args.output_dir / STRUCTURES_FILE, index_col="index")
+    free_file = args.output_dir / STRUCTURES_FILE
+    fixed_file = args.output_dir / STRUCTURES_FIXED_FILE
+    # A run relaxed before the fixed-symmetry readout existed has no
+    # structures_fixed_symmetry.csv; aggregating again backfills it from the
+    # trial directories, where they are still on disk.
+    if not fixed_file.is_file() and (args.output_dir / PYXTAL_TRIALS_FILE).is_file() \
+            and (args.output_dir / RELAXATIONS_FILE).is_file():
+        aggregate_structures(args.output_dir)
+    frame = pd.read_csv(free_file, index_col="index")
+    frame_fixed = (
+        pd.read_csv(fixed_file, index_col="index") if fixed_file.is_file() else None
+    )
     if frame["has_structure"].sum() == 0:
         relax_path = args.output_dir / RELAXATIONS_FILE
         if relax_path.is_file():
@@ -2359,7 +2462,6 @@ def stage_score(args) -> None:
                     raise RuntimeError(
                         f"Cannot score: all {len(relax_df)} relaxation trial(s) failed with worker errors"
                     )
-    cif_dir = args.output_dir / CIF_DIR
 
     genes = load_genes(args.input)
     # Not persisted by write_screen -- large, and cheap to recompute.
@@ -2375,12 +2477,12 @@ def stage_score(args) -> None:
         except Exception as exc:
             logger.warning("Gene %d: no fingerprint (%s)", index, exc)
 
-    def read_variant(directory: Path, energy_column: str) -> dict:
+    def read_variant(target: pd.DataFrame, directory: Path) -> dict:
         """Structures, validity, relaxed fingerprints and hull energies for one readout."""
         out = {"validity": {}, "structures": {}, "relaxed": {}, "hull": {}}
         if not directory.is_dir():
             return out
-        for index in frame.index:
+        for index in target.index:
             cif_path = directory / f"{index}.cif"
             if not cif_path.is_file():
                 continue
@@ -2399,8 +2501,8 @@ def stage_score(args) -> None:
                 out["relaxed"][index] = fingerprinter.fingerprint_structure(structure)
             except Exception as exc:
                 logger.warning("Gene %d: no relaxed fingerprint (%s)", index, exc)
-            energy = frame.at[index, energy_column] if energy_column in frame else None
-            if energy is not None and pd.notna(energy):
+            energy = target.at[index, "energy"]
+            if pd.notna(energy):
                 try:
                     # The energy came from the same potential that defines this
                     # hull, which is why --mlip is restricted to published hulls.
@@ -2411,78 +2513,68 @@ def stage_score(args) -> None:
                     logger.warning("Gene %d: e_above_hull failed (%s)", index, exc)
         return out
 
-    kept = read_variant(cif_dir, "energy")
-    phase.done("read CIFs, validity, fingerprints and e_above_hull")
-
-    # The same measurements on the structure the rattle stage was handed.  A
-    # separate pass rather than a column, because it is a different structure
-    # and every downstream verdict -- validity, uniqueness, novelty, the hull --
-    # has to be recomputed on it rather than inherited.
-    want_prerattle = getattr(args, "prerattle_metrics", True)
-    prerattle_dir = args.output_dir / PRERATTLE_CIF_DIR
-    prerattle = (
-        read_variant(prerattle_dir, "energy_prerattle")
-        if want_prerattle else {"validity": {}, "structures": {}, "relaxed": {}, "hull": {}}
-    )
-    if want_prerattle and not prerattle["structures"]:
-        logger.info(
-            "No pre-rattle structures at %s; the pre-rattle metrics will be "
-            "reported as null. A run relaxed before they were recorded has none.",
-            prerattle_dir,
+    def attach(target: pd.DataFrame, variant: dict) -> pd.DataFrame:
+        """Write a readout's per-gene verdicts onto *target*, and return its scored rows."""
+        novel_genes = set(screen.novel)
+        target["valid_structure"] = pd.Series(variant["validity"], dtype=object)
+        target["e_above_hull"] = pd.Series(variant["hull"], dtype=float)
+        target["gene_novel"] = pd.Series(
+            {index: index in novel_genes for index in target.index}
         )
-    elif want_prerattle:
-        phase.done("read pre-rattle CIFs, validity, fingerprints and e_above_hull")
-    def attach(variant: dict, suffix: str) -> pd.DataFrame:
-        """Write a variant's per-gene verdicts onto *frame*, and return its scored rows."""
-        frame[f"valid_structure{suffix}"] = pd.Series(variant["validity"])
-        frame[f"e_above_hull{suffix}"] = pd.Series(variant["hull"])
-        frame[f"relaxed_fingerprint_resolved{suffix}"] = pd.Series(
-            {index: index in variant["relaxed"] for index in frame.index}
+        target["relaxed_fingerprint_resolved"] = pd.Series(
+            {index: index in variant["relaxed"] for index in target.index}
         )
-        frame[f"relaxed_fingerprint_changed{suffix}"] = pd.Series(
+        target["relaxed_fingerprint_changed"] = pd.Series(
             {
                 index: variant["relaxed"][index] != gene_fingerprints.get(index)
                 for index in variant["relaxed"]
-            }
+            },
+            dtype=object,
         )
         # Only structures that got this far can be unique or novel, and
         # comparing the ones that did not would just cost matcher calls.
         scored = pd.DataFrame(
             {
                 "fingerprint": pd.Series(gene_fingerprints),
-                "structure": pd.Series(variant["structures"]),
+                "structure": pd.Series(variant["structures"], dtype=object),
             }
         ).dropna()
         scored = scored.loc[
             [i for i in scored.index if bool(variant["validity"].get(i, False))]
         ]
-        scored["relaxed_fingerprint"] = pd.Series(variant["relaxed"]).reindex(scored.index)
+        scored["relaxed_fingerprint"] = pd.Series(variant["relaxed"], dtype=object).reindex(
+            scored.index
+        )
         return scored
 
-    novel_genes = set(screen.novel)
-    frame["gene_novel"] = pd.Series(
-        {index: index in novel_genes for index in frame.index}
-    )
-    scored_kept = attach(kept, "")
-    scored_pre = attach(prerattle, "_prerattle") if prerattle["structures"] else None
+    readouts = [("free", frame, args.output_dir / CIF_DIR, free_file)]
+    if frame_fixed is not None:
+        readouts.append(
+            ("fixed_symmetry", frame_fixed, args.output_dir / CIF_FIXED_DIR, fixed_file)
+        )
+    scored = {}
+    for label, target, directory, _ in readouts:
+        scored[label] = attach(target, read_variant(target, directory))
+    phase.done("read CIFs, validity, fingerprints and e_above_hull")
 
-    for scored, suffix in ((scored_kept, ""), (scored_pre, "_prerattle")):
-        if scored is None:
-            continue
-        unique_index = set(filter_by_unique_structure(scored).index)
-        frame[f"unique_structure{suffix}"] = pd.Series(
-            {index: index in unique_index for index in scored.index}
+    for label, target, _, _ in readouts:
+        unique_index = (
+            set(filter_by_unique_structure(scored[label]).index)
+            if len(scored[label]) else set()
+        )
+        target["unique_structure"] = pd.Series(
+            {index: index in unique_index for index in scored[label].index}, dtype=object
         )
     phase.done("uniqueness (StructureMatcher)")
 
     # The matcher needs a candidate for either fingerprint, and one reference
-    # serves both readouts: built over the union of all four fingerprint sets,
-    # so the streaming pass over the ~1 GB CIF export happens once rather than
+    # serves both readouts: built over the union of their fingerprint sets, so
+    # the streaming pass over the ~1 GB CIF export happens once rather than
     # twice.  That pass is the score stage's dominant cost.
-    fingerprint_sets = [scored_kept["fingerprint"], scored_kept["relaxed_fingerprint"].dropna()]
-    if scored_pre is not None:
+    fingerprint_sets = []
+    for label in scored:
         fingerprint_sets += [
-            scored_pre["fingerprint"], scored_pre["relaxed_fingerprint"].dropna()
+            scored[label]["fingerprint"], scored[label]["relaxed_fingerprint"].dropna()
         ]
     reference = build_novelty_reference(
         pd.concat(fingerprint_sets),
@@ -2507,57 +2599,23 @@ def stage_score(args) -> None:
             pd.Series({"fingerprint": relaxed, "structure": row.structure})
         )
 
-    for scored, suffix in ((scored_kept, ""), (scored_pre, "_prerattle")):
-        if scored is None:
-            continue
-        frame[f"novel_by_sampled_gene{suffix}"] = pd.Series(
-            {index: novelty_filter.is_novel(row) for index, row in scored.iterrows()}
+    for label, target, _, path in readouts:
+        rows = scored[label]
+        target["novel_by_sampled_gene"] = pd.Series(
+            {index: novelty_filter.is_novel(row) for index, row in rows.iterrows()},
+            dtype=object,
         )
-        frame[f"novel_structure{suffix}"] = pd.Series(
-            {index: _is_novel(row) for index, row in scored.iterrows()}
+        target["novel_structure"] = pd.Series(
+            {index: _is_novel(row) for index, row in rows.iterrows()}, dtype=object
         )
+        target.drop(columns=["structure"], errors="ignore").to_csv(path)
     phase.done("novelty (StructureMatcher)")
 
-    # What the rattle did, per gene, on the three axes it can move: the gene's
-    # own orbit set, novelty, and the energy thresholds.
-    if scored_pre is not None:
-        frame["rattle_moved_off_gene"] = pd.Series(
-            {
-                index: (
-                    kept["relaxed"].get(index) != gene_fingerprints.get(index)
-                    and prerattle["relaxed"].get(index) == gene_fingerprints.get(index)
-                )
-                for index in frame.index
-                if index in kept["relaxed"] and index in prerattle["relaxed"]
-            }
-        )
-        frame["rattle_lowered_energy"] = pd.Series(
-            {
-                index: bool(
-                    pd.notna(frame.at[index, "energy"])
-                    and pd.notna(frame.at[index, "energy_prerattle"])
-                    and frame.at[index, "energy_per_atom"]
-                    < frame.at[index, "energy_per_atom_prerattle"] - 1e-9
-                )
-                for index in frame.index
-            }
-        )
-
-    frame.drop(columns=["structure"], errors="ignore").to_csv(
-        args.output_dir / STRUCTURES_FILE
-    )
     _update_manifest(
         args.output_dir / MANIFEST_FILE,
-        {
-            "hull": hull.provenance,
-            "novelty": "sampled+relaxed fingerprint",
-            "prerattle_metrics": scored_pre is not None,
-        },
+        {"hull": hull.provenance, "novelty": "sampled+relaxed fingerprint"},
     )
-    report = funnel(screen, frame)
-    if scored_pre is not None:
-        report.update(funnel(screen, frame, prefix="prerattle_"))
-        report.update(rattle_effect(screen, frame))
+    report = funnel(screen, frame, frame_fixed)
     (args.output_dir / FUNNEL_FILE).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )
@@ -2938,23 +2996,6 @@ def build_parser() -> argparse.ArgumentParser:
             "and do only the rest. On by default, since both logs are written "
             "row by row and an interrupted stage has nothing to gain from "
             "repeating itself; --no-resume starts both from scratch."
-        ),
-    )
-
-    score = parser.add_argument_group("scoring (stage: score)")
-    score.add_argument(
-        "--prerattle-metrics", action=argparse.BooleanOptionalAction, default=True,
-        help=(
-            "Report every metric a second time on the structure the rattle stage "
-            "was handed, under a 'prerattle_' prefix, plus what the rattle "
-            "changed ('rattle_moved_off_gene', 'rattle_novel_became_known', "
-            "'rattle_metasun_lost' and their counterparts). On by default: the "
-            "rattle lowers energy but can discard the Wyckoff orbits WyFormer "
-            "predicted and can relax a novel structure onto a known one, and "
-            "neither is visible from the kept structure alone. It costs a second "
-            "pass of the matcher and the hull, not a second relaxation, and it "
-            "changes nothing about which structure the protocol keeps. "
-            "--no-prerattle-metrics reports the kept readout only."
         ),
     )
 

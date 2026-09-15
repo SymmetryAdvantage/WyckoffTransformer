@@ -351,18 +351,15 @@ def prerelax(
 #: known until it has run; this one always is.
 KEPT_CIF_SUFFIX = "_kept.cif"
 
-#: Suffix of the CIF holding the structure the rattle stage was *handed*.
-#:
-#: Written alongside the kept one, always, because the rattle is not free of
-#: consequence beyond energy and the protocol reports both readouts.  A rattle
-#: is a finite symmetry-breaking perturbation: the structure it leaves is off
-#: the Wyckoff orbits the gene specified -- which is what WyFormer predicts and
-#: what the whole symmetry-by-design argument rests on -- and it can relax onto
-#: a LeMat-Bulk entry the unrattled structure was distinct from, turning a novel
-#: structure into a known one.  Neither effect is visible from the kept
-#: structure alone.  Identical to the kept CIF when the rattle did not run or
-#: did not win its margin.
-PRERATTLE_CIF_SUFFIX = "_prerattle.cif"
+#: Suffix of the fixed-symmetry structure's CIF: the output of the
+#: symmetry-constrained stages, before the symmetry is released or the structure
+#: rattled.  Written alongside the kept one, always, because the protocol scores
+#: both: the release and the rattle can move a structure off the Wyckoff orbits
+#: the gene specified -- which is what WyFormer predicts -- and onto a
+#: LeMat-Bulk entry the symmetric structure was distinct from.  Deliberately not
+#: ending in :data:`KEPT_CIF_SUFFIX`, which ``func_run`` globs for the final
+#: structure and would otherwise match both.
+KEPT_FIXED_CIF_SUFFIX = "_fixed_symmetry.cif"
 
 
 def _trial_seed(id_gene: int | str, i_trial: int) -> int:
@@ -440,7 +437,9 @@ def relax_trial(
         prerelax_release_symmetry: bool = False,
         prerelax_rattle: bool = False,
         prerelax_max_expansion: Optional[float] = None,
-) -> tuple[Optional[Atoms], Optional[float]]:
+) -> tuple[
+    Optional[Atoms], Optional[float], tuple[Optional[Atoms], Optional[float]]
+]:
     """Relax one PyXtal draw and write the CIF the relaxation kept.
 
     The relaxation half of :func:`func_run`, for one trial and with no PyXtal
@@ -489,11 +488,10 @@ def relax_trial(
             produced; see :func:`prerelax`.
 
     Returns:
-        ``(atoms, energy, prerattle)``, where *prerattle* is a
-        ``(atoms, energy)`` pair for the structure the rattle stage was handed
-        -- equal to the kept one when the rattle did not run or did not win.
-        ``(None, None, None)`` when the clash guard rejected the relaxed
-        structure.
+        ``(atoms, energy, fixed_symmetry)``, where *fixed_symmetry* is an
+        ``(atoms, energy)`` pair for the output of the symmetry-constrained
+        stages.  Either structure is ``None``, with its energy, when the clash
+        guard rejected it; the two are judged separately.
 
     Raises:
         Exception: Whatever the relaxation raised.  Unlike :func:`func_run`,
@@ -543,30 +541,40 @@ def relax_trial(
             "[%s] Relaxed structure has atomic clashes (E = %.5f eV); "
             "discarding as unphysical.", label, energy,
         )
-        return None, None, None
+        atoms_relaxed, energy = None, None
+    else:
+        # The kept structure, whichever stage produced it.
+        write(
+            filename=str(trial_dir / f"{formula}{KEPT_CIF_SUFFIX}"),
+            images=atoms_relaxed,
+            format="cif",
+        )
 
-    # The kept structure, whichever stage produced it.
-    write(
-        filename=str(trial_dir / f"{formula}{KEPT_CIF_SUFFIX}"),
-        images=atoms_relaxed,
-        format="cif",
-    )
-    # And the one the rattle was handed, so the metrics can be reported both
-    # ways.  Written unconditionally, including when it is the same structure:
-    # a missing file and an unrattled trial would otherwise be indistinguishable
-    # downstream, which is exactly the ambiguity this pair exists to remove.
-    prerattle_energy = stages.prerattle.get_potential_energy()
-    write(
-        filename=str(trial_dir / f"{formula}{PRERATTLE_CIF_SUFFIX}"),
-        images=stages.prerattle,
-        format="cif",
-    )
+    atoms_fixed, energy_fixed = stages.fixed_symmetry, stages.fixed_symmetry_energy
+    if clash_guard and has_atomic_clash(atoms_fixed):
+        logger.warning(
+            "[%s] Fixed-symmetry structure has atomic clashes (E = %.5f eV); "
+            "discarding as unphysical.", label, energy_fixed,
+        )
+        atoms_fixed, energy_fixed = None, None
+    else:
+        # Written unconditionally, including when it is the kept structure: a
+        # missing file and a trial whose later stages changed nothing would
+        # otherwise be indistinguishable downstream.
+        write(
+            filename=str(trial_dir / f"{formula}{KEPT_FIXED_CIF_SUFFIX}"),
+            images=atoms_fixed,
+            format="cif",
+        )
+
     logger.info(
-        "[%s] Done, E = %.5f eV (pre-rattle %.5f eV%s)",
-        label, energy, prerattle_energy,
+        "[%s] Done, E = %s eV (fixed symmetry %s eV%s)",
+        label,
+        "clash" if energy is None else f"{energy:.5f}",
+        "clash" if energy_fixed is None else f"{energy_fixed:.5f}",
         ", rattle accepted" if stages.rattle_accepted else "",
     )
-    return atoms_relaxed, energy, (stages.prerattle, prerattle_energy)
+    return atoms_relaxed, energy, (atoms_fixed, energy_fixed)
 
 
 def func_run(
@@ -652,7 +660,7 @@ def func_run(
         formula = atoms_in.get_chemical_formula(mode="metal")
 
         try:
-            atoms_relaxed, energy, _prerattle = relax_trial(
+            atoms_relaxed, energy, _fixed = relax_trial(
                 atoms_in=atoms_in,
                 calculator=calculator,
                 trial_dir=trial_dir,

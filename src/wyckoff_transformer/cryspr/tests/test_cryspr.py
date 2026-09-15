@@ -388,7 +388,8 @@ class TestFuncRunClashGuard(unittest.TestCase):
             with patch("wyckoff_transformer.cryspr.generator.single_pyxtal",
                        return_value=relaxed.copy()), \
                  patch("wyckoff_transformer.cryspr.generator.stepwise_relax_stages",
-                       return_value=RelaxStages(kept=relaxed, prerattle=relaxed)), \
+                       return_value=RelaxStages(kept=relaxed, fixed_symmetry=relaxed,
+                                                fixed_symmetry_energy=-7.0)), \
                  patch("wyckoff_transformer.cryspr.generator.has_atomic_clash",
                        return_value=True) as mock_clash:
                 result = func_run(
@@ -409,14 +410,15 @@ class TestFuncRunClashGuard(unittest.TestCase):
 
     def test_mace_calculator_engages_the_guard(self):
         result, mock_clash = self._run(_calculator_from_module("mace.calculators.mace"))
-        mock_clash.assert_called_once()
+        # Once for the kept structure and once for the fixed-symmetry one.
+        self.assertEqual(mock_clash.call_count, 2)
         self.assertEqual(result, (None, None, None, None, None),
                          "the only trial clashed, so no structure survives")
 
     def test_clash_guard_true_forces_the_guard_on_a_non_mace_calculator(self):
         result, mock_clash = self._run(_calculator_from_module("upet.calculator"),
                                        clash_guard=True)
-        mock_clash.assert_called_once()
+        self.assertEqual(mock_clash.call_count, 2)
         self.assertEqual(result, (None, None, None, None, None))
 
     def test_clash_guard_false_forces_the_guard_off_for_mace(self):

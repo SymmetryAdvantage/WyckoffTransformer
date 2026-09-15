@@ -67,7 +67,7 @@ def _relax_one(payload):
     started = time.time()
     try:
         atoms = read(io.StringIO(xyz), format="extxyz")
-        relaxed, energy, _prerattle = relax_trial(
+        relaxed, energy, _fixed = relax_trial(
             atoms_in=atoms, calculator=_CALC, trial_dir=Path(wdir),
             label=f"gene {gene} trial {trial}", seed=_trial_seed(gene, trial),
             fmax=0.05,

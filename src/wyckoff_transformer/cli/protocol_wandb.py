@@ -160,6 +160,7 @@ def generate_genes(
     system_prior: Optional[Path] = None,
     temperature: float = 1.0,
     manifest_path: Optional[Path] = None,
+    allow_fewer: bool = False,
 ) -> int:
     """Generate a gene cohort from the run's checkpoint and write it to disk.
 
@@ -184,7 +185,7 @@ def generate_genes(
     explicitly because datasets are not loaded here.
 
     Returns:
-        The number of genes written (always *n_genes* on success).
+        The number of genes written (always *n_genes* on success, or fewer if *allow_fewer* is True).
     """
     import wandb  # noqa: PLC0415
 
@@ -198,6 +199,9 @@ def generate_genes(
         wandb_project=project,
         load_datasets=False,
     )
+    if hasattr(trainer.model, "_orig_mod"):
+        trainer.model = trainer.model._orig_mod
+
     attempted = max(n_genes + 1, int(round(n_genes * oversample)))
 
     if condition_value is not None and condition is None:
@@ -278,10 +282,17 @@ def generate_genes(
         temperature=temperature,
     )
     if len(generated) < n_genes:
-        raise ValueError(
-            f"Only {len(generated)} of {attempted} generated genes are formally "
-            f"valid; need {n_genes}. Raise --oversample."
-        )
+        if allow_fewer and len(generated) > 0:
+            logger.warning(
+                "Only %d of %d generated genes are formally valid; proceeding with %d "
+                "genes (--allow-fewer).",
+                len(generated), attempted, len(generated),
+            )
+        else:
+            raise ValueError(
+                f"Only {len(generated)} of {attempted} generated genes are formally "
+                f"valid; need {n_genes}. Raise --oversample."
+            )
     if manifest_path is not None:
         from wyckoff_transformer.cli.protocol import update_manifest  # noqa: PLC0415
 
@@ -323,17 +334,21 @@ def download_protocol_artifact(
     return artifact.version
 
 
-def flatten_funnel(funnel: dict) -> dict:
-    """Numeric leaves of ``funnel.json``, keyed for ``run.summary``.
+def flatten_funnel(funnel: dict, prefix: str = SUMMARY_PREFIX) -> dict:
+    """Numeric leaves of ``funnel.json``, keyed hierarchically for ``run.summary``.
 
-    The funnel is already a flat dict of scalars; this just drops the ``None``
-    entries a partial run leaves and prefixes the rest.
+    Traverses hierarchical sections (e.g. ``protocol/gene/``,
+    ``protocol/fixed_symmetry/``, ``protocol/free/``) and flattens them into
+    summary keys, dropping ``None`` and boolean entries.
     """
-    return {
-        f"{SUMMARY_PREFIX}{key}": value
-        for key, value in funnel.items()
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-    }
+    out = {}
+    for key, value in funnel.items():
+        if isinstance(value, dict):
+            sub = flatten_funnel(value, prefix=f"{prefix}{key}/")
+            out.update(sub)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[f"{prefix}{key}"] = value
+    return out
 
 
 def build_stage_args(args, gene_file: Path) -> Namespace:
@@ -370,7 +385,6 @@ def build_stage_args(args, gene_file: Path) -> Namespace:
         basinhop_temperature=args.basinhop_temperature,
         basinhop_stdev=args.basinhop_stdev,
         basinhop_strain_stdev=args.basinhop_strain_stdev,
-        prerattle_metrics=args.prerattle_metrics,
         # The optional stages' own arguments, so that --stages can name them.
         template_index=args.template_index,
         template_candidates=args.template_candidates,
@@ -427,6 +441,7 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
             protocol_cli.PRESCREEN_TRIALS_FILE,
             protocol_cli.PRESCREEN_SELECTION_FILE,
             protocol_cli.STRUCTURES_FILE,
+            protocol_cli.STRUCTURES_FIXED_FILE,
             protocol_cli.FUNNEL_FILE,
             protocol_cli.MANIFEST_FILE,
         ):
@@ -436,9 +451,24 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
         cif_dir = out / protocol_cli.CIF_DIR
         if cif_dir.is_dir():
             artifact.add_dir(str(cif_dir), name=protocol_cli.CIF_DIR)
+        cif_fixed_dir = out / protocol_cli.CIF_FIXED_DIR
+        if cif_fixed_dir.is_dir():
+            artifact.add_dir(str(cif_fixed_dir), name=protocol_cli.CIF_FIXED_DIR)
         run.log_artifact(artifact)
     finally:
         run.finish()
+
+    try:
+        api_run = wandb.Api().run(wandb_run_path(args.wandb_run, args.wandb_entity, args.wandb_project))
+        for k in list(api_run.summary.keys()):
+            if k.startswith("protocol/") and not k.startswith(("protocol/gene/", "protocol/fixed_symmetry/", "protocol/free/")):
+                del api_run.summary[k]
+        for k, v in summary.items():
+            api_run.summary[k] = v
+        api_run.summary.update()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to sync summary via wandb Api: %s", exc)
+
     logger.info("Logged %d summary metrics and artifact protocol_%s",
                 len(summary), args.wandb_run)
 
@@ -504,6 +534,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Softmax temperature for every generated cascade field. Below 1 "
                           "sharpens the sampler, above 1 flattens it. Recorded in "
                           "manifest.json as sampling_temperature.")
+    gen.add_argument("--allow-fewer", action="store_true",
+                     help="Keep whatever valid genes were generated if fewer than --n-genes (e.g. for checkpoints early in training).")
 
     pyxtal = parser.add_argument_group("PyXtal generation")
     pyxtal.add_argument("--pyxtal-cores", type=int, default=None,
@@ -602,13 +634,6 @@ def build_parser() -> argparse.ArgumentParser:
     basinhop.add_argument("--basinhop-strain-stdev", type=float, default=BASINHOP_STRAIN_STDEV,
                           help="Cell strain drawn per hop, before projection.")
 
-    scoring = parser.add_argument_group("scoring")
-    scoring.add_argument(
-        "--prerattle-metrics", action=argparse.BooleanOptionalAction, default=True,
-        help="Report every metric a second time on the pre-rattle structure, "
-             "plus what the rattle changed.",
-    )
-
     template = parser.add_argument_group("template starts (stage: template)")
     template.add_argument(
         "--template-index", type=Path, default=None,
@@ -682,6 +707,7 @@ def main() -> None:
             system_prior=args.system_prior,
             temperature=args.temperature,
             manifest_path=args.output_dir / protocol_cli.MANIFEST_FILE,
+            allow_fewer=args.allow_fewer,
         )
 
     stage_args = build_stage_args(args, gene_file)

@@ -50,27 +50,31 @@ class RelaxStages:
     """Both structures a trial produces, and what the rattle decided.
 
     The protocol keeps the rattled structure when it wins, which is the right
-    call on energy and the wrong one for two other questions.  A rattle is a
-    finite symmetry-breaking perturbation, so the structure it leaves is no
-    longer on the Wyckoff orbits the gene specified -- which is what WyFormer
-    was asked to predict -- and it can relax onto a *known* structure that the
-    unrattled one was distinct from.  Reporting both therefore needs both
-    structures carried out of the relaxation rather than one, which is what this
-    exists for.
+    call on energy and the wrong one for another question.  The symmetry
+    release and the rattle can both move the structure off the Wyckoff orbits
+    the gene specified -- which is what WyFormer was asked to predict -- and
+    onto a *known* structure that the symmetric one was distinct from.  The
+    protocol therefore scores two readouts: the kept structure (``free``) and
+    the output of the symmetry-constrained stages (``fixed_symmetry``), which is
+    still on the gene's orbits by construction.
 
     Attributes:
         kept: What the trial keeps: the rattled structure when the rattle won,
-            otherwise the last stage that ran.  This is what the protocol scores.
-        prerattle: The structure the rattle stage was handed, i.e. the last
-            symmetry-respecting relaxation's output.  Identical to *kept* when
-            the rattle did not run or did not win.
+            otherwise the last stage that ran.  This is what the protocol scores
+            as ``free``.
+        fixed_symmetry: The output of the symmetry-constrained stages, before
+            the symmetry is released or the structure rattled: the
+            ``2_sym_cell+pos`` stage, or the fix-cell warm-up when
+            *fix_symmetry* is off.  A copy, so later stages cannot move it.
+        fixed_symmetry_energy: Its potential energy, eV, on the same calculator.
         rattled: The rattle stage's own output, or ``None`` if it did not run.
         rattle_accepted: Whether it won its margin.  ``None`` if it did not run.
         rattle_delta_ev_per_atom: Its energy change, eV/atom.  Negative is a win.
     """
 
     kept: Atoms
-    prerattle: Atoms
+    fixed_symmetry: Atoms
+    fixed_symmetry_energy: float
     rattled: Optional[Atoms] = None
     rattle_accepted: Optional[bool] = None
     rattle_delta_ev_per_atom: Optional[float] = None
@@ -363,7 +367,7 @@ def stepwise_relax_stages(
 
     Returns:
         A :class:`RelaxStages` carrying both the kept structure and the
-        pre-rattle one, so that a caller can report metrics for each.
+        fixed-symmetry one, so that a caller can report metrics for each.
 
     Raises:
         ValueError: If no stage that relaxes the cell would run, i.e. all of
@@ -420,6 +424,11 @@ def stepwise_relax_stages(
             logfile=logfile_for("sym_cell+positions"),
             **shared,
         )
+    # Copied, with its energy, before anything else runs: the later stages
+    # start from this structure and must not be able to move it.
+    atoms.calc = calculator
+    fixed_symmetry_energy = float(atoms.get_potential_energy())
+    fixed_symmetry = atoms.copy()
 
     # Step 2: no symmetry constraint, so the structure may lower its symmetry --
     # and so that the rattle below is perturbing a converged, unconstrained
@@ -438,9 +447,13 @@ def stepwise_relax_stages(
     # it is genuinely lower.  The margin is what makes this safe to run always:
     # a converged structure cannot be traded away for noise.
     if not rattle:
-        return RelaxStages(kept=atoms, prerattle=atoms)
+        return RelaxStages(
+            kept=atoms,
+            fixed_symmetry=fixed_symmetry,
+            fixed_symmetry_energy=fixed_symmetry_energy,
+        )
 
-    return _rattle_stage(
+    stages = _rattle_stage(
         atoms,
         rattle_stdev=rattle_stdev,
         strain_stdev=strain_stdev,
@@ -449,6 +462,9 @@ def stepwise_relax_stages(
         logfile=logfile_for("rattle_no-sym"),
         **shared,
     )
+    stages.fixed_symmetry = fixed_symmetry
+    stages.fixed_symmetry_energy = fixed_symmetry_energy
+    return stages
 
 
 def stepwise_relax(*args, **kwargs) -> Atoms:
@@ -470,7 +486,7 @@ def _rattle_stage(
         logfile: Path,
         **shared,
 ) -> RelaxStages:
-    """Perturb, re-relax, and report both structures with the verdict.
+    """Perturb, re-relax, and report the kept structure with the verdict.
 
     Which one the trial *keeps* is decided on energy here; which one a metric is
     computed on is decided by the caller, because the rattle is not free of
@@ -522,9 +538,11 @@ def _rattle_stage(
         ) + "\n",
         encoding="utf-8",
     )
+    # The fixed-symmetry pair is filled in by the caller, which ran those stages.
     return RelaxStages(
         kept=rattled if accepted else atoms,
-        prerattle=atoms,
+        fixed_symmetry=atoms,
+        fixed_symmetry_energy=float(energy_before),
         rattled=rattled,
         rattle_accepted=accepted,
         rattle_delta_ev_per_atom=delta,

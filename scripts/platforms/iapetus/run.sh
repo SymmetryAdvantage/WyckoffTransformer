@@ -36,6 +36,13 @@ WYFORMER_IMAGE="${WYFORMER_IMAGE:-pytorch:2.14.0-cuda11.8-py312-universal}"
 WYFORMER_REPO="${WYFORMER_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 WYFORMER_VENV="${WYFORMER_VENV:-$WYFORMER_REPO/.venv}"
 
+if [[ -f "$WYFORMER_REPO/.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "$WYFORMER_REPO/.env"
+    set +a
+fi
+
 if ! docker image inspect "$WYFORMER_IMAGE" >/dev/null 2>&1; then
     echo "error: image $WYFORMER_IMAGE not found; see docs/platforms/iapetus/environment.md" >&2
     exit 1

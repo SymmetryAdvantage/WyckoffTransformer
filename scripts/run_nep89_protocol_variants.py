@@ -722,7 +722,11 @@ def stage_report(args) -> None:
         for arm in args.arms:
             path = args.root / cohort / arm / "funnel.json"
             if path.is_file():
-                funnels[f"{cohort}/{arm}"] = json.loads(path.read_text(encoding="utf-8"))
+                nested = json.loads(path.read_text(encoding="utf-8"))
+                # The funnel is nested by readout; this table is the kept one.
+                funnels[f"{cohort}/{arm}"] = {
+                    **nested.get("gene", {}), **nested.get("free", {})
+                }
     if funnels:
         frame = pd.DataFrame(funnels).T
         keep = [
@@ -740,39 +744,36 @@ def stage_report(args) -> None:
             "",
         ]
 
-    rattle = {}
+    readouts = {}
     for cohort in ("oracle", "wandb"):
         for arm in args.arms:
             path = args.root / cohort / arm / "funnel.json"
             if not path.is_file():
                 continue
-            f = json.loads(path.read_text(encoding="utf-8"))
-            if f.get("prerattle_metasun_per_sampled_gene") is None:
+            nested = json.loads(path.read_text(encoding="utf-8"))
+            free, fixed = nested.get("free", {}), nested.get("fixed_symmetry", {})
+            if fixed.get("metasun_per_sampled_gene") is None:
                 continue
-            rattle[f"{cohort}/{arm}"] = {
-                "metasun": f.get("metasun_per_sampled_gene"),
-                "metasun_prerattle": f.get("prerattle_metasun_per_sampled_gene"),
-                "novel": f.get("novel_structure_per_sampled_gene"),
-                "novel_prerattle": f.get("prerattle_novel_structure_per_sampled_gene"),
-                "moved_off_gene": f.get("rattle_moved_off_gene"),
-                "novel_became_known": f.get("rattle_novel_became_known"),
-                "known_became_novel": f.get("rattle_known_became_novel"),
-                "metasun_lost": f.get("rattle_metasun_lost"),
-                "metasun_gained": f.get("rattle_metasun_gained"),
-                "lowered_energy": f.get("rattle_lowered_energy"),
+            readouts[f"{cohort}/{arm}"] = {
+                "metasun": free.get("metasun_per_sampled_gene"),
+                "metasun_fixed_symmetry": fixed.get("metasun_per_sampled_gene"),
+                "novel": free.get("novel_structure_per_sampled_gene"),
+                "novel_fixed_symmetry": fixed.get("novel_structure_per_sampled_gene"),
+                "fingerprint_changed": free.get("relaxed_fingerprint_changed"),
+                "fingerprint_changed_fixed_symmetry": fixed.get("relaxed_fingerprint_changed"),
             }
-    if rattle:
+    if readouts:
         lines += [
-            "## What the rattle stage costs and buys",
+            "## Fixed symmetry against free relaxation",
             "",
-            "The rattle lowers ORB's energy, which is why it is on by default. "
-            "It also discards the Wyckoff orbits WyFormer predicted -- and for a "
-            "Wyckoff generative model those orbits *are* the prediction -- and it "
-            "can relax a novel structure onto a known one. `_prerattle` columns "
-            "are the same metric on the structure the rattle stage was handed; "
-            "the counts are genes that crossed, in both directions.",
+            "The symmetry release and the rattle lower ORB's energy, which is why "
+            "they are on by default. They can also discard the Wyckoff orbits "
+            "WyFormer predicted -- and for a Wyckoff generative model those orbits "
+            "*are* the prediction -- and relax a novel structure onto a known one. "
+            "`_fixed_symmetry` columns are the same metric on the output of the "
+            "symmetry-constrained stages.",
             "",
-            pd.DataFrame(rattle).T.to_markdown(floatfmt=".4f"),
+            pd.DataFrame(readouts).T.to_markdown(floatfmt=".4f"),
             "",
         ]
 

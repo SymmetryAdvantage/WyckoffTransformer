@@ -47,7 +47,6 @@ from wyckoff_transformer.evaluation.hull_mlips import (
 )
 from wyckoff_transformer.evaluation.protocol import (
     DEFAULT_TRIAL_SCHEDULE,
-    rattle_effect,
     GeneFingerprinter,
     GeneScreen,
     funnel,
@@ -1206,9 +1205,9 @@ class TestRattleStage(unittest.TestCase):
                 steps_limit=500,
                 wdir=Path(tmp),
             )
-        # The pre-rattle structure is reported whatever the verdict: the metrics
-        # that ignore the rattle are computed on it.
-        assert kept.prerattle is before
+        # The rattle stage fills the fixed-symmetry slot with what it was handed;
+        # stepwise_relax_stages overwrites it with the symmetric stages' output.
+        assert kept.fixed_symmetry is before
         assert kept.rattled is after
         assert kept.rattle_accepted is (kept.kept is after)
         return kept.kept is after
@@ -1580,17 +1579,33 @@ class TestStageWorkerFailure(unittest.TestCase):
             stage_score(args)
         self.assertIn("Cannot score: all 1 relaxation trial(s) failed with worker errors", str(ctx.exception))
 
+    def test_quiet_cif_parser_warnings_prints_at_most_once(self):
+        import warnings
+        from wyckoff_transformer.cli.protocol import _quiet_cif_parser_warnings
+
+        calls = []
+        original = lambda msg, cat, fname, lineno, file=None, line=None: calls.append(str(msg))
+        with patch("warnings.showwarning", original):
+            _quiet_cif_parser_warnings()
+            warnings.warn("Issues encountered while parsing CIF: 4 coords rounded", UserWarning)
+            warnings.warn("Issues encountered while parsing CIF: 2 coords rounded", UserWarning)
+            warnings.warn("Issues encountered while parsing CIF: 8 coords rounded", UserWarning)
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("4 coords rounded", calls[0])
+
 
 if __name__ == "__main__":
     unittest.main()
 
 
-class TestPreRattleReadout(unittest.TestCase):
-    """Every metric twice, and an explicit account of what the rattle changed.
+class TestFixedSymmetryReadout(unittest.TestCase):
+    """The funnel reports the gene screen and both structure readouts, nested.
 
-    The rattle lowers energy, which is why it is on by default. It also discards
-    the Wyckoff orbits WyFormer predicted and can relax a novel structure onto a
-    known one, and neither shows up in the kept structure's own numbers.
+    The symmetry release and the rattle lower energy, which is why they are on
+    by default. They can also discard the Wyckoff orbits WyFormer predicted and
+    relax a novel structure onto a known one, and neither shows up in the kept
+    structure's own numbers.
     """
 
     @staticmethod
@@ -1604,92 +1619,113 @@ class TestPreRattleReadout(unittest.TestCase):
     def _frame(rows):
         return pd.DataFrame(rows).set_index("index")
 
-    def test_the_two_readouts_are_reported_under_separate_keys(self):
-        frame = self._frame([
-            # gene 0: metastable and novel both ways
+    def test_the_two_readouts_are_reported_in_separate_sections(self):
+        free = self._frame([
             {"index": 0, "has_structure": True, "valid_structure": True,
-             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02,
-             "has_prerattle": True, "valid_structure_prerattle": True,
-             "unique_structure_prerattle": True, "novel_structure_prerattle": True,
-             "e_above_hull_prerattle": 0.05},
-            # gene 1: the rattle turned a novel structure into a known one
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02},
+            # gene 1: relaxing past the fixed symmetry made it a known structure
             {"index": 1, "has_structure": True, "valid_structure": True,
-             "unique_structure": True, "novel_structure": False, "e_above_hull": 0.01,
-             "has_prerattle": True, "valid_structure_prerattle": True,
-             "unique_structure_prerattle": True, "novel_structure_prerattle": True,
-             "e_above_hull_prerattle": 0.04},
+             "unique_structure": True, "novel_structure": False, "e_above_hull": 0.01},
         ])
-        report = funnel(self._screen(2), frame)
-        report.update(funnel(self._screen(2), frame, prefix="prerattle_"))
+        fixed = self._frame([
+            {"index": 0, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.05},
+            {"index": 1, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.04},
+        ])
+        report = funnel(self._screen(2), free, fixed)
 
-        # MetaSUN is 1 of 2 after the rattle and 2 of 2 before it.
-        self.assertEqual(report["metasun_per_sampled_gene"], 0.5)
-        self.assertEqual(report["prerattle_metasun_per_sampled_gene"], 1.0)
+        self.assertEqual(set(report), {"gene", "fixed_symmetry", "free"})
+        self.assertEqual(report["free"]["metasun_per_sampled_gene"], 0.5)
+        self.assertEqual(report["fixed_symmetry"]["metasun_per_sampled_gene"], 1.0)
         # The gene screen belongs to neither readout and is reported once.
-        self.assertIn("valid_gene_rate", report)
-        self.assertNotIn("prerattle_valid_gene_rate", report)
+        self.assertIn("valid_gene_rate", report["gene"])
+        self.assertNotIn("valid_gene_rate", report["free"])
+        self.assertNotIn("valid_gene_rate", report["fixed_symmetry"])
 
-    def test_the_rattle_effect_is_counted_in_both_directions(self):
-        frame = self._frame([
-            # lost: novel before, known after
-            {"index": 0, "unique_structure": True, "unique_structure_prerattle": True,
-             "novel_structure": False, "novel_structure_prerattle": True,
-             "e_above_hull": 0.01, "e_above_hull_prerattle": 0.02},
-            # gained: known before, novel after
-            {"index": 1, "unique_structure": True, "unique_structure_prerattle": True,
-             "novel_structure": True, "novel_structure_prerattle": False,
-             "e_above_hull": 0.01, "e_above_hull_prerattle": 0.02},
-            # metastability gained by the rattle, novelty unchanged
-            {"index": 2, "unique_structure": True, "unique_structure_prerattle": True,
-             "novel_structure": True, "novel_structure_prerattle": True,
-             "e_above_hull": 0.05, "e_above_hull_prerattle": 0.4},
-            # unchanged
-            {"index": 3, "unique_structure": True, "unique_structure_prerattle": True,
-             "novel_structure": True, "novel_structure_prerattle": True,
-             "e_above_hull": 0.02, "e_above_hull_prerattle": 0.02},
-        ])
-        effect = rattle_effect(self._screen(4), frame)
-        self.assertEqual(effect["rattle_novel_became_known"], 1)
-        self.assertEqual(effect["rattle_known_became_novel"], 1)
-        self.assertEqual(effect["rattle_metasun_lost"], 1)
-        self.assertEqual(effect["rattle_metasun_gained"], 2)  # genes 1 and 2
-        self.assertEqual(effect["rattle_metastable_gained"], 1)
-        self.assertEqual(effect["rattle_metastable_lost"], 0)
-        self.assertEqual(effect["rattle_novel_became_known_per_sampled_gene"], 0.25)
-
-    def test_a_gene_that_lost_uniqueness_is_not_counted_as_a_novelty_change(self):
-        """Otherwise a validity failure would be attributed to novelty."""
-        frame = self._frame([
-            {"index": 0, "unique_structure": False, "unique_structure_prerattle": True,
-             "novel_structure": False, "novel_structure_prerattle": True,
-             "e_above_hull": 0.01, "e_above_hull_prerattle": 0.02},
-        ])
-        effect = rattle_effect(self._screen(1), frame)
-        self.assertEqual(effect["rattle_novel_became_known"], 0)
-
-    def test_a_run_without_the_pre_rattle_columns_reports_nulls(self):
-        """A cohort relaxed before the pre-rattle CIFs existed must stay readable."""
-        frame = self._frame([
+    def test_the_report_is_plain_json(self):
+        free = self._frame([
             {"index": 0, "has_structure": True, "valid_structure": True,
              "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02},
         ])
-        effect = rattle_effect(self._screen(1), frame)
-        self.assertIsNone(effect["rattle_novel_became_known"])
-        self.assertIsNone(effect["rattle_metasun_lost"])
-        report = funnel(self._screen(1), frame, prefix="prerattle_")
-        self.assertIsNone(report["prerattle_structure"])
-        self.assertIsNone(report["prerattle_metasun_per_sampled_gene"])
+        report = funnel(self._screen(1), free, free)
+        self.assertEqual(json.loads(json.dumps(report)), dict(report))
 
-    def test_the_kept_readout_keeps_its_unprefixed_keys(self):
-        """Every existing consumer reads these names; renaming them buys nothing."""
-        frame = self._frame([
+    def test_a_run_without_the_fixed_symmetry_structures_reports_nulls(self):
+        """A cohort relaxed before the fixed-symmetry CIFs existed must stay readable."""
+        free = self._frame([
             {"index": 0, "has_structure": True, "valid_structure": True,
              "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02},
         ])
-        report = funnel(self._screen(1), frame)
+        report = funnel(self._screen(1), free)
+        self.assertIsNone(report["fixed_symmetry"]["structure"])
+        self.assertIsNone(report["fixed_symmetry"]["metasun_per_sampled_gene"])
+        self.assertEqual(report["free"]["structure"], 1)
+
+    def test_flat_lookups_read_the_free_readout(self):
+        """Scripts written against the flat funnel still read the kept structure."""
+        free = self._frame([
+            {"index": 0, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": True, "e_above_hull": 0.02},
+        ])
+        fixed = self._frame([
+            {"index": 0, "has_structure": True, "valid_structure": True,
+             "unique_structure": True, "novel_structure": False, "e_above_hull": 0.02},
+        ])
+        report = funnel(self._screen(1), free, fixed)
         for key in ("metasun_per_sampled_gene", "sun_per_sampled_gene",
-                    "novel_structure_per_sampled_gene", "metastable"):
+                    "novel_structure_per_sampled_gene", "metastable", "sampled"):
             self.assertIn(key, report)
+        self.assertEqual(report["metasun_per_sampled_gene"], 1.0)
+        self.assertEqual(report.get("sampled"), 1)
+
+
+class TestAggregateBothReadouts(unittest.TestCase):
+    """Each readout picks its own lowest-energy trial and keeps its own CIF."""
+
+    def test_the_fixed_symmetry_winner_can_be_a_different_trial(self):
+        import csv
+
+        from wyckoff_transformer.cli.protocol import (
+            CIF_DIR, CIF_FIXED_DIR, PYXTAL_TRIALS_FILE, RELAXATIONS_FILE,
+            RELAXATION_COLUMNS, STRUCTURES_FILE, STRUCTURES_FIXED_FILE,
+            aggregate_structures,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pd.DataFrame([
+                {"index": 0, "trial": t, "status": "ok", "formula": "Na2",
+                 "n_atoms": 2, "dof_positional": 3, "n_trials": 2, "seconds": 1.0,
+                 "error": ""}
+                for t in (0, 1)
+            ], columns=list(PYXTAL_COLUMNS)).to_csv(out / PYXTAL_TRIALS_FILE, index=False)
+            rows = []
+            for trial, (free, fixed) in enumerate(((-10.0, -8.0), (-9.0, -8.5))):
+                kept, sym = out / f"t{trial}_kept.cif", out / f"t{trial}_fixed_symmetry.cif"
+                kept.write_text(f"kept {trial}")
+                sym.write_text(f"fixed {trial}")
+                rows.append({
+                    "index": 0, "trial": trial, "status": "ok", "formula": "Na2",
+                    "energy": free, "energy_per_atom": free / 2, "n_atoms": 2,
+                    "device": "cpu", "seconds": 1.0, "cif": str(kept), "error": "",
+                    "status_fixed": "ok", "energy_fixed": fixed,
+                    "energy_per_atom_fixed": fixed / 2, "cif_fixed": str(sym),
+                })
+            with (out / RELAXATIONS_FILE).open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(RELAXATION_COLUMNS))
+                writer.writeheader()
+                writer.writerows(rows)
+
+            aggregate_structures(out)
+
+            free = pd.read_csv(out / STRUCTURES_FILE, index_col="index")
+            fixed = pd.read_csv(out / STRUCTURES_FIXED_FILE, index_col="index")
+            self.assertEqual(int(free.loc[0, "best_trial"]), 0)
+            self.assertEqual(int(fixed.loc[0, "best_trial"]), 1)
+            self.assertEqual(float(fixed.loc[0, "energy"]), -8.5)
+            self.assertEqual((out / CIF_DIR / "0.cif").read_text(), "kept 0")
+            self.assertEqual((out / CIF_FIXED_DIR / "0.cif").read_text(), "fixed 1")
 
 
 class TestBasinHopTrialKeys(unittest.TestCase):
@@ -1736,18 +1772,18 @@ class TestRowLogMigration(unittest.TestCase):
                 writer = csv.DictWriter(handle, fieldnames=old)
                 writer.writeheader()
                 writer.writerow({"index": 0, "trial": 0, "status": "ok", "energy": -1.5})
-            new = old + ["energy_prerattle"]
+            new = old + ["energy_fixed"]
             log = RowLog(path, new, resume=True)
             self.assertEqual(log.done, {(0, 0)})
             log.write({"index": 1, "trial": 0, "status": "ok", "energy": -2.0,
-                       "energy_prerattle": -1.9})
+                       "energy_fixed": -1.9})
             log.close()
 
             frame = log.frame()
             self.assertEqual(list(frame.columns), new)
             self.assertEqual(float(frame.loc[0, "energy"]), -1.5)
-            self.assertTrue(pd.isna(frame.loc[0, "energy_prerattle"]))
-            self.assertEqual(float(frame.loc[1, "energy_prerattle"]), -1.9)
+            self.assertTrue(pd.isna(frame.loc[0, "energy_fixed"]))
+            self.assertEqual(float(frame.loc[1, "energy_fixed"]), -1.9)
 
     def test_an_unchanged_header_is_left_alone(self):
         with tempfile.TemporaryDirectory() as tmp:
