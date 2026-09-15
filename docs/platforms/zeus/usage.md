@@ -44,24 +44,23 @@ something breaks, see [troubleshooting.md](troubleshooting.md).
 
 ## Choosing a GPU
 
-Two cards, both healthy, both usually busy:
+Two identical RTX 6000 Ada Generation cards (46068 MiB each), both healthy,
+both usually busy.
 
-| `nvidia-smi` index | PCI bus | `/dev/nvidia` minor | Model | Memory |
-| --- | --- | --- | --- | --- |
-| 0 | `0000:16:00.0` | 0 | RTX 6000 Ada Generation | 46068 MiB |
-| 1 | `0000:34:00.0` | 1 | RTX 6000 Ada Generation | 46068 MiB |
-
-All three numberings agree, so `CUDA_VISIBLE_DEVICES=1` is `nvidia-smi`'s
-GPU 1 is `/dev/nvidia1`. Both cards are identical, so CUDA's
-default `FASTEST_FIRST` ordering has nothing to reorder. Re-verify by UUID if a
-card is ever replaced:
+The `nvidia-smi` index, the `/dev/nvidia` minor and CUDA's device order agree,
+so `CUDA_VISIBLE_DEVICES=1` is `nvidia-smi`'s GPU 1 is `/dev/nvidia1`. Both
+cards are identical, so CUDA's default `FASTEST_FIRST` ordering has nothing to
+reorder. Last verified 2026-09-15, after a card was moved to another PCI slot.
+Re-verify whenever a card is moved or replaced -- the UUIDs must come out in the
+same order, and the minors must follow the indices:
 
 ```bash
-.venv/bin/python -c "
+CUDA_VISIBLE_DEVICES=0,1 .venv/bin/python -c "
 import torch
 for i in range(torch.cuda.device_count()):
     print(i, torch.cuda.get_device_properties(i).uuid)"
 nvidia-smi --query-gpu=index,uuid --format=csv,noheader
+nvidia-smi -q | grep 'Minor Number'
 ```
 
 Check the load before you claim one:

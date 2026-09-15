@@ -89,6 +89,7 @@ nvidia-smi --query-compute-apps=pid,used_memory --format=csv
 ps -o user=,args= -p <pid>
 ```
 
-Device numbering is consistent here — `nvidia-smi` index, PCI bus order and
-`/dev/nvidia` minor all agree — so `/dev/nvidia1` really is GPU 1. The mapping is in [usage.md](usage.md#choosing-a-gpu); regenerate it
-rather than trusting it if cards are ever reseated.
+Device numbering is consistent here — `nvidia-smi` index, CUDA order and
+`/dev/nvidia` minor all agree — so `/dev/nvidia1` really is GPU 1. The check is in
+[usage.md](usage.md#choosing-a-gpu); re-run it rather than trusting it if a card
+is moved or replaced.
