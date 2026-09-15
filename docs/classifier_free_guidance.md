@@ -1,10 +1,13 @@
 # Classifier-free guidance for the e_hull-conditioned WyFormer
 
-> **In progress.** Training started 2026-09-16 01:50 +08 on zeus GPU 1 at commit
-> `7cf1895`, as W&B run
-> [`ehull_adamw_wsd_5x_cfg-20260916-015500`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x_cfg-20260916-015500).
+> **In progress.** Training started 2026-09-16 05:02 +08 on zeus GPU 1 at commit
+> `d3f4a5d`, as W&B run
+> [`ehull_adamw_wsd_5x_cfg-20260916-055000`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x_cfg-20260916-055000).
 > Its baseline, [`ehull_adamw_wsd_5x-20260912-115321`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x-20260912-115321),
-> was itself still training on aspire2a (epoch 22,500 of 40,000). No results yet.
+> was itself still training on aspire2a (epoch 23,000 of 40,000). No results yet.
+> An earlier run, `ehull_adamw_wsd_5x_cfg-20260916-015500`, used a different
+> encoding of the null condition, went unstable, and was stopped (see below);
+> it is tagged `superseded` on W&B.
 
 ## Why
 
@@ -106,7 +109,7 @@ Two runs, identical except for guidance:
 
 | | baseline | CFG |
 |---|---|---|
-| W&B run | `ehull_adamw_wsd_5x-20260912-115321` | `ehull_adamw_wsd_5x_cfg-20260916-015500` |
+| W&B run | `ehull_adamw_wsd_5x-20260912-115321` | `ehull_adamw_wsd_5x_cfg-20260916-055000` |
 | config | `yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml` | `.../ehull_adamw_wsd_5x_cfg.yaml` |
 | `condition_dropout` | — | 0.1 |
 | `condition_dim` | 1 | 2 |
@@ -176,13 +179,13 @@ exceeded the 300 s `--relax-timeout` there, a handicap GPU arms would not share.
 # train (zeus); resumes itself after a crash
 WANDB_ENTITY=symmetry-advantage nohup scripts/platforms/zeus/train_supervised.sh \
     yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x_cfg.yaml lemat_bulk_fmax1_stress 1 \
-    ehull_adamw_wsd_5x_cfg-20260916-015500 > runs/.logs/cfg.log 2>&1 &
+    ehull_adamw_wsd_5x_cfg-20260916-055000 > runs/.logs/cfg.log 2>&1 &
 
 # archive e_hull index, once per reference (~10 min, ~30 GB RAM)
 .venv/bin/python scripts/analyse_guidance_sweep.py index
 
 # one arm: cohort + screen on CPU, then relax + score on the GPU
-run=ehull_adamw_wsd_5x_cfg-20260916-015500
+run=ehull_adamw_wsd_5x_cfg-20260916-055000
 for w in 0 1 1.5 2 3 5; do
     .venv/bin/wyformer-protocol-wandb $run --output-dir generated/$run/guidance/w$w \
         --condition energy_above_hull=0 --guidance-scale $w --arm cfg-w$w \
