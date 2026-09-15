@@ -48,7 +48,12 @@ from wyckoff_transformer.paths import runs_root, wandb_dir
 from wyckoff_transformer.tokenization import WYCKOFF_MAPPINGS_FILENAME
 from wyckoff_transformer.wyckoff_processor import MODEL_ENGINEERS_DIRNAME
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
-from wyckoff_transformer.cli import describe_condition, resolve_condition_values
+from wyckoff_transformer.cli import (
+    DEFAULT_CONDITION_TARGETS,
+    DEFAULT_SWEEP_FEATURE,
+    describe_condition,
+    resolve_condition_values,
+)
 from wyckoff_transformer.cli import protocol as protocol_cli
 from wyckoff_transformer.cryspr.basin_hopping import (
     BASINHOP_STDEV,
@@ -158,10 +163,11 @@ def generate_genes(
     sampled from the run's saved space-group distribution, and the formally
     valid genes are truncated to *n_genes*.
 
-    A conditional run needs its target passed explicitly via *condition*
-    (``["energy_above_hull=0"]``) or *condition_value*: datasets are not loaded
-    here, so the conditioning cannot be sampled from the training distribution
-    the way ``wyformer-generate --use-cached-tensors`` does.
+    A conditional run uses the targets passed via *condition*
+    (``["energy_above_hull=0"]``) or *condition_value*. Any unspecified
+    features among ``energy_above_hull``, ``delta_e_polymorph``, and
+    ``max_force`` default to 0.0. Other condition features must be passed
+    explicitly because datasets are not loaded here.
 
     Returns:
         The number of genes written (always *n_genes* on success).
@@ -180,19 +186,40 @@ def generate_genes(
     )
     attempted = max(n_genes + 1, int(round(n_genes * oversample)))
 
+    if condition_value is not None and condition is None:
+        if (
+            trainer.condition_features
+            and len(trainer.condition_features) > 1
+            and DEFAULT_SWEEP_FEATURE in trainer.condition_features
+        ):
+            condition = [f"{DEFAULT_SWEEP_FEATURE}={condition_value}"]
+            condition_value = None
+
     condition_values = resolve_condition_values(trainer, condition, condition_value)
+    if trainer.condition_features:
+        if condition_values is None:
+            condition_values = {}
+        for feature in trainer.condition_features:
+            if feature not in condition_values and feature in DEFAULT_CONDITION_TARGETS:
+                condition_values[feature] = DEFAULT_CONDITION_TARGETS[feature]
+
+        missing = [f for f in trainer.condition_features if f not in condition_values]
+        if missing:
+            raise ValueError(
+                f"Run {run_id} conditions on {list(trainer.condition_features)}; pass "
+                f"--condition NAME=VALUE for {missing} (e.g. --condition {missing[0]}=0). "
+                "Datasets are not loaded here, so the conditioning cannot be sampled from training data."
+            )
+        ordered = {f: condition_values[f] for f in trainer.condition_features if f in condition_values}
+        ordered.update({k: v for k, v in condition_values.items() if k not in ordered})
+        condition_values = ordered
+
     cond = None
-    if condition_values is not None:
+    if condition_values:
         cond = trainer.build_condition_from_values(
             condition_values, attempted, device=device
         )
         logger.info("Conditioning generation on %s", describe_condition(condition_values))
-    elif trainer.condition_features:
-        raise ValueError(
-            f"Run {run_id} conditions on {list(trainer.condition_features)}; pass "
-            "--condition NAME=VALUE (e.g. --condition energy_above_hull=0). Datasets "
-            "are not loaded here, so the conditioning cannot be sampled from training data."
-        )
 
     start_tensor = None
     composition_cond = None
@@ -440,11 +467,11 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--condition", action="append", metavar="NAME=VALUE", default=None,
                      help="Conditioning target for every generated gene, e.g. "
                           "--condition energy_above_hull=0. Repeat once per feature. "
-                          "Required for a conditional run: datasets are not loaded here, "
-                          "so the conditioning cannot be sampled from training data.")
+                          "Features energy_above_hull, delta_e_polymorph, and max_force "
+                          "default to 0 if not specified.")
     gen.add_argument("--condition-value", type=float, default=None,
-                     help="Shorthand for --condition <the one feature>=VALUE, for a "
-                          "single-channel conditional model.")
+                     help="Shorthand for --condition <the one feature>=VALUE (or "
+                          "energy_above_hull=VALUE on multi-channel models).")
     gen.add_argument("--system-prior", type=Path, default=None,
                      help="Path to a system_prior.npz. For chemical_system_conditioning models, "
                           "defaults to cache/<dataset>/system_prior.npz.")

@@ -67,6 +67,13 @@ def describe_condition(values: Optional[Dict[str, float]]) -> str:
 #: What a bare conditioning target has always meant in this repo: an energy above hull.
 DEFAULT_SWEEP_FEATURE = "energy_above_hull"
 
+#: Default physical targets for channels that have natural ground-state baselines.
+DEFAULT_CONDITION_TARGETS: Dict[str, float] = {
+    "energy_above_hull": 0.0,
+    "delta_e_polymorph": 0.0,
+    "max_force": 0.0,
+}
+
 
 def single_channel_condition(trainer, value, n_rows, feature=DEFAULT_SWEEP_FEATURE,
                              baseline=0.0):

@@ -130,11 +130,12 @@ Drop `--condition` for an unconditional run.
   the run's saved space-group distribution exactly as `wyformer-generate` does.
   The gene file is written to the output directory and included in the artifact,
   so the cohort a run was scored on is recoverable.
-- **A conditional run needs its target.** Datasets are not loaded here, so the
-  conditioning cannot be sampled from the training distribution — pass it with
-  `--condition energy_above_hull=0` (repeat once per feature, or
-  `--condition-value` for a single-channel model). An unconditional run takes
-  neither.
+- **Conditioning targets default to 0 for stability channels.** Datasets are
+  not loaded here, so conditioning cannot be sampled from the training
+  distribution. Features `energy_above_hull`, `delta_e_polymorph`, and
+  `max_force` default to 0 if not specified via CLI. Other features must be
+  passed with `--condition NAME=VALUE` (or `--condition-value` for a
+  single-channel model). An unconditional run takes neither.
 - **The run's model files must be reachable.** `runs/<run-id>/` is used if it
   already holds `best_model_params.pt`, `wyckoff_processor.json` and
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.

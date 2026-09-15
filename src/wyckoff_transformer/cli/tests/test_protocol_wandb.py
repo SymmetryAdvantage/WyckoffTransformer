@@ -302,17 +302,89 @@ class TestGenerateGenes(unittest.TestCase):
                     oversample=1.15, device="cpu", output_path=self.out,
                 )
 
-    def test_conditional_run_needs_a_target(self):
+    def test_conditional_run_needs_a_target_for_non_default_features(self):
         trainer = MagicMock()
-        trainer.condition_features = ("energy_above_hull",)
+        trainer.condition_features = ("band_gap",)
         with patch.object(pw, "load_trainer", return_value=trainer), \
              patch.object(pw, "ensure_run_files"), \
              patch("wandb.Api"):
-            with self.assertRaises(ValueError):
+            with self.assertRaisesRegex(ValueError, "conditions on .*band_gap"):
                 pw.generate_genes(
                     run_id="r", entity="e", project="p", n_genes=10,
                     oversample=1.15, device="cpu", output_path=self.out,
                 )
+
+    def test_default_conditions_when_unspecified(self):
+        trainer = MagicMock()
+        trainer.condition_features = ("energy_above_hull", "delta_e_polymorph", "max_force")
+        trainer.build_condition_from_values.return_value = "COND"
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+            )
+        values, n_rows = trainer.build_condition_from_values.call_args.args[:2]
+        self.assertEqual(
+            values,
+            {"energy_above_hull": 0.0, "delta_e_polymorph": 0.0, "max_force": 0.0},
+        )
+        self.assertEqual(trainer.generate_structures.call_args.kwargs["cond"], "COND")
+
+    def test_partial_condition_fills_remaining_defaults(self):
+        trainer = MagicMock()
+        trainer.condition_features = ("energy_above_hull", "delta_e_polymorph", "max_force")
+        trainer.build_condition_from_values.return_value = "COND"
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+                condition=["energy_above_hull=0.05"],
+            )
+        values, n_rows = trainer.build_condition_from_values.call_args.args[:2]
+        self.assertEqual(
+            values,
+            {"energy_above_hull": 0.05, "delta_e_polymorph": 0.0, "max_force": 0.0},
+        )
+
+    def test_condition_value_on_multi_channel_model(self):
+        trainer = MagicMock()
+        trainer.condition_features = ("energy_above_hull", "delta_e_polymorph", "max_force")
+        trainer.build_condition_from_values.return_value = "COND"
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+                condition_value=0.05,
+            )
+        values, n_rows = trainer.build_condition_from_values.call_args.args[:2]
+        self.assertEqual(
+            values,
+            {"energy_above_hull": 0.05, "delta_e_polymorph": 0.0, "max_force": 0.0},
+        )
+
+    def test_single_channel_defaults_to_zero(self):
+        trainer = MagicMock()
+        trainer.condition_features = ("energy_above_hull",)
+        trainer.build_condition_from_values.return_value = "COND"
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+            )
+        values, n_rows = trainer.build_condition_from_values.call_args.args[:2]
+        self.assertEqual(values, {"energy_above_hull": 0.0})
 
     def test_condition_value_is_built_and_passed(self):
         trainer = MagicMock()
