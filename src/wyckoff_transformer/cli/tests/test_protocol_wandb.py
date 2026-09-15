@@ -331,6 +331,39 @@ class TestGenerateGenes(unittest.TestCase):
         self.assertEqual(values, {"energy_above_hull": 0.0})
         self.assertEqual(trainer.generate_structures.call_args.kwargs["cond"], "COND")
 
+    def test_chemical_system_conditioning_uses_prior(self):
+        trainer = MagicMock()
+        trainer.condition_features = ()
+        trainer.chemical_system_conditioning = True
+        trainer.start_name = "spacegroup_number"
+        trainer.tokenisers = {"elements": MagicMock(), "spacegroup_number": MagicMock()}
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        prior = MagicMock()
+        draws = MagicMock()
+        draws.conditioning_block.return_value = "COMP_COND"
+        draws.start_tensor.return_value = "START_T"
+        draws.element_mask.return_value = "ELEM_MASK"
+        prior.sample.return_value = draws
+
+        run_mock = MagicMock()
+        run_mock.config = {"dataset": "lemat_bulk_fmax1"}
+        api_mock = MagicMock()
+        api_mock.run.return_value = run_mock
+
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api", return_value=api_mock), \
+             patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load", return_value=prior), \
+             patch("pathlib.Path.is_file", return_value=True):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+            )
+        kwargs = trainer.generate_structures.call_args.kwargs
+        self.assertEqual(kwargs["composition_cond"], "COMP_COND")
+        self.assertEqual(kwargs["start_tensor"], "START_T")
+        self.assertEqual(kwargs["allowed_element_mask"], "ELEM_MASK")
+
 
 if __name__ == "__main__":
     unittest.main()

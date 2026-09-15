@@ -150,6 +150,7 @@ def generate_genes(
     output_path: Path,
     condition: Optional[list] = None,
     condition_value: Optional[float] = None,
+    system_prior: Optional[Path] = None,
 ) -> int:
     """Generate a gene cohort from the run's checkpoint and write it to disk.
 
@@ -193,9 +194,45 @@ def generate_genes(
             "are not loaded here, so the conditioning cannot be sampled from training data."
         )
 
+    start_tensor = None
+    composition_cond = None
+    element_mask = None
+    if getattr(trainer, "chemical_system_conditioning", None) is True:
+        from wyckoff_transformer.paths import cache_root
+        from wyckoff_transformer.system_prior import SystemSpaceGroupPrior
+
+        prior_path = system_prior
+        if prior_path is None:
+            dataset_name = run.config.get("dataset")
+            if dataset_name:
+                candidate = cache_root() / dataset_name / "system_prior.npz"
+                if candidate.is_file():
+                    prior_path = candidate
+        if prior_path is None or not Path(prior_path).is_file():
+            raise ValueError(
+                f"Run {run_id} uses chemical_system_conditioning; pass --system-prior "
+                f"pointing to system_prior.npz (checked {prior_path})."
+            )
+        logger.info("Sampling chemical systems and space groups from %s", prior_path)
+        prior = SystemSpaceGroupPrior.load(prior_path)
+        draws = prior.sample(attempted, required=None, allowed=None)
+        elements_tokeniser = trainer.tokenisers["elements"]
+        composition_cond = draws.conditioning_block(len(elements_tokeniser), device=device)
+        start_tensor = draws.start_tensor(
+            trainer.tokenisers[trainer.start_name], trainer.model.start_type, device=device
+        )
+        element_mask = draws.element_mask(
+            len(elements_tokeniser), stop_token=elements_tokeniser.stop_token, device=device
+        )
+
     logger.info("Generating %d genes (%d attempted) from run %s", n_genes, attempted, run_id)
     generated = trainer.generate_structures(
-        n_structures=attempted, calibrate=False, cond=cond
+        n_structures=attempted,
+        calibrate=False,
+        cond=cond,
+        composition_cond=composition_cond,
+        start_tensor=start_tensor,
+        allowed_element_mask=element_mask,
     )
     if len(generated) < n_genes:
         raise ValueError(
@@ -408,6 +445,9 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--condition-value", type=float, default=None,
                      help="Shorthand for --condition <the one feature>=VALUE, for a "
                           "single-channel conditional model.")
+    gen.add_argument("--system-prior", type=Path, default=None,
+                     help="Path to a system_prior.npz. For chemical_system_conditioning models, "
+                          "defaults to cache/<dataset>/system_prior.npz.")
 
     pyxtal = parser.add_argument_group("PyXtal generation")
     pyxtal.add_argument("--pyxtal-cores", type=int, default=None,
@@ -583,6 +623,7 @@ def main() -> None:
             output_path=gene_file,
             condition=args.condition,
             condition_value=args.condition_value,
+            system_prior=args.system_prior,
         )
 
     stage_args = build_stage_args(args, gene_file)
