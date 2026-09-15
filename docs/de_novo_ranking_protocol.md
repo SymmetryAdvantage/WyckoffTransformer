@@ -52,10 +52,10 @@ none of them waits on another's resource:
 
 | stage | what it needs | cost | output |
 |---|---|---|---|
-| `screen` | one core, 4M fingerprints in RAM | ~2 min cached, ~8 min cold | `screen.json` |
+| `screen` | one core, 4.8M fingerprints in RAM (~17 GB) | ~2 min cached, ~11 min cold | `screen.json` |
 | `generate` | every CPU core, no potential | seconds per draw | `pyxtal.extxyz`, `pyxtal.csv` |
 | `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `cifs/`, `cifs_fixed_symmetry/` |
-| `score` | the hull parquet and LeMat-Bulk geometry in RAM | ~1 min | `funnel.json`, updated `structures*.csv` |
+| `score` | the hull parquet and LeMat-Bulk geometry in RAM | 8–20 min on 2026-09-15 (zeus, shared load): mostly the relaxed-structure symmetry detection, then ~3 min for the novelty reference | `funnel.json`, updated `structures*.csv` |
 
 Two further stages are optional, and neither is part of `--stage all`. Both are
 alternative *sources of starting structures* rather than steps of the cascade,
@@ -161,7 +161,7 @@ With that record:
 | `structures.csv` | per gene: lowest-energy trial chosen after rattling and symmetry release (free), plus validity, uniqueness, novelty, `e_above_hull`, `dof_positional`, `n_trials`, `gene_novel`, `novel_by_sampled_gene`, `relaxed_fingerprint_resolved`, `relaxed_fingerprint_changed` |
 | `structures_fixed_symmetry.csv` | per gene: lowest-energy trial relaxed under fixed symmetry (pre-rattling), scored identically to `structures.csv` |
 | `funnel.json` | hierarchical report containing `gene`, `fixed_symmetry`, and `free` sections, with cascade rates per *sampled* gene |
-| `manifest.json` | MLIP, checkpoint, trial schedule, rattle, devices, timeouts, hull provenance |
+| `manifest.json` | MLIP, checkpoint, trial schedule, rattle, devices, timeouts, hull provenance, novelty reference (`reference_cache`, `novelty_reference`; the screen's under `lineage`) |
 | `cifs/`, `cifs_fixed_symmetry/` | kept CIFs: `cifs/` holds free structures post-rattling, `cifs_fixed_symmetry/` holds fixed-symmetry structures pre-rattling |
 | `cryspr/` | per-trial relaxation logs and `rattle.json` |
 
@@ -211,7 +211,7 @@ Drop `--condition` for an unconditional run.
   - `protocol/fixed_symmetry/`: Structure-based metrics evaluated on the lowest-energy structures relaxed under fixed symmetry (pre-rattling): `structure`, `valid_structure`, `unique_structure`, `novel_structure`, `metastable`, `stable`, `metastable_among_novel`, `stable_among_novel`, `sun_per_sampled_gene`, `metasun_per_sampled_gene`, etc.
   - `protocol/free/`: Structure-based metrics evaluated on the lowest-energy structures chosen after symmetry release and rattling: `structure`, `valid_structure`, `unique_structure`, `novel_structure`, `metastable`, `stable`, `metastable_among_novel`, `stable_among_novel`, `sun_per_sampled_gene`, `metasun_per_sampled_gene`, etc.
 
-  `screen.json`, `pyxtal.extxyz`, `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `funnel.json`, `manifest.json`, `cifs/`, and `cifs_fixed_symmetry/` go into an artifact named `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything and skips only the write-back; `--entity` / `--project` override where the run is looked up.
+  `screen.json`, `pyxtal.extxyz`, `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `funnel.json`, `manifest.json`, `cifs/`, and `cifs_fixed_symmetry/` go into an artifact named `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything and skips only the write-back; `--wandb-entity` / `--wandb-project` override where the run is looked up.
 
 The same hardware, trial-schedule, MLIP and reference flags as `wyformer-protocol`
 are accepted and passed straight through.
@@ -222,7 +222,12 @@ are accepted and passed straight through.
   refreshed `funnel.json`, `structures.csv`, and `structures_fixed_symmetry.csv` go
   back as a new artifact version and `run.summary` is overwritten. Use it after a change to how
   novelty or the hull is judged. `--from-artifact v2` pins a version instead of
-  taking the latest.
+  taking the latest. After a change of *reference* it is `--stages screen,score`:
+  gene novelty is decided in the screen, and `score` refuses a `screen.json`
+  judged against a reference other than its own `--reference-cache` (see
+  [The novelty reference](#the-novelty-reference)). Re-screening is safe on a
+  relaxed run — validity, uniqueness and the representatives depend on the genes
+  alone. A re-score that fails uploads nothing.
 
 ## The cascade
 
@@ -289,14 +294,83 @@ gene's novelty. When symmetry detection fails on a relaxed structure
 (`relaxed_fingerprint_resolved = false`), only the sampled fingerprint is used
 for that gene.
 
-That is what makes the reference affordable. LeMat-Bulk has 4.2M entries and
+That is what makes the reference affordable. LeMat-Bulk has 5.3M entries and
 the matcher needs a `Structure` per candidate, which is far too much to hold;
 but only entries whose fingerprint collides with a generated one can ever reach
 it. On `upi73i4k`'s 2500 genes, 627 fingerprints collide, over **795** reference
-structures — a median of 1 candidate each and never more than 6. So the
-reference is built per run: one streaming pass over the Wyckoff cache for the
-colliding `immutable_id`s, then one chunked pass over `lemat_pbe.csv.gz` for
-their geometry.
+structures — a median of 1 candidate each and never more than 6 (measured
+against `lemat_bulk_ehull`). So the reference is built per run: one streaming
+pass over the Wyckoff cache for the colliding `immutable_id`s, then one chunked
+pass over `lemat_pbe.csv.gz` for their geometry.
+
+**A colliding entry without geometry is refused, not dropped.** An entry missing
+from `lemat_pbe.csv.gz`, or whose CIF does not parse, cannot be matched against,
+and a structure whose only candidates were such entries would be scored novel.
+`build_novelty_reference` therefore raises `UnresolvedReferenceError` rather than
+scoring around the hole. No such entry exists today: every one of the 5,327,342
+`immutable_id`s of `lemat_bulk_fmax1_stress` (and of the 4,207,723 of
+`lemat_bulk_ehull`) is in the 5,335,299-row export (checked 2026-09-15).
+
+### The novelty reference
+
+Novelty is judged against **`cache/lemat_bulk_fmax1_stress`, all three splits**
+— the current LeMat-Bulk variant ([lemat_bulk_pipeline.md](lemat_bulk_pipeline.md)).
+Both halves of it are recorded in `manifest.json`: the screen's reference under
+`lineage` → `screen.json` → `reference`, with the size of its fingerprint set;
+the score stage's as `reference_cache`, `reference_splits`, `lemat_cif_csv` and
+`novelty_reference` (with how many fingerprints collided, over how many
+entries). `score` refuses (`StaleOutputError`) a `screen.json` whose recorded
+reference is not its own `--reference-cache` and `--reference-splits`, or that
+records none, so that gene novelty and structure novelty in one funnel always
+come from the same reference. The fingerprint set is cached beside the
+reference it was computed from (`--reference-fingerprint-cache` defaults to
+`gene_fingerprints.pkl.gz` in the reference's directory, with the splits in the
+name when they are not all three); before 2026-09-15 it was one fixed path, so
+passing another `--reference-cache` alone silently reused `lemat_bulk_ehull`'s
+fingerprints.
+
+**Protocol artifacts scored before 2026-09-15 used `lemat_bulk_ehull`**
+(changed on top of commit `600a2ab`). That variant lacks 1.12M of the current
+variant's rows — everything above `max_force` 0.02 eV/Å, the Materials Project
+rows with empty forces, Yb and actinide chemistry — so a generated structure
+matching one of them counted as novel. Gene novelty, `novel_structure`,
+MetaSUN, SUN and the novelty crossings of such an artifact are **not comparable**
+with a run scored against `lemat_bulk_fmax1_stress` until it is re-scored
+(`--from-artifact --stages screen,score`); validity, uniqueness, `metastable`
+and `stable` do not depend on the reference. Re-scored on 2026-09-15 with
+`--from-artifact --stages screen,score`, `lemat_bulk_ehull` → `lemat_bulk_fmax1_stress`
+(free readout unless marked; every other funnel entry unchanged):
+
+| run | artifact | gene novelty | novel structure | MetaSUN | SUN | MetaSUN, fixed symmetry |
+|---|---|---|---|---|---|---|
+| `e9ywwsie` | v4 → **v5** | 0.672 → 0.663 | 0.665 → 0.653 | 0.278 → 0.268 | 0.006 → 0.005 | 0.161 → 0.153 |
+| `ehull-ssops-20260904-235534` | v2 → **v3** | 0.643 → 0.631 | 0.622 → 0.612 | 0.289 → 0.281 | 0.006 → 0.006 | 0.197 → 0.190 |
+| `ehull5x-20260904-213346` | v3 → **v4** | 0.580 → 0.557 | 0.594 → 0.579 | 0.268 → 0.255 | 0.014 → 0.012 | 0.185 → 0.172 |
+| `19qbxo6l` | v3 → **v4** | 0.673 → 0.665 | 0.588 → 0.580 | 0.193 → 0.188 | 0.007 → 0.007 | 0.103 → 0.099 |
+| `e_all_adamw_wsd-20260909-001225` | v1 → **v2** | 0.698 → 0.690 | 0.608 → 0.603 | 0.210 → 0.206 | 0.003 → 0.002 | 0.107 → 0.103 |
+| `relational_e_all_adamw_wsd-20260909-234259` | v0 → **v1** | 0.725 → 0.686 | 0.672 → 0.636 | 0.197 → 0.169 | 0.011 → 0.006 | 0.110 → 0.085 |
+| `upi73i4k`\* | v3 → **v4** | 0.670 → 0.660 | 0.638 → 0.633 | 0.256 → 0.250 | 0.005 → 0.005 | 0.161 → 0.154 |
+
+\* Not a pure re-score; see below.
+
+The relational run loses the most: 2.8 points of MetaSUN and half its SUN. Its
+generated structures are disproportionately ones the current variant has and
+`lemat_bulk_ehull` did not, so its MetaSUN lead over `e_all_adamw_wsd` went
+from −0.013 to −0.037. In every run the re-screen kept validity, uniqueness and
+the counts exactly, and no gene went from known to novel.
+
+**`upi73i4k` also had its gene 860 re-relaxed.** `score` refused v3
+(`IncompleteStageError`): all three trials of gene 860 (K24Cl36H90O132, 282
+atoms) had failed with a CUDA out-of-memory error on a 2 GiB card. v3 was scored
+on 2026-09-12, before that check existed, and counted the gene as having no
+structure. On 2026-09-16 those three trials were re-run on zeus with `relax
+--resume` (one worker on each RTX 6000 Ada, `--relax-timeout 1800`, the same
+draws from `pyxtal.extxyz`), then `screen` and `score` against
+`lemat_bulk_fmax1_stress`. The other 2365 trials were kept. So v4 differs from v3
+by that one gene as well as by the reference: `structure` 997 → 998,
+`valid_structure` 904 → 905. The gene relaxed to a valid, novel structure at 0.101
+eV/atom above the hull, just outside `metastable`, so `metastable` and `stable`
+are unchanged.
 
 ## The settings, in brief
 
@@ -345,13 +419,15 @@ for the equivalence results and the one-hot-encoding trap.
 
 | path | what | note |
 |---|---|---|
-| `cache/lemat_bulk_ehull/data.pkl.gz` | LeMat-Bulk in the Wyckoff representation | existing |
-| `cache/lemat_bulk_ehull/gene_fingerprints.pkl.gz` | 3.96M gene fingerprints | built on first `screen` |
+| `cache/lemat_bulk_fmax1_stress/data.pkl.gz` | LeMat-Bulk in the Wyckoff representation, 5,327,342 rows over train/val/test; the novelty reference | built by [the LeMat pipeline](lemat_bulk_pipeline.md); `--reference-cache` overrides |
+| `cache/lemat_bulk_fmax1_stress/gene_fingerprints.pkl.gz` | 4,826,004 distinct gene fingerprints of all three splits (3,959,797 in `lemat_bulk_ehull`) | built on first `screen`, beside the reference |
 | `data/lemat-bulk/lemat_pbe.csv.gz` | LeMat-Bulk CIFs, by `immutable_id` | the geometry `StructureMatcher` needs; `--lemat-cif-csv` overrides |
 
 The hull parquet is fetched from HuggingFace and cached there. The first `screen`
-takes ~8 minutes, almost all of it unpickling the 4.2M-row reference; cached, ~2
-minutes.
+takes ~11 minutes (2026-09-15, zeus): ~1.5 minutes unpickling the 5.3M-row
+reference, the rest fingerprinting it. Cached, ~2 minutes, spent loading the
+fingerprint set. `score` unpickles the reference once more to find the colliding
+entries (~25 GB resident while it does).
 
 ## Known limitations
 

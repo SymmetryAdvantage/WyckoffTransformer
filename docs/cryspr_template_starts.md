@@ -130,9 +130,11 @@ wyformer-protocol genes.json.gz --output-dir run/ --stage relax --devices cuda:0
 wyformer-protocol genes.json.gz --output-dir run/ --stage score
 ```
 
-The stage builds `cache/lemat_bulk_ehull/anonymous_wyckoff_index.parquet` on
-first use — one pass over the 4.2M-row Wyckoff cache, about two minutes, 104 MB
-— and loads it thereafter. Selecting a template for a thousand genes then costs
+The stage builds `anonymous_wyckoff_index.parquet` beside `--reference-cache` on
+first use — one pass over the Wyckoff cache, about two minutes, 104 MB for the
+4.2M-row `lemat_bulk_ehull` — and loads it thereafter. Since 2026-09-15 that is
+`cache/lemat_bulk_fmax1_stress/` (5.3M rows); the measurements in this document
+were made with templates, and gene novelty, from `lemat_bulk_ehull`. Selecting a template for a thousand genes then costs
 about a minute, and reading their geometry one streaming pass over the LeMat-Bulk
 CIF export.
 

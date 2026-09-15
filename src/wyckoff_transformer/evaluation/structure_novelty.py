@@ -40,6 +40,10 @@ DEFAULT_LEMAT_CIF_CSV = Path("data/lemat-bulk/lemat_pbe.csv.gz")
 DEFAULT_CHUNKSIZE = 50_000
 
 
+class UnresolvedReferenceError(RuntimeError):
+    """A LeMat-Bulk entry that shares a generated fingerprint has no readable geometry."""
+
+
 def collect_reference_ids(
     fingerprints: Iterable[tuple],
     cache: Optional[Path] = None,
@@ -119,7 +123,8 @@ def load_reference_structures(
         ``immutable_id`` -> ``pymatgen`` ``Structure``.  Ids the export does not
         carry, and CIFs that fail to parse, are absent: a reference entry we
         cannot read is one we cannot match against, and dropping it can only
-        make a structure look *more* novel, never less.
+        make a structure look *more* novel, never less -- which is why
+        :func:`build_novelty_reference` refuses a reference with such a hole.
     """
     from pymatgen.core import Structure
 
@@ -185,6 +190,15 @@ def build_novelty_reference(
     Returns:
         A frame indexed by ``immutable_id`` with ``fingerprint`` and
         ``structure`` columns.  Empty when nothing collides.
+
+    Raises:
+        UnresolvedReferenceError: If any colliding entry is missing from the
+            CIF export or its CIF does not parse.  Dropping it would leave its
+            fingerprint with fewer candidates than LeMat-Bulk has -- none, for a
+            fingerprint that only it carries -- and a structure the matcher is
+            never shown a candidate for is scored novel.  That is a hole in the
+            reference, not a property of the model, so it is refused rather than
+            counted.
     """
     hits = collect_reference_ids(fingerprints, cache=cache, splits=splits)
     if not hits:
@@ -199,6 +213,15 @@ def build_novelty_reference(
     structures = load_reference_structures(
         ids, lemat_cif_csv=lemat_cif_csv, chunksize=chunksize
     )
+    unresolved = sorted(set(ids) - set(structures))
+    if unresolved:
+        raise UnresolvedReferenceError(
+            f"{len(unresolved)} of {len(set(ids))} LeMat-Bulk entries sharing a "
+            f"generated fingerprint have no readable CIF in {lemat_cif_csv or DEFAULT_LEMAT_CIF_CSV} "
+            f"(e.g. {', '.join(unresolved[:5])}); structures that could only have "
+            "matched them would be scored novel. Pass the CIF export the "
+            "reference cache was built from with --lemat-cif-csv."
+        )
 
     rows = [
         {"immutable_id": i, "fingerprint": fingerprint, "structure": structures[i]}

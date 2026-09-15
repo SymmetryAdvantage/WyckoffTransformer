@@ -56,9 +56,14 @@ from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
-#: Where :meth:`TemplateIndex.load` keeps the built index.  Beside the Wyckoff
-#: cache it is derived from, and regenerated whenever that cache changes.
-DEFAULT_INDEX_PATH = Path("cache/lemat_bulk_ehull/anonymous_wyckoff_index.parquet")
+#: File name of the index, which lives beside the Wyckoff cache it is built from.
+INDEX_FILE_NAME = "anonymous_wyckoff_index.parquet"
+
+#: Where :meth:`TemplateIndex.load` keeps the built index: beside the protocol's
+#: default reference cache, ``DEFAULT_REFERENCE_CACHE`` (not imported here at
+#: module level; a test pins the two together).  An existing parquet is loaded as
+#: is, so it must be deleted by hand when that cache is rebuilt.
+DEFAULT_INDEX_PATH = Path("cache/lemat_bulk_fmax1_stress") / INDEX_FILE_NAME
 
 #: Columns of the index parquet.  ``immutable_id`` is the frame's index.
 INDEX_COLUMNS = ("anon_hash", "letters", "composition", "energy_above_hull")
@@ -474,7 +479,7 @@ def build_index_frame(
     )
     from wyckoff_transformer.evaluation.novelty import record_to_anonymous_fingerprint
 
-    cache = Path(cache) if cache is not None else DEFAULT_REFERENCE_CACHE
+    cache = resolve_store_path(cache if cache is not None else DEFAULT_REFERENCE_CACHE)
     splits = splits if splits is not None else DEFAULT_REFERENCE_SPLITS
     if not cache.is_file():
         raise FileNotFoundError(

@@ -62,11 +62,44 @@ logger = logging.getLogger(__name__)
 #: Default cache of LeMat-Bulk in the Wyckoff-gene representation, as written by
 #: the dataset caching scripts.  Holds ``train``/``val``/``test`` frames with the
 #: columns :func:`record_to_augmented_fingerprint` needs.
-DEFAULT_REFERENCE_CACHE = Path("cache/lemat_bulk_ehull/data.pkl.gz")
+#:
+#: ``lemat_bulk_fmax1_stress``, the current variant (docs/lemat_bulk_pipeline.md).
+#: Until 2026-09-15 this was the superseded ``lemat_bulk_ehull``, which lacks
+#: 1.12M of the current variant's rows -- everything above ``max_force`` 0.02
+#: eV/A, the Materials Project rows with empty forces, Yb and actinide chemistry --
+#: so a generated structure matching one of those read as novel.
+DEFAULT_REFERENCE_CACHE = Path("cache/lemat_bulk_fmax1_stress/data.pkl.gz")
 
 #: Novelty must be judged against every LeMat-Bulk structure, not just the
 #: training split: the benchmark's reference is the whole corpus.
 DEFAULT_REFERENCE_SPLITS = ("train", "val", "test")
+
+
+def default_fingerprint_cache(cache: Path, splits: Sequence[str]) -> Path:
+    """Where the fingerprint set of *cache* over *splits* is kept: beside the cache.
+
+    Derived rather than fixed, because the set is only valid for the cache and
+    splits it was computed from, and :func:`load_reference_fingerprints` reuses
+    whatever file it is pointed at.  A fixed default would hand one reference's
+    fingerprints to a screen that was asked for another.
+    """
+    splits = tuple(splits)
+    name = (
+        "gene_fingerprints.pkl.gz" if splits == DEFAULT_REFERENCE_SPLITS
+        else f"gene_fingerprints_{'+'.join(splits)}.pkl.gz"
+    )
+    return Path(cache).parent / name
+
+
+def reference_identity(cache: Path, splits: Sequence[str]) -> dict:
+    """What a novelty verdict was judged against, comparable across machines.
+
+    The dataset directory and file name, not the full path: the same store is
+    mounted at different places on different hosts, and a path given relative
+    to the store and the one it resolves to name the same reference.
+    """
+    cache = Path(cache)
+    return {"cache": f"{cache.parent.name}/{cache.name}", "splits": list(splits)}
 
 #: Thresholds the funnel reports, in eV/atom.  0.1 is the metastability
 #: threshold LeMat-GenBench uses for MetaSUN; 0 is SUN.
@@ -205,7 +238,8 @@ def load_reference_fingerprints(
             split here would score memorised structures as novel.
         fingerprint_cache: Where to persist the computed set.  Reused verbatim
             when it exists, since the set depends only on *cache* and *splits*
-            and every variant evaluation needs the same one.
+            and every variant evaluation needs the same one -- so it must be a
+            file built from them; :func:`default_fingerprint_cache` names one.
 
     Returns:
         The set of augmented Wyckoff fingerprints.

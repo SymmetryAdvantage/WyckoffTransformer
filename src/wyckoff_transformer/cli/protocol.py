@@ -91,12 +91,14 @@ from wyckoff_transformer.evaluation.protocol import (
     DEFAULT_REFERENCE_SPLITS,
     DEFAULT_TRIAL_SCHEDULE,
     GeneFingerprinter,
+    default_fingerprint_cache,
     funnel,
     load_genes,
     load_reference_fingerprints,
     parse_trial_schedule,
     positional_dof,
     read_screen,
+    reference_identity,
     screen_genes,
     trials_for_dof,
     write_screen,
@@ -760,6 +762,42 @@ def require_consistent_lineage(output_dir: Path, genes: Optional[list[dict]]) ->
         )
 
 
+def require_screen_reference(output_dir: Path, cache: Path, splits) -> None:
+    """Refuse to score against a reference other than the one the screen used.
+
+    The funnel's gene section -- ``gene_novelty_rate``, and the
+    ``gene_known_became_novel`` crossings measured against it -- comes from
+    ``screen.json``, while structure novelty is judged in ``score`` against
+    ``--reference-cache``.  Scoring a run screened against one reference with
+    another would publish a funnel whose two halves disagree about what is
+    known.  A screen that records no reference predates the record
+    (2026-09-15), when the default was ``lemat_bulk_ehull``.
+
+    Raises:
+        StaleOutputError: Unless the screen's recorded reference is *cache* over
+            *splits*.
+    """
+    record = (_read_manifest(output_dir).get(LINEAGE_KEY) or {}).get(SCREEN_FILE) or {}
+    expected = reference_identity(cache, splits)
+    recorded = record.get("reference")
+    if recorded == expected:
+        return
+    found = (
+        "records no reference, so it predates 2026-09-15, when gene novelty was "
+        "judged against lemat_bulk_ehull by default"
+        if recorded is None
+        else f"judged gene novelty against {recorded['cache']} "
+             f"({','.join(recorded['splits'])})"
+    )
+    raise StaleOutputError(
+        f"{Path(output_dir) / SCREEN_FILE} {found}, but structure novelty would be "
+        f"judged against {expected['cache']} ({','.join(expected['splits'])}). "
+        "Re-run the screen stage with the same --reference-cache and "
+        "--reference-splits first (--stage screen, or --stages screen,score in "
+        "wyformer-protocol-wandb); it leaves the draws and relaxations alone."
+    )
+
+
 def _failed_row(key, status: str, error: str) -> dict:
     """The log row for a trial the worker pool could not answer."""
     index, trial = key
@@ -1150,18 +1188,33 @@ def _trial_dir(output_dir: Path, index: int, trial: int) -> Path:
 # --------------------------------------------------------------------------- #
 # Stage 1: screen
 # --------------------------------------------------------------------------- #
+def _reference_splits(args) -> tuple[str, ...]:
+    return tuple(s.strip() for s in args.reference_splits.split(","))
+
+
 def stage_screen(args) -> None:
-    """Validity, uniqueness with counts, and gene novelty.  No potential."""
+    """Validity, uniqueness with counts, and gene novelty.  No potential.
+
+    The reference gene novelty was judged against is recorded with the screen's
+    lineage, so that ``score`` can refuse to put it in one funnel with structure
+    novelty judged against another.  Re-running this stage on a relaxed run is
+    safe: validity, uniqueness and the representatives depend on the genes
+    alone, and nothing downstream is built from the screen's id.
+    """
     genes = load_genes(args.input)
+    splits = _reference_splits(args)
     reference = load_reference_fingerprints(
         args.reference_cache,
-        tuple(s.strip() for s in args.reference_splits.split(",")),
-        fingerprint_cache=args.reference_fingerprint_cache,
+        splits,
+        fingerprint_cache=getattr(args, "reference_fingerprint_cache", None)
+        or default_fingerprint_cache(args.reference_cache, splits),
     )
     screen = screen_genes(genes, reference, GeneFingerprinter())
     write_screen(screen, args.output_dir / SCREEN_FILE)
     _write_lineage(args.output_dir, SCREEN_FILE, {
         "id": _new_lineage_id(), "parent": genes_digest(genes),
+        "reference": reference_identity(args.reference_cache, splits),
+        "reference_fingerprints": len(reference),
     })
     print(json.dumps(screen.summary(), indent=2))
     print(
@@ -1409,6 +1462,7 @@ def stage_template(args) -> None:
     from ase.io import write as ase_write
 
     from wyckoff_transformer.cryspr.template import (
+        INDEX_FILE_NAME,
         TemplateIndex,
         gene_query,
         load_template_structures,
@@ -1428,7 +1482,13 @@ def stage_template(args) -> None:
         print("Every gene already has a template draw.")
         return
 
-    index_table = TemplateIndex.load(args.template_index)
+    # Built from --reference-cache and kept beside it, as --template-index says;
+    # the index of one cache must not be filed under another.
+    index_table = TemplateIndex.load(
+        args.template_index or Path(args.reference_cache).parent / INDEX_FILE_NAME,
+        cache=args.reference_cache,
+        splits=_reference_splits(args),
+    )
     logger.info(
         "Template index: %d LeMat-Bulk entries over %d anonymous fingerprints",
         len(index_table), index_table.n_fingerprints,
@@ -2653,6 +2713,10 @@ def stage_score(args) -> None:
         args.output_dir,
         load_genes(args.input) if Path(args.input).is_file() else None,
     )
+    # And one reference: gene novelty comes from the screen, structure novelty
+    # from here.
+    splits = _reference_splits(args)
+    require_screen_reference(args.output_dir, args.reference_cache, splits)
     phase = _PhaseTimer()
     screen = read_screen(args.output_dir / SCREEN_FILE)
     free_file = args.output_dir / STRUCTURES_FILE
@@ -2796,10 +2860,23 @@ def stage_score(args) -> None:
     reference = build_novelty_reference(
         pd.concat(fingerprint_sets),
         cache=args.reference_cache,
-        splits=tuple(s.strip() for s in args.reference_splits.split(",")),
+        splits=splits,
         lemat_cif_csv=args.lemat_cif_csv,
     )
     phase.done("build the novelty reference")
+    # Which reference a number was judged against is not recoverable from the
+    # number, and it has changed once already.
+    novelty_reference = {
+        "reference_cache": str(args.reference_cache),
+        "reference_splits": ",".join(splits),
+        "lemat_cif_csv": str(args.lemat_cif_csv),
+        "novelty_reference": {
+            **reference_identity(args.reference_cache, splits),
+            "colliding_fingerprints": reference["fingerprint"].nunique()
+            if len(reference) else 0,
+            "candidate_entries": len(reference),
+        },
+    }
     novelty_filter = NoveltyFilter(reference)
 
     def _relaxed_missing(value) -> bool:
@@ -2830,7 +2907,8 @@ def stage_score(args) -> None:
 
     _update_manifest(
         args.output_dir / MANIFEST_FILE,
-        {"hull": hull.provenance, "novelty": "sampled+relaxed fingerprint"},
+        {"hull": hull.provenance, "novelty": "sampled+relaxed fingerprint",
+         **novelty_reference},
     )
     report = funnel(screen, frame, frame_fixed)
     (args.output_dir / FUNNEL_FILE).write_text(
@@ -3237,12 +3315,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Splits of that cache to treat as known.",
     )
     reference.add_argument(
-        "--reference-fingerprint-cache", type=Path,
-        default=Path("cache/lemat_bulk_ehull/gene_fingerprints.pkl.gz"),
+        "--reference-fingerprint-cache", type=Path, default=None,
         help=(
             "Where to persist the reference fingerprint set. Computing it from "
-            "4M rows takes minutes; every variant evaluation reuses the same set, "
-            "so it is written once and loaded thereafter."
+            "5M rows takes minutes; every variant evaluation reuses the same set, "
+            "so it is written once and loaded thereafter -- whatever the file "
+            "holds, so it must have been built from --reference-cache and "
+            "--reference-splits. Defaults to gene_fingerprints.pkl.gz beside "
+            "--reference-cache (with the splits in the name when not all of them)."
         ),
     )
     reference.add_argument(

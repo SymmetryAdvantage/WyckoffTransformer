@@ -32,7 +32,10 @@ To re-score a run whose relaxations are already done -- e.g. after a change to
 how novelty is judged -- pass ``--from-artifact --stages score``: the previous
 ``protocol_<run-id>`` artifact is downloaded into ``--output-dir`` and only the
 score stage runs, then the refreshed ``funnel.json`` and ``structures.csv`` go
-back as a new artifact version and ``run.summary`` is overwritten.
+back as a new artifact version and ``run.summary`` is overwritten.  After a
+change of *reference* it is ``--stages screen,score``: gene novelty is judged in
+the screen, and ``score`` refuses a screen judged against another reference.  A
+re-score that fails uploads nothing.
 """
 from __future__ import annotations
 
@@ -507,7 +510,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--from-artifact", nargs="?", const="latest", default=None, metavar="VERSION",
         help="Re-score an already-relaxed run: download its protocol_<id> "
              "artifact (this VERSION, or the latest) into --output-dir and run "
-             "only the stages named by --stages (use --stages score). Implies "
+             "only the stages named by --stages (use --stages score, or "
+             "--stages screen,score when the reference has changed). Implies "
              "--skip-generate; nothing is generated or relaxed.",
     )
 
@@ -659,8 +663,8 @@ def build_parser() -> argparse.ArgumentParser:
     reference.add_argument("--reference-cache", type=Path, default=DEFAULT_REFERENCE_CACHE)
     reference.add_argument("--reference-splits", type=str, default=",".join(DEFAULT_REFERENCE_SPLITS))
     reference.add_argument(
-        "--reference-fingerprint-cache", type=Path,
-        default=Path("cache/lemat_bulk_ehull/gene_fingerprints.pkl.gz"),
+        "--reference-fingerprint-cache", type=Path, default=None,
+        help="Defaults to gene_fingerprints.pkl.gz beside --reference-cache.",
     )
     reference.add_argument(
         "--lemat-cif-csv", type=Path, default=Path("data/lemat-bulk/lemat_pbe.csv.gz"),
@@ -757,6 +761,11 @@ def main() -> None:
         # that is not finished.
         raise
     except Exception as exc:
+        if args.from_artifact is not None:
+            # The artifact already holds a complete funnel. A partial one built
+            # from the re-screen would publish a new version, and overwrite the
+            # run's gene metrics, for a re-score that did not happen.
+            raise
         stage_exc = exc
 
     if stage_exc is not None:

@@ -586,6 +586,143 @@ class TestNoveltyReference(unittest.TestCase):
         self.assertTrue(reference.empty)
         self.assertEqual(list(reference.columns), ["fingerprint", "structure"])
 
+    def test_a_colliding_entry_without_geometry_is_refused_not_scored_novel(self):
+        # Dropped silently, the fingerprint would lose its only candidate and
+        # every structure on it would read as novel.
+        from pymatgen.core import Lattice, Structure
+
+        from wyckoff_transformer.evaluation import structure_novelty
+        from wyckoff_transformer.evaluation.structure_novelty import (
+            UnresolvedReferenceError,
+            build_novelty_reference,
+        )
+
+        silicon = Structure(Lattice.cubic(5.43), ["Si", "Si"], [[0, 0, 0], [0.25, 0.25, 0.25]])
+        hits = {"F": ["mp-1"], "G": ["agm000000002"]}
+        with patch.object(structure_novelty, "collect_reference_ids", return_value=hits), \
+                patch.object(structure_novelty, "load_reference_structures",
+                             return_value={"mp-1": silicon}):
+            with self.assertRaisesRegex(UnresolvedReferenceError, "1 of 2 .*agm000000002"):
+                build_novelty_reference(["F", "G"])
+
+    def test_every_colliding_entry_with_geometry_builds_the_reference(self):
+        from pymatgen.core import Lattice, Structure
+
+        from wyckoff_transformer.evaluation import structure_novelty
+        from wyckoff_transformer.evaluation.structure_novelty import build_novelty_reference
+
+        silicon = Structure(Lattice.cubic(5.43), ["Si", "Si"], [[0, 0, 0], [0.25, 0.25, 0.25]])
+        with patch.object(structure_novelty, "collect_reference_ids",
+                          return_value={"F": ["mp-1", "mp-2"]}), \
+                patch.object(structure_novelty, "load_reference_structures",
+                             return_value={"mp-1": silicon, "mp-2": silicon.copy()}):
+            reference = build_novelty_reference(["F"])
+        self.assertEqual(sorted(reference.index), ["mp-1", "mp-2"])
+
+
+class TestReferenceChoice(unittest.TestCase):
+    """Novelty is judged against the current LeMat-Bulk variant, and only one of them."""
+
+    CU = {"group": 225, "species": ["Cu"], "numIons": [4], "sites": [["4a"]]}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name)
+
+    def test_the_default_reference_is_the_current_lemat_variant(self):
+        # CLAUDE.md: lemat_bulk_fmax1_stress is the only current variant; the
+        # others must not be used for new evaluation.
+        from wyckoff_transformer.cli import protocol_wandb
+        from wyckoff_transformer.evaluation.protocol import DEFAULT_REFERENCE_CACHE
+
+        self.assertEqual(DEFAULT_REFERENCE_CACHE,
+                         Path("cache/lemat_bulk_fmax1_stress/data.pkl.gz"))
+        for parser, argv in (
+            (build_parser(), ["genes.json", "--output-dir", "out"]),
+            (protocol_wandb.build_parser(), ["run", "--output-dir", "out"]),
+        ):
+            args = parser.parse_args(argv)
+            self.assertEqual(args.reference_cache, DEFAULT_REFERENCE_CACHE)
+            self.assertIsNone(args.reference_fingerprint_cache)
+
+    def test_the_template_index_lives_beside_the_default_reference(self):
+        from wyckoff_transformer.cryspr.template import DEFAULT_INDEX_PATH
+        from wyckoff_transformer.evaluation.protocol import DEFAULT_REFERENCE_CACHE
+
+        self.assertEqual(DEFAULT_INDEX_PATH.parent, DEFAULT_REFERENCE_CACHE.parent)
+
+    def test_the_fingerprint_cache_follows_the_reference_and_its_splits(self):
+        from wyckoff_transformer.evaluation.protocol import default_fingerprint_cache
+
+        cache = Path("cache/some_variant/data.pkl.gz")
+        self.assertEqual(default_fingerprint_cache(cache, ("train", "val", "test")),
+                         Path("cache/some_variant/gene_fingerprints.pkl.gz"))
+        self.assertEqual(default_fingerprint_cache(cache, ("train",)),
+                         Path("cache/some_variant/gene_fingerprints_train.pkl.gz"))
+
+    def _screen(self, reference_cache, fingerprint_cache=None):
+        from wyckoff_transformer.cli.protocol import stage_screen
+
+        genes = self.out / "genes.json"
+        genes.write_text(json.dumps([self.CU]), encoding="utf-8")
+        args = SimpleNamespace(
+            input=genes, output_dir=self.out, reference_cache=reference_cache,
+            reference_splits="train,val,test",
+            reference_fingerprint_cache=fingerprint_cache,
+        )
+        with patch("wyckoff_transformer.cli.protocol.load_reference_fingerprints",
+                   return_value=set()) as load:
+            stage_screen(args)
+        return load
+
+    def test_the_screen_loads_the_fingerprints_of_the_reference_it_was_given(self):
+        load = self._screen(Path("cache/variant_b/data.pkl.gz"))
+        self.assertEqual(load.call_args.kwargs["fingerprint_cache"],
+                         Path("cache/variant_b/gene_fingerprints.pkl.gz"))
+        explicit = self._screen(Path("cache/variant_b/data.pkl.gz"), Path("/elsewhere.pkl.gz"))
+        self.assertEqual(explicit.call_args.kwargs["fingerprint_cache"],
+                         Path("/elsewhere.pkl.gz"))
+
+    def test_the_screen_records_its_reference(self):
+        from wyckoff_transformer.cli.protocol import LINEAGE_KEY, MANIFEST_FILE, SCREEN_FILE
+
+        self._screen(Path("cache/variant_b/data.pkl.gz"))
+        record = json.loads((self.out / MANIFEST_FILE).read_text())[LINEAGE_KEY][SCREEN_FILE]
+        self.assertEqual(record["reference"],
+                         {"cache": "variant_b/data.pkl.gz", "splits": ["train", "val", "test"]})
+        self.assertEqual(record["reference_fingerprints"], 0)
+
+    def test_score_accepts_the_screens_reference_however_its_path_is_spelled(self):
+        from wyckoff_transformer.cli.protocol import require_screen_reference
+
+        self._screen(Path("cache/variant_b/data.pkl.gz"))
+        require_screen_reference(
+            self.out, Path("/mnt/store/cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+
+    def test_score_refuses_a_screen_of_another_reference(self):
+        from wyckoff_transformer.cli.protocol import StaleOutputError, require_screen_reference
+
+        self._screen(Path("cache/variant_a/data.pkl.gz"))
+        with self.assertRaisesRegex(StaleOutputError, "variant_a.*variant_b"):
+            require_screen_reference(
+                self.out, Path("cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+        with self.assertRaisesRegex(StaleOutputError, r"\(train\)"):
+            require_screen_reference(self.out, Path("cache/variant_a/data.pkl.gz"), ("train",))
+
+    def test_score_refuses_a_screen_that_predates_the_record(self):
+        from wyckoff_transformer.cli.protocol import (
+            SCREEN_FILE, StaleOutputError, _write_lineage, require_screen_reference,
+        )
+
+        with self.assertRaisesRegex(StaleOutputError, "records no reference"):
+            require_screen_reference(
+                self.out, Path("cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+        _write_lineage(self.out, SCREEN_FILE, {"id": "s", "parent": "genes:sha256:x"})
+        with self.assertRaisesRegex(StaleOutputError, "lemat_bulk_ehull"):
+            require_screen_reference(
+                self.out, Path("cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+
 
 class TestRelaxedFingerprint(unittest.TestCase):
     """The relaxed structure is re-fingerprinted, not trusted to match its gene."""

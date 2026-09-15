@@ -292,6 +292,28 @@ class TestMainSkipGenerate(unittest.TestCase):
         score.assert_called_once()
         upload.assert_called_once()
 
+    def test_a_failed_rescore_uploads_nothing(self):
+        """The artifact holds a complete funnel; a partial one must not replace it."""
+        from wyckoff_transformer.evaluation.protocol import GeneScreen
+
+        pw.protocol_cli.write_screen(
+            GeneScreen(n_sampled=1, valid=[0], counts={0: 1}, novel=[0]),
+            self.out / pw.protocol_cli.SCREEN_FILE,
+        )
+        with patch.object(pw, "download_protocol_artifact"), \
+             patch.object(pw.protocol_cli, "stage_screen"), \
+             patch.object(pw.protocol_cli, "stage_score",
+                          side_effect=MemoryError("reference")), \
+             patch.object(pw, "upload") as upload:
+            sys.argv = [
+                "wyformer-protocol-wandb", "run7", "--output-dir", str(self.out),
+                "--from-artifact", "--stages", "screen,score",
+            ]
+            with self.assertRaises(MemoryError):
+                pw.main()
+        upload.assert_not_called()
+        self.assertFalse((self.out / pw.protocol_cli.FUNNEL_FILE).exists())
+
     def test_skip_generate_without_file_raises(self):
         (self.out / pw.GENES_FILE).unlink()
         sys.argv = [
