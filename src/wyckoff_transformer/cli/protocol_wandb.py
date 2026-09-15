@@ -391,6 +391,7 @@ def build_stage_args(args, gene_file: Path) -> Namespace:
         limit=args.limit,
         resume=args.resume,
         retry_failed=args.retry_failed,
+        allow_incomplete=args.allow_incomplete,
         reference_cache=args.reference_cache,
         reference_splits=args.reference_splits,
         reference_fingerprint_cache=args.reference_fingerprint_cache,
@@ -646,7 +647,10 @@ def build_parser() -> argparse.ArgumentParser:
     relax.add_argument("--limit", type=int, default=None, help="Only relax genes below this index.")
     relax.add_argument("--retry-failed", action="store_true",
                        help="On --resume, re-run failed trials too. A killed-worker "
-                            "row is re-run regardless.")
+                            "or failed-GPU row is re-run regardless.")
+    relax.add_argument("--allow-incomplete", action="store_true",
+                       help="Score although trials are still unanswered because a GPU "
+                            "failed or a worker was killed. Refused by default.")
     relax.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True,
                        help="Keep the trials the generate and relax logs already recorded "
                             "and do only the rest. --no-resume starts both from scratch.")
@@ -715,6 +719,11 @@ def main() -> None:
     try:
         for stage in stages:
             protocol_cli.run_stage(stage, stage_args)
+    except protocol_cli.IncompleteStageError:
+        # Nothing is wrong with the run that a partial report would describe:
+        # its trials are waiting for --resume, and uploading now would publish
+        # a new artifact version for a cohort that is not finished.
+        raise
     except Exception as exc:
         stage_exc = exc
 

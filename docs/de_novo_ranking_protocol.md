@@ -84,14 +84,45 @@ wyformer-protocol genes.json.gz --output-dir run/ --stage score
 milliseconds to seconds while a trial's relaxation takes seconds to minutes, so
 interleaving them costs little on CPU -- but it idles a GPU, and PyXtal
 rejection-samples, so a gene it cannot satisfy does not fail: it spins.
-`--pyxtal-timeout` (300 s) bounds one draw and `--relax-timeout` (1800 s) one
-trial, and an abandoned one is recorded as such rather than silently missing.
+`--pyxtal-timeout` (300 s) bounds one draw and `--relax-timeout` (300 s) one
+trial -- 1800 s before commit 86935ef, which is what every protocol artifact up
+to 2026-09-12 was relaxed with, so pass `--relax-timeout 1800` to extend one of
+those runs -- and an abandoned one is recorded as such rather than silently missing.
 
 **The unit of work is a trial, not a gene.** Trial budgets differ by a factor
 of three, so a pool keyed by gene leaves workers idle at the end; both stages
 therefore queue `(gene, trial)` pairs, and both append a row per pair as it
 finishes. `--resume` (on by default) then restarts at the trial granularity,
 and `--no-resume` starts over.
+
+**A broken worker is not a failed trial.** A CUDA error such as `unspecified
+launch failure` poisons the worker's context, and every later trial on it
+then fails in milliseconds. One card on iapetus did this to 750 of the 2324
+trials of `ehull-ssops-20260904-235534`, whose MSUN then read a third lower
+than a comparable model's while its MSUN per relaxed structure was the same.
+The pool stages (generate, prescreen, basinhop, relax) therefore run under
+`wyckoff_transformer.cli.worker_pool`, which:
+
+- stops giving work to a worker that reported a GPU error, lets the other
+  workers finish what they are running, and retries the trial on a fresh pool;
+- retries the trials of a worker that crashed or hung past its timeout
+  (twice `--relax-timeout`, plus 600 s: a trial can wait for another to finish
+  before a worker takes it). A crash that could have come from any of the
+  trials running at the time charges none of them; they are then run one at a
+  time, so that a trial which keeps crashing is the only one charged;
+- retires a device that faults in three consecutive pool rounds;
+- stops a pool without waiting on a worker that never finished initialising,
+  which would otherwise block the stage after its last trial;
+- writes a trial it still could not answer (three attempts, or no device left)
+  with an error that `--resume` recognises and re-runs.
+
+Each stage records what it had to do in `manifest.json` (`relax_worker_faults`,
+`relax_pool_breaks`, `relax_hung_workers`, `relax_trials_retried`,
+`relax_trials_unanswered`, `relax_retired_devices`, with the same fields for
+`pyxtal_`, `prescreen_` and `basinhop_`). A stage that leaves unanswered trials
+raises once its outputs are written, and `score` refuses a run with any, so
+that such a run is not scored and uploaded as the model's numbers. The fix is
+`--resume`; `--allow-incomplete` scores what there is.
 
 `--limit 12` gives a smoke test on the first twelve genes. Outputs:
 

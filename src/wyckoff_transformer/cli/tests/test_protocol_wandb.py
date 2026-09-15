@@ -67,7 +67,7 @@ class TestBuildStageArgs(unittest.TestCase):
             "input", "output_dir", "mlip", "cores", "devices", "workers_per_device",
             "n_trials", "pyxtal_cores", "pyxtal_timeout", "pyxtal_tol_factor",
             "fmax", "relax_timeout",
-            "release_symmetry", "rattle", "limit", "resume",
+            "release_symmetry", "rattle", "limit", "resume", "allow_incomplete",
             "reference_cache", "reference_splits", "reference_fingerprint_cache",
             "lemat_cif_csv", "debug",
         ):
@@ -615,3 +615,32 @@ class TestStagesWithoutScore(unittest.TestCase):
                     patch.object(protocol_wandb, "upload") as upload:
                 protocol_wandb.main()
             upload.assert_called_once()
+
+
+class TestIncompleteStagesAreNotUploaded(unittest.TestCase):
+    """Trials waiting for --resume are not a result, partial or otherwise."""
+
+    def test_an_incomplete_relax_uploads_nothing(self):
+        import gzip
+        import tempfile
+
+        from wyckoff_transformer.cli import protocol_wandb
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            with gzip.open(out / protocol_wandb.GENES_FILE, "wt", encoding="utf-8") as handle:
+                json.dump([], handle)
+            (out / protocol_wandb.protocol_cli.SCREEN_FILE).write_text("{}", encoding="utf-8")
+            argv = [
+                "wyformer-protocol-wandb", "someid", "--output-dir", str(out),
+                "--stages", "relax,score", "--skip-generate",
+            ]
+            with patch("sys.argv", argv), \
+                    patch.object(
+                        protocol_wandb.protocol_cli, "run_stage",
+                        side_effect=protocol_wandb.protocol_cli.IncompleteStageError("holes"),
+                    ), \
+                    patch.object(protocol_wandb, "upload") as upload:
+                with self.assertRaises(protocol_wandb.protocol_cli.IncompleteStageError):
+                    protocol_wandb.main()
+            upload.assert_not_called()

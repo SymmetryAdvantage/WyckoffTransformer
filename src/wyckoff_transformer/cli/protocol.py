@@ -55,14 +55,20 @@ import os
 import signal
 import time
 import warnings
-from collections import deque
-from concurrent.futures import ProcessPoolExecutor, TimeoutError, as_completed
-from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
+from wyckoff_transformer.cli.worker_pool import (
+    RETRYABLE_ERRORS,
+    describe,
+    is_retryable_error,
+    is_technical_error,
+    mark_worker_faulty,
+    run_supervised,
+    set_worker_device,
+)
 from wyckoff_transformer.cryspr.basin_hopping import (
     BASINHOP_STDEV,
     BASINHOP_STRAIN_STDEV,
@@ -326,11 +332,12 @@ class RowLog:
     #:
     #: A trial whose relaxation diverged has been answered and re-running it
     #: would answer the same way, so ``--resume`` is right to skip it.  A trial
-    #: whose worker was killed under it has not been answered at all, and
-    #: skipping it silently turns an infrastructure failure into a permanent
-    #: hole in the cohort -- 1034 of 1800 trials in one run here, which read as
-    #: a collapsed reconstruction rate rather than as a crash.
-    RETRYABLE_ERRORS = ("BrokenProcessPool", "A process in the process pool", "worker failed")
+    #: whose worker was killed under it, or whose GPU failed, has not been
+    #: answered at all, and skipping it silently turns an infrastructure failure
+    #: into a permanent hole in the cohort -- 1034 of 1800 trials in one run
+    #: here, which read as a collapsed reconstruction rate rather than as a
+    #: crash.  See :mod:`wyckoff_transformer.cli.worker_pool`.
+    RETRYABLE_ERRORS = RETRYABLE_ERRORS
 
     def __init__(
         self, path: Path, columns, resume: bool, retry_failed: bool = False
@@ -368,7 +375,8 @@ class RowLog:
 
         Everything, normally.  With *retry_failed*, only the successful ones, so
         a stage re-runs what it failed at.  Either way a row whose error names a
-        killed worker is *not* done: see :data:`RETRYABLE_ERRORS`.
+        killed worker or a failed device is *not* done: see
+        :data:`RETRYABLE_ERRORS`.
         """
         keep = pd.Series(True, index=previous.index)
         if not len(previous):
@@ -376,14 +384,12 @@ class RowLog:
         if "status" in previous.columns and retry_failed:
             keep &= previous["status"].astype(str) == "ok"
         if "error" in previous.columns:
-            text = previous["error"].astype(str)
-            retryable = pd.Series(False, index=previous.index)
-            for marker in self.RETRYABLE_ERRORS:
-                retryable |= text.str.contains(marker, regex=False, na=False)
+            retryable = previous["error"].map(is_retryable_error).astype(bool)
             if retryable.any():
                 logger.info(
-                    "%s: %d row(s) record a killed worker rather than a failed "
-                    "trial; they will be re-run", self.path, int(retryable.sum()),
+                    "%s: %d row(s) record a killed worker or a failed device "
+                    "rather than a failed trial; they will be re-run",
+                    self.path, int(retryable.sum()),
                 )
             keep &= ~retryable
         return keep
@@ -448,6 +454,101 @@ class RowLog:
         if not self._handle.closed:
             self._handle.flush()
         return read_rows(self.path, self.columns)
+
+
+def latest_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """The last row of each ``(index, trial)``.
+
+    A resumed stage appends its retry of a trial below the row that recorded
+    the failure, so a log can hold several rows for one trial; the last is the
+    trial's answer.
+    """
+    if not len(frame):
+        return frame
+    return frame.drop_duplicates(["index", "trial"], keep="last")
+
+
+class IncompleteStageError(RuntimeError):
+    """A stage log still has trials that a technical failure left unanswered."""
+
+
+def unanswered_trials(
+    output_dir: Path, files, limit: Optional[int] = None
+) -> dict[str, int]:
+    """Trials per log whose latest row says the machine, not the trial, failed.
+
+    Args:
+        output_dir: The protocol run directory.
+        files: Stage log file names to check; missing ones are skipped.
+        limit: Only count genes with an index below this, as ``--limit`` does.
+
+    Returns:
+        ``{file name: count}`` for the logs with any such trial.
+    """
+    counts = {}
+    for name in files:
+        frame = latest_rows(read_rows(Path(output_dir) / name))
+        if not len(frame) or "error" not in frame.columns:
+            continue
+        if limit is not None:
+            frame = frame[frame["index"] < limit]
+        n = int(frame["error"].map(is_retryable_error).sum())
+        if n:
+            counts[name] = n
+    return counts
+
+
+#: Every per-trial log whose holes change what the score stage counts.
+TRIAL_LOGS = (
+    PYXTAL_TRIALS_FILE, PRESCREEN_TRIALS_FILE, BASINHOP_TRIALS_FILE, RELAXATIONS_FILE,
+)
+
+
+def require_complete(args, files) -> None:
+    """Refuse to go on from logs that a technical failure left holes in.
+
+    A trial lost to a failed GPU or a killed worker would otherwise be counted
+    as a gene without a structure, and the funnel -- MSUN included -- would
+    report an infrastructure failure as a property of the model.
+
+    Raises:
+        IncompleteStageError: Unless ``args.allow_incomplete`` is set.
+    """
+    counts = unanswered_trials(args.output_dir, files, getattr(args, "limit", None))
+    if not counts:
+        return
+    summary = ", ".join(f"{n} in {name}" for name, n in counts.items())
+    if getattr(args, "allow_incomplete", False):
+        logger.warning("Going on despite unanswered trials (%s)", summary)
+        return
+    raise IncompleteStageError(
+        f"Trials left unanswered by technical failures: {summary}. Re-run the "
+        "stage that wrote them with --resume, which retries exactly those "
+        "trials, or pass --allow-incomplete to score what there is."
+    )
+
+
+def _failed_row(key, status: str, error: str) -> dict:
+    """The log row for a trial the worker pool could not answer."""
+    index, trial = key
+    logger.warning("Gene %d trial %d: %s (%s)", index, trial, status, error)
+    return {"index": index, "trial": trial, "status": status, "error": error}
+
+
+def _progress_logger(verb: str, every: int, unit: str = "trial"):
+    """A ``progress`` callback for :func:`run_supervised` logging rate and ETA."""
+    started = time.time()
+
+    def report(done: int, total: int) -> None:
+        if done % every and done != total:
+            return
+        rate = (time.time() - started) / done
+        logger.info(
+            "%s %d/%d (%.1f s/%s, %.0f min left)",
+            verb, done, total, rate, unit, rate * (total - done) / 60,
+        )
+
+    return report
 
 
 def resolve_devices(
@@ -549,7 +650,9 @@ def claim_device(counter, slots: list[str]) -> str:
     as one idle card and a handful of very slow trials.
 
     The modulo matters for a worker the pool replaces after a crash: it takes
-    the slot round again rather than running out of devices.
+    the slot round again rather than running out of devices.  A pool rebuilt
+    after a technical failure gets a fresh counter, and only the slots still in
+    service.
 
     Args:
         counter: A :func:`multiprocessing.Value` of type ``i``, shared with
@@ -771,6 +874,7 @@ def _init_relax_worker(
     _WORKER_DEVICE = claim_device(counter, slots)
     _WORKER_TORCH_DEVICE = _pin_visible_device(_WORKER_DEVICE)
     _WORKER_BUDGET = budgets.get(_WORKER_DEVICE) if budgets else None
+    set_worker_device(_WORKER_DEVICE)
 
     try:
         import torch
@@ -781,14 +885,24 @@ def _init_relax_worker(
 
     # Built once per process rather than per trial: loading an MLIP costs far
     # more than relaxing one structure.
-    if mlip is not None:
-        _WORKER_CALCULATOR = build_hull_calculator(mlip, device=_WORKER_TORCH_DEVICE)
-    if prerelax_mlip is not None:
-        from wyckoff_transformer.cryspr.mlips import build_prerelax_calculator
+    try:
+        if mlip is not None:
+            _WORKER_CALCULATOR = build_hull_calculator(mlip, device=_WORKER_TORCH_DEVICE)
+        if prerelax_mlip is not None:
+            from wyckoff_transformer.cryspr.mlips import build_prerelax_calculator
 
-        _WORKER_PRERELAX_CALCULATOR = build_prerelax_calculator(
-            prerelax_mlip, device=_WORKER_TORCH_DEVICE
-        )
+            _WORKER_PRERELAX_CALCULATOR = build_prerelax_calculator(
+                prerelax_mlip, device=_WORKER_TORCH_DEVICE
+            )
+    except Exception as exc:
+        # A broken card is reported through the worker's tasks, which say which
+        # device it was.  Raised from here, it would break the whole pool and
+        # say nothing about where.  Anything else -- a misspelt potential, a
+        # missing checkpoint -- is a configuration error and still raises.
+        if not is_technical_error(describe(exc)):
+            raise
+        mark_worker_faulty(describe(exc))
+        return
     logger.info(
         "Worker ready on %s (torch device %s): %s%s",
         _WORKER_DEVICE, _WORKER_TORCH_DEVICE, mlip or "no scoring potential",
@@ -951,55 +1065,47 @@ def stage_generate(args) -> None:
     cores = args.pyxtal_cores or os.cpu_count() or 1
     logger.info("Drawing %d structures on %d core(s)", len(tasks), cores)
 
-    ctx = multiprocessing.get_context("spawn")
     n_ok = 0
-    worker_failures = 0
-    first_worker_exc = None
+
+    def record(key, result) -> None:
+        nonlocal n_ok
+        index, trial = key
+        row, atoms = result
+        dof, n_trials = budget[index]
+        row["dof_positional"] = dof
+        row["n_trials"] = n_trials
+        if atoms is not None:
+            # Tagged in the frame itself, so the relax stage needs
+            # nothing but this file to know what it is relaxing.
+            atoms.info = {"gene": int(index), "trial": int(trial)}
+            ase_write(str(structures_path), atoms, format="extxyz", append=True)
+            n_ok += 1
+        log.write(row)
+
     try:
-        with ProcessPoolExecutor(
-            max_workers=cores,
-            mp_context=ctx,
-            initializer=_init_generate_worker,
-            initargs=(args.debug,),
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _generate_one,
+        pool_report = run_supervised(
+            (
+                ((index, trial), (
                     index,
                     trial,
                     genes[index],
                     str(_trial_dir(args.output_dir, index, trial)),
                     args.pyxtal_timeout,
                     args.pyxtal_tol_factor,
-                ): (index, trial)
+                ))
                 for index, trial in tasks
-            }
-            for done, future in enumerate(as_completed(futures), start=1):
-                index, trial = futures[future]
-                try:
-                    row, atoms = future.result()
-                except Exception as exc:  # noqa: BLE001 - a worker died
-                    logger.warning("Gene %d trial %d: worker failed (%s)", index, trial, exc)
-                    worker_failures += 1
-                    if first_worker_exc is None:
-                        first_worker_exc = exc
-                    row, atoms = (
-                        {"index": index, "trial": trial, "status": "failed",
-                         "error": f"{type(exc).__name__}: {exc}", "seconds": None},
-                        None,
-                    )
-                dof, n_trials = budget[index]
-                row["dof_positional"] = dof
-                row["n_trials"] = n_trials
-                if atoms is not None:
-                    # Tagged in the frame itself, so the relax stage needs
-                    # nothing but this file to know what it is relaxing.
-                    atoms.info = {"gene": int(index), "trial": int(trial)}
-                    ase_write(str(structures_path), atoms, format="extxyz", append=True)
-                    n_ok += 1
-                log.write(row)
-                if done % 100 == 0 or done == len(futures):
-                    logger.info("Drew %d/%d", done, len(futures))
+            ),
+            _generate_one,
+            slots=["cpu"] * cores,
+            initializer=_init_generate_worker,
+            initargs=lambda counter, live: (args.debug,),
+            on_result=record,
+            on_failure=lambda key, status, error: record(
+                key, (_failed_row(key, status, error), None)
+            ),
+            task_timeout=args.pyxtal_timeout,
+            progress=_progress_logger("Drew", 100),
+        )
     finally:
         log.close()
 
@@ -1020,15 +1126,13 @@ def stage_generate(args) -> None:
         "pyxtal_ok": pyxtal_ok,
         "pyxtal_failed": int((frame["status"] == "failed").sum()),
         "pyxtal_timed_out": int((frame["status"] == "timeout").sum()),
+        **pool_report.manifest("pyxtal"),
     })
     print(
         f"{n_ok} new draws, {pyxtal_ok}/{len(frame)} "
         f"trials with a structure -> {structures_path}"
     )
-    if futures and (worker_failures == len(futures) or (pyxtal_ok == 0 and worker_failures > 0)):
-        raise RuntimeError(
-            f"All {cores} PyXtal generation worker(s) failed ({worker_failures}/{len(futures)} tasks failed with worker errors): {first_worker_exc}"
-        ) from first_worker_exc
+    require_complete(args, (PYXTAL_TRIALS_FILE,))
 
 
 # --------------------------------------------------------------------------- #
@@ -1279,21 +1383,19 @@ def stage_prescreen(args) -> None:
 
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ.setdefault(key, value)
-    ctx = multiprocessing.get_context("spawn")
-    claimed = ctx.Value("i", 0)
-    started = time.time()
+
+    def record(key, result) -> None:
+        index, trial = key
+        row, relaxed = result
+        if relaxed is not None:
+            relaxed.info = {"gene": int(index), "trial": int(trial)}
+            ase_write(str(relaxed_path), relaxed, format="extxyz", append=True)
+        log.write(row)
+
     try:
-        with ProcessPoolExecutor(
-            max_workers=len(slots),
-            mp_context=ctx,
-            initializer=_init_relax_worker,
-            # No scoring potential: this stage never computes a reported energy,
-            # and loading ORB in every worker would cost more than the stage.
-            initargs=(claimed, slots, None, prescreen_mlip, args.debug),
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _prescreen_one,
+        pool_report = run_supervised(
+            (
+                ((index, trial), (
                     index,
                     trial,
                     atoms,
@@ -1302,30 +1404,22 @@ def stage_prescreen(args) -> None:
                     args.relax_timeout,
                     args.prescreen_release_symmetry,
                     args.prescreen_rattle,
-                ): (index, trial)
+                ))
                 for index, trial, atoms in todo
-            }
-            for done, future in enumerate(as_completed(futures), start=1):
-                index, trial = futures[future]
-                try:
-                    row, relaxed = future.result()
-                except Exception as exc:  # noqa: BLE001 - a worker died
-                    logger.warning("Gene %d trial %d: worker failed (%s)", index, trial, exc)
-                    row, relaxed = (
-                        {"index": index, "trial": trial, "status": "failed",
-                         "error": f"{type(exc).__name__}: {exc}"},
-                        None,
-                    )
-                if relaxed is not None:
-                    relaxed.info = {"gene": int(index), "trial": int(trial)}
-                    ase_write(str(relaxed_path), relaxed, format="extxyz", append=True)
-                log.write(row)
-                if done % 50 == 0 or done == len(futures):
-                    rate = (time.time() - started) / done
-                    logger.info(
-                        "Pre-relaxed %d/%d (%.1f s/trial, %.0f min left)",
-                        done, len(futures), rate, rate * (len(futures) - done) / 60,
-                    )
+            ),
+            _prescreen_one,
+            slots=slots,
+            initializer=_init_relax_worker,
+            # No scoring potential: this stage never computes a reported energy,
+            # and loading ORB in every worker would cost more than the stage.
+            initargs=lambda counter, live: (counter, live, None, prescreen_mlip, args.debug),
+            on_result=record,
+            on_failure=lambda key, status, error: record(
+                key, (_failed_row(key, status, error), None)
+            ),
+            task_timeout=args.relax_timeout,
+            progress=_progress_logger("Pre-relaxed", 50),
+        )
     finally:
         log.close()
 
@@ -1339,6 +1433,7 @@ def stage_prescreen(args) -> None:
         "prescreen_rattle": args.prescreen_rattle,
         "prescreen_select": args.prescreen_select,
         **selection,
+        **pool_report.manifest("prescreen"),
     })
     print(
         f"{selection['prescreen_selected']} of {selection['prescreen_candidates']} "
@@ -1347,6 +1442,7 @@ def stage_prescreen(args) -> None:
         f"{selection['prescreen_rejected']} distinct but over budget) "
         f"-> {args.output_dir / PRESCREEN_FILE}"
     )
+    require_complete(args, (PRESCREEN_TRIALS_FILE,))
 
 
 def _select_and_write(
@@ -1660,19 +1756,23 @@ def stage_basinhop(args) -> None:
 
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ.setdefault(key, value)
-    ctx = multiprocessing.get_context("spawn")
-    claimed = ctx.Value("i", 0)
-    started = time.time()
+
+    def record(walk, result) -> None:
+        index, trial = walk
+        row, minima = result
+        for key, atoms, energy_per_atom in minima:
+            atoms.info = {
+                "gene": int(index), "trial": int(key),
+                "walk_trial": int(trial),
+                "energy_per_atom": float(energy_per_atom),
+            }
+            ase_write(str(minima_path), atoms, format="extxyz", append=True)
+        log.write(row)
+
     try:
-        with ProcessPoolExecutor(
-            max_workers=len(slots),
-            mp_context=ctx,
-            initializer=_init_relax_worker,
-            initargs=(claimed, slots, None, mlip, args.debug),
-        ) as pool:
-            futures = {
-                pool.submit(
-                    _basinhop_one,
+        pool_report = run_supervised(
+            (
+                ((index, trial), (
                     index,
                     trial,
                     atoms,
@@ -1683,34 +1783,20 @@ def stage_basinhop(args) -> None:
                     args.basinhop_strain_stdev,
                     args.prescreen_fmax,
                     args.relax_timeout,
-                ): (index, trial)
+                ))
                 for index, trial, atoms in todo
-            }
-            for done, future in enumerate(as_completed(futures), start=1):
-                index, trial = futures[future]
-                try:
-                    row, minima = future.result()
-                except Exception as exc:  # noqa: BLE001 - a worker died
-                    logger.warning("Gene %d trial %d: worker failed (%s)", index, trial, exc)
-                    row, minima = (
-                        {"index": index, "trial": trial, "status": "failed",
-                         "error": f"{type(exc).__name__}: {exc}"},
-                        [],
-                    )
-                for key, atoms, energy_per_atom in minima:
-                    atoms.info = {
-                        "gene": int(index), "trial": int(key),
-                        "walk_trial": int(trial),
-                        "energy_per_atom": float(energy_per_atom),
-                    }
-                    ase_write(str(minima_path), atoms, format="extxyz", append=True)
-                log.write(row)
-                if done % 25 == 0 or done == len(futures):
-                    rate = (time.time() - started) / done
-                    logger.info(
-                        "Walked %d/%d (%.1f s/walk, %.0f min left)",
-                        done, len(futures), rate, rate * (len(futures) - done) / 60,
-                    )
+            ),
+            _basinhop_one,
+            slots=slots,
+            initializer=_init_relax_worker,
+            initargs=lambda counter, live: (counter, live, None, mlip, args.debug),
+            on_result=record,
+            on_failure=lambda key, status, error: record(
+                key, (_failed_row(key, status, error), [])
+            ),
+            task_timeout=args.relax_timeout,
+            progress=_progress_logger("Walked", 25, unit="walk"),
+        )
     finally:
         log.close()
 
@@ -1733,6 +1819,7 @@ def stage_basinhop(args) -> None:
         # Kept, not rejected: a supergroup still has the gene's own operations.
         "basinhop_symmetry_gained": int(rows["n_symmetry_gained"].fillna(0).sum()),
         **selection,
+        **pool_report.manifest("basinhop"),
     })
     print(
         f"{selection['basinhop_selected']} of {selection['basinhop_candidates']} "
@@ -1741,6 +1828,7 @@ def stage_basinhop(args) -> None:
         f"{selection['basinhop_rejected']} distinct but over budget) "
         f"-> {args.output_dir / BASINHOP_FILE}"
     )
+    require_complete(args, (BASINHOP_TRIALS_FILE,))
 
 
 def _basinhop_select(args, genes: list[dict], schedule) -> dict:
@@ -1909,39 +1997,6 @@ def _read_draws(
     return draws
 
 
-def _shutdown_relax_pool(pool, grace: float = 120.0) -> None:
-    """Stop the workers without waiting on one that will never stop.
-
-    By the time this runs every future has resolved and every row is on disk,
-    so a worker still alive has nothing left to do -- but
-    ``ProcessPoolExecutor.__exit__`` joins them unconditionally, and a worker
-    that wedged inside its initialiser never returns.  That has happened here:
-    a worker whose CUDA context never finished coming up spun at 100% CPU for
-    the whole run, took no trial, and then deadlocked the stage *after* all
-    2369 relaxations were complete -- an eight-hour run with nothing to show
-    for it, because the score stage never started.
-
-    So: ask nicely, wait *grace* seconds, then terminate and move on.
-    """
-    # `_processes` is None until the pool spawns its first worker, which a
-    # fully resumed stage never does. Snapshot before pool.shutdown() clears it to None.
-    processes = list((getattr(pool, "_processes", None) or {}).values())
-    pool.shutdown(wait=False, cancel_futures=True)
-    deadline = time.time() + grace
-    for process in processes:
-        process.join(max(0.0, deadline - time.time()))
-        if not process.is_alive():
-            continue
-        logger.warning(
-            "Relaxation worker %s did not exit; terminating it", process.pid)
-        process.terminate()
-        process.join(10)
-        if process.is_alive():
-            logger.warning("Relaxation worker %s ignored SIGTERM; killing it", process.pid)
-            process.kill()
-            process.join(10)
-
-
 def _warn_about_idle_slots(relaxed: pd.DataFrame, slots: list[str]) -> None:
     """Say so when a card that was asked for took no trials.
 
@@ -2012,164 +2067,48 @@ def stage_relax(args) -> None:
     for key, value in _SINGLE_THREAD_ENV_VARS.items():
         os.environ.setdefault(key, value)
 
-    ctx = multiprocessing.get_context("spawn")
-    # Inherited by every worker the pool spawns, replacements included.
-    claimed = ctx.Value("i", 0)
+    budgets: dict = {}
 
-    started = time.time()
-    worker_failures = 0
-    first_worker_exc = None
-    total_trials = len(todo)
-    done = 0
-
-    budgets = resolve_device_budgets(slots, ctx=ctx)
-
-    def _make_pool() -> ProcessPoolExecutor:
-        return ProcessPoolExecutor(
-            max_workers=len(slots),
-            mp_context=ctx,
-            initializer=_init_relax_worker,
-            initargs=(claimed, slots, args.mlip, prerelax_mlip, args.debug, budgets),
-        )
-
-    pool = _make_pool()
-    todo_deque = deque(todo)
-    active_futures: dict[object, tuple[int, int, object, float]] = {}
-    max_in_flight = len(slots)
-    consecutive_pool_failures = 0
-    max_pool_restarts = max(3, len(slots))
-
-    relax_timeout = args.relax_timeout
-    if relax_timeout:
-        grace = min(0.1, relax_timeout) if relax_timeout < 1.0 else max(5.0, min(30.0, relax_timeout * 0.1))
-        timeout_limit = relax_timeout + grace
-        wait_timeout = min(2.0, max(0.01, timeout_limit / 2.0))
-    else:
-        timeout_limit = None
-        wait_timeout = 2.0
-
-    def _fill_active() -> None:
-        while len(active_futures) < max_in_flight and todo_deque:
-            idx, tr, at = todo_deque.popleft()
-            fut = pool.submit(
-                _relax_one,
-                idx,
-                tr,
-                at,
-                str(_trial_dir(args.output_dir, idx, tr)),
-                args.fmax,
-                args.release_symmetry,
-                args.rattle,
-                args.relax_timeout,
-                getattr(args, "prerelax_fmax", 0.1),
-                getattr(args, "prerelax_max_expansion", None),
-            )
-            active_futures[fut] = (idx, tr, at, time.time())
+    def relax_initargs(counter, live):
+        # Fresh budgets for every pool: a worker killed while holding a
+        # reservation would otherwise leak it into the next one.
+        budgets.clear()
+        budgets.update(resolve_device_budgets(live))
+        return (counter, live, args.mlip, prerelax_mlip, args.debug, dict(budgets))
 
     try:
-        _fill_active()
-        while active_futures:
-            pool_broken = False
-            timed_out_item = None
-            try:
-                for future in as_completed(list(active_futures.keys()), timeout=wait_timeout):
-                    idx, tr, at, sub_time = active_futures.pop(future)
-                    try:
-                        row = future.result()
-                    except Exception as exc:  # noqa: BLE001 - a worker died
-                        logger.warning("Gene %d trial %d: worker failed (%s)", idx, tr, exc)
-                        worker_failures += 1
-                        if first_worker_exc is None:
-                            first_worker_exc = exc
-                        row = {
-                            "index": idx, "trial": tr, "status": "failed",
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                        if isinstance(exc, BrokenProcessPool):
-                            pool_broken = True
-                    else:
-                        if row.get("status") == "ok":
-                            consecutive_pool_failures = 0
-
-                    log.write(row)
-                    done += 1
-                    if done % 25 == 0 or done == total_trials:
-                        rate = (time.time() - started) / done
-                        logger.info(
-                            "Relaxed %d/%d (%.1f s/trial, %.0f min left)",
-                            done, total_trials, rate, rate * (total_trials - done) / 60,
-                        )
-
-                    if pool_broken:
-                        break
-
-                    if todo_deque and len(active_futures) < max_in_flight:
-                        n_idx, n_tr, n_at = todo_deque.popleft()
-                        n_fut = pool.submit(
-                            _relax_one,
-                            n_idx,
-                            n_tr,
-                            n_at,
-                            str(_trial_dir(args.output_dir, n_idx, n_tr)),
-                            args.fmax,
-                            args.release_symmetry,
-                            args.rattle,
-                            args.relax_timeout,
-                            getattr(args, "prerelax_fmax", 0.1),
-                            getattr(args, "prerelax_max_expansion", None),
-                        )
-                        active_futures[n_fut] = (n_idx, n_tr, n_at, time.time())
-                    break
-            except TimeoutError:
-                pass
-
-            if timeout_limit is not None and not pool_broken:
-                now = time.time()
-                for fut, (idx, tr, at, sub_time) in list(active_futures.items()):
-                    elapsed = now - sub_time
-                    if elapsed > timeout_limit:
-                        timed_out_item = (fut, idx, tr, at, elapsed)
-                        break
-
-            if timed_out_item is not None:
-                fut, idx, tr, at, elapsed = timed_out_item
-                logger.warning(
-                    "Gene %d trial %d: relaxation timed out after %.1f s (worker hung); "
-                    "terminating worker pool and restarting",
-                    idx, tr, elapsed,
-                )
-                row = {
-                    "index": idx, "trial": tr, "status": "timeout",
-                    "device": None, "n_atoms": len(at),
-                    "formula": at.get_chemical_formula(mode="metal"),
-                    "energy": None, "energy_per_atom": None, "cif": None,
-                    "error": f"exceeded {args.relax_timeout:g} s (worker hung)",
-                    "seconds": round(elapsed, 2),
-                }
-                log.write(row)
-                done += 1
-                active_futures.pop(fut, None)
-                pool_broken = True
-
-            if pool_broken:
-                for remaining_fut, (r_idx, r_tr, r_at, _) in list(active_futures.items()):
-                    todo_deque.appendleft((r_idx, r_tr, r_at))
-                active_futures.clear()
-
-                _shutdown_relax_pool(pool, grace=10.0)
-                consecutive_pool_failures += 1
-                if consecutive_pool_failures >= max_pool_restarts or not todo_deque:
-                    break
-                logger.info("Restarting relaxation worker pool")
-                budgets = resolve_device_budgets(slots, ctx=ctx)
-                pool = _make_pool()
-                _fill_active()
+        pool_report = run_supervised(
+            (
+                ((index, trial), (
+                    index,
+                    trial,
+                    atoms,
+                    str(_trial_dir(args.output_dir, index, trial)),
+                    args.fmax,
+                    args.release_symmetry,
+                    args.rattle,
+                    args.relax_timeout,
+                    getattr(args, "prerelax_fmax", 0.1),
+                    getattr(args, "prerelax_max_expansion", None),
+                ))
+                for index, trial, atoms in todo
+            ),
+            _relax_one,
+            slots=slots,
+            initializer=_init_relax_worker,
+            initargs=relax_initargs,
+            on_result=lambda key, row: log.write(row),
+            on_failure=lambda key, status, error: log.write(
+                _failed_row(key, status, error)
+            ),
+            task_timeout=args.relax_timeout,
+            progress=_progress_logger("Relaxed", 25),
+        )
     finally:
         log.close()
-        _shutdown_relax_pool(pool)
 
     frame = aggregate_structures(args.output_dir)
-    relaxed = log.frame()
+    relaxed = latest_rows(log.frame())
     _warn_about_idle_slots(relaxed, slots)
     trials_relaxed = int((relaxed["status"] == "ok").sum())
     trials_failed = int((relaxed["status"] != "ok").sum())
@@ -2208,15 +2147,13 @@ def stage_relax(args) -> None:
         },
         "genes_with_structure": int(frame["has_structure"].sum()),
         "genes_attempted": int(len(frame)),
+        **pool_report.manifest("relax"),
     })
     print(
         f"{int(frame['has_structure'].sum())}/{len(frame)} genes produced a "
         f"structure -> {args.output_dir / STRUCTURES_FILE}"
     )
-    if total_trials and (worker_failures == total_trials or (trials_relaxed == 0 and worker_failures > 0)):
-        raise RuntimeError(
-            f"All {len(slots)} relaxation worker(s) failed ({worker_failures}/{total_trials} tasks failed with worker errors): {first_worker_exc}"
-        ) from first_worker_exc
+    require_complete(args, (RELAXATIONS_FILE,))
 
 
 def _backfill_fixed_symmetry_from_cryspr(relaxations: pd.DataFrame) -> pd.DataFrame:
@@ -2297,7 +2234,7 @@ def aggregate_structures(output_dir: Path) -> pd.DataFrame:
         The frame written to ``structures.csv``, indexed by gene.
     """
     output_dir = Path(output_dir)
-    draws = read_rows(output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS)
+    draws = latest_rows(read_rows(output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS))
     relaxations = read_rows(output_dir / RELAXATIONS_FILE, RELAXATION_COLUMNS)
     if (relaxations["status"] == "ok").any() and not (
         "status_fixed" in relaxations.columns
@@ -2306,6 +2243,7 @@ def aggregate_structures(output_dir: Path) -> pd.DataFrame:
         relaxations = _backfill_fixed_symmetry_from_cryspr(relaxations)
         if (relaxations["status_fixed"] == "ok").any():
             relaxations.to_csv(output_dir / RELAXATIONS_FILE, index=False)
+    relaxations = latest_rows(relaxations)
     # Only present in a wide-then-narrow run.  Its per-gene counts and seconds
     # are what make the two arms comparable on cost: without them a run that
     # drew ten times as many starts looks identical to one that drew the usual
@@ -2436,6 +2374,9 @@ def stage_score(args) -> None:
     from wyckoff_transformer.evaluation.structure_novelty import build_novelty_reference
     from wyckoff_transformer.evaluation.structure_validity import is_valid
 
+    # Before anything is loaded: a funnel with holes in it would be published
+    # as the model's numbers.
+    require_complete(args, TRIAL_LOGS)
     phase = _PhaseTimer()
     screen = read_screen(args.output_dir / SCREEN_FILE)
     free_file = args.output_dir / STRUCTURES_FILE
@@ -2984,9 +2925,20 @@ def build_parser() -> argparse.ArgumentParser:
             "On --resume, re-run the trials that failed as well as the ones "
             "never attempted. Off by default, because a trial whose relaxation "
             "diverged has been answered and would answer the same way. A row "
-            "whose error names a killed worker is re-run regardless: that is an "
-            "infrastructure failure, and skipping it leaves a permanent hole in "
-            "the cohort that reads as a collapsed success rate."
+            "whose error names a killed worker or a failed GPU is re-run "
+            "regardless: that is an infrastructure failure, and skipping it "
+            "leaves a permanent hole in the cohort that reads as a collapsed "
+            "success rate."
+        ),
+    )
+    parser.add_argument(
+        "--allow-incomplete", action="store_true",
+        help=(
+            "Go on, and score, although some trials are still unanswered because "
+            "a GPU failed or a worker was killed. Off by default: each stage "
+            "retries such trials on a fresh pool and retires a device that keeps "
+            "failing, and whatever is left over is refused rather than counted "
+            "as a gene without a structure. --resume retries exactly those trials."
         ),
     )
     parser.add_argument(
