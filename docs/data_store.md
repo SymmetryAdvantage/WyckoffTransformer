@@ -156,7 +156,7 @@ refusals; a test holds the two to agreement. Source it, then:
 RUNS_DIR=$(wyformer_path WYFORMER_RUNS "$REPO/runs") || exit 1
 ```
 
-`scripts/platforms/aspire2a/train_in_pb.sh` resolves the locations **once, at submission**, writes
+`scripts/platforms/aspire2a/train_in_pbs.sh` resolves the locations **once, at submission**, writes
 them into the job spec, and exports them in every link. A chain therefore uses
 the same directories throughout, even if the config is edited while it is
 queued. Exporting matters for containers: the environment tier wins, so the Python
@@ -256,7 +256,7 @@ output exists.
 
 **`last_checkpoint.pt` needs its own mechanism**, and it has one. It holds
 mid-training resume state — optimiser, scheduler, RNG, loader position — and
-`scripts/platforms/aspire2a/train_in_pb.sh` chains PBS jobs by resuming from it across the queue's
+`scripts/platforms/aspire2a/train_in_pbs.sh` chains PBS jobs by resuming from it across the queue's
 24 h ceiling. It used to be the one part of a run that existed in exactly one
 place, and a purge of `runs/` restarted a multi-day chain from epoch 0 without an
 error. Three pieces close that:

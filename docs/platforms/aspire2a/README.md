@@ -33,7 +33,7 @@ Everything is already built. From a login node:
 
 ```bash
 cd /scratch/users/nus/kna/WyckoffTransformer
-bash scripts/platforms/aspire2a/train_in_pb.sh yamls/models/NextToken/v6/base_sg.yaml mp_20 --pilot
+bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/NextToken/v6/base_sg.yaml mp_20 --pilot
 ```
 
 That submits a 2 h pilot to the dev queue and prints the job id. For a real run,
@@ -114,7 +114,7 @@ In `scripts/platforms/aspire2a/`:
 | Script | What |
 | --- | --- |
 | `run_in_singularity.sh` | run any command against `.venv` inside the image |
-| `train_in_pb.sh` | the general self-chaining training launcher |
+| `train_in_pbs.sh` | the general self-chaining training launcher |
 | `protocol_relax.pbs` | self-chaining relax + score for one generated pool |
 | `train_formula_energy.pbs` | one-slot fit of the composition-floor ensemble |
 | `prefetch_cached_path.sh` | parallel-range fetch of a checkpoint into the `cached_path` cache, ETag-verified |

@@ -5,7 +5,7 @@
 #
 # The relax stage is resumable -- it skips representatives already in
 # structures.csv -- so this script CHAINS itself the way
-# scripts/platforms/aspire2a/train_in_pb.sh does: run under `timeout`, hand the node back cleanly, re-qsub, pick up where
+# scripts/platforms/aspire2a/train_in_pbs.sh does: run under `timeout`, hand the node back cleanly, re-qsub, pick up where
 # structures.csv left off. `--stage score` runs once, in the link that finds
 # nothing left to relax.
 #
@@ -22,7 +22,7 @@
 # POST='python scripts/analyse_dft_screen_uplift.py'.
 #
 # Queue: `-q ai` routes by (ngpus, walltime); ngpus=1 with a walltime in
-# (02:00:01, 24:00:00] lands in aiq1. See scripts/platforms/aspire2a/train_in_pb.sh
+# (02:00:01, 24:00:00] lands in aiq1. See scripts/platforms/aspire2a/train_in_pbs.sh
 # for the map.
 # ---------------------------------------------------------------------------
 #PBS -N wyf_relax

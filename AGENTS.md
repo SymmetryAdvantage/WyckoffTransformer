@@ -43,7 +43,7 @@ each missing file of `REQUIRED_RUN_FILES` down from W&B on demand.
 
 **`last_checkpoint.pt` is the one file that needs care.** It holds mid-training
 resume state -- optimiser, scheduler, RNG, loader position -- and
-`scripts/platforms/aspire2a/train_in_pb.sh` chains PBS jobs by resuming from it across the queue's
+`scripts/platforms/aspire2a/train_in_pbs.sh` chains PBS jobs by resuming from it across the queue's
 24 h ceiling. It used to exist in exactly one place, so a purge of `runs/`
 silently restarted multi-day chains from epoch 0. It is now mirrored into the
 run's W&B **files** (`WyckoffTrainer.mirror_checkpoint_to_wandb`, rate-limited by

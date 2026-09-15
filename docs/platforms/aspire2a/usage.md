@@ -46,11 +46,11 @@ with `myusage`, both in `/app/apps/local/bin`.
 
 ## Submitting a training run
 
-`scripts/platforms/aspire2a/train_in_pb.sh` is the entry point for anything that trains. It takes a
+`scripts/platforms/aspire2a/train_in_pbs.sh` is the entry point for anything that trains. It takes a
 model config and a dataset, and it is both the submitter and the job:
 
 ```bash
-bash scripts/platforms/aspire2a/train_in_pb.sh yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull
+bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull
 ```
 
 A full config is far more epochs than 24 h, so the job **chains itself**. Each
@@ -81,7 +81,7 @@ Options worth knowing (`--help` prints them all):
 Re-submitting the same config+dataset after a stop continues the pinned run from
 its last checkpoint with a fresh attempt budget.
 
-`train_in_pb.sh` launches `scripts/train.py` only. The composition-floor ensemble
+`train_in_pbs.sh` launches `scripts/train.py` only. The composition-floor ensemble
 has its own trainer and its own one-slot job,
 `scripts/platforms/aspire2a/train_formula_energy.pbs`; see its header for the
 `-v` overrides.

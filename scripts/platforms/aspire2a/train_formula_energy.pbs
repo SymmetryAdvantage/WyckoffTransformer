@@ -37,7 +37,7 @@
 # the job in aiq1 rather than aidev: the `ai` routing queue dispatches
 # walltime <= 2h to aidev, and (02:00:01, 24:00:00] with ngpus=1 to aiq1.
 #
-# There is no chaining here, unlike scripts/platforms/aspire2a/train_in_pb.sh: this trainer
+# There is no chaining here, unlike scripts/platforms/aspire2a/train_in_pbs.sh: this trainer
 # writes no intermediate checkpoints, so a killed job has nothing to resume
 # from. It only has to fit inside one slot, and it does.
 # ---------------------------------------------------------------------------

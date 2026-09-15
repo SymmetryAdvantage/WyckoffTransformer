@@ -168,7 +168,7 @@ or reinstall the project — [environment.md](environment.md#adding-or-repairing
 `pandarallel` reads the **node's** core count, not the cgroup's — 128 on a
 `gpu001`-class node against the 16 CPUs the job actually owns — and forks that
 many workers into a `mem=` limit sized for 16. Pass `--n-jobs $NCPUS`;
-`scripts/platforms/aspire2a/train_in_pb.sh` already does.
+`scripts/platforms/aspire2a/train_in_pbs.sh` already does.
 
 ---
 

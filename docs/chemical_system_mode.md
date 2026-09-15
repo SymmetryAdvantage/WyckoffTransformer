@@ -106,7 +106,7 @@ stops being a free choice once it follows the element vocabulary, so
 `from_config` derives it (the energy column, then one column per element in the
 dataset's vocabulary) and refuses a config that hardcodes a different number.
 
-    bash scripts/platforms/aspire2a/train_in_pb.sh \
+    bash scripts/platforms/aspire2a/train_in_pbs.sh \
         yamls/models/lemat/chemsys_e_hull_adamw_wsd.yaml lemat_bulk_fmax1_stress
 
 No re-cache is needed. `chemical_system_conditioning` reads the
