@@ -128,6 +128,33 @@ def formula_conditioning_width(
     return chemical_system_conditioning_dim(n_elements)
 
 
+def guidance_conditioning_width(condition_dropout: float, conditioning_width: int) -> int:
+    """Columns classifier-free guidance adds to the conditioning vector: 1, or 0 without it.
+
+    A model trained with `condition_dropout` sees each example either with its conditioning
+    or with none, and has to be told which. Zeroing the dropped rows is not enough on its own:
+    AdaLN is affine in its input, so the zero vector is just another point on the line the
+    conditional modulations lie on -- for a log1p(e_hull) channel it is exactly e_hull = 0,
+    the very target the model is sampled at. The extra column is a presence flag, 1 on every
+    conditioned row and 0 on a dropped one, alongside the zeroed values. That gives the
+    unconditional branch a modulation of its own (the AdaLN bias) and the conditional one an
+    independent offset (the flag's weight) -- the same freedom as a learned null embedding,
+    with the model itself unchanged. `from_config` and `WyckoffTrainer.condition_dim` both
+    need this number, which is why it lives here.
+    """
+    if condition_dropout is None or condition_dropout == 0:
+        return 0
+    if not 0 < condition_dropout < 1:
+        raise ValueError(
+            f"condition_dropout must be in [0, 1), got {condition_dropout}: at 1 the model "
+            "never sees a condition and there is nothing to guide towards.")
+    if not conditioning_width:
+        raise ValueError(
+            "condition_dropout is set, but nothing conditions this model: classifier-free "
+            "guidance needs a condition to drop.")
+    return 1
+
+
 def normalise_condition_scales(condition_scale, features: Tuple[str, ...]) -> Tuple[float, ...]:
     """A divisor per conditioning feature, applied before its transform.
 
@@ -433,6 +460,10 @@ class WyckoffTrainer():
     #: dropped. Mutually exclusive with composition_conditioning; see
     #: `formula_conditioning_width` and wyckoff_transformer.chemical_system.
     chemical_system_conditioning = False
+    #: Probability of dropping a training example's whole conditioning vector, which is
+    #: what classifier-free guidance trains on. 0 is an ordinary conditional model. A class
+    #: default for the same reason as the two above; see `condition_dropout` in __init__.
+    condition_dropout = 0.0
 
     #: The dataset the run trains on, as `from_config` read it off `config.dataset`. Kept
     #: because a `chemical_system_conditioning` run has to be able to name the tensor cache
@@ -513,6 +544,7 @@ class WyckoffTrainer():
         composition_conditioning: bool = False,
         chemical_system_conditioning: bool = False,
         condition_on_cell_size: bool = True,
+        condition_dropout: float = 0.0,
         resume: bool = False,
         reschedule: bool = False,
         distributed: DistributedContext = SINGLE_PROCESS,
@@ -603,6 +635,16 @@ class WyckoffTrainer():
                 the cell size is what the model is being asked to choose and telling it
                 the answer forces the decoder to work one z at a time.
                 See docs/csp_mode.md.
+            condition_dropout: Train for classifier-free guidance: each training example has
+                its whole conditioning vector -- scalars and formula block alike -- replaced
+                by the null condition with this probability, so that one set of weights
+                learns both p(gene | condition) and p(gene). The conditioning vector gains a
+                trailing presence column for it (see guidance_conditioning_width), so
+                CascadeTransformer_args.condition_dim is one wider than without. Evaluation
+                always conditions, which keeps the validation loss comparable with a model
+                trained without dropout; train() additionally logs the unconditional one.
+                `generate_structures(guidance_scale=...)` is what uses the result.
+                See docs/classifier_free_guidance.md.
             resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
@@ -661,9 +703,13 @@ class WyckoffTrainer():
         self.condition_on_cell_size = condition_on_cell_size
         self.n_elements = len(tokenisers["elements"]) if "elements" in tokenisers else None
         # Raises on the two modes together, and on either without an element vocabulary.
-        formula_conditioning_width(
+        formula_width = formula_conditioning_width(
             self.n_elements, composition_conditioning, chemical_system_conditioning,
             condition_on_cell_size)
+        # Raises on a dropout outside [0, 1) and on one with nothing to drop.
+        guidance_conditioning_width(
+            condition_dropout, len(self.condition_features) + formula_width)
+        self.condition_dropout = float(condition_dropout or 0.0)
         if self.formula_conditioning_field is not None:
             # Densify before the datasets are built: they keep only cascade_order and
             # extra_fields, and the ragged counters the tokeniser stores are neither.
@@ -1156,6 +1202,8 @@ class WyckoffTrainer():
             parts.append(
                 f"{chemical_system_conditioning_dim(self.n_elements)} columns for the "
                 f"chemical system over {self.n_elements} element tokens")
+        if self.classifier_free_guidance and parts:
+            parts.append("1 presence column for classifier-free guidance")
         return ", ".join(parts) if parts else "nothing"
 
 
@@ -1216,23 +1264,41 @@ class WyckoffTrainer():
         """Width of the vector this run feeds to AdaLN, or None when unconditional.
 
         Each `condition_feature` occupies one column, in the order they are configured,
-        and the composition -- or the chemical system -- the rest.
+        the composition -- or the chemical system -- the next block, and under
+        `condition_dropout` a presence flag the last column.
         `CascadeTransformer_args.condition_dim` has to agree.
         """
         width = len(self.condition_features) + formula_conditioning_width(
             self.n_elements, self.composition_conditioning,
             self.chemical_system_conditioning, self.condition_on_cell_size)
+        width += guidance_conditioning_width(self.condition_dropout, width)
         return width or None
 
 
+    @property
+    def classifier_free_guidance(self) -> bool:
+        """Whether this model was trained to be sampled with a guidance scale."""
+        return bool(self.condition_dropout)
+
+
     def build_cond(self, dataset: AugmentedCascadeDataset,
-                   batch_selection: 'Tensor | slice' = slice(None)) -> Optional[Tensor]:
+                   batch_selection: 'Tensor | slice' = slice(None),
+                   drop_condition: bool = False,
+                   unconditional: bool = False) -> Optional[Tensor]:
         """Assemble the conditioning vector for a batch, in the model's units.
 
         One place, because the scalars are stored in physical units and transformed on
         the way in while the formula block -- the composition, or the chemical system --
         is stored ready to use, and getting that order wrong in one of three call sites
         would be invisible until the conditioning quietly stopped meaning anything.
+
+        Args:
+            drop_condition: Replace each row by the null condition with probability
+                `condition_dropout`. What training does, and nothing else should.
+            unconditional: Replace every row by the null condition: the model's
+                estimate of p(gene) rather than p(gene | condition).
+            Both are no-ops for a model trained without `condition_dropout`, except that
+            `unconditional` then raises -- such a model has no null condition to be given.
         """
         parts = []
         if self.condition_features:
@@ -1244,7 +1310,38 @@ class WyckoffTrainer():
             parts.append(dataset.data[formula_field][batch_selection])
         if not parts:
             return None
-        return parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
+        cond = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
+        if not self.classifier_free_guidance:
+            if unconditional:
+                raise ValueError(
+                    "This model was trained without condition_dropout, so it has no "
+                    "unconditional mode to evaluate.")
+            return cond
+        if unconditional:
+            return self.null_condition(cond.size(0), device=cond.device)
+        cond = self.with_presence_flag(cond)
+        if drop_condition:
+            # Zeroes the flag along with the values: a dropped row is exactly null_condition.
+            keep = torch.rand(cond.size(0), 1, device=cond.device) >= self.condition_dropout
+            cond = cond * keep
+        return cond
+
+
+    def with_presence_flag(self, cond: Tensor) -> Tensor:
+        """Append the classifier-free guidance presence column, set, to a conditioning block.
+
+        `cond` is everything else the model is conditioned on, already in the model's units.
+        """
+        return torch.cat([cond, torch.ones_like(cond[..., :1])], dim=-1)
+
+
+    def null_condition(self, n_rows: int, device: Optional[torch.device] = None) -> Tensor:
+        """The conditioning vector that stands for "no condition": zeros, flag included."""
+        if not self.classifier_free_guidance:
+            raise ValueError(
+                "This model was trained without condition_dropout and has no null condition.")
+        return torch.zeros(n_rows, self.condition_dim, dtype=torch.float32,
+                           device=device if device is not None else self.device)
 
 
     def build_condition_from_values(
@@ -1529,6 +1626,8 @@ class WyckoffTrainer():
             composition_conditioning,
             chemical_system_conditioning,
             trainer_args.get("condition_on_cell_size", True))
+        condition_dropout = trainer_args.get("condition_dropout", 0.0)
+        derived += guidance_conditioning_width(condition_dropout, derived)
         declared = config.model.CascadeTransformer_args.get("condition_dim")
         if derived:
             if declared is None:
@@ -1540,6 +1639,8 @@ class WyckoffTrainer():
                     f"{list(condition_features)}"
                     + (" plus the composition" if composition_conditioning else "")
                     + (" plus the chemical system" if chemical_system_conditioning else "")
+                    + (" plus the classifier-free guidance presence column"
+                       if condition_dropout else "")
                     + f" makes it {derived}. Remove it and let it be derived, or fix it.")
         elif declared is not None:
             raise ValueError(
@@ -1632,13 +1733,17 @@ class WyckoffTrainer():
         testing: bool = False,
         return_n_samples: bool = False,
         rescale_to_viable: bool = True,
-        model: Optional[nn.Module] = None) -> Tensor | tuple[Tensor, int]:
+        model: Optional[nn.Module] = None,
+        drop_condition: bool = False,
+        unconditional: bool = False) -> Tensor | tuple[Tensor, int]:
         """
         Computes loss on the dataset.
 
         Args:
             model: What to run the forward pass through; `self.model` by default. Training
                 passes the DDP wrapper, whose backward pass averages the gradients.
+            drop_condition: apply `condition_dropout` to the batch; training only.
+            unconditional: compute the loss under the null condition; see `build_cond`.
             return_n_samples: also return the number of examples the summed loss was computed
                 over. Needed to rescale a mini-batch loss to a whole-split estimate. From a
                 sharded loader it is this rank's share of the global batch instead, which
@@ -1692,7 +1797,8 @@ class WyckoffTrainer():
                 start_tokens, masked_data, target, batch_selection = dataset.get_masked_cascade_data(
                     known_seq_len, known_cascade_len, return_chosen_indices=True)
 
-        cond = self.build_cond(dataset, batch_selection)
+        cond = self.build_cond(dataset, batch_selection,
+                               drop_condition=drop_condition, unconditional=unconditional)
         if model is None:
             model = self.model
 
@@ -1797,7 +1903,8 @@ class WyckoffTrainer():
                 # the other ~130 configs are tuned against that scale.)
                 loss, n_samples = self.get_loss(
                     self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
-                    rescale_to_viable=False, return_n_samples=True, model=forward_model)
+                    rescale_to_viable=False, return_n_samples=True, model=forward_model,
+                    drop_condition=True)
                 loss = loss / n_samples
                 if self.predict_start:
                     # Rides along every step rather than taking steps of its own; see
@@ -1808,7 +1915,7 @@ class WyckoffTrainer():
             else:
                 loss, n_samples = self.get_loss(
                     self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
-                    return_n_samples=True, model=forward_model)
+                    return_n_samples=True, model=forward_model, drop_condition=True)
             if self.target == TargetClass.NumUniqueTokens:
                 # Predictions are [batch_size, cascade_size]
                 # Unreduced MSE is [batch_size, cascade_size]
@@ -1933,12 +2040,16 @@ class WyckoffTrainer():
 
 
     @torch.no_grad()
-    def evaluate(self, dataset: AugmentedCascadeDataset, loader: Optional[AugmentedCascadeLoader] = None) -> Tensor:
+    def evaluate(self, dataset: AugmentedCascadeDataset, loader: Optional[AugmentedCascadeLoader] = None,
+                 unconditional: bool = False) -> Tensor:
         """
         Evaluates the model by calculating the average loss on the dataset.
         Args:
             dataset: The dataset to evaluate on.
             loader: The loader to use for batching.
+            unconditional: Evaluate under the null condition, for a model trained with
+                `condition_dropout`. Its gap to the conditional loss is how many nats the
+                condition is worth to the model per structure.
         Returns:
             The average loss on the dataset, averaged over ranks under DDP: one entry per
             *target* cascade field, in the
@@ -2012,8 +2123,11 @@ class WyckoffTrainer():
                         # get_loss already rescales a sampled batch to the whole viable set.
                         loss[target_rank] += self.get_loss(
                             dataset, known_seq_len, known_cascade_len, loader=loader,
-                            no_batch=loader is None)
+                            no_batch=loader is None, unconditional=unconditional)
                 else: # NumUniqueTokens
+                    if unconditional:
+                        raise NotImplementedError(
+                            "Unconditional evaluation is only implemented for NextToken")
                     # One head per cascade field is predicted in a single pass here, so unlike
                     # NextToken the non-target columns are computed; drop them rather than
                     # carry them, matching what train_epoch backpropagates.
@@ -2393,6 +2507,14 @@ class WyckoffTrainer():
                 }
                 if self.test_dataset is not None:
                     raw_losses['test'] = self.evaluate(self.test_dataset, self.test_loader)
+                if (self.classifier_free_guidance and self.target == TargetClass.NextToken
+                        and not self.production_training):
+                    # Logged beside the conditional loss rather than instead of it: `val` stays
+                    # what every other conditional run reports, and the gap between the two is
+                    # what the condition is worth. Never the selection metric -- best_model is
+                    # still chosen on the conditional `val`.
+                    raw_losses['val_unconditional'] = self.evaluate(
+                        self.val_dataset, self.val_loader, unconditional=True)
                 loss_dict = {}
                 if self.target == TargetClass.Scalar:
                     total_val_loss = raw_losses['val']
@@ -2476,6 +2598,7 @@ class WyckoffTrainer():
             cond: Optional[torch.Tensor] = None,
             composition_cond: Optional[torch.Tensor] = None,
             allowed_element_mask: Optional[torch.Tensor] = None,
+            guidance_scale: float = 1.0,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -2517,7 +2640,18 @@ class WyckoffTrainer():
                 rest of the palette. `SystemDraws.element_mask` builds it. Activates
                 element-constrained generation on its own; `required_element_set` stays
                 optional and is the only thing that forces an element in.
+            guidance_scale: Classifier-free guidance scale w, for a model trained with
+                `condition_dropout`: every generated token is drawn from
+                p(t | c)^w p(t)^(1-w), renormalised. 1 is plain conditional sampling and the
+                only value a model without `condition_dropout` accepts; 0 ignores the
+                condition; above 1 pushes the sample further towards it. Like
+                `temperature`, it does not touch the space group, which is drawn from the
+                saved unconditional distribution. See WyckoffGenerator.guided_logits.
         """
+        if guidance_scale != 1.0 and not self.classifier_free_guidance:
+            raise ValueError(
+                f"guidance_scale={guidance_scale} needs a model trained with "
+                "condition_dropout; this one has no unconditional mode to guide away from.")
         # `stops` must be passed: without it the generator cannot tell a finished sequence
         # from a live one, and `compute_validity_per_known_sequence_length` then scores STOP
         # tokens as invalid Wyckoff positions.
@@ -2553,6 +2687,8 @@ class WyckoffTrainer():
                         "`cond` must also supply `composition_cond`; otherwise the model is "
                         "handed a conditioning vector of the wrong width.")
                 cond = torch.cat([cond, composition_cond.to(cond.device, torch.float32)], dim=-1)
+            if self.classifier_free_guidance:
+                cond = self.with_presence_flag(cond)
         elif composition_cond is not None:
             if self.formula_conditioning_field is None:
                 raise ValueError("composition_cond was given, but this model is not "
@@ -2562,6 +2698,8 @@ class WyckoffTrainer():
                 raise ValueError(
                     f"This model is also conditioned on {list(condition_features)}; pass "
                     "`cond` for those alongside `composition_cond`.")
+            if self.classifier_free_guidance:
+                cond = self.with_presence_flag(cond)
         elif self.condition_dim is not None:
             # Nothing supplied: draw whole conditioning rows from the training data, which
             # keeps the scalar and the composition paired as they actually occur rather
@@ -2577,7 +2715,11 @@ class WyckoffTrainer():
                     "was provided and no train_dataset is available to sample one from.")
             random_indices = torch.randint(
                 0, self.train_dataset.num_examples, (n_structures,), device=self.device)
+            # Carries the presence flag of a guided model already.
             cond = self.build_cond(self.train_dataset, random_indices)
+        uncond = None
+        if guidance_scale != 1.0:
+            uncond = self.null_condition(cond.size(0), device=cond.device)
 
         if start_tensor is None:
             if getattr(self, "predict_start", False):
@@ -2603,13 +2745,17 @@ class WyckoffTrainer():
                 elements_vocab=self.tokenisers['elements'],
                 cond=cond,
                 allowed_element_mask=allowed_element_mask,
+                uncond=uncond,
+                guidance_scale=guidance_scale,
             )
         elif compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
-                start_tensor, temperature=temperature, compute_validity=True, cond=cond)
+                start_tensor, temperature=temperature, compute_validity=True, cond=cond,
+                uncond=uncond, guidance_scale=guidance_scale)
         else:
             generated_tensors = generator.generate_tensors(
-                start_tensor, temperature=temperature, compute_validity=False, cond=cond)
+                start_tensor, temperature=temperature, compute_validity=False, cond=cond,
+                uncond=uncond, guidance_scale=guidance_scale)
 
         # Non-target fields are filled in by their engineers (site_symmetry_ops_id, ...). They are inputs to the model, not part of the generated
         # structure, and a vector-valued one cannot be stacked with the [batch, length] token

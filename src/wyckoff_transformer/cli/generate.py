@@ -286,6 +286,11 @@ def main():
                              "Below 1 sharpens, above 1 flattens. It also applies to the "
                              "space group of a model with predict_start; otherwise the "
                              "space group is drawn from the saved distribution either way.")
+    parser.add_argument("--guidance-scale", type=float, default=1.0,
+                        help="Classifier-free guidance scale, for a model trained with "
+                             "condition_dropout. 1 samples the conditional model, 0 the "
+                             "unconditional one, above 1 pushes further towards the "
+                             "condition. Refused for any other model unless 1.")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode.")
     parser.add_argument("--required-elements", "--r", type=str,
                         help="Required elements for constrained generation (e.g., 'Li-S'). "
@@ -512,6 +517,7 @@ def main():
         required_element_set=args.required_elements if use_element_constraints else None,
         allowed_element_set=allowed_elements if allowed_elements is not None else "all",
         allowed_element_mask=element_mask,
+        guidance_scale=args.guidance_scale,
     )
 
     generation_end_time = time.time()

@@ -134,6 +134,40 @@ class WyckoffGenerator():
                     self.tail_calibrators.append(TemperatureScaling().to(model_device))
 
 
+    def guided_logits(
+        self,
+        start: Tensor,
+        cascade: List[Tensor],
+        prediction_head: int,
+        cond: Optional[Tensor],
+        uncond: Optional[Tensor],
+        guidance_scale: float,
+    ) -> Tensor:
+        """Next-token logits, with classifier-free guidance when a guidance scale is set.
+
+        Returns ``l_u + w (l_c - l_u)`` for the conditional logits ``l_c`` and the
+        unconditional ones ``l_u``, i.e. a sampling distribution proportional to
+        ``p(t | c)^w p(t)^(1 - w)`` at every position -- the autoregressive form of
+        classifier-free guidance. ``w = 1`` is the conditional model and skips the second
+        pass; ``w = 0`` is the unconditional one; ``w > 1`` extrapolates away from the
+        unconditional distribution. Combining raw logits rather than log-probabilities
+        makes no difference after the softmax, since the two differ by a per-row constant.
+        The same holds for a shared temperature or calibration temperature applied
+        afterwards: dividing the combination by T is combining the divided logits.
+
+        Both passes go through the model as one doubled batch.
+        """
+        if uncond is None or guidance_scale == 1.0:
+            return self.model(start, cascade, None, prediction_head, cond=cond)
+        batch_size = start.size(0)
+        doubled = self.model(
+            torch.cat([start, start], dim=0),
+            [torch.cat([field, field], dim=0) for field in cascade],
+            None, prediction_head, cond=torch.cat([cond, uncond], dim=0))
+        conditional, unconditional = doubled[:batch_size], doubled[batch_size:]
+        return unconditional + guidance_scale * (conditional - unconditional)
+
+
     @torch.no_grad()
     def sample_start_classes(
             self, batch_size: int, cond: Optional[Tensor] = None, temperature: float = 1) -> Tensor:
@@ -162,7 +196,9 @@ class WyckoffGenerator():
         elements_vocab: Optional[Dict] = None,
         delimiter: str = "-",
         cond: Optional[Tensor] = None,
-        allowed_element_mask: Optional[Tensor] = None
+        allowed_element_mask: Optional[Tensor] = None,
+        uncond: Optional[Tensor] = None,
+        guidance_scale: float = 1.0,
     ) -> List[Tensor] | Tuple[List[Tensor], List[float], List[float]]:
         """
         Generates a sequence of tokens.
@@ -186,6 +222,10 @@ class WyckoffGenerator():
                 palette and undo the sampling. Mutually exclusive with a non-default
                 `allowed_element_set`, which says the same thing for every row at once.
                 Every row must permit STOP, and at least one element besides it.
+            uncond : The null conditioning vector, one row per structure, for a model trained
+                with classifier-free guidance. Required when `guidance_scale` is not 1.
+            guidance_scale : Classifier-free guidance scale w; see `guided_logits`. Applied
+                before calibration, element masking and the temperature.
         Returns:
             The generated sequence of tokens. It has shape [batch_size, max_len, len(cascade_order)].
                 It doesn't include the start token.
@@ -199,6 +239,17 @@ class WyckoffGenerator():
         per_row_element_mask = allowed_element_mask is not None
         device = start.device
         batch_size = start.size(0)
+        if guidance_scale != 1.0:
+            if cond is None or uncond is None:
+                raise ValueError(
+                    "A guidance scale other than 1 needs both `cond` and `uncond`: guidance "
+                    "extrapolates from the unconditional prediction to the conditional one.")
+            if uncond.shape != cond.shape:
+                raise ValueError(
+                    f"uncond has shape {tuple(uncond.shape)} against cond's "
+                    f"{tuple(cond.shape)}; it is the null condition for the same rows.")
+            if guidance_scale < 0:
+                raise ValueError(f"guidance_scale must be non-negative, got {guidance_scale}")
         if max_length is None:
             max_length = self.max_sequence_len
         if compute_validity and self.stops is None:
@@ -336,7 +387,9 @@ class WyckoffGenerator():
                 if self.cascade_is_target.get(cascade_name, False):
                     # +1 for MASK
                     this_generation_input = [generated_cascade[:, :known_seq_len + 1] for generated_cascade in generated]
-                    logits = self.model(start, this_generation_input, None, known_cascade_len, cond=cond)
+                    logits = self.guided_logits(
+                        start, this_generation_input, known_cascade_len, cond, uncond,
+                        guidance_scale)
                     if self.calibrators is not None:
                         if known_seq_len < len(self.calibrators[known_cascade_len]):
                             logits = self.calibrators[known_cascade_len][known_seq_len](logits)

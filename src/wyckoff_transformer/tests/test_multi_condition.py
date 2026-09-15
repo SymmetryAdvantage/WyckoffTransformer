@@ -22,6 +22,7 @@ from wyckoff_transformer.cli import (
 from wyckoff_transformer.trainer import (
     WyckoffTrainer,
     get_condition_transform,
+    guidance_conditioning_width,
     normalise_condition_features,
     normalise_condition_scales,
     normalise_condition_transforms,
@@ -386,8 +387,10 @@ class TestShippedConfigs(unittest.TestCase):
             declared = model_args.get("condition_dim")
             with self.subTest(config=path.name):
                 if features:
+                    expected = len(features) + guidance_conditioning_width(
+                        trainer_args.get("condition_dropout", 0.0), len(features))
                     self.assertEqual(
-                        declared, len(features),
+                        declared, expected,
                         f"{path} conditions on {list(features)} but declares "
                         f"condition_dim={declared}")
                 else:
