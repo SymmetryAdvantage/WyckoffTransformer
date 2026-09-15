@@ -1,6 +1,6 @@
 """Answer, for the PBS chain, whether a run has resume state anywhere.
 
-`scripts/train_in_pb.sh` has to decide between resuming a pinned W&B run id and
+`scripts/platforms/aspire2a/train_in_pb.sh` has to decide between resuming a pinned W&B run id and
 minting a fresh one, and it must not get that wrong in the direction of starting
 over: a run whose `last_checkpoint.pt` was purged from `runs/` has trained epochs
 that exist only in its W&B artifact.

@@ -1,35 +1,82 @@
-# e_all_adamw_wsd, plus the chemical system as a conditioning input.
+# e_all_adamw_wsd, plus crystallographic and chemical pairwise relational attention biases.
 #
-# The architecture, the optimiser and the schedule are the parent's, unchanged and for
-# the reasons documented there -- this file is one flag and one comment different, so a
-# diff against it is the experiment. Read
-# `yamls/models/lemat_bulk_ehull/e_all_adamw_wsd.yaml` for why the energies are
-# conditioned the way they are; nothing about that changes here.
+# The optimiser, the schedule, the conditioning and the tokeniser are the parent's,
+# unchanged and for the reasons documented there -- this file is one block different, so a
+# diff against `yamls/models/lemat_bulk_ehull/e_all_adamw_wsd.yaml` is the experiment.
 #
-# What is added is `chemical_system_conditioning`: an indicator over the element
-# vocabulary saying which elements the structure is made of, appended to the three
-# energy channels. It is the relaxed variant of the CSP conditioning in
-# `ehull_composition.yaml` -- which elements, not how many -- so the model still chooses
-# the stoichiometry, the cell size and the space group. See docs/chemical_system_mode.md.
+# What is added is `relational_attention_bias`, from
+# `docs/archive/wyckoff_backbone_improvements.md` §1 and implemented in
+# `wyckoff_transformer.cascade.relational`. Attention over Wyckoff sites is isotropic
+# here: there is no positional encoding over the site axis (`learned_positional_encoding_
+# max_size: 0` below) and the trainer permutes the sequence every step, so every pair of
+# sites enters attention alike. The bias makes the pair matter without making the
+# *position* matter -- it is a function of the two sites' tokens only, so it permutes
+# with them:
 #
-# The conditioning vector is therefore 95 wide for `lemat_bulk_fmax1`: three energy
-# columns then 92 element columns (89 elements and three service tokens, which stay
-# zero). `condition_dim` is NOT set below -- it follows the element vocabulary, so
-# `from_config` derives it and refuses a config that hardcodes a number that would rot
-# the moment the dataset changed.
+#   A_ij = Q_i . K_j / sqrt(d_k) + B_chem(e_i, e_j) + B_wyckoff(G, ss_i, ss_j)
 #
-# Two things about the scale of the new columns, since the parent's notes are careful
-# about that and the same argument has to be made here. AdaLN is zero-initialised, so a
-# wider input is the identity at step 0 exactly as before. And the new columns are
-# indicators, whose per-column standard deviation over the training set is at most 0.5
-# and for most elements far less -- the same order as `energy_above_hull` at 0.317
-# post-transform, and below the 0.525 that made `max_force @ 0.01` diverge. No transform
-# or scale is applied to them: `condition_transform` and `condition_scale` name the
-# scalar features only, and an indicator is already on the right scale by construction.
+# B_chem is a learned element-embedding interaction plus an MLP over three standardised,
+# symmetric physical descriptors of the pair (electronegativity difference, radius
+# difference, radius ratio); B_wyckoff is a free symmetric table over site-symmetry
+# pairs, gated per head by the space group. Both are added to the attention logits as a
+# float `attn_mask`, so nothing else about the attention -- the padding mask included --
+# changes.
 #
-# The tokeniser is the parent's, unchanged. `chemical_system_conditioning` reads the
-# `counters: {composition: elements}` field the cache already carries and keeps only its
-# keys, so the same tensor cache serves both modes and no re-cache is needed.
+# Everything that produces the bias is zero-initialised, so at step 0 this model is
+# *bit-identical* to the parent (there is a test for it,
+# `test_identical_to_the_baseline_at_initialisation`). That is what makes the comparison
+# an ablation rather than two different experiments, and it is also why nothing about the
+# learning rate or the warmup needed revisiting: the run starts where the parent starts.
+#
+# Cost, measured on one A100-40GB against the parent config on the same node and dataset.
+# Parameters 150,841 -> 179,281, and 26,244 of the 28,440 added are the 81x81x4
+# site-symmetry table -- a lookup, zero-initialised, and weight decay keeps the pairs that
+# never co-occur at zero. Uncompiled forward+backward at batch 50000, averaged over
+# sequence lengths 1..10: 80.1 -> 87.7 ms per step, i.e. +9.6%. Compiled, in the pilots
+# below, a steady-state epoch is ~5 s for both -- the difference is under the resolution
+# of what the progress bar reports -- while the first epoch, which pays compilation,
+# grows from 66 s to 104 s.
+#
+# The bias tensor is [batch, nhead, N+1, N+1], the same shape as the attention scores each
+# of the three layers already materialises, and it is built once per forward and shared by
+# all three. Both vocabulary-sized tables (92x92 elements, 81x81 site symmetries) are
+# computed off the batch axis, so the MLP and the embedding product cost the same whether
+# the batch is 1 or 50000.
+#
+# Pilots (3 epochs, `--pilot`): relational hcj90x1q, baseline bxkblgrw. They ran the whole
+# path -- train, calibrate, generate, evaluate on the test split -- to completion. Their
+# losses are not a result: at three epochs both models are still essentially at
+# initialisation, where this one is the parent by construction.
+#
+# The parent's notes on the dataset and the conditioning follow, unchanged.
+#
+# The dirty-data run: train on everything LeMat-Bulk has short of a pathological
+# relaxation, and tell the model what it is looking at rather than filtering.
+#
+# The dataset is `lemat_bulk_fmax1` (scripts/build_lemat_bulk_fmax.py): max_force <= 1 eV/A
+# instead of the 0.02 that produced `lemat_bulk_ehull`. That cut removed 10.5% of the
+# archive, and `wyckoff_transformer.formula_energy.dataset` shows what it removed was not
+# noise -- it keeps 95.6% of Alexandria rows against 35.5% of the ICSD-backed ones, because
+# Materials Project reports forces from a different protocol whose median is 0.028, above
+# the cut. 4,509,453 training structures here against 4,007,729 there, and the half million
+# extra are disproportionately the experimentally-grounded ones.
+#
+# Three conditioning channels, in this order, one column of the AdaLN input each. THE ORDER
+# IS LOAD-BEARING: every modulation weight is tied to it, so reordering the list below
+# silently repoints all of them. There is no test that can catch that after the fact, which
+# is why `build_cond` assembles the vector in exactly one place.
+#
+#   energy_above_hull   how stable, absolutely
+#   delta_e_polymorph   how stable, relative to the best polymorph of the same composition
+#                       -- the thing e_hull cannot express, since from one row at 0.15 the
+#                       model cannot tell the best known structure for a formula from a
+#                       polymorph 0.1 above it
+#   max_force           how converged the relaxation that produced the row actually was
+#
+# Generation then asks for (0, 0, 0): on the hull, the ground state of its formula, and
+# from a converged calculation. All three are exactly representable -- log1p(0) = 0 -- so
+# that target is the origin of the conditioning space rather than an extrapolation past
+# the edge of the training distribution.
 model:
   start_token: spacegroup_number
   cascade:
@@ -84,11 +131,6 @@ model:
     # this learning rate.
     condition_scale:
       max_force: 0.05
-    # Which elements, not how many: an indicator over the element vocabulary, appended
-    # to the three energy columns above. Mutually exclusive with
-    # composition_conditioning, which is the same slot filled with fractions and a cell
-    # size instead.
-    chemical_system_conditioning: true
     # Measured on an RTX 6000 Ada: 18.60 ms per step at 25000 (t1c9ehzp, 80000 epochs in
     # 238108 s over 12.8M steps, validation included), i.e. 1.34M examples/s. Per-step cost
     # is dominated by kernel launches rather than arithmetic for this 144k-parameter model,
@@ -114,9 +156,30 @@ model:
     num_fully_connected_layers: 3
     learned_positional_encoding_max_size: 0
     learned_positional_encoding_only_masked: true
-    # condition_dim is deliberately absent: with the chemical system in the vector its
-    # width follows the element vocabulary, so it is derived data rather than a choice.
-    # The trainer computes it and refuses a config that states a different number.
+    # The pairwise relational bias. `element_field` and `site_symmetry_field` name entries
+    # of `model.cascade.order` above; the module resolves them to cascade indices and
+    # reads the element vocabulary out of the tokeniser to build its (frozen, checkpointed)
+    # table of physical pair descriptors.
+    relational_attention_bias:
+      element_field: elements
+      site_symmetry_field: site_symmetries
+      # The width of the element embedding whose elementwise product feeds the learned
+      # chemical interaction term W_e^T (v_i * v_j). Matched to the cascade's own
+      # `elements: 16` -- this is a second, independent embedding of the same vocabulary,
+      # and there is no reason for it to be the wider of the two.
+      element_embedding_dim: 16
+      # 3 -> 32 -> nhead over the standardised pair descriptors. 32 costs 260 parameters
+      # and is evaluated once over the 92x92 vocabulary per forward, never per batch
+      # element, so its width is nearly free.
+      chem_mlp_hidden: 32
+      # Makes B_wyckoff depend on G, as the formulation requires. NOT the additive E_sg(G)
+      # of the write-up: an additive term constant along j is invariant under softmax and
+      # would do exactly nothing. A per-head multiplicative gate (1 + g(G)), zero-init so
+      # it starts as the identity, is the cheapest form that actually reaches the logits.
+      space_group_gate: true
+    # One column per entry of condition_feature. The trainer derives this and refuses to
+    # run if the two disagree, so it is a declaration rather than a knob.
+    condition_dim: 3
     TransformerEncoderLayer_args:
       nhead: 4
       dim_feedforward: 128

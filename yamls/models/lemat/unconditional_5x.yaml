@@ -1,40 +1,3 @@
-# LeMat-Bulk e_hull-conditioned WyFormer: ehull_adamw_wsd.yaml at 5x the parameter count,
-# with a decay phase covering 20% of the run instead of 10%. Everything else -- optimiser,
-# peak lr, batch size, tokeniser, dropout, clipping -- is held at the values of the smaller
-# run so that the two are comparable.
-#
-# Capacity. The baseline is 144185 parameters; this file is 723350, a factor of 5.02.
-# The growth is entirely in width, with depth left at 3 layers, so the comparison against
-# ehull_adamw_wsd.yaml moves along a single axis:
-#
-#   embeddings 16/16/8 -> 48/48/24, i.e. d_model 40 -> 120, exactly 3x. The embeddings are
-#     concatenated, so d_model is their sum; there is no separate d_model knob to set, and
-#     it must stay divisible by nhead or the model silently pads it.
-#   nhead 4 -> 8. Head dimension goes 10 -> 15 rather than 10 -> 30: at these sizes a head
-#     of 10 is already small, and tripling the width into four heads would make each head
-#     wider than the whole baseline model.
-#   dim_feedforward 128 -> 320, i.e. 2.5x. Not 3x: a uniform 3x on every width knob lands
-#     at 785046 parameters (5.44x), and the FFN is the cheapest place to give back the 9%.
-#     The FFN-to-model ratio therefore drops from 3.2 to 2.67.
-#
-# The prediction heads are a pyramid from (d_model + vocabulary) down to the vocabulary, so
-# they grow roughly linearly in d_model, not quadratically: 66785 -> 143886, only 2.15x.
-# The encoder carries the rest, 51864 -> 408840 (7.9x). That asymmetry is why the width
-# multiplier needed to reach 5x total is 3 rather than sqrt(5).
-#
-# Two numbers inherited from the baseline are now on weaker ground, both deliberately left
-# alone so that this run isolates capacity, and both worth a sweep afterwards:
-#
-#   dropout 0. The baseline's case for it was 28 training examples per parameter and a
-#     *negative* train-val gap. At 4.0M structures against 723k parameters that ratio is
-#     5.5. The argument still points the same way, but with a fifth of the margin -- watch
-#     loss.epoch.train against loss.epoch.val, and reach for dropout only if the gap turns
-#     positive and grows.
-#   lr 3e-3. Under muP-style width scaling a 3x wider model would want roughly a third of
-#     the rate, i.e. ~1e-3. AdamW's per-parameter normalisation makes it much less than a
-#     full 3x effect in practice, and the baseline file already flags 3e-3 as its least
-#     established number, so changing both capacity and rate at once would confound the
-#     result. If this run is unstable in the stable phase, 1e-3 is the first thing to try.
 model:
   start_token: spacegroup_number
   cascade:
@@ -56,17 +19,6 @@ model:
     multiclass_next_token_with_order_permutation: true
     target: NextToken
     evaluation_samples: 1
-    condition_feature: energy_above_hull
-    # e_hull spans 0-37 eV/atom while the median is 0.235 and p99 is 2.73, so a handful of
-    # outliers would otherwise set the scale of the AdaLN modulation input. log1p is near-linear
-    # over the 0-0.1 band we actually sample from and compressive in the tail (37 -> 3.65).
-    # The data stays in eV/atom; the transform is applied on the way into the model.
-    condition_transform: log1p
-    # Unchanged from the baseline, so that examples-seen per epoch is identical and the two
-    # loss curves can be read against each other directly. Peak memory will be higher: the
-    # baseline's 10.4 GiB was almost entirely the resident dataset, which is unchanged, but
-    # activations scale with d_model, so expect roughly 1-3 GiB more at 50000. If it does not
-    # fit alongside another job, halve to 25000 rather than touching anything else.
     train_batch_size: 50000
     val_batch_size: 50000
     test_batch_size: 50000
@@ -85,7 +37,6 @@ model:
     num_fully_connected_layers: 3
     learned_positional_encoding_max_size: 0
     learned_positional_encoding_only_masked: true
-    condition_dim: 1
     TransformerEncoderLayer_args:
       # 120 / 8 = 15 per head; see the capacity note at the top.
       nhead: 8

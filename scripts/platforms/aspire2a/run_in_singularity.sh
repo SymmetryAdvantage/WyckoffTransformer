@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Launch a command against the WyFormer venv inside the base PyTorch container.
 #
-#   scripts/run_in_singularity.sh python scripts/train.py \
+#   scripts/platforms/aspire2a/run_in_singularity.sh python scripts/train.py \
 #       yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull cuda
 #
 # The venv at $REPO_DIR/.venv is built by scripts/build_singularity_venv.sh and
@@ -15,6 +15,12 @@ SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
 # SINGULARITY_NO_EVAL keeps `singularity run` from re-parsing the arg vector
 # through a shell (it otherwise chokes on parentheses in -c snippets).
 export SINGULARITY_NO_EVAL=1
+
+# The module system is not always initialised in a batch shell, so source it first.
+if ! command -v singularity >/dev/null 2>&1; then
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load singularity
+fi
 
 # /scratch and $HOME are bound automatically; add the node-local job scratch (where
 # throwaway configs live) and anything the caller asks for via EXTRA_BIND.

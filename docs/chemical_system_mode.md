@@ -98,16 +98,16 @@ change to how the block is stored, not to what it means.
 
 ## Training a backbone
 
-`yamls/models/lemat_bulk_fmax1/chemsys_e_all_adamw_wsd.yaml` is
+`yamls/models/lemat/chemsys_e_hull_adamw_wsd.yaml` is
 `yamls/models/lemat_bulk_ehull/e_all_adamw_wsd.yaml` — the same architecture,
-optimiser and WSD schedule, the same three energy conditioning channels — plus
+optimiser and WSD schedule — conditioned on `energy_above_hull` alone, plus
 `chemical_system_conditioning: true`, and minus its `condition_dim`. The width
 stops being a free choice once it follows the element vocabulary, so
-`from_config` derives it (95 for `lemat_bulk_fmax1`: three energy columns, then
-92 element columns) and refuses a config that hardcodes a different number.
+`from_config` derives it (the energy column, then one column per element in the
+dataset's vocabulary) and refuses a config that hardcodes a different number.
 
-    bash scripts/train_in_pb.sh \
-        yamls/models/lemat_bulk_fmax1/chemsys_e_all_adamw_wsd.yaml lemat_bulk_fmax1
+    bash scripts/platforms/aspire2a/train_in_pb.sh \
+        yamls/models/lemat/chemsys_e_hull_adamw_wsd.yaml lemat_bulk_fmax1_stress
 
 No re-cache is needed. `chemical_system_conditioning` reads the
 `counters: {composition: elements}` field the tokeniser already emits and keeps

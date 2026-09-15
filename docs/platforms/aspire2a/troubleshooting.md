@@ -12,18 +12,23 @@ and `.venv/bin/python` points into the container, so uv decides the venv is
 one. Any job running at the time dies with import errors.
 
 Rebuild: [environment.md](environment.md#never-run-uv-from-the-host). Always go
-through `scripts/run_in_singularity.sh`.
+through `scripts/platforms/aspire2a/run_in_singularity.sh`.
 
 ---
 
 ## `singularity: command not found`
 
-It is not on the default `PATH`, and in a batch shell the module system may not
-be initialised either. Use the two-step fallback the PBS scripts use:
+It is not on the default `PATH`: `module load singularity`. It prints nothing,
+and puts `singularity` on `PATH` of the shell it runs in — so not inside `( ... )`
+or a pipeline such as `module load singularity 2>&1 | tail`, where the change is
+lost with the subshell. In a batch shell the module system may not be initialised
+either; `scripts/platforms/aspire2a/run_in_singularity.sh` handles both:
 
 ```bash
-export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
-command -v singularity || { source /etc/profile.d/modules.sh && module load singularity; }
+if ! command -v singularity >/dev/null 2>&1; then
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load singularity
+fi
 ```
 
 ---
@@ -110,7 +115,7 @@ dependencies: pytz`. A full run is then 664 passed / 41 skipped, with nothing
 deselected:
 
 ```bash
-bash scripts/run_in_singularity.sh python -m pytest -q
+bash scripts/platforms/aspire2a/run_in_singularity.sh python -m pytest -q
 ```
 
 ---
@@ -140,7 +145,7 @@ self-chaining scripts re-`qsub` to the **same** queue they were submitted to.
 
 The base venv build does not install the `relax` extra. See
 [environment.md](environment.md#the-relax-extra-orb-and-mace).
-`scripts/protocol_relax.pbs` installs it for you on first use.
+`scripts/platforms/aspire2a/protocol_relax.pbs` installs it for you on first use.
 
 ---
 
@@ -151,7 +156,7 @@ Only `wyformer-generate`, `wyformer-cryspr` and `wyformer-protocol` are in
 Run them as modules:
 
 ```bash
-bash scripts/run_in_singularity.sh python -m wyckoff_transformer.cli.protocol_wandb --help
+bash scripts/platforms/aspire2a/run_in_singularity.sh python -m wyckoff_transformer.cli.protocol_wandb --help
 ```
 
 or reinstall the project — [environment.md](environment.md#adding-or-repairing-the-project-install).
@@ -163,14 +168,14 @@ or reinstall the project — [environment.md](environment.md#adding-or-repairing
 `pandarallel` reads the **node's** core count, not the cgroup's — 128 on a
 `gpu001`-class node against the 16 CPUs the job actually owns — and forks that
 many workers into a `mem=` limit sized for 16. Pass `--n-jobs $NCPUS`;
-`scripts/train_in_pb.sh` already does.
+`scripts/platforms/aspire2a/train_in_pb.sh` already does.
 
 ---
 
 ## `python -c "..."` fails inside the container on parentheses
 
 `singularity run` re-parses the argument vector through a shell.
-`scripts/run_in_singularity.sh` sets `SINGULARITY_NO_EVAL=1` to stop that. If
+`scripts/platforms/aspire2a/run_in_singularity.sh` sets `SINGULARITY_NO_EVAL=1` to stop that. If
 you are invoking `singularity` directly, set it yourself.
 
 ---

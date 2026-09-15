@@ -511,8 +511,7 @@ def load_tensors_and_tokenisers(
             raise
         return tensors, tokenisers, token_engineers
     else:
-        cache_path = cache_root() / dataset
-        with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
+        with gzip.open(this_cache_path / 'data.pkl.gz', "rb") as f:
             datasets_pd = pickle.load(f)
         # A saved processor carries its own config; the repository's YAML, which may
         # have changed or gone since, is only for building new tokenisers.

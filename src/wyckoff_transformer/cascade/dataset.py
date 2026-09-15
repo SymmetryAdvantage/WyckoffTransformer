@@ -713,16 +713,37 @@ class AugmentedCascadeLoader():
         """
         batch_start = self.next_batch_index * self.batch_size
         batch_end = batch_start + self.batch_size
-        if batch_end >= self.num_examples:
+
+        if batch_start >= self.num_examples:
             self.this_shuffle_order = torch.randperm(
                 self.num_examples, device=self.dataset.augmented_storage_device,
                 pin_memory=self.dataset.pin_memory)
             self.next_batch_index = 0
-            if self.fix_batch_size:
-                return self.get_next_batch()
-        else:
+            return self.get_next_batch()
+
+        if batch_end < self.num_examples:
+            batch_selection = self.this_shuffle_order[batch_start:batch_end]
             self.next_batch_index += 1
-        batch_selection = self.this_shuffle_order[batch_start:batch_end]
+        elif batch_end == self.num_examples:
+            batch_selection = self.this_shuffle_order[batch_start:batch_end]
+            self.this_shuffle_order = torch.randperm(
+                self.num_examples, device=self.dataset.augmented_storage_device,
+                pin_memory=self.dataset.pin_memory)
+            self.next_batch_index = 0
+        else:  # batch_start < self.num_examples < batch_end
+            if self.fix_batch_size:
+                self.this_shuffle_order = torch.randperm(
+                    self.num_examples, device=self.dataset.augmented_storage_device,
+                    pin_memory=self.dataset.pin_memory)
+                self.next_batch_index = 0
+                return self.get_next_batch()
+            else:
+                batch_selection = self.this_shuffle_order[batch_start:]
+                self.this_shuffle_order = torch.randperm(
+                    self.num_examples, device=self.dataset.augmented_storage_device,
+                    pin_memory=self.dataset.pin_memory)
+                self.next_batch_index = 0
+
         logging.debug("The current batch size is %i", len(batch_selection))
         return batch_selection
 

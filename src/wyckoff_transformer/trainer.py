@@ -1898,7 +1898,15 @@ class WyckoffTrainer():
             self.scheduler.load_state_dict(checkpoint["scheduler"])
         for name, loader in self._loaders().items():
             if name in checkpoint["loaders"]:
-                loader.load_state_dict(checkpoint["loaders"][name])
+                try:
+                    loader.load_state_dict(checkpoint["loaders"][name])
+                except ValueError as exc:
+                    if self.reschedule:
+                        logger.warning(
+                            "RESCHEDULING: could not restore %s loader state (%s); reshuffling it.",
+                            name, exc)
+                    else:
+                        raise
             else:
                 logger.warning("The checkpoint holds no %s loader state; reshuffling it.", name)
         random.setstate(checkpoint["rng"]["python"])

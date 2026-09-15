@@ -1,0 +1,76 @@
+# LeMat-Bulk unconditional WyFormer for lemat_bulk_fmax1_stress_ehull01 (E_hull <= 0.1).
+# train_batch_size is set to 50,000 so each gradient step fits comfortably in GPU memory (A100-40GB),
+# while val_batch_size (30,543) and test_batch_size (30,818) cover the full validation and test splits.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    # 3x the baseline, preserving the 2:2:1 split between the three cascade fields.
+    # These sum to d_model = 120.
+    embedding_size:
+      elements: 48
+      site_symmetries: 48
+      sites_enumeration: 24
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    train_batch_size: 50000
+    val_batch_size: 30543
+    test_batch_size: 30818
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      # 120 / 8 = 15 per head.
+      nhead: 8
+      dim_feedforward: 320
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 500
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.
+  # 1,576,041 // 50,000 = 31 steps per epoch.
+  epochs: 40000
+tokeniser:
+  name: lemat_bulk_fmax1_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000

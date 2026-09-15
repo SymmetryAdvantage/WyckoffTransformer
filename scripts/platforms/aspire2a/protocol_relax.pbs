@@ -4,14 +4,14 @@
 # `--stage relax` over every unique gene, then `--stage score`.
 #
 # The relax stage is resumable -- it skips representatives already in
-# structures.csv -- so this script CHAINS itself the way scripts/train_ehull_5x.pbs
-# does: run under `timeout`, hand the node back cleanly, re-qsub, pick up where
+# structures.csv -- so this script CHAINS itself the way
+# scripts/platforms/aspire2a/train_in_pb.sh does: run under `timeout`, hand the node back cleanly, re-qsub, pick up where
 # structures.csv left off. `--stage score` runs once, in the link that finds
 # nothing left to relax.
 #
 # Submit:
 #     cd /scratch/users/nus/kna/WyckoffTransformer
-#     qsub -v POOL=generated/<run> scripts/protocol_relax.pbs
+#     qsub -v POOL=generated/<run> scripts/platforms/aspire2a/protocol_relax.pbs
 #
 # POOL is a directory holding wyckoff_genes.json.gz; outputs land in POOL/protocol.
 # The cheap `--stage screen` is run here when its output is missing, and the venv's
@@ -22,7 +22,8 @@
 # POST='python scripts/analyse_dft_screen_uplift.py'.
 #
 # Queue: `-q ai` routes by (ngpus, walltime); ngpus=1 with a walltime in
-# (02:00:01, 24:00:00] lands in aiq1. See scripts/train_ehull_5x.pbs for the map.
+# (02:00:01, 24:00:00] lands in aiq1. See scripts/platforms/aspire2a/train_in_pb.sh
+# for the map.
 # ---------------------------------------------------------------------------
 #PBS -N wyf_relax
 #PBS -q ai
@@ -35,7 +36,7 @@
 set -u
 
 REPO=/scratch/users/nus/kna/WyckoffTransformer
-PBS_SCRIPT="$REPO/scripts/protocol_relax.pbs"
+PBS_SCRIPT="$REPO/scripts/platforms/aspire2a/protocol_relax.pbs"
 QSUB=/opt/pbs/bin/qsub
 
 POOL=${POOL:?set POOL to the directory holding wyckoff_genes.json.gz}
@@ -65,17 +66,18 @@ echo "start     : $(date -Is)"
 echo "=========================================================="
 nvidia-smi || true
 
+# The module system is not always initialised in a batch shell, so source it first.
 if ! command -v singularity >/dev/null 2>&1; then
-    export PATH="/app/apps/singularity/sup/squashfuse/0.6.1/bin:/app/apps/singularity/3.10.0/bin:$PATH"
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load singularity
 fi
-command -v singularity >/dev/null 2>&1 || { source /etc/profile.d/modules.sh 2>/dev/null && module load singularity; }
 singularity --version
 
-# orb-models is in the `relax` extra, which scripts/build_singularity_venv.sh does
-# not install; a chained link inherits it from the first one.
+# orb-models is in the `relax` extra, which
+# scripts/build_singularity_venv.sh does not install; a chained link inherits it from the first one.
 if [ ! -d "$REPO/.venv/lib/python3.12/site-packages/orb_models" ]; then
     echo "installing the relax extra into the venv"
-    bash "$REPO/scripts/run_in_singularity.sh" bash -c "
+    bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" bash -c "
         export UV_CACHE_DIR=$REPO/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
         cd $REPO
         ~/.local/bin/uv pip compile --python /usr/bin/python3.12 --emit-index-url \
@@ -91,7 +93,7 @@ fi
 # so a link that finds it missing just makes it.
 if [ ! -f "$OUT/screen.json" ]; then
     echo "no screen.json -> running --stage screen"
-    bash "$REPO/scripts/run_in_singularity.sh" \
+    bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" \
         wyformer-protocol "$GENES" --output-dir "$OUT" --stage screen || exit 3
 fi
 
@@ -102,7 +104,7 @@ echo "structures.csv rows before: $rows_before"
 
 set +e
 timeout --signal=TERM --kill-after=300 "$RELAX_TIMEOUT" \
-    bash "$REPO/scripts/run_in_singularity.sh" \
+    bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" \
         wyformer-protocol "$GENES" --output-dir "$OUT" --stage relax \
             --devices cuda:0 --workers-per-device "$WORKERS" --resume
 rc=$?
@@ -115,14 +117,14 @@ echo "structures.csv rows after: $rows_after"
 
 if [ "$rc" -eq 0 ]; then
     echo "relaxation complete -> scoring"
-    bash "$REPO/scripts/run_in_singularity.sh" \
+    bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" \
         wyformer-protocol "$GENES" --output-dir "$OUT" --stage score
     score_rc=$?
     echo "score exit code: $score_rc"
     if [ "$score_rc" -eq 0 ] && [ -n "$POST" ]; then
         echo "----------------------------------------------------------"
         echo "post: $POST $POOL"
-        bash "$REPO/scripts/run_in_singularity.sh" $POST "$POOL"
+        bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" $POST "$POOL"
         echo "post exit code: $?"
     fi
     exit "$score_rc"

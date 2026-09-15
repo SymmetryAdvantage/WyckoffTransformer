@@ -33,7 +33,7 @@ Everything is already built. From a login node:
 
 ```bash
 cd /scratch/users/nus/kna/WyckoffTransformer
-bash scripts/train_in_pb.sh yamls/models/NextToken/v6/base_sg.yaml mp_20 --pilot
+bash scripts/platforms/aspire2a/train_in_pb.sh yamls/models/NextToken/v6/base_sg.yaml mp_20 --pilot
 ```
 
 That submits a 2 h pilot to the dev queue and prints the job id. For a real run,
@@ -45,7 +45,7 @@ To run something by hand on a GPU, take a dev node first:
 qsub -I -q ai -P 11001786 -l select=1:ngpus=1:ncpus=16:mem=110gb -l walltime=02:00:00
 cd /scratch/users/nus/kna/WyckoffTransformer
 module load singularity
-bash scripts/run_in_singularity.sh python -c "import torch; print(torch.cuda.is_available())"
+bash scripts/platforms/aspire2a/run_in_singularity.sh python -c "import torch; print(torch.cuda.is_available())"
 ```
 
 Three things to know before your first run:
@@ -109,27 +109,24 @@ long chain.
 
 ## Scripts
 
-Contrary to the rule in `AGENTS.md`, the ASPIRE 2A-specific scripts are **not**
-under `scripts/platforms/aspire2a/` — they are still in `scripts/`:
+In `scripts/platforms/aspire2a/`:
 
 | Script | What |
 | --- | --- |
 | `run_in_singularity.sh` | run any command against `.venv` inside the image |
-| `build_singularity_venv.sh` | build `.venv` (run *inside* the image) |
 | `train_in_pb.sh` | the general self-chaining training launcher |
-| `train_ehull_5x.pbs`, `train_ehull_ssops.pbs`, `train_formula_energy.pbs` | its single-purpose predecessors |
 | `protocol_relax.pbs` | self-chaining relax + score for one generated pool |
+| `train_formula_energy.pbs` | one-slot fit of the composition-floor ensemble |
+| `prefetch_cached_path.sh` | parallel-range fetch of a checkpoint into the `cached_path` cache, ETag-verified |
 
-One script *is* in the right place, because nothing running depends on its path:
+`.venv` is built by the generic `scripts/build_singularity_venv.sh`, run *inside*
+the image with `WYFORMER_PLATFORM=aspire2a`; see [environment.md](environment.md).
 
-| Script | What |
-| --- | --- |
-| `scripts/platforms/aspire2a/prefetch_cached_path.sh` | parallel-range fetch of a checkpoint into the `cached_path` cache, ETag-verified |
-
-They cannot be moved while chains are in flight: a running link re-`qsub`s
-**itself** by absolute path, so renaming the file breaks the chain mid-run. Move
-them once no `wyf_*` job is queued or running, and update the `$REPO/scripts/...`
-paths inside each one at the same time.
+Do not move a launcher while its chains are in flight: a running link re-`qsub`s
+**itself** by absolute path, and calls `run_in_singularity.sh` by path too, so
+renaming either breaks the chain mid-run. Move them once no job of theirs is
+queued or running, and update the `$REPO/scripts/...` paths inside each one at
+the same time.
 
 ---
 

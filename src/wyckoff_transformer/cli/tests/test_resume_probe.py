@@ -1,6 +1,6 @@
 """The probe must never report "nothing to resume" when it simply could not tell.
 
-`scripts/train_in_pb.sh` mints a fresh W&B run id on status 1, so conflating "W&B is
+`scripts/platforms/aspire2a/train_in_pb.sh` mints a fresh W&B run id on status 1, so conflating "W&B is
 unreachable" with "this run has no checkpoint" is how a purged run loses its trained
 epochs. Status 2 exists to keep those apart.
 """
