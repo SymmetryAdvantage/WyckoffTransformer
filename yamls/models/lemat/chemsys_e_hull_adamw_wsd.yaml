@@ -1,19 +1,22 @@
-# e_all_adamw_wsd, plus the chemical system as a conditioning input.
+# e_all_adamw_wsd, conditioned on energy_above_hull alone, plus the chemical system as a
+# conditioning input.
 #
 # The architecture, the optimiser and the schedule are the parent's, unchanged and for
-# the reasons documented there -- this file is one flag and one comment different, so a
-# diff against it is the experiment. Read
-# `yamls/models/lemat_bulk_ehull/e_all_adamw_wsd.yaml` for why the energies are
-# conditioned the way they are; nothing about that changes here.
+# the reasons documented there. Two things differ, so a diff against it is the
+# experiment: of the parent's three conditioning channels only `energy_above_hull` is
+# kept -- `delta_e_polymorph` and `max_force`, and with it `condition_scale`, are
+# dropped -- and the chemical system is added. Read
+# `yamls/models/lemat_bulk_ehull/e_all_adamw_wsd.yaml` for why the energy is
+# conditioned the way it is.
 #
 # What is added is `chemical_system_conditioning`: an indicator over the element
-# vocabulary saying which elements the structure is made of, appended to the three
-# energy channels. It is the relaxed variant of the CSP conditioning in
+# vocabulary saying which elements the structure is made of, appended to the
+# `energy_above_hull` channel. It is the relaxed variant of the CSP conditioning in
 # `ehull_composition.yaml` -- which elements, not how many -- so the model still chooses
 # the stoichiometry, the cell size and the space group. See docs/chemical_system_mode.md.
 #
-# The conditioning vector is therefore 95 wide for `lemat_bulk_fmax1`: three energy
-# columns then 92 element columns (89 elements and three service tokens, which stay
+# The conditioning vector is therefore 93 wide for `lemat_bulk_fmax1`: one energy
+# column then 92 element columns (89 elements and three service tokens, which stay
 # zero). `condition_dim` is NOT set below -- it follows the element vocabulary, so
 # `from_config` derives it and refuses a config that hardcodes a number that would rot
 # the moment the dataset changed.
@@ -54,34 +57,14 @@ model:
     # e_hull spans 0-37 eV/atom while the median is 0.226 and p99 is 2.72, so a handful of
     # outliers would otherwise set the scale of the AdaLN modulation input. log1p is near-linear
     # over the 0-0.1 band we actually sample from and compressive in the tail (37 -> 3.65).
-    # delta_e_polymorph has the same shape and the same units, and max_force is non-negative
-    # by construction, so one transform serves all three.
     # The data stays in physical units; the transform is applied on the way into the model.
+    # Post-transform over the training set: sd 0.317, p99 1.317, p99.9 1.622, max 3.642.
+    #
+    # There is no `condition_scale`: it existed in the parent only to put max_force in
+    # coarser units, and max_force is not a channel here.
     condition_transform: log1p
-    # max_force is not commensurable with the two energies: unscaled, log1p leaves it a
-    # near-constant input (sd 0.020 against 0.317 for e_hull) and the AdaLN weight has to
-    # make up two orders of magnitude. Reading it in coarser units first fixes that. This
-    # is a units choice recorded in the config, not a statistic fitted to the data, so
-    # nothing has to be persisted alongside the weights for generation to agree.
-    #
-    # 0.05, NOT the 0.01 that run wjwmgjag used and diverged on. 0.01 was picked by matching
-    # medians, which is the wrong summary for a variable that is exactly zero for a quarter
-    # of rows and has a long right tail: it equalised the middle and blew up the end, giving
-    # max_force the WIDEST spread of the three channels -- the opposite of the intent.
-    # Measured over the training set, post-transform:
-    #
-    #                        sd      p99    p99.9     max
-    #   energy_above_hull  0.317    1.317   1.622    3.642
-    #   delta_e_polymorph  0.207    0.939   1.450    1.896
-    #   max_force @ 0.01   0.525    2.365   3.153    4.613   <- widest on every statistic
-    #   max_force @ 0.05   0.216    1.074   1.702    3.043   <- sits between the other two
-    #
-    # AdaLN is Linear(cond) -> (1+gamma) scaling with no bound on gamma, so the tail of the
-    # conditioning input is the tail of the modulation. At 0.01 the diverging run reached
-    # |gamma| of 23 against at most 6.6 for the single-channel baseline that is stable at
-    # this learning rate.
     # Which elements, not how many: an indicator over the element vocabulary, appended
-    # to the three energy columns above. Mutually exclusive with
+    # to the energy column above. Mutually exclusive with
     # composition_conditioning, which is the same slot filled with fractions and a cell
     # size instead.
     chemical_system_conditioning: true
