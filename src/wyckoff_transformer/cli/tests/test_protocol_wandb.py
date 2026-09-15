@@ -851,3 +851,51 @@ class TestRefuseToResampleUnderResume(unittest.TestCase):
             with self.assertRaises(StaleOutputError):
                 pw.main()
         generate.assert_not_called()
+
+
+class TestArms(unittest.TestCase):
+    """A sweep arm must not overwrite the run's headline cohort, nor another run's."""
+
+    def test_the_headline_cohort_keeps_its_names(self):
+        self.assertEqual(pw.protocol_artifact_name("r1"), "protocol_r1")
+        self.assertEqual(pw.summary_prefix(), "protocol/")
+
+    def test_an_arm_gets_its_own_artifact_and_summary_prefix(self):
+        self.assertEqual(pw.protocol_artifact_name("r1", "cfg-w2"), "protocol_r1.cfg-w2")
+        self.assertEqual(pw.summary_prefix("cfg-w2"), "protocol_cfg-w2/")
+        flat = pw.flatten_funnel({"free": {"structure": 3}}, prefix=pw.summary_prefix("w2"))
+        self.assertEqual(flat, {"protocol_w2/free/structure": 3})
+
+    def test_an_arm_cannot_collide_with_another_runs_headline(self):
+        # Run ids contain '-' and '_', so neither may separate the arm.
+        self.assertNotEqual(pw.protocol_artifact_name("a_b"), pw.protocol_artifact_name("a", "b"))
+        for bad in ("w.2", "w/2", "w 2", ""):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pw.protocol_artifact_name("r1", bad)
+
+    def test_parser_defaults(self):
+        args = pw.build_parser().parse_args(["r", "--output-dir", "x"])
+        self.assertIsNone(args.arm)
+        self.assertEqual(args.guidance_scale, 1.0)
+        args = pw.build_parser().parse_args(
+            ["r", "--output-dir", "x", "--arm", "w3", "--guidance-scale", "3"])
+        self.assertEqual((args.arm, args.guidance_scale), ("w3", 3.0))
+
+    def test_main_rejects_a_bad_arm_before_doing_anything(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["wyformer-protocol-wandb", "run-id", "--output-dir", tmp, "--arm", "w.2"]
+            with patch.object(sys, "argv", argv), \
+                    patch.object(pw, "generate_genes") as generate:
+                with self.assertRaises(SystemExit):
+                    pw.main()
+            generate.assert_not_called()
+
+    def test_main_forwards_the_guidance_scale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = ["wyformer-protocol-wandb", "run-id", "--output-dir", tmp,
+                    "--guidance-scale", "2.5", "--stages", "screen", "--no-upload"]
+            with patch.object(sys, "argv", argv), \
+                    patch.object(pw, "generate_genes") as generate, \
+                    patch.object(pw.protocol_cli, "run_stage"):
+                pw.main()
+            self.assertEqual(generate.call_args.kwargs["guidance_scale"], 2.5)

@@ -43,6 +43,7 @@ import argparse
 import gzip
 import json
 import logging
+import re
 from argparse import Namespace
 from pathlib import Path
 from typing import Optional
@@ -199,6 +200,7 @@ def generate_genes(
     temperature: float = 1.0,
     manifest_path: Optional[Path] = None,
     allow_fewer: bool = False,
+    guidance_scale: float = 1.0,
 ) -> int:
     """Generate a gene cohort from the run's checkpoint and write it to disk.
 
@@ -210,8 +212,13 @@ def generate_genes(
     token is drawn from the run's saved space-group distribution regardless, so
     the space-group marginal is the same at every temperature.
 
-    *manifest_path* receives what only this step knows: the temperature the
-    cohort was drawn at, and how much of the raw draw was formally valid.  The
+    *guidance_scale* is the classifier-free guidance scale, for a run trained
+    with ``condition_dropout``; 1 is plain conditional sampling. Like the
+    temperature, it leaves the space group alone.
+
+    *manifest_path* receives what only this step knows: the temperature and
+    guidance scale the cohort was drawn at, the condition it was drawn under,
+    and how much of the raw draw was formally valid.  The
     kept cohort is truncated to *n_genes*, so the rejected fraction is
     unrecoverable from the gene file afterwards -- and it moves with the
     temperature, which is exactly what a sweep needs to be able to see.
@@ -323,8 +330,8 @@ def generate_genes(
             len(elements_tokeniser), stop_token=elements_tokeniser.stop_token, device=device
         )
 
-    logger.info("Generating %d genes (%d attempted) from run %s at T=%g",
-                n_genes, attempted, run_id, temperature)
+    logger.info("Generating %d genes (%d attempted) from run %s at T=%g, guidance scale %g",
+                n_genes, attempted, run_id, temperature, guidance_scale)
     generated = trainer.generate_structures(
         n_structures=attempted,
         calibrate=False,
@@ -333,6 +340,7 @@ def generate_genes(
         start_tensor=start_tensor,
         allowed_element_mask=element_mask,
         temperature=temperature,
+        guidance_scale=guidance_scale,
     )
     if len(generated) < n_genes:
         if allow_fewer and len(generated) > 0:
@@ -351,6 +359,9 @@ def generate_genes(
 
         update_manifest(manifest_path, {
             "sampling_temperature": temperature,
+            "guidance_scale": guidance_scale,
+            # In physical units, as passed; None for an unconditional run.
+            "generation_condition": dict(condition_values) if condition_values else None,
             "generation_attempted": attempted,
             "generation_formally_valid": len(generated),
             "formal_gene_validity": round(len(generated) / attempted, 4),
@@ -363,10 +374,32 @@ def generate_genes(
     return len(generated)
 
 
+#: What an ``--arm`` name may contain. It becomes part of an artifact name, where W&B
+#: allows these and dots, and dots are kept back as the separator: run ids here contain
+#: both ``-`` and ``_``, so either would let ``protocol_<run>`` of one run collide with
+#: an arm of another.
+ARM_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def protocol_artifact_name(run_id: str, arm: Optional[str] = None) -> str:
+    """``protocol_<run-id>``, or ``protocol_<run-id>.<arm>`` for a named arm."""
+    if arm is None:
+        return f"protocol_{run_id}"
+    if not ARM_NAME.match(arm):
+        raise ValueError(f"--arm {arm!r} may only contain letters, digits, '-' and '_'")
+    return f"protocol_{run_id}.{arm}"
+
+
+def summary_prefix(arm: Optional[str] = None) -> str:
+    """``protocol/`` for the run's headline cohort, ``protocol_<arm>/`` for a named arm."""
+    return SUMMARY_PREFIX if arm is None else f"protocol_{arm}/"
+
+
 def download_protocol_artifact(
-    run_id: str, entity: str, project: str, output_dir: Path, version: str = "latest"
+    run_id: str, entity: str, project: str, output_dir: Path, version: str = "latest",
+    arm: Optional[str] = None,
 ) -> str:
-    """Pull a run's ``protocol_<id>`` artifact into *output_dir*.
+    """Pull a run's ``protocol_<id>`` artifact -- or one arm's -- into *output_dir*.
 
     Used by ``--from-artifact`` to re-score an already-relaxed run: the stage
     outputs (``screen.json``, ``structures.csv``, ``cifs/``, the gene file) are
@@ -377,7 +410,7 @@ def download_protocol_artifact(
     """
     import wandb  # noqa: PLC0415
 
-    name = f"protocol_{run_id}"
+    name = protocol_artifact_name(run_id, arm)
     artifact = wandb.Api().artifact(
         f"{entity}/{project}/{name}:{version}", type=ARTIFACT_TYPE
     )
@@ -455,9 +488,17 @@ def build_stage_args(args, gene_file: Path) -> Namespace:
 
 
 def upload(args, gene_file: Path, funnel: dict) -> None:
-    """Write the funnel into the run's summary and the outputs into one artifact."""
+    """Write the funnel into the run's summary and the outputs into one artifact.
+
+    With ``--arm`` both go under the arm's own names -- ``protocol_<arm>/`` in the
+    summary, ``protocol_<run-id>.<arm>`` as the artifact -- so a sweep over a sampling
+    setting leaves the run's headline ``protocol/`` numbers alone.
+    """
     import wandb  # noqa: PLC0415
 
+    arm = getattr(args, "arm", None)
+    prefix = summary_prefix(arm)
+    artifact_name = protocol_artifact_name(args.wandb_run, arm)
     out = args.output_dir
     run = wandb.init(
         dir=wandb_dir(),
@@ -466,7 +507,7 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
         id=args.wandb_run,
         resume="must",
     )
-    summary = flatten_funnel(funnel)
+    summary = flatten_funnel(funnel, prefix=prefix)
     try:
         run.summary.update(summary)
 
@@ -474,10 +515,11 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
         metadata = {}
         if manifest_path.is_file():
             metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+        metadata["arm"] = arm
         if args.from_artifact is not None:
-            metadata["rescored_from"] = f"protocol_{args.wandb_run}:{args.from_artifact}"
+            metadata["rescored_from"] = f"{artifact_name}:{args.from_artifact}"
         artifact = wandb.Artifact(
-            name=f"protocol_{args.wandb_run}",
+            name=artifact_name,
             type=ARTIFACT_TYPE,
             metadata=metadata,
         )
@@ -514,8 +556,9 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
 
     try:
         api_run = wandb.Api().run(wandb_run_path(args.wandb_run, args.wandb_entity, args.wandb_project))
+        sections = tuple(f"{prefix}{section}/" for section in ("gene", "fixed_symmetry", "free"))
         for k in list(api_run.summary.keys()):
-            if k.startswith("protocol/") and not k.startswith(("protocol/gene/", "protocol/fixed_symmetry/", "protocol/free/")):
+            if k.startswith(prefix) and not k.startswith(sections):
                 del api_run.summary[k]
         for k, v in summary.items():
             api_run.summary[k] = v
@@ -523,8 +566,7 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to sync summary via wandb Api: %s", exc)
 
-    logger.info("Logged %d summary metrics and artifact protocol_%s",
-                len(summary), args.wandb_run)
+    logger.info("Logged %d summary metrics and artifact %s", len(summary), artifact_name)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -567,6 +609,14 @@ def build_parser() -> argparse.ArgumentParser:
              "--stages screen,score when the reference has changed). Implies "
              "--skip-generate; nothing is generated or relaxed.",
     )
+    parser.add_argument(
+        "--arm", type=str, default=None, metavar="NAME",
+        help="Name this cohort as one arm of a sweep over sampling settings (e.g. a "
+             "guidance scale): its funnel goes into run.summary under protocol_NAME/ and "
+             "its outputs into the artifact protocol_<run-id>.NAME, leaving the run's "
+             "headline protocol/ numbers and protocol_<run-id> artifact alone. "
+             "--from-artifact then reads the arm's artifact. Letters, digits, - and _.",
+    )
 
     gen = parser.add_argument_group("generation")
     gen.add_argument("--n-genes", type=int, default=1000,
@@ -593,6 +643,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Softmax temperature for every generated cascade field. Below 1 "
                           "sharpens the sampler, above 1 flattens it. Recorded in "
                           "manifest.json as sampling_temperature.")
+    gen.add_argument("--guidance-scale", type=float, default=1.0,
+                     help="Classifier-free guidance scale, for a run trained with "
+                          "condition_dropout: 1 is plain conditional sampling, 0 "
+                          "unconditional, above 1 pushes further towards the condition. "
+                          "Recorded in manifest.json as guidance_scale.")
     gen.add_argument("--allow-fewer", action="store_true",
                      help="Keep whatever valid genes were generated if fewer than --n-genes (e.g. for checkpoints early in training).")
 
@@ -771,11 +826,15 @@ def main() -> None:
     unknown = [s for s in stages if s not in known]
     if unknown:
         raise SystemExit(f"--stages: {unknown} not in {known}")
+    try:
+        protocol_artifact_name(args.wandb_run, args.arm)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
 
     if args.from_artifact is not None:
         download_protocol_artifact(
             args.wandb_run, args.wandb_entity, args.wandb_project,
-            args.output_dir, version=args.from_artifact,
+            args.output_dir, version=args.from_artifact, arm=args.arm,
         )
 
     if args.skip_generate or args.from_artifact is not None:
@@ -800,6 +859,7 @@ def main() -> None:
             temperature=args.temperature,
             manifest_path=args.output_dir / protocol_cli.MANIFEST_FILE,
             allow_fewer=args.allow_fewer,
+            guidance_scale=args.guidance_scale,
         )
 
     stage_args = build_stage_args(args, gene_file)
