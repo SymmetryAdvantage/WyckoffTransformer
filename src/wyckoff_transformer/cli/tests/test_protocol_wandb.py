@@ -644,3 +644,53 @@ class TestIncompleteStagesAreNotUploaded(unittest.TestCase):
                 with self.assertRaises(protocol_wandb.protocol_cli.IncompleteStageError):
                     protocol_wandb.main()
             upload.assert_not_called()
+
+
+class TestRefuseToResampleUnderResume(unittest.TestCase):
+    """Sampling over a gene file whose logs would be resumed is how
+    protocol_ehull5x-20260904-213346 v1 scored one cohort's draws as another's."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name)
+
+    def _args(self, resume):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(output_dir=self.out, resume=resume)
+
+    def _log(self, name, rows):
+        header = "index,trial,status\n"
+        (self.out / name).write_text(header + "".join(f"{i},0,ok\n" for i in range(rows)))
+
+    def test_refused_with_resume_and_a_log(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE, StaleOutputError
+
+        self._log(PYXTAL_TRIALS_FILE, 1)
+        with self.assertRaisesRegex(StaleOutputError, "--skip-generate"):
+            pw.refuse_to_resample_under_resume(self._args(True), self.out / pw.GENES_FILE)
+
+    def test_allowed_with_no_resume(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE
+
+        self._log(PYXTAL_TRIALS_FILE, 1)
+        pw.refuse_to_resample_under_resume(self._args(False), self.out / pw.GENES_FILE)
+
+    def test_allowed_on_a_fresh_or_empty_directory(self):
+        from wyckoff_transformer.cli.protocol import RELAXATIONS_FILE
+
+        pw.refuse_to_resample_under_resume(self._args(True), self.out / pw.GENES_FILE)
+        self._log(RELAXATIONS_FILE, 0)
+        pw.refuse_to_resample_under_resume(self._args(True), self.out / pw.GENES_FILE)
+
+    def test_main_refuses_before_sampling(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE, StaleOutputError
+
+        self._log(PYXTAL_TRIALS_FILE, 1)
+        argv = ["wyformer-protocol-wandb", "run-id", "--output-dir", str(self.out)]
+        with patch.object(sys, "argv", argv), \
+                patch.object(pw, "generate_genes") as generate:
+            with self.assertRaises(StaleOutputError):
+                pw.main()
+        generate.assert_not_called()

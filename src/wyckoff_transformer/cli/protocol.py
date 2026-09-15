@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -54,9 +55,10 @@ import multiprocessing
 import os
 import signal
 import time
+import uuid
 import warnings
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import pandas as pd
 
@@ -528,6 +530,236 @@ def require_complete(args, files) -> None:
     )
 
 
+#: Manifest key recording what each resumable output was built from.
+LINEAGE_KEY = "lineage"
+
+#: The per-trial log each ``--relax-from`` source is the selection of.
+RELAX_SOURCE_LOGS = {
+    "pyxtal": PYXTAL_TRIALS_FILE,
+    "prescreen": PRESCREEN_TRIALS_FILE,
+    "basinhop": BASINHOP_TRIALS_FILE,
+}
+
+
+class StaleOutputError(RuntimeError):
+    """An output directory holds rows built from inputs that have since changed."""
+
+
+def genes_digest(genes: list[dict]) -> str:
+    """An identity for a gene cohort that survives re-compressing its file.
+
+    The gzip header carries a timestamp, so the file's own bytes differ between
+    two writes of the same genes; the canonical JSON does not.
+    """
+    payload = json.dumps(genes, sort_keys=True, separators=(",", ":"))
+    return "genes:sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _read_manifest(output_dir: Path) -> dict:
+    path = Path(output_dir) / MANIFEST_FILE
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _write_lineage(output_dir: Path, name: str, record: dict) -> None:
+    lineage = dict(_read_manifest(output_dir).get(LINEAGE_KEY) or {})
+    lineage[name] = record
+    _update_manifest(Path(output_dir) / MANIFEST_FILE, {LINEAGE_KEY: lineage})
+
+
+def _new_lineage_id() -> str:
+    return uuid.uuid4().hex
+
+
+def claim_lineage(
+    output_dir: Path,
+    name: str,
+    parent: str,
+    resume: bool,
+    verify: Optional[Callable[[], Optional[str]]] = None,
+) -> str:
+    """Tie the output *name* to what it is built from, before a stage opens it.
+
+    A stage log is keyed by ``(gene index, trial)`` and nothing else, so on
+    ``--resume`` a row is taken as done whatever it was computed from.  That is
+    how ``protocol_ehull5x-20260904-213346:v1`` came to be scored on draws of
+    one gene cohort filed under the indices of another: the wrapper sampled a
+    fresh gene file into a directory whose PyXtal draws and relaxations it then
+    resumed, and 789 of its 998 structures belonged to a gene other than the
+    one they were scored as.
+
+    Each output therefore records, under ``lineage`` in ``manifest.json``, an
+    ``id`` of its own and the ``parent`` it was built from: the gene file's
+    :func:`genes_digest` for ``screen.json`` and ``pyxtal.csv``, and the ``id``
+    of the log a stage reads its structures from for everything downstream.  A
+    fresh (not resumed) output gets a new id, which is what makes the outputs
+    built from its predecessor detectably stale.
+
+    Args:
+        output_dir: The protocol run directory.
+        name: The output's file name.
+        parent: What it is being built from now.
+        resume: Whether the stage keeps the rows already in the file.
+        verify: For a file written before lineage was recorded: returns why
+            its rows do not belong to *parent*, or ``None`` if they do.
+
+    Returns:
+        The output's id, to be passed as the *parent* of what is built from it.
+
+    Raises:
+        StaleOutputError: If resuming would keep rows built from something else.
+    """
+    record = (_read_manifest(output_dir).get(LINEAGE_KEY) or {}).get(name)
+    path = Path(output_dir) / name
+    if resume and path.is_file() and len(read_rows(path)):
+        if record is not None and record.get("parent") == parent:
+            return record["id"]
+        if record is not None and record.get("parent") is not None:
+            raise StaleOutputError(
+                f"{path} was built from {record['parent']}, not from {parent}, "
+                "so resuming it would mix the two. Resume with the inputs it was "
+                "built from, or pass --no-resume to start the stage over."
+            )
+        # Written before lineage was recorded, or adopted unverified by a later
+        # stage: its rows can only be checked against their content.
+        problem = verify() if verify is not None else None
+        if problem:
+            raise StaleOutputError(
+                f"{path} does not belong to {parent}: {problem}. Resume with the "
+                "inputs it was built from, or pass --no-resume to start the "
+                "stage over."
+            )
+        if verify is None:
+            logger.warning("%s has no recorded lineage; adopting it unchecked", path)
+        record = {"id": record["id"] if record else _new_lineage_id(), "parent": parent}
+    else:
+        record = {"id": _new_lineage_id(), "parent": parent}
+    _write_lineage(output_dir, name, record)
+    return record["id"]
+
+
+def lineage_id(output_dir: Path, name: str) -> str:
+    """The id of an existing output, recording one if it predates lineage.
+
+    Such an output is adopted with an unknown parent: nothing downstream can be
+    checked against where it came from, but everything built from it from now
+    on can be checked against it.
+    """
+    record = (_read_manifest(output_dir).get(LINEAGE_KEY) or {}).get(name)
+    if record is not None:
+        return record["id"]
+    record = {"id": _new_lineage_id(), "parent": None}
+    _write_lineage(output_dir, name, record)
+    return record["id"]
+
+
+def _reduced_formula(formula) -> Optional[str]:
+    from pymatgen.core import Composition
+
+    if not isinstance(formula, str) or not formula:
+        return None
+    return Composition(formula).reduced_formula
+
+
+def _gene_formula(gene: dict) -> Optional[str]:
+    from pymatgen.core import Composition
+
+    try:
+        counts: dict[str, float] = {}
+        for species, n in zip(gene["species"], gene["numIons"]):
+            counts[species] = counts.get(species, 0) + n
+        return Composition(counts).reduced_formula
+    except Exception:  # noqa: BLE001 - an unreadable gene is checked elsewhere
+        return None
+
+
+def _composition_mismatches(rows: pd.DataFrame, expected: dict) -> Optional[str]:
+    """Why the rows' compositions are not those *expected* per ``(index, trial)``.
+
+    Rows without a formula (a failed draw) and keys *expected* does not cover
+    are not evidence either way and are skipped.
+    """
+    if "formula" not in rows.columns:
+        return None
+    checked = mismatched = 0
+    for index, trial, formula in zip(rows["index"], rows["trial"], rows["formula"]):
+        want = expected.get((int(index), int(trial)))
+        got = _reduced_formula(formula)
+        if want is None or got is None:
+            continue
+        checked += 1
+        mismatched += got != want
+    if mismatched:
+        return f"{mismatched} of {checked} rows have another composition"
+    return None
+
+
+def _verify_draws_log(output_dir: Path, name: str, genes: list[dict]):
+    """A *verify* for ``pyxtal.csv``: every draw has its gene's composition."""
+    def verify() -> Optional[str]:
+        rows = read_rows(Path(output_dir) / name)
+        formulas = [_gene_formula(gene) for gene in genes]
+        expected = {
+            (int(index), int(trial)): formulas[int(index)]
+            if 0 <= int(index) < len(formulas) else "<no such gene>"
+            for index, trial in zip(rows["index"], rows["trial"])
+        }
+        return _composition_mismatches(rows, expected)
+    return verify
+
+
+def _verify_against_draws(output_dir: Path, name: str, draws):
+    """A *verify* for a log of work on *draws*: each row has its draw's composition."""
+    def verify() -> Optional[str]:
+        expected = {
+            (index, trial): _reduced_formula(atoms.get_chemical_formula(mode="metal"))
+            for index, trial, atoms in draws
+        }
+        return _composition_mismatches(read_rows(Path(output_dir) / name), expected)
+    return verify
+
+
+def require_consistent_lineage(output_dir: Path, genes: Optional[list[dict]]) -> None:
+    """Refuse to score outputs that were not built from one another.
+
+    Only recorded lineage is checked; a run from before it was recorded passes.
+
+    Raises:
+        StaleOutputError: Naming every output whose parent is not the current one.
+    """
+    lineage = _read_manifest(output_dir).get(LINEAGE_KEY) or {}
+    if not lineage:
+        return
+    problems = []
+    digest = genes_digest(genes) if genes is not None else None
+    for name in (SCREEN_FILE, PYXTAL_TRIALS_FILE):
+        parent = (lineage.get(name) or {}).get("parent")
+        if digest is not None and parent is not None and parent != digest:
+            problems.append(f"{name} was built from another gene file")
+    draws_id = (lineage.get(PYXTAL_TRIALS_FILE) or {}).get("id")
+    for name in (PRESCREEN_TRIALS_FILE, BASINHOP_TRIALS_FILE):
+        parent = (lineage.get(name) or {}).get("parent")
+        if parent is not None and draws_id is not None and parent != draws_id \
+                and (Path(output_dir) / name).is_file():
+            problems.append(f"{name} was built from earlier PyXtal draws")
+    relax_parent = (lineage.get(RELAXATIONS_FILE) or {}).get("parent")
+    sources = {
+        record["id"] for name, record in lineage.items()
+        if name in RELAX_SOURCE_LOGS.values()
+    }
+    if relax_parent is not None and relax_parent not in sources:
+        problems.append(f"{RELAXATIONS_FILE} relaxed structures that have since been replaced")
+    if problems:
+        raise StaleOutputError(
+            f"Outputs in {output_dir} do not belong together: {'; '.join(problems)}. "
+            "Re-run the stages after the first stale one with --no-resume."
+        )
+
+
 def _failed_row(key, status: str, error: str) -> dict:
     """The log row for a trial the worker pool could not answer."""
     index, trial = key
@@ -928,6 +1160,9 @@ def stage_screen(args) -> None:
     )
     screen = screen_genes(genes, reference, GeneFingerprinter())
     write_screen(screen, args.output_dir / SCREEN_FILE)
+    _write_lineage(args.output_dir, SCREEN_FILE, {
+        "id": _new_lineage_id(), "parent": genes_digest(genes),
+    })
     print(json.dumps(screen.summary(), indent=2))
     print(
         f"\n{screen.n_unique} genes to relax "
@@ -1021,6 +1256,21 @@ def _todo_representatives(screen, limit: Optional[int]) -> list[int]:
     return sorted(i for i in screen.counts if limit is None or i < limit)
 
 
+def _claim_draws_log(args, genes: list[dict], resume: bool) -> str:
+    """Check that the screen and the draws log belong to *genes*; see :func:`claim_lineage`."""
+    digest = genes_digest(genes)
+    screened = (_read_manifest(args.output_dir).get(LINEAGE_KEY) or {}).get(SCREEN_FILE)
+    if screened is not None and screened.get("parent") not in (None, digest):
+        raise StaleOutputError(
+            f"{args.output_dir / SCREEN_FILE} was computed from another gene file "
+            f"than {args.input}. Run --stage screen on this one first."
+        )
+    return claim_lineage(
+        args.output_dir, PYXTAL_TRIALS_FILE, digest, resume,
+        verify=_verify_draws_log(args.output_dir, PYXTAL_TRIALS_FILE, genes),
+    )
+
+
 def stage_generate(args) -> None:
     """PyXtal draws for every unique gene, on CPU, with a per-draw timeout.
 
@@ -1042,6 +1292,7 @@ def stage_generate(args) -> None:
     multiplier = getattr(args, "trial_multiplier", 1)
     budget = {index: _budget(genes[index], schedule, multiplier) for index in todo}
 
+    _claim_draws_log(args, genes, args.resume)
     log = RowLog(args.output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS, args.resume, getattr(args, "retry_failed", False))
     structures_path = args.output_dir / PYXTAL_FILE
     if not args.resume and structures_path.exists():
@@ -1169,6 +1420,7 @@ def stage_template(args) -> None:
     schedule = parse_trial_schedule(args.n_trials)
     todo = _todo_representatives(screen, args.limit)
 
+    _claim_draws_log(args, genes, resume=True)
     log = RowLog(args.output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS, resume=True)
     todo = [index for index in todo if (index, TEMPLATE_TRIAL) not in log.done]
     if not todo:
@@ -1369,6 +1621,11 @@ def stage_prescreen(args) -> None:
     )
     draws = _read_draws(args.output_dir / PYXTAL_FILE, args.limit)
 
+    claim_lineage(
+        args.output_dir, PRESCREEN_TRIALS_FILE,
+        lineage_id(args.output_dir, PYXTAL_TRIALS_FILE), args.resume,
+        verify=_verify_against_draws(args.output_dir, PRESCREEN_TRIALS_FILE, draws),
+    )
     log = RowLog(args.output_dir / PRESCREEN_TRIALS_FILE, PRESCREEN_COLUMNS, args.resume, getattr(args, "retry_failed", False))
     relaxed_path = args.output_dir / PRESCREEN_ALL_FILE
     if not args.resume and relaxed_path.exists():
@@ -1742,6 +1999,11 @@ def stage_basinhop(args) -> None:
     )
     draws = _read_draws(args.output_dir / PYXTAL_FILE, args.limit)
 
+    claim_lineage(
+        args.output_dir, BASINHOP_TRIALS_FILE,
+        lineage_id(args.output_dir, PYXTAL_TRIALS_FILE), args.resume,
+        verify=_verify_against_draws(args.output_dir, BASINHOP_TRIALS_FILE, draws),
+    )
     log = RowLog(args.output_dir / BASINHOP_TRIALS_FILE, BASINHOP_COLUMNS, args.resume, getattr(args, "retry_failed", False))
     minima_path = args.output_dir / BASINHOP_ALL_FILE
     if not args.resume and minima_path.exists():
@@ -2048,6 +2310,14 @@ def stage_relax(args) -> None:
             prerelax_mlip, args.mlip,
         )
 
+    # Parented on the log of the stage that wrote the draws, not on the extxyz:
+    # a draw re-made by `generate --no-resume` keeps its (gene, trial) key, and
+    # PyXtal is not seeded, so only the new log id says the structure changed.
+    claim_lineage(
+        args.output_dir, RELAXATIONS_FILE,
+        lineage_id(args.output_dir, RELAX_SOURCE_LOGS[source]), args.resume,
+        verify=_verify_against_draws(args.output_dir, RELAXATIONS_FILE, draws),
+    )
     log = RowLog(args.output_dir / RELAXATIONS_FILE, RELAXATION_COLUMNS, args.resume, getattr(args, "retry_failed", False))
     todo = [(i, t, atoms) for i, t, atoms in draws if (i, t) not in log.done]
     if log.done:
@@ -2377,6 +2647,12 @@ def stage_score(args) -> None:
     # Before anything is loaded: a funnel with holes in it would be published
     # as the model's numbers.
     require_complete(args, TRIAL_LOGS)
+    # And one built from a single cohort: a structure scored against another
+    # gene's fingerprint makes every novelty verdict meaningless.
+    require_consistent_lineage(
+        args.output_dir,
+        load_genes(args.input) if Path(args.input).is_file() else None,
+    )
     phase = _PhaseTimer()
     screen = read_screen(args.output_dir / SCREEN_FILE)
     free_file = args.output_dir / STRUCTURES_FILE

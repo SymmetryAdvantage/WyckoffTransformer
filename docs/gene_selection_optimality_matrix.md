@@ -151,6 +151,9 @@ $P(\text{novel}\mid\text{not metastable}) = 0.793$, $\phi = -0.284$.
 > all of it comes from free structural descriptors — the trained critic and the
 > generator likelihood each add nothing measurable. See
 > [`gene_selection_measurements.md`](gene_selection_measurements.md) §1–2.
+> *Correction, 2026-09-15:* the artifact these numbers come from scores most of
+> its structures against the wrong genes (see the correction at the top of that
+> note), so they are unsupported until re-measured.
 
 **So the headroom for a gene-level stability critic shrinks as the generator
 gets better at stability.** At 0.116 the critic had abundant novelty to spend and

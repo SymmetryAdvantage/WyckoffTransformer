@@ -1841,3 +1841,207 @@ class TestResumeAfterAKilledWorker(unittest.TestCase):
             retry_failed=True,
         )
         self.assertEqual(log.done, {(0, 0)})
+
+
+class TestResumeLineage(unittest.TestCase):
+    """A resumed log must have been built from the inputs it is resumed with.
+
+    Stage logs are keyed by (gene index, trial) alone. protocol_ehull5x-20260904-213346
+    v1 resumed the draws and relaxations of one gene file under a newly sampled
+    one, and 789 of its 998 scored structures belonged to another gene.
+    """
+
+    CU = {"group": 225, "species": ["Cu"], "numIons": [4], "sites": [["4a"]]}
+    NACL = {"group": 225, "species": ["Na", "Cl"], "numIons": [4, 4], "sites": [["4a"], ["4b"]]}
+
+    def setUp(self):
+        from wyckoff_transformer.cli.protocol import SCREEN_FILE
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.out = Path(tmp.name)
+        write_screen(
+            GeneScreen(n_sampled=1, valid=[0], invalid=[], counts={0: 1}, novel=[0], known=[]),
+            self.out / SCREEN_FILE,
+        )
+
+    def _genes(self, *genes) -> Path:
+        path = self.out / "genes.json"
+        path.write_text(json.dumps(list(genes)), encoding="utf-8")
+        return path
+
+    def _draws_log(self, formula="Cu4"):
+        from wyckoff_transformer.cli.protocol import PYXTAL_COLUMNS, PYXTAL_TRIALS_FILE
+
+        pd.DataFrame(
+            [{"index": 0, "trial": 0, "status": "ok", "formula": formula, "n_atoms": 4,
+              "dof_positional": 0, "n_trials": 1, "seconds": 0.1}],
+            columns=list(PYXTAL_COLUMNS),
+        ).to_csv(self.out / PYXTAL_TRIALS_FILE, index=False)
+
+    def _generate(self, genes_file, resume):
+        from wyckoff_transformer.cli.protocol import stage_generate
+        from wyckoff_transformer.cli.worker_pool import PoolReport
+
+        args = SimpleNamespace(
+            input=genes_file, output_dir=self.out, limit=None, n_trials="1",
+            trial_multiplier=1, resume=resume, retry_failed=False, pyxtal_cores=1,
+            pyxtal_timeout=10.0, pyxtal_tol_factor=1.3, debug=False,
+        )
+        with patch("wyckoff_transformer.cli.protocol.run_supervised",
+                   return_value=PoolReport()) as supervised:
+            stage_generate(args)
+        return supervised
+
+    def _lineage(self):
+        from wyckoff_transformer.cli.protocol import LINEAGE_KEY, MANIFEST_FILE
+
+        return json.loads((self.out / MANIFEST_FILE).read_text())[LINEAGE_KEY]
+
+    def test_the_digest_ignores_the_file_it_was_read_from(self):
+        from wyckoff_transformer.cli.protocol import genes_digest
+
+        self.assertEqual(genes_digest([dict(self.CU)]),
+                         genes_digest([dict(reversed(list(self.CU.items())))]))
+        self.assertNotEqual(genes_digest([self.CU]), genes_digest([self.NACL]))
+
+    def test_generate_records_the_gene_file_it_drew_from(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE, genes_digest
+
+        self._generate(self._genes(self.CU), resume=False)
+        self.assertEqual(self._lineage()[PYXTAL_TRIALS_FILE]["parent"], genes_digest([self.CU]))
+
+    def test_generate_refuses_to_resume_draws_of_another_gene_file(self):
+        from wyckoff_transformer.cli.protocol import StaleOutputError
+
+        self._generate(self._genes(self.CU), resume=False)
+        self._draws_log("Cu4")
+        with self.assertRaises(StaleOutputError):
+            self._generate(self._genes(self.NACL), resume=True)
+
+    def test_no_resume_starts_over_on_another_gene_file(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE, genes_digest
+
+        self._generate(self._genes(self.CU), resume=False)
+        first = self._lineage()[PYXTAL_TRIALS_FILE]["id"]
+        self._draws_log("Cu4")
+        self._generate(self._genes(self.NACL), resume=False)
+        record = self._lineage()[PYXTAL_TRIALS_FILE]
+        self.assertEqual(record["parent"], genes_digest([self.NACL]))
+        self.assertNotEqual(record["id"], first)
+
+    def test_resuming_the_same_gene_file_keeps_the_log_id(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE
+
+        genes = self._genes(self.CU)
+        self._generate(genes, resume=False)
+        self._draws_log("Cu4")
+        first = self._lineage()[PYXTAL_TRIALS_FILE]["id"]
+        self._generate(genes, resume=True)
+        self.assertEqual(self._lineage()[PYXTAL_TRIALS_FILE]["id"], first)
+
+    def test_an_unrecorded_log_of_other_compositions_is_refused(self):
+        """What the ehull5x run's own directory would have been checked with."""
+        from wyckoff_transformer.cli.protocol import StaleOutputError
+
+        self._draws_log("Na4Cl4")
+        with self.assertRaisesRegex(StaleOutputError, "1 of 1 rows"):
+            self._generate(self._genes(self.CU), resume=True)
+
+    def test_an_unrecorded_log_of_matching_compositions_is_adopted(self):
+        from wyckoff_transformer.cli.protocol import PYXTAL_TRIALS_FILE, genes_digest
+
+        self._draws_log("Cu2")  # a primitive cell of the same composition
+        supervised = self._generate(self._genes(self.CU), resume=True)
+        self.assertEqual(list(supervised.call_args.args[0]), [])
+        self.assertEqual(self._lineage()[PYXTAL_TRIALS_FILE]["parent"], genes_digest([self.CU]))
+
+    def test_generate_refuses_a_screen_of_another_gene_file(self):
+        from wyckoff_transformer.cli.protocol import (
+            SCREEN_FILE, StaleOutputError, _write_lineage, genes_digest,
+        )
+
+        _write_lineage(self.out, SCREEN_FILE, {"id": "s", "parent": genes_digest([self.NACL])})
+        with self.assertRaisesRegex(StaleOutputError, "screen"):
+            self._generate(self._genes(self.CU), resume=False)
+
+    def _relax(self, resume):
+        from ase.build import bulk
+        from ase.io import write as ase_write
+        from wyckoff_transformer.cli.protocol import PYXTAL_FILE, stage_relax
+        from wyckoff_transformer.cli.worker_pool import PoolReport
+
+        atoms = bulk("Cu", "fcc", a=3.6, cubic=True)
+        atoms.info = {"gene": 0, "trial": 0}
+        ase_write(str(self.out / PYXTAL_FILE), atoms, format="extxyz")
+        args = SimpleNamespace(
+            output_dir=self.out, mlip="orb_conserv_inf", cores=1, devices=None,
+            workers_per_device=1, limit=None, resume=resume, fmax=0.05,
+            release_symmetry=True, rattle=True, relax_timeout=10.0, debug=False,
+        )
+        with patch("wyckoff_transformer.cli.protocol.run_supervised",
+                   return_value=PoolReport()), \
+                patch("wyckoff_transformer.cli.protocol.aggregate_structures",
+                      return_value=pd.DataFrame({"has_structure": [True]})):
+            stage_relax(args)
+
+    def _relaxations_log(self, formula="Cu4"):
+        from wyckoff_transformer.cli.protocol import RELAXATION_COLUMNS, RELAXATIONS_FILE
+
+        pd.DataFrame(
+            [{"index": 0, "trial": 0, "status": "ok", "formula": formula, "energy": -1.0,
+              "n_atoms": 4, "device": "cpu"}],
+            columns=list(RELAXATION_COLUMNS),
+        ).to_csv(self.out / RELAXATIONS_FILE, index=False)
+
+    def test_relax_refuses_to_resume_relaxations_of_replaced_draws(self):
+        """PyXtal is not seeded: `generate --no-resume` re-draws under the same keys."""
+        from wyckoff_transformer.cli.protocol import StaleOutputError
+
+        self._draws_log()
+        self._relax(resume=False)
+        self._relaxations_log()
+        self._generate(self._genes(self.CU), resume=False)
+        self._draws_log()
+        with self.assertRaisesRegex(StaleOutputError, "relaxations.csv"):
+            self._relax(resume=True)
+
+    def test_relax_resumes_relaxations_of_the_same_draws(self):
+        from wyckoff_transformer.cli.protocol import RELAXATIONS_FILE
+
+        self._generate(self._genes(self.CU), resume=False)
+        self._draws_log()
+        self._relax(resume=False)
+        self._relaxations_log()
+        first = self._lineage()[RELAXATIONS_FILE]["id"]
+        self._relax(resume=True)
+        self.assertEqual(self._lineage()[RELAXATIONS_FILE]["id"], first)
+
+    def test_an_unrecorded_relaxations_log_of_other_draws_is_refused(self):
+        from wyckoff_transformer.cli.protocol import StaleOutputError
+
+        self._relaxations_log("Na4Cl4")
+        with self.assertRaises(StaleOutputError):
+            self._relax(resume=True)
+
+    def test_score_refuses_outputs_of_different_lineages(self):
+        from wyckoff_transformer.cli.protocol import (
+            PYXTAL_TRIALS_FILE, RELAXATIONS_FILE, SCREEN_FILE, StaleOutputError,
+            _write_lineage, genes_digest, require_consistent_lineage,
+        )
+
+        digest = genes_digest([self.CU])
+        _write_lineage(self.out, SCREEN_FILE, {"id": "s", "parent": digest})
+        _write_lineage(self.out, PYXTAL_TRIALS_FILE, {"id": "draws-2", "parent": digest})
+        _write_lineage(self.out, RELAXATIONS_FILE, {"id": "r", "parent": "draws-2"})
+        require_consistent_lineage(self.out, [self.CU])
+        with self.assertRaisesRegex(StaleOutputError, "another gene file"):
+            require_consistent_lineage(self.out, [self.NACL])
+        _write_lineage(self.out, RELAXATIONS_FILE, {"id": "r", "parent": "draws-1"})
+        with self.assertRaisesRegex(StaleOutputError, "relaxations.csv"):
+            require_consistent_lineage(self.out, [self.CU])
+
+    def test_a_run_from_before_lineage_is_scored(self):
+        from wyckoff_transformer.cli.protocol import require_consistent_lineage
+
+        require_consistent_lineage(self.out, [self.CU])

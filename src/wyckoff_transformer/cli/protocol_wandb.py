@@ -670,6 +670,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def refuse_to_resample_under_resume(args, gene_file: Path) -> None:
+    """Refuse to sample a new gene file over one whose stage logs would be resumed.
+
+    Sampling writes over *gene_file*, and the stages then resume their logs by
+    ``(gene index, trial)`` alone, so the old draws and relaxations would be
+    scored as the new genes' -- which is what ``protocol_ehull5x-20260904-213346``
+    v1 and v2 were.  :func:`protocol.claim_lineage` would refuse at the generate
+    stage, but only after the old gene file, the one those logs *can* be resumed
+    with, had already been replaced; hence this check, before sampling.
+
+    Raises:
+        protocol.StaleOutputError: With ``--resume`` and any stage log present.
+    """
+    if not args.resume:
+        return
+    present = [
+        name for name in protocol_cli.TRIAL_LOGS
+        if protocol_cli.read_rows(args.output_dir / name).shape[0]
+    ]
+    if not present:
+        return
+    raise protocol_cli.StaleOutputError(
+        f"{args.output_dir} already holds {', '.join(present)}, built from "
+        f"{gene_file}; sampling a new gene file would resume them as the new "
+        "genes' trials. Pass --skip-generate to resume the existing cohort, or "
+        "--no-resume to sample a new one and start every stage over."
+    )
+
+
 def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(
@@ -698,6 +727,7 @@ def main() -> None:
             )
         logger.info("Reusing gene file %s", gene_file)
     else:
+        refuse_to_resample_under_resume(args, gene_file)
         generate_genes(
             run_id=args.wandb_run,
             entity=args.wandb_entity,
@@ -719,10 +749,12 @@ def main() -> None:
     try:
         for stage in stages:
             protocol_cli.run_stage(stage, stage_args)
-    except protocol_cli.IncompleteStageError:
+    except (protocol_cli.IncompleteStageError, protocol_cli.StaleOutputError):
         # Nothing is wrong with the run that a partial report would describe:
-        # its trials are waiting for --resume, and uploading now would publish
-        # a new artifact version for a cohort that is not finished.
+        # its trials are waiting for --resume, or its outputs are waiting to be
+        # rebuilt from one cohort, and uploading now would publish a new
+        # artifact version -- and overwrite the run's summary -- for a cohort
+        # that is not finished.
         raise
     except Exception as exc:
         stage_exc = exc

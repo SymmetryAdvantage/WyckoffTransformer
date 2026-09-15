@@ -124,6 +124,32 @@ raises once its outputs are written, and `score` refuses a run with any, so
 that such a run is not scored and uploaded as the model's numbers. The fix is
 `--resume`; `--allow-incomplete` scores what there is.
 
+**A resumed row must come from the inputs it is resumed with.** Stage logs are
+keyed by `(gene index, trial)` and nothing else. `protocol_ehull5x-20260904-213346`
+v1 and v2 were produced by re-running `wyformer-protocol-wandb` without
+`--no-resume`: it sampled a fresh gene file over the old one and then resumed the
+old draws and relaxations as the new genes' trials. 2392 of the 2804 successful
+relaxations, and 789 of the 998 structures scored, belong to a gene other than
+the one they were scored as (audit of 2026-09-15). Every output therefore records
+its lineage under `lineage` in `manifest.json`: an `id` of its own and the
+`parent` it was built from. That parent is the gene cohort's digest for
+`screen.json` and `pyxtal.csv`, and the id of the source log for `prescreen.csv`,
+`basinhop.csv` and `relaxations.csv`. An output started afresh gets a new id.
+With that record:
+
+- a stage refuses to resume a log whose parent is not what it is building from
+  now (`StaleOutputError`). A `generate --no-resume` therefore makes a later
+  `relax --resume` refuse: PyXtal is not seeded, so the re-made draws keep their
+  keys but not their structures;
+- a log written before lineage was recorded is checked by content: every row's
+  composition must be its gene's (or its draw's), and the log is adopted if so;
+- `score` refuses outputs whose recorded lineages do not chain, and the W&B
+  wrapper uploads nothing for it;
+- `wyformer-protocol-wandb` refuses to sample a gene file at all into a
+  directory that holds stage logs, unless given `--no-resume` (start over) or
+  `--skip-generate` (resume the cohort already there). The later check would
+  come too late: by then the gene file those logs belong to is overwritten.
+
 `--limit 12` gives a smoke test on the first twelve genes. Outputs:
 
 | file | contents |

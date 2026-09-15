@@ -6,7 +6,31 @@
 > training a new generative model. Every number is reproducible from the scripts
 > named in §8.
 >
-> **Headline:** on the current generator the whole gene-level reranking
+> **Correction, 2026-09-15 (audit at commit `fba3b24`): the protocol artifact
+> this note measures is contaminated, and its conclusions are unsupported until
+> they are re-measured.** `protocol_ehull5x-20260904-213346:v1` scores one gene
+> cohort's structures under another's indices. Its `wyckoff_genes.json.gz` (md5
+> of the decompressed JSON `86990c10…`) replaced the one the first pass drew from
+> (`48ac2f0e…`, v0), and the stage logs were resumed on top of it. Of the 2804
+> successful relaxations, 412 have their v1 gene's composition and 2392 their v0
+> gene's. Of the 998 structures in `structures.csv`, **789 belong to a v0 gene**.
+> §0.1's diagnosis is therefore inverted: the ~400 rows it filters out are the
+> *correct* ones. Every analysis below that pairs a gene (its features, its
+> likelihood, its critic score, its gene-level novelty) with a structural
+> outcome pairs mismatched genes for most of the pool.
+>
+> The clean replacement is **`protocol_ehull5x-20260904-213346:v3`**: a
+> from-scratch re-run on 2026-09-15 on zeus (new 1000-gene cohort, `--no-resume`,
+> code at `fba3b24`, ORB-v3-conservative-inf, `--relax-timeout 1800`, 8 workers
+> on one RTX 6000 Ada). All 2406 draws and 998 structures match their own genes,
+> all 2406 relaxations succeeded, and no worker faulted. Its free-readout MetaSUN
+> is **0.268** per sampled gene, not 0.316 (novel structures 0.594 vs 0.702,
+> metastable 0.576 vs 0.521); fixed-symmetry MetaSUN is 0.185 vs 0.223. The W&B
+> run summary now carries v3's numbers. Re-measure on v3 before using anything
+> below. See `docs/de_novo_ranking_protocol.md` for the guard that now prevents
+> this.
+>
+> **Headline (unsupported, see above):** on the current generator the whole gene-level reranking
 > enterprise is worth **1.27× at 25% acceptance**, against an arithmetic ceiling
 > of 3.16× and a perfect-energy-oracle ceiling of 1.75×. All of that 1.27×
 > comes from **free structural descriptors of the gene**. The trained energy
@@ -34,6 +58,11 @@ scores against an **ORB** hull, so any critic-versus-outcome correlation mixes
 model error with a cross-functional offset.
 
 ### 0.1 A data defect found on the way in
+
+> **Misdiagnosed; see the correction at the top.** The minority rows are not
+> misfiled: they are the only trials of the genes in the artifact's own gene
+> file. `structures.csv` *is* affected, and the formula filter keeps the wrong
+> side.
 
 `relaxations.csv` and `pyxtal.csv` inside the protocol artifact concatenate a
 crashed first pass and its retry **without reconciling the `index` column**.
