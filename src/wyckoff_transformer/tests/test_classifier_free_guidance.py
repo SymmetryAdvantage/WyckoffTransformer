@@ -3,8 +3,12 @@
 What can go wrong silently, and is therefore pinned here:
 
 - the null condition coinciding with a real one. AdaLN is affine in its input, so a zeroed
-  log1p(e_hull) column *is* e_hull = 0 -- the target the protocol samples at. The presence
-  column is what separates the two, and it has to be zeroed with the rest of a dropped row;
+  log1p(e_hull) column *is* e_hull = 0 -- the target the protocol samples at. The null
+  indicator column is what separates the two;
+- a conditioned row reaching AdaLN differently from a model trained without dropout. The
+  indicator is 0 on those rows for exactly that reason: a presence flag that is a constant
+  1 on them duplicates the AdaLN bias, and destabilised run
+  ehull_adamw_wsd_5x_cfg-20260916-015500 (see guidance_conditioning_width);
 - dropout leaking out of training. Evaluation, calibration and generation all go through
   `build_cond`, and a validation loss computed with dropped conditions would not be
   comparable with a run trained without it;
@@ -51,7 +55,7 @@ class TestWidth(unittest.TestCase):
         self.assertEqual(guidance_conditioning_width(0.0, 1), 0)
         self.assertEqual(guidance_conditioning_width(None, 1), 0)
 
-    def test_dropout_adds_the_presence_column(self):
+    def test_dropout_adds_the_null_indicator_column(self):
         self.assertEqual(guidance_conditioning_width(0.1, 3), 1)
 
     def test_a_dropout_of_one_or_more_is_refused(self):
@@ -75,37 +79,40 @@ class TestBuildCond(unittest.TestCase):
         self.values = torch.linspace(0.0, 2.0, 1000).unsqueeze(1)
         self.data = _dataset(energy_above_hull=self.values)
 
-    def test_the_presence_flag_is_set_on_every_conditioned_row(self):
-        cond = _skeleton().build_cond(self.data)
-        self.assertEqual(cond.shape, (1000, 2))
-        self.assertTrue(torch.equal(cond[:, 1], torch.ones(1000)))
-        self.assertTrue(torch.allclose(cond[:, 0], torch.log1p(self.values[:, 0])))
+    def test_a_conditioned_row_is_the_baseline_row_plus_a_zero(self):
+        guided = _skeleton().build_cond(self.data)
+        plain = _skeleton(condition_dropout=0.0).build_cond(self.data)
+        self.assertEqual(guided.shape, (1000, 2))
+        self.assertTrue(torch.equal(guided[:, :1], plain))
+        self.assertTrue(torch.equal(guided[:, 1], torch.zeros(1000)))
 
     def test_dropped_rows_are_exactly_the_null_condition(self):
         torch.manual_seed(0)
         trainer = _skeleton(condition_dropout=0.3)
         cond = trainer.build_cond(self.data, drop_condition=True)
-        dropped = cond[:, 1] == 0
-        # The flag and the value go together: never a zeroed flag on a live value.
-        self.assertTrue(torch.equal(cond[dropped], torch.zeros(int(dropped.sum()), 2)))
+        dropped = cond[:, 1] == 1
+        # The indicator and the zeroed value go together: never a set indicator on a live value.
+        self.assertTrue(torch.equal(cond[dropped], trainer.null_condition(int(dropped.sum()))))
         kept = ~dropped
+        self.assertTrue(torch.equal(cond[kept, 1], torch.zeros(int(kept.sum()))))
         self.assertTrue(torch.allclose(cond[kept, 0], torch.log1p(self.values[kept, 0])))
         # 300 expected of 1000; the binomial sd is 14.5.
         self.assertAlmostEqual(dropped.float().mean().item(), 0.3, delta=0.06)
 
     def test_the_null_condition_differs_from_a_zero_target(self):
-        # The reason the presence column exists: e_hull = 0 transforms to 0.
+        # The reason the indicator column exists: e_hull = 0 transforms to 0.
         trainer = _skeleton()
         at_zero = trainer.build_cond(_dataset(energy_above_hull=torch.zeros(1, 1)))
-        self.assertFalse(torch.equal(at_zero, trainer.null_condition(1)))
+        self.assertTrue(torch.equal(at_zero, torch.zeros(1, 2)))
+        self.assertTrue(torch.equal(trainer.null_condition(1), torch.tensor([[0.0, 1.0]])))
 
     def test_without_drop_condition_nothing_is_dropped(self):
         cond = _skeleton(condition_dropout=0.9).build_cond(self.data)
-        self.assertTrue(bool((cond[:, 1] == 1).all()))
+        self.assertTrue(bool((cond[:, 1] == 0).all()))
 
     def test_unconditional_is_all_null(self):
         cond = _skeleton().build_cond(self.data, unconditional=True)
-        self.assertTrue(torch.equal(cond, torch.zeros(1000, 2)))
+        self.assertTrue(torch.equal(cond, torch.tensor([[0.0, 1.0]]).repeat(1000, 1)))
 
     def test_a_model_without_dropout_is_unchanged_by_drop_condition(self):
         trainer = _skeleton(condition_dropout=0.0)
@@ -179,7 +186,7 @@ class TestTrainingPaths(unittest.TestCase):
 
 
 class _CondModel:
-    """Logits that depend on the presence flag only: conditional rows favour token 0.
+    """Logits that depend on the null indicator only: conditional rows favour token 0.
 
     Records every call, so the tests can see how many forward passes a step costs.
     """
@@ -195,8 +202,8 @@ class _CondModel:
 
     def __call__(self, start, cascade, padding_mask, prediction_head, cond=None):
         self.batch_sizes.append(start.size(0))
-        flag = cond[:, -1:]
-        return flag * self.CONDITIONAL + (1 - flag) * self.UNCONDITIONAL
+        null = cond[:, -1:]
+        return null * self.UNCONDITIONAL + (1 - null) * self.CONDITIONAL
 
 
 CASCADE = ("elements", "site_symmetries", "sites_enumeration")
@@ -214,8 +221,8 @@ class TestGuidedLogits(unittest.TestCase):
     def setUp(self):
         self.start = torch.zeros(3, dtype=torch.int64)
         self.cascade = [torch.zeros(3, 1, dtype=torch.int64)]
-        self.cond = torch.tensor([[0.0, 1.0]]).repeat(3, 1)
-        self.uncond = torch.zeros(3, 2)
+        self.cond = torch.zeros(3, 2)
+        self.uncond = torch.tensor([[0.0, 1.0]]).repeat(3, 1)
 
     def _logits(self, scale):
         model = _CondModel()
@@ -241,10 +248,11 @@ class TestGuidedLogits(unittest.TestCase):
 
     def test_sampling_follows_the_guided_distribution(self):
         start = torch.zeros(20000, dtype=torch.int64)
-        cond = torch.tensor([[0.0, 1.0]]).repeat(20000, 1)
+        cond = torch.zeros(20000, 2)
         torch.manual_seed(0)
         generated = _generator(_CondModel()).generate_tensors(
-            start, cond=cond, uncond=torch.zeros_like(cond), guidance_scale=2.0)
+            start, cond=cond, uncond=torch.tensor([[0.0, 1.0]]).repeat(20000, 1),
+            guidance_scale=2.0)
         share = (generated[0][:, 0] == 0).float().mean().item()
         # Guided logits are [2.0, -0.5]: p(0) = 1 / (1 + e^-2.5) = 0.924, against 0.731
         # for the conditional model alone.
@@ -303,13 +311,13 @@ class TestGenerateStructuresForwardsGuidance(unittest.TestCase):
             trainer.generate_structures(n_structures=4, calibrate=False, **kwargs)
         return _RecordingGenerator.calls[-1]
 
-    def test_the_caller_condition_gains_the_flag_and_the_null_is_forwarded(self):
+    def test_the_caller_condition_gains_the_indicator_and_the_null_is_forwarded(self):
         call = self._call(self._trainer(0.1), cond=torch.full((4, 1), 0.1),
                           guidance_scale=2.5)
         self.assertEqual(call["guidance_scale"], 2.5)
         self.assertTrue(torch.allclose(
-            call["cond"], torch.tensor([[math.log1p(0.1), 1.0]]).repeat(4, 1)))
-        self.assertTrue(torch.equal(call["uncond"], torch.zeros(4, 2)))
+            call["cond"], torch.tensor([[math.log1p(0.1), 0.0]]).repeat(4, 1)))
+        self.assertTrue(torch.equal(call["uncond"], torch.tensor([[0.0, 1.0]]).repeat(4, 1)))
 
     def test_every_path_forwards_it(self):
         trainer = self._trainer(0.1)
@@ -326,7 +334,8 @@ class TestGenerateStructuresForwardsGuidance(unittest.TestCase):
         call = self._call(self._trainer(0.1), cond=torch.zeros(4, 1))
         self.assertEqual(call["guidance_scale"], 1.0)
         self.assertIsNone(call["uncond"])
-        # Still flagged: the conditional branch of a guided model always carries it.
+        # Still two columns: the conditional branch of a guided model always carries the
+        # (clear) indicator.
         self.assertEqual(call["cond"].shape, (4, 2))
 
     def test_a_model_without_dropout_refuses_a_guidance_scale(self):
@@ -334,7 +343,7 @@ class TestGenerateStructuresForwardsGuidance(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "condition_dropout"):
             trainer.generate_structures(n_structures=4, calibrate=False,
                                         cond=torch.zeros(4, 1), guidance_scale=2.0)
-        # And at 1 it behaves exactly as before: one column, no flag.
+        # And at 1 it behaves exactly as before: one column, no indicator.
         call = self._call(trainer, cond=torch.zeros(4, 1))
         self.assertEqual(call["cond"].shape, (4, 1))
 
@@ -360,7 +369,7 @@ class TestRealModelEndToEnd(unittest.TestCase):
                 if "adaLN" in name:
                     parameter.normal_(std=0.5)
 
-    def test_condition_dim_is_derived_with_the_presence_column(self):
+    def test_condition_dim_is_derived_with_the_null_indicator_column(self):
         self.assertEqual(self.trainer.model.condition_dim, 2)
         self.assertEqual(self.trainer.condition_dim, 2)
 
@@ -387,7 +396,7 @@ class TestRealModelEndToEnd(unittest.TestCase):
         start = self.trainer._sample_start_tokens_from_distribution(n)
         cascade = [torch.full((n, 1), self.trainer.masks_dict[field], dtype=torch.int64)
                    for field in self.trainer.cascade_order]
-        cond = self.trainer.with_presence_flag(torch.zeros(n, 1))
+        cond = self.trainer.with_null_indicator(torch.zeros(n, 1))
         uncond = self.trainer.null_condition(n, device=torch.device("cpu"))
         generator = WyckoffGenerator(
             model, self.trainer.cascade_order, self.trainer.cascade_is_target,

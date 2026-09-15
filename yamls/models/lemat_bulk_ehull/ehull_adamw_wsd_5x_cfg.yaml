@@ -6,9 +6,12 @@
 #     condition with probability 0.1, so the same weights learn p(gene | e_hull) and p(gene).
 #     0.1 is the value Ho & Salimans (arXiv:2207.12598) and the autoregressive image models
 #     (LlamaGen, arXiv:2406.06525) settled on; 0.5 cost them conditional quality.
-#   condition_dim: 2 -- log1p(e_hull), plus a presence flag that is 0 on a dropped row. The
-#     flag is not optional: AdaLN is affine in its input, so a zeroed log1p(e_hull) alone would
-#     be the e_hull = 0 condition, the very target the protocol samples at. See
+#   condition_dim: 2 -- log1p(e_hull), plus a null indicator that is 1 on a dropped row and 0
+#     on every conditioned one. It is not optional: AdaLN is affine in its input, so a zeroed
+#     log1p(e_hull) alone would be the e_hull = 0 condition, the very target the protocol
+#     samples at. And it is 0, not 1, on conditioned rows so that those reach AdaLN exactly as
+#     in the baseline: the first run of this file used a presence flag (1 on conditioned rows),
+#     whose weight duplicated the AdaLN bias and destabilised training -- see
 #     trainer.guidance_conditioning_width. It adds 1440 parameters (2 x 240 x 3) to 723350.
 #
 # Every other number, including epochs, is the baseline's, so the two runs see the same
@@ -104,7 +107,7 @@ model:
     num_fully_connected_layers: 3
     learned_positional_encoding_max_size: 0
     learned_positional_encoding_only_masked: true
-    # log1p(e_hull) and the classifier-free guidance presence flag.
+    # log1p(e_hull) and the classifier-free guidance null indicator.
     condition_dim: 2
     TransformerEncoderLayer_args:
       # 120 / 8 = 15 per head; see the capacity note at the top.

@@ -355,7 +355,7 @@ def score_gene_likelihood(
         cond = trainer.transform_condition(cond.to(trainer.device, dtype=torch.float32))
         if getattr(trainer, "classifier_free_guidance", False):
             # Scored as p(gene | cond), the conditional model, not a guided mixture.
-            cond = trainer.with_presence_flag(cond)
+            cond = trainer.with_null_indicator(cond)
     elif trainer.condition_features:
         raise ValueError(
             f"This generator is conditioned on {list(trainer.condition_features)}; pass "

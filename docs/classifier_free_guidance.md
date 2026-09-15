@@ -32,13 +32,35 @@ only).
 **The null condition needs a column of its own.** AdaLN is affine in its input,
 so zeroing log1p(e_hull) does not remove the condition. It sets e_hull = 0,
 which is exactly the target the protocol samples at. The conditioning vector
-therefore gains a trailing presence flag: 1 on every conditioned row, 0 on a
-dropped one, with the values zeroed alongside it
-(`trainer.guidance_conditioning_width`). The unconditional branch then gets its
-own modulation (the AdaLN bias), and the conditional branch gets an independent
-offset (the flag's weight). That is the same freedom a learned null embedding
-would give, with `CascadeTransformer` unchanged. `condition_dim` goes from 1 to
-2, adding 1,440 parameters to 723,350.
+therefore gains a trailing **null indicator**: 1 on a dropped row, whose values
+are zeroed, and 0 on every conditioned row (`trainer.guidance_conditioning_width`).
+A conditioned row reaches AdaLN exactly as it would without dropout, so the
+conditional path keeps the baseline's parameterisation `w·v + b`. The null
+condition gets a modulation of its own, `w_null + b`, which is the freedom a
+learned null embedding would give, with `CascadeTransformer` unchanged.
+`condition_dim` goes from 1 to 2, adding 1,440 parameters to 723,350.
+
+**The indicator's polarity matters; the first attempt had it backwards.**
+Run `ehull_adamw_wsd_5x_cfg-20260916-015500` (commit `7cf1895`, stopped at
+epoch ~640 on 2026-09-16) used a *presence* flag instead: 1 on conditioned
+rows, 0 on dropped ones. On 90% of rows that column is a constant 1, so its
+weight is a second copy of the AdaLN bias. By epoch 500 the two pointed the
+same way in every layer (cosine 0.87–0.96). AdamW steps each by about the
+learning rate, so the conditional modulation offset moved at roughly twice the
+baseline's rate (layer-0 norm 6.8 against 5.1), and training went unstable
+from about step 5,000:
+
+| steps 45k–52k | baseline | presence flag |
+|---|---|---|
+| mean train batch loss | 1.27 | 1.51 |
+| grad-norm median / max | 0.14 / 6.8 | 0.36 / 518 |
+| steps clipped at 10 | 0 | 56 |
+| val NLL at epoch 500 | 20.45 | 25.38 |
+
+Its val NLL was 5 nats behind, with site symmetries and enumerations worst
+(5.50 / 3.00 against 2.72 / 1.74). The baseline's lr of 3e-3 was already at the
+edge of stability, which is presumably why doubling one parameter group's
+effective step mattered.
 
 A model without `condition_dropout` trains exactly as before, with no extra
 column and no extra RNG draw (`test_a_model_without_dropout_is_unchanged_by_drop_condition`).

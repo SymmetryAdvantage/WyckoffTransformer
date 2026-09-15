@@ -135,12 +135,21 @@ def guidance_conditioning_width(condition_dropout: float, conditioning_width: in
     or with none, and has to be told which. Zeroing the dropped rows is not enough on its own:
     AdaLN is affine in its input, so the zero vector is just another point on the line the
     conditional modulations lie on -- for a log1p(e_hull) channel it is exactly e_hull = 0,
-    the very target the model is sampled at. The extra column is a presence flag, 1 on every
-    conditioned row and 0 on a dropped one, alongside the zeroed values. That gives the
-    unconditional branch a modulation of its own (the AdaLN bias) and the conditional one an
-    independent offset (the flag's weight) -- the same freedom as a learned null embedding,
-    with the model itself unchanged. `from_config` and `WyckoffTrainer.condition_dim` both
-    need this number, which is why it lives here.
+    the very target the model is sampled at. The extra column is a *null indicator*: 0 on
+    every conditioned row, 1 on a dropped one, whose values are zeroed. A conditioned row
+    therefore reaches AdaLN exactly as it would in a model trained without dropout, and the
+    null condition gets a modulation of its own (the AdaLN bias plus the indicator's weight)
+    -- the freedom of a learned null embedding, with the model itself unchanged.
+    `from_config` and `WyckoffTrainer.condition_dim` both need this number, which is why it
+    lives here.
+
+    Not the other way round. A *presence* flag, 1 on conditioned rows, was tried first
+    (run ehull_adamw_wsd_5x_cfg-20260916-015500, stopped at epoch ~640): on 90% of rows it
+    is a constant 1, so its weight duplicates the AdaLN bias. The two learned the same
+    direction (cosine 0.87-0.96 in every layer by epoch 500), AdamW stepped both by the
+    learning rate, and the conditional modulation offset moved at about twice the rate of the
+    baseline's. Gradient-norm spikes to 500 followed, and validation NLL at epoch 500 was
+    25.4 against the baseline's 20.4.
     """
     if condition_dropout is None or condition_dropout == 0:
         return 0
@@ -639,7 +648,7 @@ class WyckoffTrainer():
                 its whole conditioning vector -- scalars and formula block alike -- replaced
                 by the null condition with this probability, so that one set of weights
                 learns both p(gene | condition) and p(gene). The conditioning vector gains a
-                trailing presence column for it (see guidance_conditioning_width), so
+                trailing null-indicator column for it (see guidance_conditioning_width), so
                 CascadeTransformer_args.condition_dim is one wider than without. Evaluation
                 always conditions, which keeps the validation loss comparable with a model
                 trained without dropout; train() additionally logs the unconditional one.
@@ -1203,7 +1212,7 @@ class WyckoffTrainer():
                 f"{chemical_system_conditioning_dim(self.n_elements)} columns for the "
                 f"chemical system over {self.n_elements} element tokens")
         if self.classifier_free_guidance and parts:
-            parts.append("1 presence column for classifier-free guidance")
+            parts.append("1 null-indicator column for classifier-free guidance")
         return ", ".join(parts) if parts else "nothing"
 
 
@@ -1265,7 +1274,7 @@ class WyckoffTrainer():
 
         Each `condition_feature` occupies one column, in the order they are configured,
         the composition -- or the chemical system -- the next block, and under
-        `condition_dropout` a presence flag the last column.
+        `condition_dropout` a null indicator the last column.
         `CascadeTransformer_args.condition_dim` has to agree.
         """
         width = len(self.condition_features) + formula_conditioning_width(
@@ -1319,29 +1328,32 @@ class WyckoffTrainer():
             return cond
         if unconditional:
             return self.null_condition(cond.size(0), device=cond.device)
-        cond = self.with_presence_flag(cond)
+        cond = self.with_null_indicator(cond)
         if drop_condition:
-            # Zeroes the flag along with the values: a dropped row is exactly null_condition.
-            keep = torch.rand(cond.size(0), 1, device=cond.device) >= self.condition_dropout
-            cond = cond * keep
+            dropped = torch.rand(cond.size(0), 1, device=cond.device) < self.condition_dropout
+            cond = torch.where(dropped, self.null_condition(1, device=cond.device), cond)
         return cond
 
 
-    def with_presence_flag(self, cond: Tensor) -> Tensor:
-        """Append the classifier-free guidance presence column, set, to a conditioning block.
+    def with_null_indicator(self, cond: Tensor) -> Tensor:
+        """Append the classifier-free guidance null indicator, clear, to a conditioning block.
 
         `cond` is everything else the model is conditioned on, already in the model's units.
+        The appended column is 0, so the row reaches AdaLN as it would in a model trained
+        without `condition_dropout`; see guidance_conditioning_width.
         """
-        return torch.cat([cond, torch.ones_like(cond[..., :1])], dim=-1)
+        return torch.cat([cond, torch.zeros_like(cond[..., :1])], dim=-1)
 
 
     def null_condition(self, n_rows: int, device: Optional[torch.device] = None) -> Tensor:
-        """The conditioning vector that stands for "no condition": zeros, flag included."""
+        """The conditioning vector that stands for "no condition": zeros, indicator set."""
         if not self.classifier_free_guidance:
             raise ValueError(
                 "This model was trained without condition_dropout and has no null condition.")
-        return torch.zeros(n_rows, self.condition_dim, dtype=torch.float32,
+        null = torch.zeros(n_rows, self.condition_dim, dtype=torch.float32,
                            device=device if device is not None else self.device)
+        null[:, -1] = 1.0
+        return null
 
 
     def build_condition_from_values(
@@ -1639,7 +1651,7 @@ class WyckoffTrainer():
                     f"{list(condition_features)}"
                     + (" plus the composition" if composition_conditioning else "")
                     + (" plus the chemical system" if chemical_system_conditioning else "")
-                    + (" plus the classifier-free guidance presence column"
+                    + (" plus the classifier-free guidance null-indicator column"
                        if condition_dropout else "")
                     + f" makes it {derived}. Remove it and let it be derived, or fix it.")
         elif declared is not None:
@@ -2688,7 +2700,7 @@ class WyckoffTrainer():
                         "handed a conditioning vector of the wrong width.")
                 cond = torch.cat([cond, composition_cond.to(cond.device, torch.float32)], dim=-1)
             if self.classifier_free_guidance:
-                cond = self.with_presence_flag(cond)
+                cond = self.with_null_indicator(cond)
         elif composition_cond is not None:
             if self.formula_conditioning_field is None:
                 raise ValueError("composition_cond was given, but this model is not "
@@ -2699,7 +2711,7 @@ class WyckoffTrainer():
                     f"This model is also conditioned on {list(condition_features)}; pass "
                     "`cond` for those alongside `composition_cond`.")
             if self.classifier_free_guidance:
-                cond = self.with_presence_flag(cond)
+                cond = self.with_null_indicator(cond)
         elif self.condition_dim is not None:
             # Nothing supplied: draw whole conditioning rows from the training data, which
             # keeps the scalar and the composition paired as they actually occur rather
@@ -2715,7 +2727,7 @@ class WyckoffTrainer():
                     "was provided and no train_dataset is available to sample one from.")
             random_indices = torch.randint(
                 0, self.train_dataset.num_examples, (n_structures,), device=self.device)
-            # Carries the presence flag of a guided model already.
+            # Carries the null indicator of a guided model already.
             cond = self.build_cond(self.train_dataset, random_indices)
         uncond = None
         if guidance_scale != 1.0:
