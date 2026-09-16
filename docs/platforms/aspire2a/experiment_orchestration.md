@@ -77,21 +77,21 @@ read-only across all jobs.
 ### 2. Per-experiment code snapshot via `git worktree`
 
 Worktrees share the object store, so this costs seconds, not a sync.
+On ASPIRE 2A, worktrees are placed in `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>`
+and reuse the main virtual environment at `/home/project/11001786/WyFormer/WyckoffTransformer/.venv`:
 
 ```bash
-git worktree add --detach $WT $SHA
-mkdir -p $WT/cache
-ln -s $CANON/data                      $WT/data                      # shared raw data
-ln -s $CANON/cache/$DATASET/data.pkl.gz $WT/cache/$DATASET/data.pkl.gz  # shared, code-independent (stage 1)
-# stage-2 tensor cache: symlink the shared one when the tokenisation fingerprint
-# matches, else point at a snapshot-private @<fp> path (see section 3)
-# wyckoffs_enumerated_by_ss.json and engineers/*.json are committed package data, so a
-# worktree already has them -- do not regenerate them.
+git worktree add /home/users/nus/kna/scratch/WyFormer/worktrees/$WT_NAME $SHA
+cd /home/users/nus/kna/scratch/WyFormer/worktrees/$WT_NAME
+bash scripts/platforms/aspire2a/env_init.sh
 ```
 
-Jobs then run `PYTHONPATH=$WT/src $VENV/bin/python scripts/train.py ...` from
-`$WT`. `PYTHONPATH` shadows the (absent) project install; the repo's
-`parents[2]/yamls` and `parents[2]/cache` lookups resolve inside the worktree.
+Data, cache, runs and W&B directories resolve automatically through `~/.config/wyformer/paths.env`
+(see `docs/data_store.md`), so no hand-made symlinks for `data/` or `cache/` are needed.
+
+Jobs then run `PYTHONPATH=$WT/src` inside Singularity via `scripts/platforms/aspire2a/run_in_singularity.sh`
+(or `train_in_pbs.sh` which sets this automatically). `PYTHONPATH` shadows the main checkout's
+editable install recorded in the shared venv, ensuring code changes inside `$WT/src` are imported.
 
 **Config overrides:** `train.py` only takes `--pilot` / `--compile` / etc., not
 arbitrary `key=value`. Generate a concrete YAML per variant (declarative,

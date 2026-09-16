@@ -213,3 +213,34 @@ points for anything that honours it).
 `myprojects` shows the project balance and `myusage` your own burn. As of
 2026-09-07, project 11001786 had 1.91 M SU left of 46.3 M, expiring 2027-08-31.
 A chained 24 h 1-GPU run is a real charge; check before launching one.
+
+---
+
+## `No such file or directory: /home/project/...` inside the container
+
+Unlike `/scratch` and `$HOME`, `/home/project` (and `/data/projects`) is **not** mounted
+automatically into Singularity containers on ASPIRE 2A.
+`scripts/platforms/aspire2a/run_in_singularity.sh` binds `/home/project` and `/data/projects`
+explicitly. If you invoke `singularity run` or `singularity exec` manually, you must add:
+
+```bash
+singularity run --nv --bind /home/project,/data/projects ...
+```
+
+---
+
+## Worktree code changes are not taking effect (main checkout code is imported)
+
+Worktrees reuse the main checkout's virtual environment at
+`/home/project/11001786/WyFormer/WyckoffTransformer/.venv`. That venv's editable install
+records the main repo's `src/` directory in its `.pth`.
+
+`scripts/platforms/aspire2a/run_in_singularity.sh` automatically sets
+`PYTHONPATH=$REPO_DIR/src` inside the container, which prioritizes the worktree's code
+over the `.pth` file. If running a custom script or container invocation from a worktree,
+always ensure `PYTHONPATH` points to the worktree's `src` directory:
+
+```bash
+export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
+```
+

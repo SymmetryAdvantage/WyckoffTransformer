@@ -5,7 +5,7 @@
 # partition, writing runs/formula_energy/ensemble.pt.
 #
 # Submit:
-#     cd /scratch/users/nus/kna/WyckoffTransformer
+#     cd /home/project/11001786/WyFormer/WyckoffTransformer
 #     mkdir -p logs
 #     qsub scripts/platforms/aspire2a/train_formula_energy.pbs
 #
@@ -47,11 +47,11 @@
 #PBS -l select=1:ngpus=1:ncpus=8:mem=64gb
 #PBS -l walltime=04:00:00
 #PBS -j oe
-#PBS -o /scratch/users/nus/kna/WyckoffTransformer/logs/
+#PBS -o /home/project/11001786/WyFormer/WyckoffTransformer/logs/
 
 set -u
 
-REPO=/scratch/users/nus/kna/WyckoffTransformer
+REPO=${REPO:-/home/project/11001786/WyFormer/WyckoffTransformer}
 SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
 CONFIG=${CONFIG:-yamls/models/formula_energy/censored_floor.yaml}
 OUT=${OUT:-}                      # empty -> the `out:` key of the config
@@ -77,6 +77,14 @@ else
     OUT_PATH=$(sed -n 's/^out:[[:space:]]*//p' "$CONFIG" | head -n1)
 fi
 [ -n "$OUT_PATH" ] || { echo "config has no 'out:' key and OUT is unset" >&2; exit 2; }
+
+# Resolve runs/ via wyformer_paths.sh if relative to runs/
+# shellcheck source=scripts/wyformer_paths.sh
+. "$REPO/scripts/wyformer_paths.sh"
+RUNS_DIR=$(wyformer_path WYFORMER_RUNS "$REPO/runs") || exit 1
+if [[ "$OUT_PATH" == runs/* ]]; then
+    OUT_PATH="$RUNS_DIR/${OUT_PATH#runs/}"
+fi
 mkdir -p "$(dirname "$OUT_PATH")"
 
 # save_ensemble overwrites in place, and a member of the ensemble is an hour of

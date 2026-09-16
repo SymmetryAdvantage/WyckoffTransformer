@@ -29,7 +29,7 @@
 #   checkouts on one machine each build a venv.
 set -euo pipefail
 
-REPO_DIR=${REPO_DIR:-/scratch/users/nus/kna/WyckoffTransformer}
+REPO_DIR=${REPO_DIR:-/home/project/11001786/WyFormer/WyckoffTransformer}
 UV=${UV:-$HOME/.local/bin/uv}
 BASE_PYTHON=${BASE_PYTHON:-/usr/bin/python3.12}
 export UV_CACHE_DIR=${UV_CACHE_DIR:-$REPO_DIR/.uv-cache}

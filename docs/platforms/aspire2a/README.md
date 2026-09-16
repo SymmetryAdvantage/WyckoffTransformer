@@ -32,8 +32,8 @@ Two things shape everything else here:
 Everything is already built. From a login node:
 
 ```bash
-cd /scratch/users/nus/kna/WyckoffTransformer
-bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/NextToken/v6/base_sg.yaml mp_20 --pilot
+cd /home/project/11001786/WyFormer/WyckoffTransformer
+bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1_stress --pilot
 ```
 
 That submits a 2 h pilot to the dev queue and prints the job id. For a real run,
@@ -43,7 +43,7 @@ To run something by hand on a GPU, take a dev node first:
 
 ```bash
 qsub -I -q ai -P 11001786 -l select=1:ngpus=1:ncpus=16:mem=110gb -l walltime=02:00:00
-cd /scratch/users/nus/kna/WyckoffTransformer
+cd /home/project/11001786/WyFormer/WyckoffTransformer
 module load singularity
 bash scripts/platforms/aspire2a/run_in_singularity.sh python -c "import torch; print(torch.cuda.is_available())"
 ```
@@ -82,19 +82,26 @@ regardless of what the node holds. The AI queues default to
 
 | Path | What |
 | --- | --- |
-| `/scratch/users/nus/kna/WyckoffTransformer` | The working checkout (Lustre) |
-| `<repo>/.venv` | Python 3.12.3 venv, **container-only**, `--system-site-packages` |
-| `<repo>/.uv-cache` | uv cache (3.0 GB), kept off the home quota |
+| `/home/project/11001786/WyFormer/WyckoffTransformer` | The canonical working checkout (GPFS) |
+| `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` | Git worktrees (Lustre scratch), reusing the main `.venv` |
+| `<main-repo>/.venv` | Python 3.12.3 venv, **container-only**, `--system-site-packages` |
+| `/home/project/11001786/WyFormer/data` | Data store (`WYFORMER_DATA`), untracked datasets |
+| `/home/project/11001786/WyFormer/cache` | Tensor and dataset cache (`WYFORMER_CACHE`) |
+| `/scratch/users/nus/kna/WyFormer/runs` | Run working outputs (`WYFORMER_RUNS`) |
+| `/scratch/users/nus/kna/WyFormer` | W&B local working directory (`WANDB_DIR`) |
 | `~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif` | The base image, 12 GB |
 | `~/.cache/cached_path/` | ORB checkpoints — on the **home** quota, see below |
 | `/raid` | Node-local NVMe, 14 TB, per-job dir `/raid/pbs.<jobid>` |
+
+Storage paths are defined in `~/.config/wyformer/paths.env` (see `docs/data_store.md`).
 
 Storage and quotas (`myquota`, `myprojects` from `/app/apps/local/bin`):
 
 | Mount | Type | Quota | Used | Holds |
 | --- | --- | --- | --- | --- |
 | `/home/users/nus/kna` | GPFS | **50 GB** | 34.6 GB | the `.sif` (12 GB), `~/.cache` (7 GB), `~/.netrc` |
-| `/scratch/users/nus/kna` | Lustre | 100 TB | 82.5 GB | the checkout, `cache/` (23 GB), `runs/`, `.venv` |
+| `/home/project/11001786` | GPFS | 20 TB | — | the main checkout, `data/`, `cache/`, `.venv` |
+| `/scratch/users/nus/kna` | Lustre | 100 TB | — | `runs/`, `worktrees/` |
 | `/raid` | node-local XFS | — | — | throwaway job scratch, **gone when the job ends** |
 
 The **home quota is the tight one**: 50 GB, a quarter of it already the
@@ -113,7 +120,9 @@ In `scripts/platforms/aspire2a/`:
 
 | Script | What |
 | --- | --- |
-| `run_in_singularity.sh` | run any command against `.venv` inside the image |
+| `run_in_singularity.sh` | run any command against `.venv` inside the image (binds `/home/project`, sets `PYTHONPATH`) |
+| `env_init.sh` | initialise checkout/worktree: links brief, links shared `.venv` for worktrees, verifies paths |
+| `create_worktree.sh` | create a git worktree in `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` |
 | `train_in_pbs.sh` | the general self-chaining training launcher |
 | `protocol_relax.pbs` | self-chaining relax + score for one generated pool |
 | `train_formula_energy.pbs` | one-slot fit of the composition-floor ensemble |

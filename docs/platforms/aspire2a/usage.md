@@ -4,7 +4,9 @@ Everything here assumes the environment is already built. If it is not, or you
 broke it, read [environment.md](environment.md) first.
 
 ```bash
-cd /scratch/users/nus/kna/WyckoffTransformer
+cd /home/project/11001786/WyFormer/WyckoffTransformer
+# or in a worktree:
+# cd /home/users/nus/kna/scratch/WyFormer/worktrees/<name>
 ```
 
 ---
@@ -50,12 +52,12 @@ with `myusage`, both in `/app/apps/local/bin`.
 model config and a dataset, and it is both the submitter and the job:
 
 ```bash
-bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull
+bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1_stress
 ```
 
 A full config is far more epochs than 24 h, so the job **chains itself**. Each
-link pins one W&B run id (in `runs/.<dataset>__<config>.runid`), resumes from
-`runs/<id>/last_checkpoint.pt`, runs `train.py` under `timeout` so it stops ~30
+link pins one W&B run id (in `$WYFORMER_RUNS/.<dataset>__<config>.runid`), resumes from
+`$WYFORMER_RUNS/<id>/last_checkpoint.pt`, runs `train.py` under `timeout` so it stops ~30
 min before the wall, and re-`qsub`s itself. It stops on `train.py` exit 0, on
 the attempt cap, or when a link crashes without getting anywhere.
 
@@ -134,14 +136,15 @@ That routes to `aidev` (priority 100, so it starts quickly) and gives you two
 hours. Two such jobs at a time. Then, on the node:
 
 ```bash
-cd /scratch/users/nus/kna/WyckoffTransformer
+cd /home/project/11001786/WyFormer/WyckoffTransformer
 module load singularity                      # or singularity/4.3.1
 bash scripts/platforms/aspire2a/run_in_singularity.sh python scripts/train.py \
-    yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml lemat_bulk_ehull cuda --pilot
+    yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1_stress cuda --pilot
 ```
 
 `scripts/platforms/aspire2a/run_in_singularity.sh` is the only supported way to run anything:
-it puts `.venv/bin` on `PATH` inside the image, binds the repo and `/raid`, and
+it puts `.venv/bin` on `PATH` inside the image, binds `/home/project` and `/raid`, sets
+`PYTHONPATH=$REPO_DIR/src` so the active checkout's code is executed, and
 sets `SINGULARITY_NO_EVAL=1` so `python -c` snippets with parentheses survive.
 Override `SIF=` or `REPO_DIR=` if you need a different image or checkout, and
 `EXTRA_BIND=` for extra mounts.
@@ -165,6 +168,42 @@ way. To get the entry points properly, re-run step 4 of the build — see
 
 ---
 
+## Working in a git worktree
+
+Worktrees allow running experiments with code changes isolated from the main checkout:
+
+1. **Standard location:** All worktrees on ASPIRE 2A live in
+   `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>`.
+2. **Reusing the virtual environment:** Worktrees reuse the main checkout's `.venv` at
+   `/home/project/11001786/WyFormer/WyckoffTransformer/.venv`. Rebuilding a venv on ASPIRE 2A is
+   too slow, so `run_in_singularity.sh` puts the worktree's `src` at the front of `PYTHONPATH`
+   to ensure the worktree's code is what gets imported.
+
+Create and initialize a worktree:
+
+```bash
+bash scripts/platforms/aspire2a/create_worktree.sh feature-branch [base-commit]
+cd /home/users/nus/kna/scratch/WyFormer/worktrees/feature-branch
+```
+
+Or manually:
+
+```bash
+git worktree add /home/users/nus/kna/scratch/WyFormer/worktrees/feature-branch [base-commit]
+cd /home/users/nus/kna/scratch/WyFormer/worktrees/feature-branch
+bash scripts/platforms/aspire2a/env_init.sh
+```
+
+From inside the worktree:
+- Run commands with `bash scripts/platforms/aspire2a/run_in_singularity.sh python ...`.
+- Launch chained PBS jobs with `bash scripts/platforms/aspire2a/train_in_pbs.sh <config> <dataset>`.
+  The job spec records the worktree root as `$REPO`, so all links of the chain run against the
+  worktree's code and write logs to `<worktree>/logs/`.
+- Untracked data, caches, and runs resolve automatically from `~/.config/wyformer/paths.env`,
+  so no hand-linking of data is needed.
+
+---
+
 ## Monitoring
 
 ```bash
@@ -174,10 +213,9 @@ qstat -f <jobid> | grep -E 'queue|Resource_List|comment'
 tail -f logs/<jobid>.OU
 ```
 
-PBS stdout/stderr are joined (`-j oe`) into
-`/scratch/users/nus/kna/WyckoffTransformer/logs/<jobid>.OU`. W&B goes live to
-`symmetry-advantage/WyckoffTransformer`; auth is `~/.netrc`, which the container
-sees through the automatic `$HOME` bind.
+PBS stdout/stderr are joined (`-j oe`) into `$REPO/logs/<jobid>.OU` (in the checkout or worktree
+the job was submitted from). W&B goes live to `symmetry-advantage/WyckoffTransformer`; auth is
+`~/.netrc`, which the container sees through the automatic `$HOME` bind.
 
 `nqstat` (the site's pretty `qstat`) is on `PATH` but broken on the compute
 nodes — it cannot find `libcjson.so.1`. Use plain `qstat`.

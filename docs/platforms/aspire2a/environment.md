@@ -46,15 +46,17 @@ interface, and the paths behind it change with the installed version.
 
 ```bash
 module load singularity
-cd /scratch/users/nus/kna/WyckoffTransformer
-singularity run --nv ~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \
+cd /home/project/11001786/WyFormer/WyckoffTransformer
+singularity run --nv --bind /home/project ~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \
     env WYFORMER_PLATFORM=aspire2a bash scripts/build_singularity_venv.sh
 ```
 
-`WYFORMER_PLATFORM=aspire2a` also links `CLAUDE.local.md` to
+`--bind /home/project` is required because Singularity does not bind project mounts
+automatically on ASPIRE 2A. `WYFORMER_PLATFORM=aspire2a` also links `CLAUDE.local.md` to
 [agent_brief.md](agent_brief.md); see [../README.md](../README.md). The venv
-build is the expensive way to get it -- `bash scripts/platforms/link_agent_brief.sh
-aspire2a` from a login node does only that, and needs nothing but bash.
+build is the expensive way to get it -- `bash scripts/platforms/aspire2a/env_init.sh`
+(or `bash scripts/platforms/link_agent_brief.sh aspire2a`) from a login node does only
+that, and needs nothing but bash.
 
 Four steps, all inside the container:
 
@@ -195,24 +197,71 @@ working set; a `.venv` built before 2026-09-09 does not. See
 
 ---
 
+## Git worktrees: reusing the shared virtual environment
+
+On other platforms (such as zeus and iapetus), each git worktree creates its own virtual
+environment. On ASPIRE 2A, there are **two key differences**:
+
+1. **Location:** Worktrees are located on Lustre scratch in
+   `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` (or `/scratch/users/nus/kna/WyFormer/worktrees/<name>`).
+2. **Reusing the virtual environment:** Worktrees reuse the main checkout's virtual environment at
+   `/home/project/11001786/WyFormer/WyckoffTransformer/.venv`. ASPIRE 2A has a slow filesystem
+   (metadata operations on thousands of small files take a long time), so recreating the virtual
+   environment for each worktree is too slow.
+
+### How worktrees work with the shared venv
+- In Python, editable installs write a `.pth` pointing to the checkout where it was installed
+  (`/home/project/11001786/WyFormer/WyckoffTransformer/src`).
+- To ensure a worktree imports **its own** code changes rather than the main repo,
+  `scripts/platforms/aspire2a/run_in_singularity.sh` prepends the worktree's `src` to `PYTHONPATH`
+  (`PYTHONPATH=$REPO_DIR/src:$PYTHONPATH`). In Python, `PYTHONPATH` takes precedence over `.pth` files.
+- `run_in_singularity.sh` also automatically binds `/home/project` and `/data/projects` into
+  Singularity (which is not mounted by default on ASPIRE 2A) so both the worktree on scratch and
+  the shared `.venv` on project storage are accessible.
+
+### Creating and initialising a worktree
+To create a worktree in the standard location:
+```bash
+bash scripts/platforms/aspire2a/create_worktree.sh <name> [branch-or-commit]
+```
+Or manually using git:
+```bash
+git worktree add /home/users/nus/kna/scratch/WyFormer/worktrees/<name> [branch]
+cd /home/users/nus/kna/scratch/WyFormer/worktrees/<name>
+bash scripts/platforms/aspire2a/env_init.sh
+```
+`env_init.sh` links `CLAUDE.local.md` to `docs/platforms/aspire2a/agent_brief.md`, creates the
+`.venv` symlink pointing to the shared venv, and validates `paths.env`.
+
+---
+
 ## Caches and data
 
-| Path | Size | Note |
+Storage paths are defined in `~/.config/wyformer/paths.env` (see `docs/data_store.md`):
+
+```bash
+WYFORMER_DATA=/home/project/11001786/WyFormer/data
+WYFORMER_CACHE=/home/project/11001786/WyFormer/cache
+WYFORMER_RUNS=/scratch/users/nus/kna/WyFormer/runs
+WANDB_DIR=/scratch/users/nus/kna/WyFormer
+```
+
+| Path | Size / Type | Note |
 | --- | --- | --- |
-| `<repo>/cache/` | 23 GB | dataset caches; `lemat_bulk_ehull` 11 G, `lemat_bulk_fmax1` 5.7 G, `alex_mp_20` 3.5 G, `mp_20` 911 M |
-| `<repo>/.uv-cache` | 3.0 GB | uv, on scratch by design |
-| `<repo>/.venv` | 1.5 GB | container-only |
+| `/home/project/11001786/WyFormer/data` | GPFS project | Untracked raw datasets (`WYFORMER_DATA`), e.g. `lemat-bulk` |
+| `/home/project/11001786/WyFormer/cache` | GPFS project | Tokenised dataset caches (`WYFORMER_CACHE`), e.g. `lemat_bulk_fmax1_stress` |
+| `/scratch/users/nus/kna/WyFormer/runs` | Lustre scratch | Training checkpoints and run artifacts (`WYFORMER_RUNS`) |
+| `/scratch/users/nus/kna/WyFormer` | Lustre scratch | Local W&B output directory (`WANDB_DIR`) |
+| `/home/users/nus/kna/scratch/WyFormer/worktrees/` | Lustre scratch | Working git worktrees |
+| `/home/project/11001786/.../.venv` | 1.5 GB, GPFS | Shared container-only virtual environment |
+| `<repo>/.uv-cache` | 3.0 GB | uv cache, kept on scratch by design |
 | `~/.cache/huggingface` | 5.8 GB | on the **home** quota |
 | `~/.cache/cached_path` | ORB checkpoints | on the **home** quota — `cached_path` ignores `XDG_CACHE_HOME` |
 
-`~/.bash_profile` sets `XDG_CACHE_HOME=$HOME/scratch/.cache`,
-`SINGULARITY_CACHEDIR` and `SINGULARITY_BIND=/scratch`, which keeps most caches
-on Lustre. `cached_path` is the notable exception. Home is 34.6 GB of a 50 GB
-quota, so check `myquota` before pulling another multi-GB checkpoint.
+`~/.bash_profile` sets `XDG_CACHE_HOME=$HOME/scratch/.cache`, `SINGULARITY_CACHEDIR` and
+`SINGULARITY_BIND=/scratch`, which keeps most temporary caches on Lustre. `cached_path` is the notable
+exception. Home is 34.6 GB of a 50 GB quota, so check `myquota` before pulling another multi-GB checkpoint.
 
-`.venv`, `.uv-cache` and all four `.venv-requirements*.txt` files are
-gitignored. The requirements files are generated — the base pair by
-`build_singularity_venv.sh`, the `relax` pair by `protocol_relax.pbs` — and are
-never authoritative: each is whatever PyPI resolved at the moment that script
-ran. Keep them on disk anyway, since they let you reinstall after a `.venv` wipe
-without repeating the network-bound `uv pip compile`.
+`.venv`, `.uv-cache` and all four `.venv-requirements*.txt` files are gitignored. Keep the generated
+requirements files on disk: they allow reinstalling after a `.venv` wipe without repeating the
+network-bound `uv pip compile`.

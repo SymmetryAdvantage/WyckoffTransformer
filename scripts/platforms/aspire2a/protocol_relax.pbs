@@ -10,7 +10,7 @@
 # nothing left to relax.
 #
 # Submit:
-#     cd /scratch/users/nus/kna/WyckoffTransformer
+#     cd /home/project/11001786/WyFormer/WyckoffTransformer
 #     qsub -v POOL=generated/<run> scripts/platforms/aspire2a/protocol_relax.pbs
 #
 # POOL is a directory holding wyckoff_genes.json.gz; outputs land in POOL/protocol.
@@ -31,11 +31,11 @@
 #PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
 #PBS -l walltime=23:59:59
 #PBS -j oe
-#PBS -o /scratch/users/nus/kna/WyckoffTransformer/logs/
+#PBS -o /home/project/11001786/WyFormer/WyckoffTransformer/logs/
 
 set -u
 
-REPO=/scratch/users/nus/kna/WyckoffTransformer
+REPO=${REPO:-/home/project/11001786/WyFormer/WyckoffTransformer}
 PBS_SCRIPT="$REPO/scripts/platforms/aspire2a/protocol_relax.pbs"
 QSUB=/opt/pbs/bin/qsub
 
@@ -75,7 +75,7 @@ singularity --version
 
 # orb-models is in the `relax` extra, which
 # scripts/build_singularity_venv.sh does not install; a chained link inherits it from the first one.
-if [ ! -d "$REPO/.venv/lib/python3.12/site-packages/orb_models" ]; then
+if ! bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" python -c "import orb_models" >/dev/null 2>&1; then
     echo "installing the relax extra into the venv"
     bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" bash -c "
         export UV_CACHE_DIR=$REPO/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
@@ -145,5 +145,5 @@ fi
 
 echo "resubmitting to continue (attempt $((ATTEMPT + 1)))"
 # One quoted argument: POST may contain spaces, and PBS splits -v on commas only.
-"$QSUB" -v "POOL=$POOL,WORKERS=$WORKERS,ATTEMPT=$((ATTEMPT + 1)),MAX_ATTEMPTS=$MAX_ATTEMPTS,POST=$POST" \
+"$QSUB" -v "REPO=$REPO,POOL=$POOL,WORKERS=$WORKERS,ATTEMPT=$((ATTEMPT + 1)),MAX_ATTEMPTS=$MAX_ATTEMPTS,POST=$POST" \
     "$PBS_SCRIPT"
