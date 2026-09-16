@@ -95,3 +95,4 @@ This is a research project, which means that ideas will be tried and discarded. 
 1. When describing the results of an experiment, note the date, git commit hash and applicable WanDB runs
 2. Files in docs/archive/ are not maintained - there is no need to update them, but they might contradict the state of the code base and later findings
 3. In general, files docs/*.md are supposed to be current - correct them if you notice a contradiction
+4. In geheral, files yamls/ are supposed to be immutable to preserve reproducibility and data-cache-config-run correspondence. They can be edited if asked explicitely or to fix a bug
