@@ -329,6 +329,12 @@ def score_gene_likelihood(
         raise ValueError(
             "A chemical-system-conditioned generator scores each gene under its own "
             "conditioning, which is not a likelihood comparable across genes.")
+    if getattr(trainer, "predict_start", False):
+        # start_log_prior reads the saved empirical distribution, which is not what such a
+        # model samples the space group from.
+        raise ValueError(
+            "This model predicts the space group; its prior is log_softmax(forward_start), "
+            "which this scorer does not use yet.")
     if cond is not None:
         if not trainer.condition_features:
             raise ValueError("cond was supplied, but this model has no condition features.")

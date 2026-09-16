@@ -30,8 +30,10 @@ through `allowed_element_set`, and every draw is accepted.
 The space group is also a conditioning input, in both modes and for a reason
 that predates both: it is this architecture's **start token**, so it enters as
 the sequence's first element rather than through AdaLN. `--space-group` pins it;
-omitting it samples from the training distribution, which is the right default
-when the question is "what does this system crystallise as".
+omitting it samples from the training distribution. That distribution is blind
+to the system. A model built with `predict_start: true` instead draws the space
+group from its own `p(space group | system, conditioning)`; see
+[space_group_prediction.md](space_group_prediction.md).
 
 ## The representation
 
