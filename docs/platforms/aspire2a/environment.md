@@ -51,6 +51,10 @@ singularity run --nv --bind /home/project ~/pytorch_2.14.0-cuda12.6-cudnn9-devel
     env WYFORMER_PLATFORM=aspire2a bash scripts/build_singularity_venv.sh
 ```
 
+**Not while any job runs:** the main checkout's `.venv` is a symlink to the one venv
+every checkout and chain shares, and step 3 clears it
+([below](#where-the-one-venv-actually-is)). Unlock it first with `store_lock.sh unlock`.
+
 `--bind /home/project` is required because Singularity does not bind project mounts
 automatically on ASPIRE 2A. `WYFORMER_PLATFORM=aspire2a` also links `CLAUDE.local.md` to
 [agent_brief.md](agent_brief.md); see [../README.md](../README.md). The venv
@@ -135,14 +139,24 @@ bash scripts/platforms/aspire2a/run_in_singularity.sh bash -c '
       -r .venv-requirements.relax.no-torch.txt'
 ```
 
-~30 min on a login node. `scripts/platforms/aspire2a/protocol_relax.pbs` does this automatically
-when `orb_models` is missing. It is currently installed (orb-models 0.7.0,
+~30 min on a login node. It is currently installed (orb-models 0.7.0,
 mace-torch 0.3.16) and it also pulled in pytest 9.1.1, torchmetrics, warp-lang
-and e3nn.
+and e3nn. `scripts/platforms/aspire2a/protocol_relax.pbs` used to run this itself
+when `orb_models` was missing; since the venv is read-only it stops with a pointer
+here instead.
+
+**The venv is read-only; installing into it is a deliberate step.** Unlock it, install,
+lock it again:
+
+```bash
+bash scripts/platforms/aspire2a/store_lock.sh unlock /scratch/users/nus/kna/WyckoffTransformer/.venv
+# ... the install ...
+bash scripts/platforms/aspire2a/store_lock.sh lock /scratch/users/nus/kna/WyckoffTransformer/.venv
+```
 
 **Installing into `.venv` while jobs are running is a live risk.** The venv is
-shared by every chained job on every node; four were running during the last
-audit. The relax extra's only deltas against the training set were patch-level
+shared by every chained job on every node and every worktree; four were running during
+the last audit. The relax extra's only deltas against the training set were patch-level
 (numpy 2.5.2 -> 2.5.3, rich 15 -> 13.9.4), which is why it was survivable. Do not
 assume the next one will be.
 
@@ -200,38 +214,48 @@ working set; a `.venv` built before 2026-09-09 does not. See
 ## Git worktrees: reusing the shared virtual environment
 
 On other platforms (such as zeus and iapetus), each git worktree creates its own virtual
-environment. On ASPIRE 2A, there are **two key differences**:
+environment. On ASPIRE 2A every checkout shares **one** venv instead: ASPIRE 2A's
+filesystems are slow on metadata (thousands of small files), so building one per
+worktree is too slow. The workflow -- how to create a worktree, why not with
+`claude --worktree`, what the launcher enforces -- is in
+[usage.md](usage.md#working-in-a-git-worktree).
 
-1. **Location:** Worktrees are located on Lustre scratch in
-   `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` (or `/scratch/users/nus/kna/WyFormer/worktrees/<name>`).
-2. **Reusing the virtual environment:** Worktrees reuse the main checkout's virtual environment at
-   `/home/project/11001786/WyFormer/WyckoffTransformer/.venv`. ASPIRE 2A has a slow filesystem
-   (metadata operations on thousands of small files take a long time), so recreating the virtual
-   environment for each worktree is too slow.
+### Where the one venv actually is
 
-### How worktrees work with the shared venv
-- In Python, editable installs write a `.pth` pointing to the checkout where it was installed
-  (`/home/project/11001786/WyFormer/WyckoffTransformer/src`).
-- To ensure a worktree imports **its own** code changes rather than the main repo,
-  `scripts/platforms/aspire2a/run_in_singularity.sh` prepends the worktree's `src` to `PYTHONPATH`
-  (`PYTHONPATH=$REPO_DIR/src:$PYTHONPATH`). In Python, `PYTHONPATH` takes precedence over `.pth` files.
-- `run_in_singularity.sh` also automatically binds `/home/project` and `/data/projects` into
-  Singularity (which is not mounted by default on ASPIRE 2A) so both the worktree on scratch and
-  the shared `.venv` on project storage are accessible.
+Checked 2026-09-16:
+
+| Path | What |
+| --- | --- |
+| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | the venv itself (1.5 GB), built in the old scratch checkout |
+| `/home/project/11001786/WyFormer/WyckoffTransformer/.venv` | a symlink to it |
+| `<worktree>/.venv` | a symlink to the main checkout's, made by `env_init.sh` |
+
+The old scratch checkout, `/scratch/users/nus/kna/WyckoffTransformer`, is still in use:
+the chains submitted before the main checkout moved to `/home/project` run from it and
+from this venv. Do not remove either while any of them is queued.
+
+The venv is read-only ([usage.md](usage.md#the-shared-cache-and-venv-are-read-only)).
+Rebuilding it in place (`uv venv --clear` through the symlink) would pull it from under
+every running job; build a new one elsewhere and repoint the symlink between chains.
+
+### How a worktree gets its own code from the shared venv
+- The editable install's `.pth` names the checkout it was installed from --
+  `/scratch/users/nus/kna/WyckoffTransformer/src`, not the main checkout's.
+- `scripts/platforms/aspire2a/run_in_singularity.sh` therefore puts the invoking checkout's
+  `src` first on `PYTHONPATH` (`PYTHONPATH=$REPO_DIR/src:$PYTHONPATH`), which Python searches
+  before any `.pth` entry. Anything run outside that launcher imports the old checkout's code.
+- `run_in_singularity.sh` also binds `/home/project` and `/data/projects` into Singularity
+  (not mounted by default on ASPIRE 2A), so the main checkout, the data store and the cache
+  are visible inside the container.
 
 ### Creating and initialising a worktree
-To create a worktree in the standard location:
 ```bash
-bash scripts/platforms/aspire2a/create_worktree.sh <name> [branch-or-commit]
+bash scripts/platforms/aspire2a/create_worktree.sh <name> [start-point]
 ```
-Or manually using git:
-```bash
-git worktree add /home/users/nus/kna/scratch/WyFormer/worktrees/<name> [branch]
-cd /home/users/nus/kna/scratch/WyFormer/worktrees/<name>
-bash scripts/platforms/aspire2a/env_init.sh
-```
-`env_init.sh` links `CLAUDE.local.md` to `docs/platforms/aspire2a/agent_brief.md`, creates the
-`.venv` symlink pointing to the shared venv, and validates `paths.env`.
+creates `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` on branch `<name>` and runs
+`env_init.sh` in it, which links `CLAUDE.local.md` to `docs/platforms/aspire2a/agent_brief.md`,
+links `.venv` to the shared venv, and validates `paths.env`. For a worktree made some other
+way, run `bash scripts/platforms/aspire2a/env_init.sh` from inside it.
 
 ---
 
@@ -249,11 +273,12 @@ WANDB_DIR=/scratch/users/nus/kna/WyFormer
 | Path | Size / Type | Note |
 | --- | --- | --- |
 | `/home/project/11001786/WyFormer/data` | GPFS project | Untracked raw datasets (`WYFORMER_DATA`), e.g. `lemat-bulk` |
-| `/home/project/11001786/WyFormer/cache` | GPFS project | Tokenised dataset caches (`WYFORMER_CACHE`), e.g. `lemat_bulk_fmax1_stress` |
+| `/home/project/11001786/WyFormer/cache` | GPFS project | Tokenised dataset caches (`WYFORMER_CACHE`), e.g. `lemat_bulk_fmax1_stress`; **read-only** |
 | `/scratch/users/nus/kna/WyFormer/runs` | Lustre scratch | Training checkpoints and run artifacts (`WYFORMER_RUNS`) |
 | `/scratch/users/nus/kna/WyFormer` | Lustre scratch | Local W&B output directory (`WANDB_DIR`) |
+| `/scratch/users/nus/kna/WyFormer/logs` | Lustre scratch | PBS output of every launcher |
 | `/home/users/nus/kna/scratch/WyFormer/worktrees/` | Lustre scratch | Working git worktrees |
-| `/home/project/11001786/.../.venv` | 1.5 GB, GPFS | Shared container-only virtual environment |
+| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | 1.5 GB, Lustre | Shared container-only virtual environment, **read-only**; the main checkout's `.venv` links to it |
 | `<repo>/.uv-cache` | 3.0 GB | uv cache, kept on scratch by design |
 | `~/.cache/huggingface` | 5.8 GB | on the **home** quota |
 | `~/.cache/cached_path` | ORB checkpoints | on the **home** quota — `cached_path` ignores `XDG_CACHE_HOME` |

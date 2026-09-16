@@ -4,6 +4,25 @@ Goal: run many WyFormer experiments that vary **both config and code**, on a PBS
 cluster, with the trained model delivered through W&B. This note records the
 design and the environment facts it rests on.
 
+> **Status, 2026-09-16: a design note, partly superseded.** What is implemented is
+> described in [usage.md](usage.md), and differs from the design below:
+>
+> - **Code:** one worktree per experiment, made by `create_worktree.sh`, and chains
+>   launched *from* it by `train_in_pbs.sh` -- not from immutable per-SHA snapshots.
+>   Experiments are expected to need fixes mid-run, so a commit in the worktree
+>   reaches the next link. What the snapshots were for is kept by other means:
+>   uncommitted code is refused at submission and at every link, runs are keyed by
+>   branch, and each link's commit is recorded in its log and the W&B run.
+> - **Resume:** clean mid-run resume exists (`last_checkpoint.pt`, mirrored to W&B), and
+>   `train_in_pbs.sh` chains 24 h links on it; the "no mid-run resume" fact below is stale.
+> - **Queue:** the AI partition's `ai` router (`aiq1`), not `g1`; see [usage.md](usage.md#queues).
+> - **Venv:** one shared, read-only venv, not one per `uv.lock` hash. A branch that
+>   changes dependencies cannot be trained yet.
+> - **Stage-2 caches:** no fingerprinting and no tokenise pre-jobs. The cache store is
+>   shared and read-only, jobs build nothing, and a changed tokenisation gets a new
+>   tokeniser name, built deliberately by whoever needs it.
+> - **Dispatcher:** not implemented; `train_in_pbs.sh` is submitted by hand.
+
 ## Environment facts (verified 2026-09-04)
 
 ### Queues (`qstat -q`, ASPIRE 2A)
@@ -17,11 +36,11 @@ design and the environment facts it rests on.
 | `ai`, `aiq1`..`aiq4`, `ailong` | ≤ 24 h (`ailong` ≤ 120 h) | AI partition; `ailong` max 1 running job/user |
 
 - System-wide cap: **100 jobs per user**.
-- No mid-run resume today (trainer checkpoints the best `state_dict` only, no
-  optimiser/scheduler/step state) — a "clean resume" is being written. Until it
-  lands, every run must finish inside its walltime; `g1`'s 24 h is the ceiling.
-- We submit to the **≤ 24 h queue** (`g1` / `ai`). `glong` is avoided because of
-  queue wait.
+- ~~No mid-run resume today~~ -- as of 2026-09-04. Clean resume has since landed
+  (`last_checkpoint.pt` with optimiser, scheduler, loader and RNG state), and
+  `train_in_pbs.sh` chains 24 h links on it.
+- We submit to the **≤ 24 h queue**: `-q ai`, which routes to `aiq1`. `glong` is
+  avoided because of queue wait.
 
 ### W&B connectivity — tested from a GPU compute node
 
@@ -218,14 +237,11 @@ queue adapter, to wrap what is fundamentally a single `qsub`.
 
 ## Status / next steps
 
-- [ ] Wait for the clean-resume branch so the dispatcher's chaining targets the
-      real checkpoint format.
-- [ ] Small patch: let the tensor-cache loader / `tokenise_a_dataset.py` accept a
-      cache path or `@<fp>` suffix, so snapshot-private stage-2 caches don't
-      collide with the shared name.
-- [ ] Scaffold `scripts/experiments/`: `wyformer-submit`, `wyformer-dispatcher`,
-      PBS templates (train + tokenise pre-job), login-node venv-build +
-      (optional) `wandb sync` helpers.
-- [ ] One-time: build the shared venv; stage raw `data/` and pre-cache datasets
-      under `HF_HOME`; build stage-1 `data.pkl.gz` and the canonical stage-2
-      tensor cache.
+- [x] Clean resume landed; `train_in_pbs.sh` chains on it.
+- [x] Per-experiment code isolation -- by worktrees launched from, not snapshots
+      (see the status note at the top).
+- [x] Shared venv and stage-2 caches -- shared and read-only, built deliberately
+      rather than fingerprinted.
+- [ ] Per-lock-hash venvs, so a branch that changes dependencies can train.
+- [ ] Dispatcher (`wyformer-submit`, `wyformer-dispatcher`), if hand submission
+      stops scaling.

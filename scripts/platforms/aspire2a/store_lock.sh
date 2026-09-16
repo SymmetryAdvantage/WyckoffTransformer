@@ -43,8 +43,9 @@ default_paths() {
     echo "$MAIN_REPO/.venv"
 }
 
-# Symlinks resolved first: `chmod -R` given a symlink changes its target, and a
-# worktree's .venv is a symlink to the main one.
+# Symlinks resolved first: `chmod -R` given a symlink follows it but `find` does not,
+# and both the main checkout's .venv (to /scratch/users/nus/kna/WyckoffTransformer/.venv)
+# and a worktree's (to the main one) are symlinks.
 resolve() {
     local p
     for p in "$@"; do
@@ -59,7 +60,8 @@ action=$1; shift
 case "$action" in
     lock|status)
         if [ $# -eq 0 ]; then
-            mapfile -t targets < <(default_paths)
+            mapfile -t defaults < <(default_paths)
+            mapfile -t targets < <(resolve "${defaults[@]}")
         else
             mapfile -t targets < <(resolve "$@")
         fi ;;

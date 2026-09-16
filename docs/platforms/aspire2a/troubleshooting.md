@@ -145,7 +145,8 @@ self-chaining scripts re-`qsub` to the **same** queue they were submitted to.
 
 The base venv build does not install the `relax` extra. See
 [environment.md](environment.md#the-relax-extra-orb-and-mace).
-`scripts/platforms/aspire2a/protocol_relax.pbs` installs it for you on first use.
+`scripts/platforms/aspire2a/protocol_relax.pbs` stops with a pointer there rather than
+installing into the shared, read-only venv. As of 2026-09-16 it is installed.
 
 ---
 
@@ -167,8 +168,9 @@ or reinstall the project — [environment.md](environment.md#adding-or-repairing
 
 `pandarallel` reads the **node's** core count, not the cgroup's — 128 on a
 `gpu001`-class node against the 16 CPUs the job actually owns — and forks that
-many workers into a `mem=` limit sized for 16. Pass `--n-jobs $NCPUS`;
-`scripts/platforms/aspire2a/train_in_pbs.sh` already does.
+many workers into a `mem=` limit sized for 16. Pass `--n-jobs $NCPUS`, as the recipe in
+[usage.md](usage.md#adding-a-dataset-or-tokeniser-to-the-cache) does. (Training jobs no
+longer tokenise at all.)
 
 ---
 
@@ -229,18 +231,80 @@ singularity run --nv --bind /home/project,/data/projects ...
 
 ---
 
-## Worktree code changes are not taking effect (main checkout code is imported)
+## Code changes are not taking effect (another checkout's code is imported)
 
-Worktrees reuse the main checkout's virtual environment at
-`/home/project/11001786/WyFormer/WyckoffTransformer/.venv`. That venv's editable install
-records the main repo's `src/` directory in its `.pth`.
+Every checkout shares one venv, and its editable install's `.pth` names
+`/scratch/users/nus/kna/WyckoffTransformer/src` -- the old scratch checkout, not the main
+checkout and not your worktree ([environment.md](environment.md#where-the-one-venv-actually-is)).
 
-`scripts/platforms/aspire2a/run_in_singularity.sh` automatically sets
-`PYTHONPATH=$REPO_DIR/src` inside the container, which prioritizes the worktree's code
-over the `.pth` file. If running a custom script or container invocation from a worktree,
-always ensure `PYTHONPATH` points to the worktree's `src` directory:
+`scripts/platforms/aspire2a/run_in_singularity.sh` sets `PYTHONPATH=$REPO_DIR/src` inside
+the container, which Python searches before the `.pth`. If running a custom script or
+container invocation, put the checkout's `src` first yourself:
 
 ```bash
 export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
 ```
+
+A branch created before the worktree tooling was committed (2026-09-16) carries the old
+`run_in_singularity.sh`, which does not set `PYTHONPATH`: merge `main` into it.
+`create_worktree.sh` refuses such a branch.
+
+---
+
+## `train_in_pbs.sh`: `... has uncommitted changes`
+
+At submission, the launcher refuses a checkout with modified, staged, or untracked files
+that `.gitignore` does not cover; the message lists them. Commit them, or ignore what
+should not be committed. The same check at the start of every link **stops the chain**
+if someone left changes in a worktree with a live chain. Nothing was touched, so commit
+and resubmit from that worktree to continue the pinned run.
+
+---
+
+## `train_in_pbs.sh`: `... is a Claude Code worktree`
+
+Chains are refused from `.claude/worktrees/`, which Claude Code may delete when the
+session ends. Commit, leave the session (keeping the worktree), then check the branch
+out in a worktree of your own and submit there:
+
+```bash
+git worktree remove .claude/worktrees/<name>      # from the main checkout; the branch stays
+bash scripts/platforms/aspire2a/create_worktree.sh worktree-<name>
+```
+
+See [usage.md](usage.md#working-in-a-git-worktree).
+
+---
+
+## `train_in_pbs.sh`: `the cached data for <dataset> ... is incomplete`
+
+Training jobs do not build caches. Build the missing tensor cache, tokeniser or
+`data.pkl.gz` first -- [usage.md](usage.md#adding-a-dataset-or-tokeniser-to-the-cache) --
+or, when only `data.pkl.gz` is missing and no post-training evaluation is wanted, submit
+with `--train-arg --no-test`.
+
+---
+
+## `train_in_pbs.sh`: `... pins run <id> for this config from before runs were keyed by branch`
+
+A run pinned under the old key (`.<dataset>__<config>.runid`) exists. It was started from
+some branch; the launcher does not guess whether it was this one. `--run-id <id>` continues
+it from the current branch, `--fresh` starts a new run.
+
+---
+
+## A link stops: `... has '<branch>' checked out, but this chain was submitted from '<other>'`
+
+Someone switched the branch of a worktree with a live chain. Check the chain's branch
+out again and resubmit; or leave that worktree to the new branch and continue the chain
+from a worktree on the old one with `--run-id`.
+
+---
+
+## `Permission denied` writing into the cache or the venv
+
+Both are read-only on purpose ([usage.md](usage.md#the-shared-cache-and-venv-are-read-only)).
+A tokeniser or install that has to write there is a deliberate step: `store_lock.sh open`
+(new files into a directory) or `unlock`, then `lock` again. `rm -rf` of anything inside
+fails the same way -- that is the point.
 

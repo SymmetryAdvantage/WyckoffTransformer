@@ -29,15 +29,21 @@ Two things shape everything else here:
 
 ## Quick start
 
-Everything is already built. From a login node:
+Everything is already built. An experiment is a branch in its own worktree:
 
 ```bash
 cd /home/project/11001786/WyFormer/WyckoffTransformer
-bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1_stress --pilot
+bash scripts/platforms/aspire2a/create_worktree.sh my-experiment main
+cd /home/users/nus/kna/scratch/WyFormer/worktrees/my-experiment
+claude                                    # develop; commit
+bash scripts/platforms/aspire2a/train_in_pbs.sh yamls/models/lemat/chemsys_e_hull_adamw_wsd.yaml lemat_bulk_fmax1_stress --pilot
 ```
 
 That submits a 2 h pilot to the dev queue and prints the job id. For a real run,
-drop `--pilot`: it goes to `aiq1` (24 h, 1 GPU) and chains itself to completion.
+drop `--pilot`: it goes to `aiq1` (24 h, 1 GPU) and chains itself to completion,
+training whatever the worktree has committed when each link starts. Other experiments
+run the same way from their own worktrees -- see
+[usage.md](usage.md#working-in-a-git-worktree), including why not `claude --worktree`.
 
 To run something by hand on a GPU, take a dev node first:
 
@@ -48,15 +54,21 @@ module load singularity
 bash scripts/platforms/aspire2a/run_in_singularity.sh python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-Three things to know before your first run:
+Five things to know before your first run:
 
 1. **You cannot `qsub -q aiq1`.** Every AI queue is `from_route_only`. You
    submit to `-q ai` and the router picks the queue from `(ngpus, walltime)`.
    See [usage.md](usage.md#queues).
-2. **Submit from a login node.** A job cannot `qsub` to the other PBS server,
-   and it cannot `ssh` to a login node either.
+2. **Cross-server submission needs a login node.** A job cannot `qsub` to the other
+   PBS server (`g1@pbs101`), and it cannot `ssh` to a login node either. Submitting
+   to `-q ai` from an interactive AI-partition job works.
 3. **Do not `uv sync` / `uv run` from the host shell.** It deletes `.venv`, and
-   right now that `.venv` is shared with every running job.
+   that `.venv` is shared with every running job.
+4. **The launcher only takes committed code**, and refuses Claude Code's own
+   worktrees (`.claude/worktrees/`), which can be deleted under a running chain.
+5. **The cache and the venv are read-only, and jobs build no caches.** A new
+   tokeniser or dataset is built deliberately first; see
+   [usage.md](usage.md#the-shared-cache-and-venv-are-read-only).
 
 ---
 
@@ -82,13 +94,15 @@ regardless of what the node holds. The AI queues default to
 
 | Path | What |
 | --- | --- |
-| `/home/project/11001786/WyFormer/WyckoffTransformer` | The canonical working checkout (GPFS) |
-| `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` | Git worktrees (Lustre scratch), reusing the main `.venv` |
-| `<main-repo>/.venv` | Python 3.12.3 venv, **container-only**, `--system-site-packages` |
+| `/home/project/11001786/WyFormer/WyckoffTransformer` | The main checkout (GPFS): `main`, merges experiments |
+| `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` | One worktree per experiment (Lustre scratch), reusing the shared `.venv` |
+| `/scratch/users/nus/kna/WyckoffTransformer` | The old checkout: still hosts the shared `.venv` and the chains submitted before 2026-09-16 |
+| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | Python 3.12.3 venv, **container-only**, `--system-site-packages`, **read-only**; `<main-repo>/.venv` links to it |
 | `/home/project/11001786/WyFormer/data` | Data store (`WYFORMER_DATA`), untracked datasets |
-| `/home/project/11001786/WyFormer/cache` | Tensor and dataset cache (`WYFORMER_CACHE`) |
+| `/home/project/11001786/WyFormer/cache` | Tensor and dataset cache (`WYFORMER_CACHE`), **read-only** |
 | `/scratch/users/nus/kna/WyFormer/runs` | Run working outputs (`WYFORMER_RUNS`) |
 | `/scratch/users/nus/kna/WyFormer` | W&B local working directory (`WANDB_DIR`) |
+| `/scratch/users/nus/kna/WyFormer/logs` | PBS output of every launcher |
 | `~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif` | The base image, 12 GB |
 | `~/.cache/cached_path/` | ORB checkpoints — on the **home** quota, see below |
 | `/raid` | Node-local NVMe, 14 TB, per-job dir `/raid/pbs.<jobid>` |
@@ -100,8 +114,8 @@ Storage and quotas (`myquota`, `myprojects` from `/app/apps/local/bin`):
 | Mount | Type | Quota | Used | Holds |
 | --- | --- | --- | --- | --- |
 | `/home/users/nus/kna` | GPFS | **50 GB** | 34.6 GB | the `.sif` (12 GB), `~/.cache` (7 GB), `~/.netrc` |
-| `/home/project/11001786` | GPFS | 20 TB | — | the main checkout, `data/`, `cache/`, `.venv` |
-| `/scratch/users/nus/kna` | Lustre | 100 TB | — | `runs/`, `worktrees/` |
+| `/home/project/11001786` | GPFS | 20 TB | — | the main checkout, `data/`, `cache/` |
+| `/scratch/users/nus/kna` | Lustre | 100 TB | — | `runs/`, `logs/`, `worktrees/`, the shared `.venv` |
 | `/raid` | node-local XFS | — | — | throwaway job scratch, **gone when the job ends** |
 
 The **home quota is the tight one**: 50 GB, a quarter of it already the
@@ -122,8 +136,9 @@ In `scripts/platforms/aspire2a/`:
 | --- | --- |
 | `run_in_singularity.sh` | run any command against `.venv` inside the image (binds `/home/project`, sets `PYTHONPATH`) |
 | `env_init.sh` | initialise checkout/worktree: links brief, links shared `.venv` for worktrees, verifies paths |
-| `create_worktree.sh` | create a git worktree in `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` |
-| `train_in_pbs.sh` | the general self-chaining training launcher |
+| `create_worktree.sh` | create a git worktree on branch `<name>` in `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` |
+| `train_in_pbs.sh` | the general self-chaining training launcher: committed code only, runs keyed by branch, no cache building |
+| `store_lock.sh` | keep the cache store and the shared `.venv` read-only; `open`/`unlock` for deliberate writes |
 | `protocol_relax.pbs` | self-chaining relax + score for one generated pool |
 | `train_formula_energy.pbs` | one-slot fit of the composition-floor ensemble |
 | `prefetch_cached_path.sh` | parallel-range fetch of a checkpoint into the `cached_path` cache, ETag-verified |
@@ -135,7 +150,8 @@ Do not move a launcher while its chains are in flight: a running link re-`qsub`s
 **itself** by absolute path, and calls `run_in_singularity.sh` by path too, so
 renaming either breaks the chain mid-run. Move them once no job of theirs is
 queued or running, and update the `$REPO/scripts/...` paths inside each one at
-the same time.
+the same time. The same holds for the worktree a chain runs from: it must stay, on
+the same branch, with nothing uncommitted, until the chain ends.
 
 ---
 
