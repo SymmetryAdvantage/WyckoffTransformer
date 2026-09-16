@@ -6,8 +6,10 @@
 #
 # Submit:
 #     cd /home/project/11001786/WyFormer/WyckoffTransformer
-#     mkdir -p logs
 #     qsub scripts/platforms/aspire2a/train_formula_energy.pbs
+#
+# From a worktree, name it with -v REPO=$PWD: PBS runs a copy of this file, so it
+# cannot find the checkout it came from on its own.
 #
 # Override the config or the output without editing the file:
 #     qsub -v CONFIG=yamls/models/formula_energy/mse_floor.yaml scripts/platforms/aspire2a/train_formula_energy.pbs
@@ -47,7 +49,7 @@
 #PBS -l select=1:ngpus=1:ncpus=8:mem=64gb
 #PBS -l walltime=04:00:00
 #PBS -j oe
-#PBS -o /home/project/11001786/WyFormer/WyckoffTransformer/logs/
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
 
 set -u
 
@@ -58,7 +60,7 @@ OUT=${OUT:-}                      # empty -> the `out:` key of the config
 EXTRA_ARGS=${EXTRA_ARGS:-}        # extra flags for train.py, e.g. --models 3
 
 cd "$REPO"
-mkdir -p logs
+mkdir -p /scratch/users/nus/kna/WyFormer/logs
 
 echo "=========================================================="
 echo "config    : $CONFIG"

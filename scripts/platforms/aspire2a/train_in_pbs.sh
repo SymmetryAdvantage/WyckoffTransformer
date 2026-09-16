@@ -25,7 +25,7 @@
 #
 # A full config is typically far more epochs than fits in the queue's 24 h
 # ceiling. Each link:
-#   * pins one W&B run id (persisted in runs/.<dataset>__<config>.runid),
+#   * pins one W&B run id (persisted in runs/.<dataset>__<config>__<branch>.runid),
 #   * resumes from runs/<run-id>/last_checkpoint.pt (optimiser + scheduler +
 #     loader + RNG state),
 #   * runs train.py under `timeout` so it stops ~30 min before the wall, hands
@@ -34,16 +34,31 @@
 #     when the attempt cap is hit, or when an attempt crashes without getting
 #     anywhere (see the crash test near the bottom).
 #
-# WHAT IT SETS UP BEFORE TRAINING
+# WHICH CODE IT RUNS
 #
-#   * the site_symmetry_ops engineers and their lookup table, when the tokeniser
-#     or the model asks for them (generated package data, gitignored, ~1 min,
-#     idempotent);
-#   * the tensor cache for the config's tokeniser, when it is missing -- one
-#     pass over the dataset under pandarallel, sized to the CPUs the job owns
-#     rather than the node's core count, which is what keeps it from being
-#     OOM-killed. What it costs comes out of this link's wall clock, so the
-#     training timeout is what is left of the budget after it.
+# The checkout it is invoked from -- the main one or a worktree -- and every link
+# runs whatever that checkout holds when the link starts, so a fix committed there
+# while the chain is queued reaches the next link. Two rules keep that honest:
+#   * the checkout must be committed: the submitter refuses uncommitted changes,
+#     and so does every link, which stops the chain rather than resume a run under
+#     code no commit records. The commit and branch each link ran are printed in
+#     its log and written to the W&B run's config under `code`;
+#   * the branch is part of the run key, so the same config trained from two
+#     branches is two runs, and a link refuses to run if its checkout has since
+#     been switched to another branch.
+# A worktree Claude Code manages (.claude/worktrees/) is refused: Claude Code may
+# delete it when its session ends, and a chain outlives sessions. Launch from a
+# worktree made by scripts/platforms/aspire2a/create_worktree.sh instead; the
+# submitter locks it (`git worktree lock`) so it cannot be removed under the chain.
+#
+# THE DATA IT NEEDS
+#
+# Nothing is built here. The tensor cache and tokeniser for the config's tokeniser
+# (and data.pkl.gz, which the post-training evaluation reads, unless
+# --train-arg --no-test) must already exist in the cache store; the submitter and
+# every link refuse to run otherwise. The store is shared and kept read-only
+# (scripts/platforms/aspire2a/store_lock.sh), so building a new cache is a
+# deliberate step for whoever needs one -- see docs/platforms/aspire2a/usage.md.
 #
 # QUEUE
 #
@@ -66,31 +81,31 @@
 #   bash scripts/platforms/aspire2a/train_in_pbs.sh [options] <model-config.yaml> <dataset>
 #
 #   --run-id ID        continue this W&B run id (default: the one pinned for
-#                      this config+dataset, else a new one)
+#                      this dataset+config+branch, else a new one)
 #   --fresh            start a new W&B run id, forgetting the pinned one
 #   --pilot            3-epoch smoke test: own run id, no chaining, 2 h wall
-#   --name NAME        PBS job name          (default: wyf_<config stem>)
+#   --name NAME        PBS job name          (default: wyf_<config stem>.<branch>)
 #   --queue Q          (default: ai)         --project P    (default: 11001786)
 #   --walltime HH:MM:SS (default: 23:59:59)  --ngpus N      (default: 1)
 #   --ncpus N (default: 16)                  --mem SIZE     (default: 64gb)
 #   --max-attempts N   links in the chain    (default: 8)
 #   --job-budget SEC   seconds of the wall a link may use
 #                      (default: walltime - 30 min)
-#   --tokenise-timeout SEC  ceiling on the one-off cache build (default: 14400)
 #   --device DEV       train.py device       (default: cuda)
 #   --cache-dir DIR    dataset cache root    (default: WYFORMER_CACHE, see
 #                      docs/data_store.md)
 #   --sif PATH         container image
 #   --offline          run W&B offline (sync the run dir afterwards)
-#   --allow-duplicate  submit even though a chain for this config+dataset is
-#                      still queued or running
+#   --allow-duplicate  submit even though a chain for this dataset+config+branch
+#                      is still queued or running
 #   --train-arg ARG    extra argument for train.py, repeatable
 #                      (e.g. --train-arg --production --train-arg --no-test)
 #   --dry-run          print the qsub command and the spec, submit nothing
 #
-# Resubmitting the same config+dataset after a stop continues the pinned run
-# from its last checkpoint with a fresh attempt budget. To abandon a run and
-# start over, submit with --fresh.
+# Resubmitting the same dataset+config from the same branch after a stop
+# continues the pinned run from its last checkpoint with a fresh attempt budget.
+# To abandon a run and start over, submit with --fresh. PBS output goes to
+# /scratch/users/nus/kna/WyFormer/logs (override with WYFORMER_LOGS).
 # ---------------------------------------------------------------------------
 #PBS -j oe
 
@@ -101,6 +116,59 @@ set -u
 # ===========================================================================
 
 die() { echo "error: $*" >&2; exit 1; }
+
+# Where PBS writes every link's output. Outside the checkout, so a log outlives the
+# worktree it was launched from; the cluster purges old files there on its own.
+LOGS_DIR_DEFAULT=/scratch/users/nus/kna/WyFormer/logs
+
+# git is a module here, and a batch shell may not have the module system initialised.
+ensure_git() {
+    command -v git >/dev/null 2>&1 && return 0
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load git/2.39.2 >/dev/null 2>&1
+    command -v git >/dev/null 2>&1 || die "git is not available (module load git/2.39.2 failed)"
+}
+
+# The branch checked out in $1, or detached-<sha> for a detached HEAD.
+checkout_branch() {
+    git -C "$1" symbolic-ref --short -q HEAD \
+        || printf 'detached-%s\n' "$(git -C "$1" rev-parse --short HEAD)"
+}
+
+# Refuse a checkout with uncommitted changes: modified or staged tracked files, and
+# untracked files .gitignore does not cover. Either would run code no commit records.
+require_committed() {
+    local repo=$1 what=$2 changes
+    changes=$(git -C "$repo" status --porcelain) || die "git status failed in $repo"
+    if [ -n "$changes" ]; then
+        echo "error: $repo has uncommitted changes, so $what:" >&2
+        printf '%s\n' "$changes" | head -n 20 | sed 's/^/    /' >&2
+        echo "Commit them (or stash, or add the file to .gitignore) and submit again." >&2
+        exit 1
+    fi
+}
+
+# Refuse to train without the cached data: a training job builds nothing (see THE DATA
+# IT NEEDS above). data.pkl.gz is read only by the evaluation after training, so a run
+# with --no-test ($4 = 0) does not need it.
+check_training_data() {
+    local cache_dir=$1 dataset=$2 tokeniser=$3 needs_data_pkl=$4 missing=()
+    local f
+    for f in "$cache_dir/$dataset/tensors/$tokeniser.safetensors" \
+             "$cache_dir/$dataset/tokenisers/$tokeniser.json"; do
+        [ -f "$f" ] || missing+=("$f")
+    done
+    if [ "$needs_data_pkl" -eq 1 ] && [ ! -f "$cache_dir/$dataset/data.pkl.gz" ]; then
+        missing+=("$cache_dir/$dataset/data.pkl.gz (read by the evaluation after training; --train-arg --no-test skips it)")
+    fi
+    if [ ${#missing[@]} -gt 0 ]; then
+        echo "error: the cached data for $dataset with tokeniser '$tokeniser' is incomplete:" >&2
+        printf '    missing %s\n' "${missing[@]}" >&2
+        echo "Training jobs do not build caches. Build it first -- see" >&2
+        echo "docs/platforms/aspire2a/usage.md#adding-a-dataset-or-tokeniser-to-the-cache" >&2
+        exit 1
+    fi
+}
 
 # ===========================================================================
 # submitter
@@ -122,13 +190,14 @@ submit_mode() {
     CACHE_DIR=$(wyformer_path WYFORMER_CACHE "$REPO/cache") || exit 1
     RUNS_DIR=$(wyformer_path WYFORMER_RUNS "$REPO/runs") || exit 1
     WANDB_ROOT=$(wyformer_path WANDB_DIR "$REPO") || exit 1
+    local LOGS_DIR=${WYFORMER_LOGS:-$LOGS_DIR_DEFAULT}
 
 
     # --- defaults ----------------------------------------------------------
     local SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
     local QUEUE=ai PROJECT=11001786
     local WALLTIME=23:59:59 NGPUS=1 NCPUS=16 MEM=64gb
-    local MAX_ATTEMPTS=8 JOB_BUDGET= TOKENISE_TIMEOUT=14400
+    local MAX_ATTEMPTS=8 JOB_BUDGET=
     local DEVICE=cuda JOB_NAME= RUN_ID= FRESH=0 PILOT=0 OFFLINE=0 DRY_RUN=0 ALLOW_DUP=0
     local CACHE_OVERRIDE=
     local -a TRAIN_EXTRA=()
@@ -148,7 +217,6 @@ submit_mode() {
             --mem)              MEM=${2:?--mem needs a value}; shift 2 ;;
             --max-attempts)     MAX_ATTEMPTS=${2:?--max-attempts needs a value}; shift 2 ;;
             --job-budget)       JOB_BUDGET=${2:?--job-budget needs a value}; shift 2 ;;
-            --tokenise-timeout) TOKENISE_TIMEOUT=${2:?--tokenise-timeout needs a value}; shift 2 ;;
             --device)           DEVICE=${2:?--device needs a value}; shift 2 ;;
             --cache-dir)        CACHE_OVERRIDE=${2:?--cache-dir needs a value}; shift 2 ;;
             --sif)              SIF=${2:?--sif needs a value}; shift 2 ;;
@@ -166,7 +234,7 @@ submit_mode() {
     [ ${#POSITIONAL[@]} -eq 2 ] || die "expected <model-config.yaml> <dataset>, got ${#POSITIONAL[@]} argument(s); see --help"
 
     local n v
-    for n in MAX_ATTEMPTS TOKENISE_TIMEOUT NGPUS NCPUS JOB_BUDGET; do
+    for n in MAX_ATTEMPTS NGPUS NCPUS JOB_BUDGET; do
         v=${!n}
         case "$v" in
             '') ;;                                  # only JOB_BUDGET, meaning "derive it"
@@ -174,6 +242,28 @@ submit_mode() {
         esac
     done
     local CONFIG_IN=${POSITIONAL[0]} DATASET=${POSITIONAL[1]}
+
+    # --- the code: this checkout, committed, not one Claude Code may delete ---
+    case "$REPO" in
+        */.claude/worktrees/*)
+            die "$REPO is a Claude Code worktree, which Claude Code may delete when its session ends -- and a chain outlives sessions.
+  Create a worktree for the branch with scripts/platforms/aspire2a/create_worktree.sh and submit from there
+  (see docs/platforms/aspire2a/usage.md#working-in-a-git-worktree)." ;;
+    esac
+    ensure_git
+    require_committed "$REPO" "a chain launched from it would run code no commit records"
+    local BRANCH COMMIT
+    BRANCH=$(checkout_branch "$REPO") || die "cannot read the branch checked out in $REPO"
+    COMMIT=$(git -C "$REPO" rev-parse HEAD) || die "cannot read HEAD in $REPO"
+    # Keeps `git worktree remove` and `git worktree prune` -- and so any tool built on
+    # them -- from deleting the checkout the chain re-reads on every link. Left in
+    # place when the chain ends: other chains may run from the same worktree, and
+    # `git worktree unlock` is one command once none does.
+    local GIT_COMMON_DIR GIT_DIR
+    GIT_COMMON_DIR=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)
+    GIT_DIR=$(git -C "$REPO" rev-parse --path-format=absolute --git-dir)
+    local LOCK_WORKTREE=0
+    [ "$GIT_DIR" != "$GIT_COMMON_DIR" ] && LOCK_WORKTREE=1
 
     # --- validate the config and derive everything hanging off it ----------
     [ -f "$CONFIG_IN" ] || die "no such config: $CONFIG_IN"
@@ -199,14 +289,12 @@ submit_mode() {
         [ -d "$CACHE_DIR" ] || die "cache directory does not exist: $CACHE_DIR"
     fi
 
-    local DATA_PKL="$CACHE_DIR/$DATASET/data.pkl.gz"
-    local TENSOR_CACHE="$CACHE_DIR/$DATASET/tensors/$TOKENISER.safetensors"
-    if [ ! -f "$TENSOR_CACHE" ] && [ ! -f "$DATA_PKL" ]; then
-        die "neither the tensor cache ($TENSOR_CACHE) nor the raw dataset cache ($DATA_PKL) exists -- there is nothing to train on; cache the dataset first (scripts/cache_a_dataset.py)"
-    fi
-    if [ ! -f "$TENSOR_CACHE" ]; then
-        echo "note: tensor cache for '$TOKENISER' is missing; the first link will build it from $DATA_PKL"
-    fi
+    # Checked here to fail at submission rather than in the queue, and again by every link.
+    local NEEDS_DATA_PKL=1 arg
+    for arg in ${TRAIN_EXTRA[@]+"${TRAIN_EXTRA[@]}"}; do
+        [ "$arg" = --no-test ] && NEEDS_DATA_PKL=0
+    done
+    check_training_data "$CACHE_DIR" "$DATASET" "$TOKENISER" "$NEEDS_DATA_PKL"
 
     # The ops lookup table is read at model construction time, so a missing file is a
     # hard failure rather than a silent fallback. Comments are stripped before the
@@ -217,8 +305,11 @@ submit_mode() {
     fi
 
     # --- names, ids, budgets ------------------------------------------------
-    local KEY
-    KEY=$(printf '%s__%s' "$DATASET" "$CONFIG_STEM" | tr -c 'A-Za-z0-9_.-' '_')
+    # The branch is part of the key: the same config trained from two branches is two
+    # experiments, and must pin two run ids and pass two duplicate checks.
+    local KEY LEGACY_KEY
+    KEY=$(printf '%s__%s__%s' "$DATASET" "$CONFIG_STEM" "$BRANCH" | tr -c 'A-Za-z0-9_.-' '_')
+    LEGACY_KEY=$(printf '%s__%s' "$DATASET" "$CONFIG_STEM" | tr -c 'A-Za-z0-9_.-' '_')
     local RUNID_FILE JOBID_FILE
 
     if [ "$PILOT" -eq 1 ]; then
@@ -238,7 +329,16 @@ submit_mode() {
     [ "$PILOT" -eq 1 ] || RUNID_FILE="$RUNS_DIR/.$KEY.runid"
     JOBID_FILE="$RUNS_DIR/.$KEY.jobid"
 
-    mkdir -p "$REPO/logs" "$RUNS_DIR" "$RUNS_DIR/.jobspec"
+    mkdir -p "$LOGS_DIR" "$RUNS_DIR" "$RUNS_DIR/.jobspec"
+
+    # A pin from before the branch joined the key names a run of this config that some
+    # branch started. Adopting it could resume another branch's run under this code, and
+    # ignoring it could quietly start over, so neither happens without being asked.
+    if [ "$PILOT" -eq 0 ] && [ "$FRESH" -eq 0 ] && [ -z "$RUN_ID" ] \
+            && [ ! -f "$RUNID_FILE" ] && [ -f "$RUNS_DIR/.$LEGACY_KEY.runid" ]; then
+        die "$RUNS_DIR/.$LEGACY_KEY.runid pins run $(cat "$RUNS_DIR/.$LEGACY_KEY.runid") for this config from before runs were keyed by branch.
+  Pass --run-id $(cat "$RUNS_DIR/.$LEGACY_KEY.runid") to continue that run from branch '$BRANCH', or --fresh to start a new one."
+    fi
 
     if [ "$FRESH" -eq 1 ]; then
         [ -n "$RUN_ID" ] && die "--fresh and --run-id contradict each other"
@@ -270,11 +370,11 @@ submit_mode() {
     [ "$JOB_BUDGET" -gt 0 ] || die "job budget ($JOB_BUDGET s) is not positive; raise --walltime"
     [ "$JOB_BUDGET" -lt "$WALL_SECONDS" ] || die "job budget ($JOB_BUDGET s) must be under the walltime ($WALL_SECONDS s)"
 
-    # PBS Pro takes job names up to 236 characters; 40 keeps `qstat` and the log file
-    # names readable while still telling two configs of a family apart.
-    [ -n "$JOB_NAME" ] || JOB_NAME=$(printf 'wyf_%s' "$CONFIG_STEM" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-40)
+    # PBS Pro takes job names up to 236 characters; 48 keeps `qstat -f` and the log file
+    # names readable while still telling two configs of a family, or two branches, apart.
+    [ -n "$JOB_NAME" ] || JOB_NAME=$(printf 'wyf_%s.%s' "$CONFIG_STEM" "$BRANCH" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-48)
 
-    # --- is a chain for this config+dataset already in flight? ---------------
+    # --- is a chain for this dataset+config+branch already in flight? --------
     # Two live chains on one run directory would take turns overwriting each other's
     # checkpoints, and the damage only shows up in the loss curve. The id of the job
     # each link queues is kept in JOBID_FILE; qstat knows it only while it is still
@@ -298,7 +398,7 @@ submit_mode() {
         -l "select=1:ngpus=$NGPUS:ncpus=$NCPUS:mem=$MEM"
         -l "walltime=$WALLTIME"
         -j oe
-        -o "$REPO/logs/"
+        -o "$LOGS_DIR/"
     )
 
     # Built in memory and written only on a real submission, so a --dry-run neither adds a
@@ -308,6 +408,8 @@ submit_mode() {
         echo "# Generated by scripts/platforms/aspire2a/train_in_pbs.sh on $(date -Is); sourced by every link of the chain."
         echo "# Regenerated on each submission -- edit the submission, not this file."
         printf 'REPO=%q\n'             "$REPO"
+        printf 'BRANCH=%q\n'           "$BRANCH"
+        printf 'LOGS_DIR=%q\n'         "$LOGS_DIR"
         printf 'DATA_DIR=%q\n'         "$DATA_DIR"
         printf 'CACHE_DIR=%q\n'        "$CACHE_DIR"
         printf 'RUNS_DIR=%q\n'         "$RUNS_DIR"
@@ -323,7 +425,7 @@ submit_mode() {
         printf 'JOBID_FILE=%q\n'       "$JOBID_FILE"
         printf 'MAX_ATTEMPTS=%q\n'     "$MAX_ATTEMPTS"
         printf 'JOB_BUDGET=%q\n'       "$JOB_BUDGET"
-        printf 'TOKENISE_TIMEOUT=%q\n' "$TOKENISE_TIMEOUT"
+        printf 'NEEDS_DATA_PKL=%q\n'   "$NEEDS_DATA_PKL"
         printf 'DEVICE=%q\n'           "$DEVICE"
         printf 'NCPUS_REQUESTED=%q\n'  "$NCPUS"
         printf 'WANDB_OFFLINE=%q\n'    "$OFFLINE"
@@ -340,6 +442,8 @@ submit_mode() {
 
     local -a SUBMIT=("$QSUB" "${QSUB_ARGS[@]}" -v "JOB_SPEC=$SPEC,ATTEMPT=1${RUN_ID:+,RUN_ID=$RUN_ID}" "$SCRIPT")
 
+    echo "checkout  : $REPO"
+    echo "branch    : $BRANCH @ $(git -C "$REPO" rev-parse --short "$COMMIT")"
     echo "config    : $CONFIG"
     echo "dataset   : $DATASET"
     echo "tokeniser : $TOKENISER"
@@ -354,6 +458,7 @@ submit_mode() {
 
     if [ "$DRY_RUN" -eq 1 ]; then
         [ "$DROP_PIN" -eq 1 ] && echo "note: would drop the pinned run id $(cat "$RUNID_FILE") for $KEY (left in place)"
+        [ "$LOCK_WORKTREE" -eq 1 ] && echo "note: would lock the worktree $REPO (git worktree lock)"
         echo "--- spec (not written) ---"
         printf '%s\n' "$SPEC_TEXT"
         echo "--- qsub (not submitted) ---"
@@ -374,7 +479,14 @@ submit_mode() {
     JOB_ID=$("${SUBMIT[@]}") || die "qsub failed"
     echo "$JOB_ID" > "$JOBID_FILE"
     echo "submitted : $JOB_ID"
-    echo "log       : $REPO/logs/$JOB_NAME.o${JOB_ID%%.*}"
+    echo "log       : $LOGS_DIR/$JOB_NAME.o${JOB_ID%%.*}"
+    if [ "$LOCK_WORKTREE" -eq 1 ]; then
+        if git -C "$REPO" worktree lock --reason "PBS chain $KEY ($JOB_ID) runs from this worktree; unlock once no chain does" "$REPO" 2>/dev/null; then
+            echo "locked    : $REPO (git worktree unlock it once no chain runs from it)"
+        else
+            echo "locked    : $REPO was already locked"
+        fi
+    fi
 }
 
 # Read tokeniser.name out of a model config. PyYAML where it is importable, and a
@@ -438,13 +550,29 @@ job_mode() {
 
     local ATTEMPT=${ATTEMPT:-1}
     local MIN_TRAIN_SECONDS=1800   # below this, chain instead of starting a stub epoch
-    # Pandarallel sizes its pool from the machine's *physical cores*, not the cgroup: on a
-    # 128-core node it forks 128 workers over a multi-GB frame and the job is OOM-killed
-    # (rc 137). PBS exports NCPUS as what the job actually owns.
-    local TOKENISE_JOBS=${NCPUS:-$NCPUS_REQUESTED}
 
-    cd "$REPO" || die "cannot cd to $REPO"
-    mkdir -p logs "$RUNS_DIR"
+    [ -n "${BRANCH:-}" ] \
+        || die "job spec $JOB_SPEC predates branch-keyed runs -- resubmit from a shell to regenerate it"
+    cd "$REPO" || die "cannot cd to $REPO -- was the worktree removed? Recreate it and resubmit"
+    mkdir -p "$RUNS_DIR"
+
+    # --- the code this link runs --------------------------------------------
+    # The checkout is read afresh by every link, so a commit made there while the chain
+    # was queued is what this link trains with -- by design. Uncommitted changes are not:
+    # stop rather than resume the run under code no commit records. Nothing has been
+    # touched yet, so resubmitting once the tree is committed continues the pinned run.
+    ensure_git
+    require_committed "$REPO" "this link will not train from it and the chain stops here"
+    local CURRENT_BRANCH COMMIT
+    CURRENT_BRANCH=$(checkout_branch "$REPO") || die "cannot read the branch checked out in $REPO"
+    if [ "$CURRENT_BRANCH" != "$BRANCH" ]; then
+        die "$REPO has '$CURRENT_BRANCH' checked out, but this chain was submitted from '$BRANCH'.
+  Resuming its run under another branch's code would mix two experiments in one run.
+  Check out '$BRANCH' again and resubmit to continue."
+    fi
+    COMMIT=$(git -C "$REPO" rev-parse HEAD) || die "cannot read HEAD in $REPO"
+
+    check_training_data "$CACHE_DIR" "$DATASET" "$TOKENISER" "${NEEDS_DATA_PKL:-1}"
 
     # --- the W&B run id this chain is pinned to -----------------------------
     if [ -n "${RUN_ID:-}" ]; then
@@ -517,6 +645,8 @@ job_mode() {
 
     echo "=========================================================="
     echo "attempt   : $ATTEMPT / $MAX_ATTEMPTS"
+    echo "checkout  : $REPO"
+    echo "code      : $BRANCH @ $COMMIT"
     echo "config    : $CONFIG"
     echo "dataset   : $DATASET"
     echo "tokeniser : $TOKENISER"
@@ -542,6 +672,10 @@ job_mode() {
     export SINGULARITYENV_HF_HUB_OFFLINE=1
     export SINGULARITYENV_TOKENIZERS_PARALLELISM=false
     export SINGULARITYENV_OMP_NUM_THREADS=${NCPUS:-$NCPUS_REQUESTED}
+    # train.py writes these into the W&B run's config under `code`, so the run records
+    # the commit each link trained with; the container has no git to ask.
+    export SINGULARITYENV_WYFORMER_GIT_COMMIT="$COMMIT"
+    export SINGULARITYENV_WYFORMER_GIT_BRANCH="$BRANCH"
     if [ "$WANDB_OFFLINE" -eq 1 ]; then
         export SINGULARITYENV_WANDB_MODE=offline   # `wandb sync $RUN_DIR` afterwards
     fi
@@ -552,24 +686,6 @@ job_mode() {
     # would hide that.
     if [ "$NEEDS_OPS_TABLE" -eq 1 ] && [ ! -f "$OPS_TABLE" ]; then
         die "$OPS_TABLE is missing; it is committed, so restore it from git"
-    fi
-
-    # --- one-off: the tensor cache for this tokeniser -----------------------
-    local TENSOR_CACHE="$CACHE_DIR/$DATASET/tensors/$TOKENISER.safetensors"
-    if [ ! -f "$TENSOR_CACHE" ]; then
-        echo "tensor cache missing -> tokenising $DATASET with $TOKENISER ($(date -Is))"
-        echo "this is a one-off pass over the whole dataset; later links skip it"
-        local tok_rc
-        timeout --signal=TERM --kill-after=180 "$TOKENISE_TIMEOUT" \
-            "${IN_CONTAINER[@]}" python scripts/tokenise_a_dataset.py \
-                "$DATASET" "yamls/tokenisers/$TOKENISER.yaml" --new-tokenizer --n-jobs "$TOKENISE_JOBS"
-        tok_rc=$?
-        if [ "$tok_rc" -ne 0 ] || [ ! -f "$TENSOR_CACHE" ]; then
-            # A half-written cache would poison every later link, so clear it.
-            rm -f "$TENSOR_CACHE"
-            die "tokenisation failed (rc $tok_rc) -> hard stop, nothing to train on"
-        fi
-        echo "tensor cache built: $(du -h "$TENSOR_CACHE" | cut -f1)   ($(date -Is))"
     fi
 
     # --- what is left of this job's budget for training ---------------------

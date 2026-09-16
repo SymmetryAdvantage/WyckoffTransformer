@@ -13,9 +13,14 @@
 #     cd /home/project/11001786/WyFormer/WyckoffTransformer
 #     qsub -v POOL=generated/<run> scripts/platforms/aspire2a/protocol_relax.pbs
 #
-# POOL is a directory holding wyckoff_genes.json.gz; outputs land in POOL/protocol.
-# The cheap `--stage screen` is run here when its output is missing, and the venv's
-# `relax` extra is installed when orb-models is absent, so one qsub is enough.
+# From a worktree, name it: PBS runs a copy of this file, so it cannot find the
+# checkout it came from on its own.
+#     qsub -v REPO=$PWD,POOL=generated/<run> scripts/platforms/aspire2a/protocol_relax.pbs
+#
+# POOL is a directory, relative to REPO, holding wyckoff_genes.json.gz; outputs land
+# in POOL/protocol. The cheap `--stage screen` is run here when its output is missing,
+# so one qsub is enough. The venv must already have the `relax` extra: a job does not
+# install into the shared, read-only venv.
 #
 # `-v POST=<command>` runs that command inside the container once the score stage
 # succeeds, with POOL appended, e.g.
@@ -31,7 +36,7 @@
 #PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
 #PBS -l walltime=23:59:59
 #PBS -j oe
-#PBS -o /home/project/11001786/WyFormer/WyckoffTransformer/logs/
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
 
 set -u
 
@@ -51,7 +56,7 @@ RELAX_TIMEOUT=${RELAX_TIMEOUT:-82800}     # 23 h
 POST=${POST:-}
 
 cd "$REPO"
-mkdir -p logs
+mkdir -p /scratch/users/nus/kna/WyFormer/logs
 OUT="$REPO/$POOL/protocol"
 GENES="$REPO/$POOL/wyckoff_genes.json.gz"
 STRUCTURES="$OUT/structures.csv"
@@ -73,20 +78,14 @@ if ! command -v singularity >/dev/null 2>&1; then
 fi
 singularity --version
 
-# orb-models is in the `relax` extra, which
-# scripts/build_singularity_venv.sh does not install; a chained link inherits it from the first one.
+# orb-models is in the `relax` extra, which scripts/build_singularity_venv.sh does not
+# install. The venv is shared by every worktree's jobs and kept read-only
+# (store_lock.sh), so a job does not install into it: that is a deliberate step,
+# described in docs/platforms/aspire2a/environment.md.
 if ! bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" python -c "import orb_models" >/dev/null 2>&1; then
-    echo "installing the relax extra into the venv"
-    bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh" bash -c "
-        export UV_CACHE_DIR=$REPO/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
-        cd $REPO
-        ~/.local/bin/uv pip compile --python /usr/bin/python3.12 --emit-index-url \
-            --no-annotate --no-header --extra relax -o .venv-requirements.relax.txt pyproject.toml
-        grep -viE '^(torch|nvidia-[a-z0-9-]+|pytorch-triton|triton|triton-[a-z]+)([[:space:]=<>!~;]|\$)' \
-            .venv-requirements.relax.txt > .venv-requirements.relax.no-torch.txt
-        ~/.local/bin/uv pip install --python .venv/bin/python --no-deps \
-            -r .venv-requirements.relax.no-torch.txt" || {
-        echo "could not install the relax extra" >&2; exit 3; }
+    echo "orb_models is not importable: the venv lacks the relax extra." >&2
+    echo "Install it deliberately -- docs/platforms/aspire2a/environment.md -- and resubmit." >&2
+    exit 3
 fi
 
 # The screen stage is cheap and its output is what --resume and --stage score read,

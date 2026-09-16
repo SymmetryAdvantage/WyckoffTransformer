@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import os
 import logging
 from omegaconf import OmegaConf
 import torch
@@ -97,6 +98,17 @@ def main():
                 init_timeout=180
             )
         ):
+
+        # The commit this process trains with, as a launcher that knows it passes it in:
+        # scripts/platforms/aspire2a/train_in_pbs.sh reads it from the checkout, since the
+        # container has no git for W&B to ask. In the W&B config only -- not in `config`,
+        # which a resume must match exactly -- and overwritten by every link of a chain,
+        # each of which prints its own commit in its log.
+        code = {key: os.environ[variable] for key, variable in (
+            ("commit", "WYFORMER_GIT_COMMIT"), ("branch", "WYFORMER_GIT_BRANCH"))
+            if os.environ.get(variable)}
+        if code:
+            wandb.config.update({"code": code}, allow_val_change=True)
 
         if not args.resume:
             configuration_artifact = wandb.Artifact(name=f"config_{config.name}_{wandb.run.id}", type="config")

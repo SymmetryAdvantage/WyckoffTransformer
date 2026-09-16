@@ -16,18 +16,26 @@
 set -euo pipefail
 
 MAIN_REPO="/home/project/11001786/WyFormer/WyckoffTransformer"
-repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+# Physical paths on both sides: /home/project is a symlink to /data/projects, so the
+# main checkout reached through either spelling must still compare equal.
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
+main_repo_physical=$(cd "$MAIN_REPO" && pwd -P)
 cd "$repo_root"
 
 # 1. Link agent brief
 bash scripts/platforms/link_agent_brief.sh aspire2a
 
 # 2. Setup venv link for worktrees
-if [ "$repo_root" != "$MAIN_REPO" ]; then
+if [ "$repo_root" != "$main_repo_physical" ]; then
     echo "Worktree detected at: $repo_root"
-    ln -sfn "$MAIN_REPO/.venv" "$repo_root/.venv"
-    echo "Reusing shared virtual environment:"
-    echo "  .venv -> $MAIN_REPO/.venv"
+    if [ -e "$repo_root/.venv" ] && [ ! -L "$repo_root/.venv" ]; then
+        # ln -sfn onto a real directory would put the link inside it.
+        echo "note: $repo_root/.venv is a real venv, not a link; leaving it in place."
+    else
+        ln -sfn "$MAIN_REPO/.venv" "$repo_root/.venv"
+        echo "Reusing shared virtual environment:"
+        echo "  .venv -> $MAIN_REPO/.venv"
+    fi
     if [ ! -d "$MAIN_REPO/.venv" ]; then
         echo "note: $MAIN_REPO/.venv does not exist yet. Build it in the main repo."
     fi
