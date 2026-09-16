@@ -107,8 +107,10 @@ Training, generation, screening and relaxation are unaffected.
 
 **Fixed** by the `matminer >=0.10.1` floor in `pyproject.toml`: 0.10.1 uses
 `scipy.special.sph_harm_y` and the public `Element` API, and its own `pandas<3`
-pulls pandas back to 2.3.3. Any `.venv` built before that floor still has the
-old pair; rebuild it, or move the packages in individually — including `pytz`,
+pulls pandas back to 2.3.3. The shared venv built by `build_venv.sh` on 2026-09-16 has
+matminer 0.10.1 and pandas 2.3.3; the older scratch venv the pre-2026-09-16 chains run on
+still has the old pair. For any other venv built before that floor, rebuild it, or move
+the packages in individually — including `pytz`,
 which pandas 2 needs and pandas 3 dropped, so a `--no-deps` install of just
 `matminer` and `pandas` trades this failure for `Unable to import required
 dependencies: pytz`. A full run is then 664 passed / 41 skipped, with nothing
@@ -233,9 +235,11 @@ singularity run --nv --bind /home/project,/data/projects ...
 
 ## Code changes are not taking effect (another checkout's code is imported)
 
-Every checkout shares one venv, and its editable install's `.pth` names
-`/scratch/users/nus/kna/WyckoffTransformer/src` -- the old scratch checkout, not the main
-checkout and not your worktree ([environment.md](environment.md#where-the-one-venv-actually-is)).
+Every checkout shares one venv, and its editable install's `.pth` names the main
+checkout's `src`, not your worktree's
+([environment.md](environment.md#where-the-one-venv-actually-is)). (The venv used before
+2026-09-16, and still used by chains launched from the old scratch checkout, names
+`/scratch/users/nus/kna/WyckoffTransformer/src` instead.)
 
 `scripts/platforms/aspire2a/run_in_singularity.sh` sets `PYTHONPATH=$REPO_DIR/src` inside
 the container, which Python searches before the `.pth`. If running a custom script or

@@ -326,12 +326,14 @@ allowed itself 4 h); for those, run the same commands in a `-q ai` batch job wit
 qstat -u $USER                 # your jobs on the current server
 qstat -u $USER @pbs101         # ...and on the other one
 qstat -f <jobid> | grep -E 'queue|Resource_List|comment'
-tail -f /scratch/users/nus/kna/WyFormer/logs/<job name>.o<job number>
+tail /scratch/users/nus/kna/WyFormer/logs/<job id>.OU   # e.g. 22196965.pbs102.OU, once the job has ended
 ```
 
-PBS stdout/stderr are joined (`-j oe`) into `/scratch/users/nus/kna/WyFormer/logs/`, for
-every launcher and every checkout, so a log outlives the worktree it came from; the
-cluster purges old files there itself. (Chains submitted before 2026-09-16 still write
+PBS stdout/stderr are joined (`-j oe`) into `/scratch/users/nus/kna/WyFormer/logs/<job id>.OU`,
+for every launcher and every checkout, so a log outlives the worktree it came from; the
+cluster purges old files there itself. PBS copies the file there when the job ends; while
+it runs, it grows in `/var/spool/pbs/spool/<job id>.OU` on the execution node (readable
+from an interactive job on the same node). (Chains submitted before 2026-09-16 still write
 to `logs/` in the checkout they came from.) The job spec a chain reads is in
 `$WYFORMER_RUNS/.jobspec/<key>-<timestamp>.sh`. W&B goes live to
 `symmetry-advantage/WyckoffTransformer`; auth is `~/.netrc`, which the container sees

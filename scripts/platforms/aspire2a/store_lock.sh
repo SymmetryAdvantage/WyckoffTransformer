@@ -44,8 +44,7 @@ default_paths() {
 }
 
 # Symlinks resolved first: `chmod -R` given a symlink follows it but `find` does not,
-# and both the main checkout's .venv (to /scratch/users/nus/kna/WyckoffTransformer/.venv)
-# and a worktree's (to the main one) are symlinks.
+# and a worktree's .venv is a symlink to the main checkout's.
 resolve() {
     local p
     for p in "$@"; do

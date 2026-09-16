@@ -479,7 +479,7 @@ submit_mode() {
     JOB_ID=$("${SUBMIT[@]}") || die "qsub failed"
     echo "$JOB_ID" > "$JOBID_FILE"
     echo "submitted : $JOB_ID"
-    echo "log       : $LOGS_DIR/$JOB_NAME.o${JOB_ID%%.*}"
+    echo "log       : $LOGS_DIR/$JOB_ID.OU  (written when the link ends; while it runs, qstat -f $JOB_ID)"
     if [ "$LOCK_WORKTREE" -eq 1 ]; then
         if git -C "$REPO" worktree lock --reason "PBS chain $KEY ($JOB_ID) runs from this worktree; unlock once no chain does" "$REPO" 2>/dev/null; then
             echo "locked    : $REPO (git worktree unlock it once no chain runs from it)"

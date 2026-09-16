@@ -44,37 +44,45 @@ interface, and the paths behind it change with the installed version.
 
 ## Building the venv
 
+From a login node (it downloads), in any checkout:
+
 ```bash
-module load singularity
-cd /home/project/11001786/WyFormer/WyckoffTransformer
-singularity run --nv --bind /home/project ~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \
-    env WYFORMER_PLATFORM=aspire2a bash scripts/build_singularity_venv.sh
+bash scripts/platforms/aspire2a/build_venv.sh              # build, verify, swap in, lock
+bash scripts/platforms/aspire2a/build_venv.sh --no-swap    # build and verify only
 ```
 
-**Not while any job runs:** the main checkout's `.venv` is a symlink to the one venv
-every checkout and chain shares, and step 3 clears it
-([below](#where-the-one-venv-actually-is)). Unlock it first with `store_lock.sh unlock`.
+It always builds the main checkout's `.venv`, at
+`/home/project/11001786/WyFormer/WyckoffTransformer/.venv` -- project storage, out of
+reach of scratch's purge policy -- and it is safe while jobs run: the new venv is built
+beside the live one as `.venv.build-<timestamp>`, and only after its import check passes
+is the old `.venv` renamed to `.venv.previous-<timestamp>` and the new one renamed into
+place, then locked read-only. The venv is relocatable (`uv venv --relocatable`), which is
+what makes the rename safe. Jobs that start afterwards use the new venv -- including the
+next link of a chain that started on the old one; a process already running keeps what
+it has imported but imports anything new from the new venv. Delete a `.venv.previous-*`
+once nothing runs on it (`store_lock.sh unlock` it first).
 
-`--bind /home/project` is required because Singularity does not bind project mounts
-automatically on ASPIRE 2A. `WYFORMER_PLATFORM=aspire2a` also links `CLAUDE.local.md` to
-[agent_brief.md](agent_brief.md); see [../README.md](../README.md). The venv
-build is the expensive way to get it -- `bash scripts/platforms/aspire2a/env_init.sh`
-(or `bash scripts/platforms/link_agent_brief.sh aspire2a`) from a login node does only
-that, and needs nothing but bash.
+Inside the container it runs the generic `scripts/build_singularity_venv.sh` with
+`VENV_DIR=.venv.build-<timestamp> VENV_RELOCATABLE=1 VENV_EXTRAS=relax`, which does four
+steps:
 
-Four steps, all inside the container:
-
-1. `uv pip compile pyproject.toml` — **project dependencies only**, no extras, no
-   dependency groups -> `.venv-requirements.txt`.
+1. `uv pip compile pyproject.toml --extra relax` -- project dependencies plus the `relax`
+   extra, no dependency groups -> `.venv-requirements.txt`.
 2. `grep -v` out `torch`, `nvidia-*`, `triton`, `pytorch-triton` ->
    `.venv-requirements.no-torch.txt`. The container provides them.
-3. `uv venv --clear --system-site-packages` then
+3. `uv venv --clear --system-site-packages --relocatable` then
    `uv pip install --no-deps -r .venv-requirements.no-torch.txt`. `--no-deps` is
    load-bearing: the file is already a full pinned closure, and without it uv
    re-adds torch as `schedulefree`'s dependency.
-4. `uv pip install --no-deps -e .` — the project itself.
+4. `uv pip install --no-deps -e .` -- the project itself, editable from the main checkout.
 
-Cold build ~20 min (bandwidth-bound, so **do it on a login node**); warm ~3 min.
+then imports the chain training needs and asserts that PyXtal has the pair-tolerance fix
+(merged upstream in 1.1.5, which `pyproject.toml` pins), so a resolution that fell back
+to an older PyXtal fails the build instead of producing wrong structures.
+
+`--bind /home/project,/data/projects` is required because Singularity does not bind
+project mounts automatically on ASPIRE 2A. `WYFORMER_PLATFORM=aspire2a` also links
+`CLAUDE.local.md` to [agent_brief.md](agent_brief.md); `env_init.sh` does only that.
 
 **`uv sync` is deliberately not used.** Its universal lock also has to resolve
 the `genbench-oracle` group's `material-hasher` git dependency. The container
@@ -83,82 +91,37 @@ here anyway. There is no `uv.lock` in this checkout, which is why the ASPIRE 2A
 dependency set is a **fresh resolution** rather than a pinned one — see the
 version-skew section below.
 
-The **PyXtal pin is a tarball, not a git branch, because of this host.** The
-fork in `[tool.uv.sources]` is referenced as
-`https://github.com/kazeevn/PyXtal/archive/<sha>.tar.gz`: a `{ git = ... }`
-source makes uv shell out to `git`, which this container does not have, and the
-compile in step 1 would fail outright on a *base* dependency. A tarball needs
-only HTTPS. Step 4's verification asserts the patched `check_wp` is what ended
-up in the venv, so a silent fallback to PyPI PyXtal fails the build.
-
-To move that pin into the existing venv without a rebuild — the venv is shared
-by every running job, so see the live-risk warning below — compile the direct
-requirements and install the one line:
-
-```bash
-bash scripts/platforms/aspire2a/run_in_singularity.sh bash -c '
-  export UV_CACHE_DIR=$PWD/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
-  ~/.local/bin/uv pip compile --no-deps --no-annotate --no-header pyproject.toml \
-      | grep "^pyxtal " > .venv-requirements.pyxtal.txt
-  ~/.local/bin/uv pip install --python .venv/bin/python --no-deps \
-      -r .venv-requirements.pyxtal.txt'
-```
-
 `uv` itself is a standalone binary at `~/.local/bin/uv` (0.12.6). The build sets
-`UV_CACHE_DIR=$REPO/.uv-cache` (3 GB — keeping it off the 50 GB home quota),
-`UV_PYTHON_DOWNLOADS=never` and `UV_LINK_MODE=copy`.
+`UV_CACHE_DIR=/scratch/users/nus/kna/WyFormer/uv-cache` (regenerable, so on scratch and
+off the 50 GB home quota), `UV_PYTHON_DOWNLOADS=never` and `UV_LINK_MODE=copy`.
 
 ### Adding or repairing the project install
 
-Re-running only step 4 is safe and cheap, and is what you want after adding a
-console script to `[project.scripts]` or changing package data:
+A full rebuild with `build_venv.sh` is the default way to change the venv: it never
+touches the live one. After adding a console script to `[project.scripts]` or changing
+package data, re-running only step 4 in place is cheap, but it installs into the live
+venv, so it needs the unlock/lock below and carries the live risk:
 
 ```bash
+bash scripts/platforms/aspire2a/store_lock.sh unlock /home/project/11001786/WyFormer/WyckoffTransformer/.venv
 bash scripts/platforms/aspire2a/run_in_singularity.sh \
     ~/.local/bin/uv pip install --python .venv/bin/python --no-deps -e .
+bash scripts/platforms/aspire2a/store_lock.sh lock /home/project/11001786/WyFormer/WyckoffTransformer/.venv
 ```
-
-(As of 2026-09-08 the venv is behind on this: only `wyformer-generate`,
-`wyformer-cryspr` and `wyformer-protocol` have entry points. The other six run
-as `python -m wyckoff_transformer.cli.<module>`.)
 
 ### The `relax` extra: ORB and MACE
 
-The base build has **no** `orb-models` or `mace-torch`, so
-`wyformer-protocol --stage relax` and anything touching the hull MLIPs fails
-with `ModuleNotFoundError: No module named 'orb_models'`. Add it with:
+`build_venv.sh` installs the `relax` extra (`orb-models`, `mace-torch`), which
+`wyformer-protocol --stage relax` and anything touching the hull MLIPs needs; without
+it they fail with `ModuleNotFoundError: No module named 'orb_models'`.
+`scripts/platforms/aspire2a/protocol_relax.pbs` checks for it and stops with a pointer
+here rather than installing into the shared venv.
 
-```bash
-bash scripts/platforms/aspire2a/run_in_singularity.sh bash -c '
-  export UV_CACHE_DIR=$PWD/.uv-cache UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy
-  ~/.local/bin/uv pip compile --python /usr/bin/python3.12 --emit-index-url \
-      --no-annotate --no-header --extra relax -o .venv-requirements.relax.txt pyproject.toml
-  grep -viE "^(torch|nvidia-[a-z0-9-]+|pytorch-triton|triton|triton-[a-z]+)([[:space:]=<>!~;]|\$)" \
-      .venv-requirements.relax.txt > .venv-requirements.relax.no-torch.txt
-  ~/.local/bin/uv pip install --python .venv/bin/python --no-deps \
-      -r .venv-requirements.relax.no-torch.txt'
-```
-
-~30 min on a login node. It is currently installed (orb-models 0.7.0,
-mace-torch 0.3.16) and it also pulled in pytest 9.1.1, torchmetrics, warp-lang
-and e3nn. `scripts/platforms/aspire2a/protocol_relax.pbs` used to run this itself
-when `orb_models` was missing; since the venv is read-only it stops with a pointer
-here instead.
-
-**The venv is read-only; installing into it is a deliberate step.** Unlock it, install,
-lock it again:
-
-```bash
-bash scripts/platforms/aspire2a/store_lock.sh unlock /scratch/users/nus/kna/WyckoffTransformer/.venv
-# ... the install ...
-bash scripts/platforms/aspire2a/store_lock.sh lock /scratch/users/nus/kna/WyckoffTransformer/.venv
-```
-
-**Installing into `.venv` while jobs are running is a live risk.** The venv is
-shared by every chained job on every node and every worktree; four were running during
-the last audit. The relax extra's only deltas against the training set were patch-level
-(numpy 2.5.2 -> 2.5.3, rich 15 -> 13.9.4), which is why it was survivable. Do not
-assume the next one will be.
+**The venv is read-only; installing into it in place is a deliberate step** -- unlock,
+install, lock, as above -- and **a live risk**: the venv is shared by every chained job on
+every node and every worktree. When the relax extra was once installed into a live venv,
+its only deltas against the training set were patch-level (numpy 2.5.2 -> 2.5.3,
+rich 15 -> 13.9.4), which is why it was survivable. Prefer a rebuild.
 
 ---
 
@@ -222,28 +185,24 @@ worktree is too slow. The workflow -- how to create a worktree, why not with
 
 ### Where the one venv actually is
 
-Checked 2026-09-16:
-
 | Path | What |
 | --- | --- |
-| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | the venv itself (1.5 GB), built in the old scratch checkout |
-| `/home/project/11001786/WyFormer/WyckoffTransformer/.venv` | a symlink to it |
-| `<worktree>/.venv` | a symlink to the main checkout's, made by `env_init.sh` |
+| `/home/project/11001786/WyFormer/WyckoffTransformer/.venv` | the venv itself, a real directory on project storage, built by `build_venv.sh` |
+| `<worktree>/.venv` | a symlink to it, made by `env_init.sh` |
+| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | the previous venv (read-only), built 2026-09-05 in the old scratch checkout; stale against `pyproject.toml` (stock PyXtal 1.1.4, matminer 0.8.0) |
 
-The old scratch checkout, `/scratch/users/nus/kna/WyckoffTransformer`, is still in use:
-the chains submitted before the main checkout moved to `/home/project` run from it and
-from this venv. Do not remove either while any of them is queued.
-
-The venv is read-only ([usage.md](usage.md#the-shared-cache-and-venv-are-read-only)).
-Rebuilding it in place (`uv venv --clear` through the symlink) would pull it from under
-every running job; build a new one elsewhere and repoint the symlink between chains.
+Until 2026-09-16 the main checkout's `.venv` was a symlink to that scratch venv, which
+scratch's purge policy could have deleted from under every job. The old scratch checkout,
+`/scratch/users/nus/kna/WyckoffTransformer`, is still in use: the chains submitted before
+the main checkout moved to `/home/project` run from it and from its venv. Remove both
+once none of them is queued.
 
 ### How a worktree gets its own code from the shared venv
-- The editable install's `.pth` names the checkout it was installed from --
-  `/scratch/users/nus/kna/WyckoffTransformer/src`, not the main checkout's.
+- The editable install's `.pth` names the checkout it was installed from -- the main
+  checkout's `src`.
 - `scripts/platforms/aspire2a/run_in_singularity.sh` therefore puts the invoking checkout's
   `src` first on `PYTHONPATH` (`PYTHONPATH=$REPO_DIR/src:$PYTHONPATH`), which Python searches
-  before any `.pth` entry. Anything run outside that launcher imports the old checkout's code.
+  before any `.pth` entry. Anything run outside that launcher imports the main checkout's code.
 - `run_in_singularity.sh` also binds `/home/project` and `/data/projects` into Singularity
   (not mounted by default on ASPIRE 2A), so the main checkout, the data store and the cache
   are visible inside the container.
@@ -278,8 +237,8 @@ WANDB_DIR=/scratch/users/nus/kna/WyFormer
 | `/scratch/users/nus/kna/WyFormer` | Lustre scratch | Local W&B output directory (`WANDB_DIR`) |
 | `/scratch/users/nus/kna/WyFormer/logs` | Lustre scratch | PBS output of every launcher |
 | `/home/users/nus/kna/scratch/WyFormer/worktrees/` | Lustre scratch | Working git worktrees |
-| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | 1.5 GB, Lustre | Shared container-only virtual environment, **read-only**; the main checkout's `.venv` links to it |
-| `<repo>/.uv-cache` | 3.0 GB | uv cache, kept on scratch by design |
+| `/home/project/11001786/WyFormer/WyckoffTransformer/.venv` | GPFS project | Shared container-only virtual environment, **read-only** |
+| `/scratch/users/nus/kna/WyFormer/uv-cache` | Lustre scratch | uv cache, regenerable, so on scratch by design |
 | `~/.cache/huggingface` | 5.8 GB | on the **home** quota |
 | `~/.cache/cached_path` | ORB checkpoints | on the **home** quota — `cached_path` ignores `XDG_CACHE_HOME` |
 

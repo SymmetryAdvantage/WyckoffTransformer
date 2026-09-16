@@ -96,8 +96,8 @@ regardless of what the node holds. The AI queues default to
 | --- | --- |
 | `/home/project/11001786/WyFormer/WyckoffTransformer` | The main checkout (GPFS): `main`, merges experiments |
 | `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` | One worktree per experiment (Lustre scratch), reusing the shared `.venv` |
-| `/scratch/users/nus/kna/WyckoffTransformer` | The old checkout: still hosts the shared `.venv` and the chains submitted before 2026-09-16 |
-| `/scratch/users/nus/kna/WyckoffTransformer/.venv` | Python 3.12.3 venv, **container-only**, `--system-site-packages`, **read-only**; `<main-repo>/.venv` links to it |
+| `<main-repo>/.venv` | Python 3.12.3 venv shared by every checkout, **container-only**, `--system-site-packages`, **read-only**; built by `build_venv.sh` |
+| `/scratch/users/nus/kna/WyckoffTransformer` | The old checkout and its stale venv: still used by the chains submitted before 2026-09-16 |
 | `/home/project/11001786/WyFormer/data` | Data store (`WYFORMER_DATA`), untracked datasets |
 | `/home/project/11001786/WyFormer/cache` | Tensor and dataset cache (`WYFORMER_CACHE`), **read-only** |
 | `/scratch/users/nus/kna/WyFormer/runs` | Run working outputs (`WYFORMER_RUNS`) |
@@ -114,8 +114,8 @@ Storage and quotas (`myquota`, `myprojects` from `/app/apps/local/bin`):
 | Mount | Type | Quota | Used | Holds |
 | --- | --- | --- | --- | --- |
 | `/home/users/nus/kna` | GPFS | **50 GB** | 34.6 GB | the `.sif` (12 GB), `~/.cache` (7 GB), `~/.netrc` |
-| `/home/project/11001786` | GPFS | 20 TB | — | the main checkout, `data/`, `cache/` |
-| `/scratch/users/nus/kna` | Lustre | 100 TB | — | `runs/`, `logs/`, `worktrees/`, the shared `.venv` |
+| `/home/project/11001786` | GPFS | 20 TB | — | the main checkout and its shared `.venv`, `data/`, `cache/` |
+| `/scratch/users/nus/kna` | Lustre | 100 TB | — | `runs/`, `logs/`, `worktrees/`, the uv cache |
 | `/raid` | node-local XFS | — | — | throwaway job scratch, **gone when the job ends** |
 
 The **home quota is the tight one**: 50 GB, a quarter of it already the
@@ -139,12 +139,14 @@ In `scripts/platforms/aspire2a/`:
 | `create_worktree.sh` | create a git worktree on branch `<name>` in `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>` |
 | `train_in_pbs.sh` | the general self-chaining training launcher: committed code only, runs keyed by branch, no cache building |
 | `store_lock.sh` | keep the cache store and the shared `.venv` read-only; `open`/`unlock` for deliberate writes |
+| `build_venv.sh` | rebuild the shared `.venv` beside the live one, verify, swap it in, lock it |
 | `protocol_relax.pbs` | self-chaining relax + score for one generated pool |
 | `train_formula_energy.pbs` | one-slot fit of the composition-floor ensemble |
 | `prefetch_cached_path.sh` | parallel-range fetch of a checkpoint into the `cached_path` cache, ETag-verified |
 
-`.venv` is built by the generic `scripts/build_singularity_venv.sh`, run *inside*
-the image with `WYFORMER_PLATFORM=aspire2a`; see [environment.md](environment.md).
+`.venv` is built by `build_venv.sh`, which runs the generic
+`scripts/build_singularity_venv.sh` *inside* the image; see
+[environment.md](environment.md#building-the-venv).
 
 Do not move a launcher while its chains are in flight: a running link re-`qsub`s
 **itself** by absolute path, and calls `run_in_singularity.sh` by path too, so
