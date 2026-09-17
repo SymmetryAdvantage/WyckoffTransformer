@@ -96,3 +96,4 @@ This is a research project, which means that ideas will be tried and discarded. 
 2. Files in docs/archive/ are not maintained - there is no need to update them, but they might contradict the state of the code base and later findings
 3. In general, files docs/*.md are supposed to be current - correct them if you notice a contradiction
 4. In geheral, files yamls/ are supposed to be immutable to preserve reproducibility and data-cache-config-run correspondence. They can be edited if asked explicitely or to fix a bug
+5. By default, run with WanDB online logging enabled - unless there is a specific reason not to, such as avoiding overwriting
