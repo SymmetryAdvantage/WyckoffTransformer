@@ -361,7 +361,7 @@ class AugmentedCascadeDataset():
             accumulate(self.viable_counts[:self.max_sequence_length]))
 
 
-    def sample_known_seq_len(self) -> int:
+    def sample_known_seq_len(self, rng: random.Random = random) -> int:
         """Draw a known_seq_len in proportion to the number of examples viable there.
 
         Sampling it uniformly instead wastes most steps once the sequence cap sits far above the
@@ -372,8 +372,11 @@ class AugmentedCascadeDataset():
         exactly the steps it is meant to upweight. Putting the weight in the sampling distribution
         makes the expected gradient proportional to the full objective whatever the clipping does,
         and leaves every step on the same loss scale.
+
+        `rng` is the global `random` module unless the caller owns a stream: distributed
+        training draws from one shared by every rank, so all ranks take the same step.
         """
-        return random.choices(
+        return rng.choices(
             range(self.max_sequence_length), cum_weights=self._known_seq_len_cum_weights)[0]
 
 
@@ -395,27 +398,46 @@ class AugmentedCascadeDataset():
         as an unfiltered pass over the split; a caller taking one gradient step per draw of
         sample_known_seq_len already has that weight in the draw.
         """
+        positions = self.draw_viable_positions(known_seq_len, batch_size)
+        if positions is None:
+            return self.length_sorted_indices[:self.viable_count(known_seq_len)]
+        return self.length_sorted_indices[positions]
+
+
+    def draw_viable_positions(
+        self,
+        known_seq_len: int,
+        batch_size: Optional[int],
+        generator: Optional[torch.Generator] = None) -> Optional[Tensor]:
+        """Positions into `length_sorted_indices` of a batch viable at `known_seq_len`.
+
+        The sampling rule of `sample_viable_batch`, without the final lookup. Returns None
+        when the batch is the whole viable set, i.e. the prefix `[:viable_count]`.
+
+        Args:
+            generator: Draw from this CPU generator, returning CPU positions, instead of from
+                the global RNG on the storage device. The distributed loader passes one
+                seeded identically on every rank, so all ranks agree on the global batch.
+        """
         n_viable = self.viable_count(known_seq_len)
         if n_viable == 0:
             raise ValueError(
                 f"No example in the dataset is viable at known_seq_len={known_seq_len}; "
                 f"the longest sequence has {int(self.pure_sequences_lengths.max())} elements.")
         n_samples = n_viable if batch_size is None else min(batch_size, n_viable)
-        device = self.length_sorted_indices.device
         if n_samples == n_viable:
             # The batch is the whole viable set, so there is nothing to sample. Drawing it anyway
             # would return a bootstrap resample that misses ~37% of the examples it is supposed
             # to cover -- which, at the LeMat-Bulk cap, is every known_seq_len from 13 up, in
             # evaluation as well as in training.
-            return self.length_sorted_indices[:n_viable]
+            return None
+        device = self.length_sorted_indices.device if generator is None else generator.device
         if n_samples * SAMPLE_WITHOUT_REPLACEMENT_RATIO >= n_viable:
-            positions = torch.randperm(n_viable, device=device)[:n_samples]
-        else:
-            # Sampling this thin a slice, with and without replacement differ by a
-            # finite-population correction below 1/SAMPLE_WITHOUT_REPLACEMENT_RATIO, which is not
-            # worth permuting a multi-million row set for on every step.
-            positions = torch.randint(0, n_viable, (n_samples,), device=device)
-        return self.length_sorted_indices[positions]
+            return torch.randperm(n_viable, device=device, generator=generator)[:n_samples]
+        # Sampling this thin a slice, with and without replacement differ by a
+        # finite-population correction below 1/SAMPLE_WITHOUT_REPLACEMENT_RATIO, which is not
+        # worth permuting a multi-million row set for on every step.
+        return torch.randint(0, n_viable, (n_samples,), device=device, generator=generator)
 
 
     # Compilation is safe since the function only ever uses the same data
@@ -641,18 +663,38 @@ class AugmentedCascadeDataset():
             return self.start_tokens[batch_target_is_viable], cascade_result, target
 
 
+def even_shard_bounds(n_items: int, world_size: int, rank: int) -> Tuple[int, int]:
+    """The [start, stop) of `rank`'s share of `n_items` split as evenly as possible.
+
+    The first `n_items % world_size` ranks take one extra item, as `torch.tensor_split`
+    would. A rank's share is empty when there are fewer items than ranks.
+    """
+    base, extra = divmod(n_items, world_size)
+    start = rank * base + min(rank, extra)
+    return start, start + base + (1 if rank < extra else 0)
+
+
 class AugmentedCascadeLoader():
     """
     Stateful batch iterator wrapping an AugmentedCascadeDataset.
 
     Manages shuffling, batch index tracking, and epoch iteration while
     keeping the underlying dataset as a pure const data store.
+
+    With `world_size > 1` it is one rank's view of a global batch of `batch_size`: every
+    rank draws the same global batch from a CPU generator seeded with the same `seed` and
+    returns its own shard of it, so the union over ranks is the batch a single process
+    would have drawn and `batch_size` means the same thing on any number of GPUs. See
+    wyckoff_transformer.distributed.
     """
     def __init__(
         self,
         dataset: AugmentedCascadeDataset,
         batch_size: Optional[int] = None,
         fix_batch_size: bool = True,
+        rank: int = 0,
+        world_size: int = 1,
+        seed: Optional[int] = None,
     ):
         self.dataset = dataset
         self.num_examples = dataset.num_examples
@@ -661,11 +703,45 @@ class AugmentedCascadeLoader():
 
         if self.batch_size > self.num_examples:
             raise ValueError("Batch size is larger than the dataset")
-        
-        self.this_shuffle_order = torch.randperm(
-            self.num_examples, device=dataset.augmented_storage_device)
+
+        self.rank = rank
+        self.world_size = world_size
+        #: How many examples of the global batch the last batch stands for -- the global
+        #: batch size over world_size -- and whether this rank's share of it was empty and
+        #: padded with a stand-in example that must carry no weight. Set by the sharded
+        #: draws only. The shares are unequal, or empty, only when a known_seq_len has
+        #: fewer viable examples than the global batch and they do not divide evenly.
+        self.last_batch_share: Optional[float] = None
+        self.last_batch_is_filler = False
+        if world_size > 1:
+            if batch_size is None:
+                raise ValueError(
+                    "Distributed training needs a batch size: a full-batch step is the same "
+                    "whole split on every rank, and splitting it would change what a step is.")
+            if batch_size % world_size != 0:
+                raise ValueError(
+                    f"The global batch size {batch_size} does not divide evenly between "
+                    f"{world_size} ranks.")
+            if not fix_batch_size:
+                raise NotImplementedError(
+                    "Distributed loading requires fix_batch_size: a short final batch would "
+                    "not divide evenly between ranks.")
+            if seed is None:
+                raise ValueError("A sharded loader needs the seed all ranks share")
+            if not 0 <= rank < world_size:
+                raise ValueError(f"rank {rank} is outside a world of {world_size}")
+            # On the CPU: the ranks' generators must produce identical streams, which a CPU
+            # generator guarantees and CUDA generators on different card models need not.
+            self.generator = torch.Generator().manual_seed(seed)
+        else:
+            self.generator = None
+        if self.generator is None:
+            self.this_shuffle_order = torch.randperm(
+                self.num_examples, device=dataset.augmented_storage_device)
+        else:
+            self.this_shuffle_order = self._new_shuffle_order()
         self.next_batch_index = 0
-        
+
         if batch_size is None:
             self.batches_per_epoch = 1
         else:
@@ -675,9 +751,21 @@ class AugmentedCascadeLoader():
                 self.batches_per_epoch = -(-self.num_examples // self.batch_size)
 
     @classmethod
-    def from_dataset(cls, dataset: AugmentedCascadeDataset) -> 'AugmentedCascadeLoader':
+    def from_dataset(
+        cls,
+        dataset: AugmentedCascadeDataset,
+        rank: int = 0,
+        world_size: int = 1,
+        seed: Optional[int] = None,
+    ) -> 'AugmentedCascadeLoader':
         """Create a loader using the batch_size and fix_batch_size stored on the dataset."""
-        return cls(dataset, batch_size=dataset._batch_size, fix_batch_size=dataset._fix_batch_size)
+        return cls(dataset, batch_size=dataset._batch_size, fix_batch_size=dataset._fix_batch_size,
+                   rank=rank, world_size=world_size, seed=seed)
+
+    @property
+    def sharded(self) -> bool:
+        """Whether this loader returns one rank's shard of a global batch."""
+        return self.generator is not None
 
     def state_dict(self) -> Dict[str, Any]:
         """The shuffle order and the position in it, for a run that has to be resumed.
@@ -687,10 +775,14 @@ class AugmentedCascadeLoader():
         sample but not the run that was interrupted. Moved to the CPU so a checkpoint
         written on a GPU host stays loadable anywhere.
         """
-        return {
+        state = {
             "this_shuffle_order": self.this_shuffle_order.cpu(),
             "next_batch_index": self.next_batch_index,
         }
+        if self.generator is not None:
+            # The rank-shared stream the global batches are drawn from.
+            state["generator"] = self.generator.get_state()
+        return state
 
     def load_state_dict(self, state: Dict[str, Any]) -> None:
         """Restore the shuffle position saved by `state_dict`."""
@@ -699,8 +791,31 @@ class AugmentedCascadeLoader():
             raise ValueError(
                 f"The checkpoint was written by a loader over {len(order)} examples, but this "
                 f"one has {self.num_examples}: the dataset changed under the run.")
-        self.this_shuffle_order = order.to(self.dataset.augmented_storage_device)
+        if self.generator is None:
+            self.this_shuffle_order = order.to(self.dataset.augmented_storage_device)
+        else:
+            self.this_shuffle_order = order.cpu()
+            if "generator" in state:
+                self.generator.set_state(state["generator"].cpu())
+            else:
+                # A checkpoint of a single-process run: the order carries over, and the
+                # draws after it come from this run's own shared stream.
+                logger.info("The checkpoint holds no shared loader stream; keeping this run's.")
         self.next_batch_index = int(state["next_batch_index"])
+
+    def _new_shuffle_order(self) -> Tensor:
+        if self.generator is None:
+            return torch.randperm(
+                self.num_examples, device=self.dataset.augmented_storage_device,
+                pin_memory=self.dataset.pin_memory)
+        return torch.randperm(self.num_examples, generator=self.generator)
+
+    def _to_storage(self, indices: Tensor) -> Tensor:
+        """Move CPU indices drawn by the shared generator to where the data lives."""
+        device = self.dataset.augmented_storage_device
+        if device.type == "cuda":
+            return indices.pin_memory().to(device, non_blocking=True)
+        return indices
 
     def get_next_batch(self) -> Tensor:
         """
@@ -708,6 +823,7 @@ class AugmentedCascadeLoader():
         If self.fix_batch_size is False, the last batch might be smaller than self.batch_size,
         if self.fix_batch_size is True, the last smaller batch will be dropped.
         Shuffles the data if the end of the dataset is reached.
+        A sharded loader returns this rank's shard of the batch.
         Returns:
             The indices of the current batch.
         """
@@ -715,9 +831,7 @@ class AugmentedCascadeLoader():
         batch_end = batch_start + self.batch_size
 
         if batch_start >= self.num_examples:
-            self.this_shuffle_order = torch.randperm(
-                self.num_examples, device=self.dataset.augmented_storage_device,
-                pin_memory=self.dataset.pin_memory)
+            self.this_shuffle_order = self._new_shuffle_order()
             self.next_batch_index = 0
             return self.get_next_batch()
 
@@ -726,26 +840,25 @@ class AugmentedCascadeLoader():
             self.next_batch_index += 1
         elif batch_end == self.num_examples:
             batch_selection = self.this_shuffle_order[batch_start:batch_end]
-            self.this_shuffle_order = torch.randperm(
-                self.num_examples, device=self.dataset.augmented_storage_device,
-                pin_memory=self.dataset.pin_memory)
+            self.this_shuffle_order = self._new_shuffle_order()
             self.next_batch_index = 0
         else:  # batch_start < self.num_examples < batch_end
             if self.fix_batch_size:
-                self.this_shuffle_order = torch.randperm(
-                    self.num_examples, device=self.dataset.augmented_storage_device,
-                    pin_memory=self.dataset.pin_memory)
+                self.this_shuffle_order = self._new_shuffle_order()
                 self.next_batch_index = 0
                 return self.get_next_batch()
             else:
                 batch_selection = self.this_shuffle_order[batch_start:]
-                self.this_shuffle_order = torch.randperm(
-                    self.num_examples, device=self.dataset.augmented_storage_device,
-                    pin_memory=self.dataset.pin_memory)
+                self.this_shuffle_order = self._new_shuffle_order()
                 self.next_batch_index = 0
 
         logging.debug("The current batch size is %i", len(batch_selection))
-        return batch_selection
+        if self.generator is None:
+            return batch_selection
+        # fix_batch_size is required when sharded, so the global batch is always full.
+        self.last_batch_share = self.batch_size / self.world_size
+        self.last_batch_is_filler = False
+        return self._to_storage(batch_selection.view(self.world_size, -1)[self.rank])
 
     def get_next_viable_batch(self, known_seq_len: int) -> Tensor:
         """
@@ -760,9 +873,33 @@ class AugmentedCascadeLoader():
         summed over a filtered window, because the batch is now as full as the data allows.
         Callers must rescale by viable_count / len(batch); see WyckoffTrainer.get_loss.
 
+        A sharded loader returns this rank's shard of the global batch, and a caller has to
+        weigh its summed loss by `last_batch_share` rather than by len(batch): when the
+        global batch is the whole viable set, which need not divide evenly, the shards
+        differ in size, and a rank with an empty shard gets one stand-in example flagged by
+        `last_batch_is_filler` so that it still takes part in the backward pass.
+
         Args:
             known_seq_len: The known sequence length to filter by.
         Returns:
             Indices of viable examples in the batch.
         """
-        return self.dataset.sample_viable_batch(known_seq_len, self.batch_size)
+        if self.generator is None:
+            return self.dataset.sample_viable_batch(known_seq_len, self.batch_size)
+        sorted_indices = self.dataset.length_sorted_indices
+        positions = self.dataset.draw_viable_positions(
+            known_seq_len, self.batch_size, generator=self.generator)
+        if positions is None:
+            n_global = self.dataset.viable_count(known_seq_len)
+            start, stop = even_shard_bounds(n_global, self.world_size, self.rank)
+            self.last_batch_is_filler = start == stop
+            if self.last_batch_is_filler:
+                start, stop = 0, 1
+            indices = sorted_indices[start:stop]
+        else:
+            n_global = positions.size(0)
+            self.last_batch_is_filler = False
+            indices = sorted_indices[
+                self._to_storage(positions.view(self.world_size, -1)[self.rank])]
+        self.last_batch_share = n_global / self.world_size
+        return indices

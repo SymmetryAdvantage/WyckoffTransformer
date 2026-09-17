@@ -9,16 +9,21 @@ import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
 from wyckoff_transformer.paths import runs_root, wandb_dir
+from wyckoff_transformer.distributed import init_distributed, shutdown_distributed
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: E402
 from wyckoff_transformer.trainer import train_from_config  # noqa: E402
 # from wyckoff_transformer.bigtrainer import train_from_config
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train a model')
+    parser = argparse.ArgumentParser(
+        description='Train a model. To train on several GPUs of one node, launch it with '
+                    'torchrun --standalone --nproc-per-node N; see docs/distributed_training.md')
     parser.add_argument("config", type=Path, help="The configuration file")
     parser.add_argument("dataset", type=str, help="Dataset to use")
-    parser.add_argument("device", type=torch.device, help="Device to train on")
+    parser.add_argument("device", type=torch.device,
+                        help="Device to train on. Under torchrun, `cuda` or `cpu`: each rank "
+                             "takes cuda:LOCAL_RANK of the cards CUDA_VISIBLE_DEVICES shows.")
     parser.add_argument("--pilot", action="store_true", help="Run a pilot run by setting epochs to 3")
     parser.add_argument("--debug", action="store_true", help="Debug mode")
     parser.add_argument("--run-path", type=Path, default=None,
@@ -45,7 +50,12 @@ def main():
                         help="W&B entity to log under. Pinned by default so a run's home does not "
                              "depend on the shell's W&B configuration.")
     parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT, help="W&B project")
+    parser.add_argument("--dist-backend", choices=("nccl", "gloo"), default=None,
+                        help="Collective backend under torchrun (default: nccl on cuda, gloo on cpu)")
     args = parser.parse_args()
+    # A no-op outside torchrun. Under it, before anything touches the GPU, so that every
+    # rank's CUDA context lands on its own card.
+    distributed, args.device = init_distributed(args.device, args.dist_backend)
     if args.run_path is None:
         args.run_path = runs_root()
     
@@ -82,22 +92,37 @@ def main():
 
     wandb_config = OmegaConf.to_container(config)
     args.run_path.mkdir(parents=True, exist_ok=True)
-    with wandb.init(
-        dir=wandb_dir(),
-        entity=args.wandb_entity,
-        project=args.wandb_project,
-        job_type="train",
-        tags=tags,
-        config=wandb_config,
-        # Log back into the same run rather than opening a second one, so the loss curve of a
-        # resumed run is continuous and its run directory is the one holding the checkpoint.
-        # "must" rather than "allow": a typo in the id has to fail, not silently start afresh.
-        id=args.resume,
-        resume="must" if args.resume else None,
-        settings=wandb.Settings(
-                init_timeout=180
+    if distributed.is_main:
+        run = wandb.init(
+            dir=wandb_dir(),
+            entity=args.wandb_entity,
+            project=args.wandb_project,
+            job_type="train",
+            tags=tags,
+            config=wandb_config,
+            # Log back into the same run rather than opening a second one, so the loss curve of a
+            # resumed run is continuous and its run directory is the one holding the checkpoint.
+            # "must" rather than "allow": a typo in the id has to fail, not silently start afresh.
+            id=args.resume,
+            resume="must" if args.resume else None,
+            settings=wandb.Settings(
+                    init_timeout=180
+                )
             )
-        ):
+    # The other ranks log nothing, but share the run's id: it names the run directory they
+    # read the package data and the checkpoint from. A disabled run makes every wandb call
+    # in the trainer a no-op there.
+    run_id = distributed.broadcast_object(wandb.run.id if distributed.is_main else None)
+    if not distributed.is_main:
+        run = wandb.init(mode="disabled", id=run_id, entity=args.wandb_entity,
+                         project=args.wandb_project, config=wandb_config)
+    with run:
+        if distributed.enabled:
+            # Next to `code`, not in `config`: the number of GPUs is how a run was executed,
+            # not what it trains, and a chain may resume on a different count.
+            wandb.config.update({"distributed": {
+                "world_size": distributed.world_size, "backend": distributed.backend}},
+                allow_val_change=True)
 
         # The commit this process trains with, as a launcher that knows it passes it in:
         # scripts/platforms/aspire2a/train_in_pbs.sh reads it from the checkout, since the
@@ -119,9 +144,10 @@ def main():
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed)
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed)
+    shutdown_distributed(distributed)
 
 
 if __name__ == '__main__':

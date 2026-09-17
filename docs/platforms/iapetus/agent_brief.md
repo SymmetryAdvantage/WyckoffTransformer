@@ -21,7 +21,9 @@ brief; the full pages are in `docs/platforms/iapetus/`.
   `run.sh` at the same paths; resolve them with `wyckoff_transformer.paths`.
 - **GPUs:** 2x Tesla K20c (<5 GiB) and a GTX 750 Ti (2 GiB), driver 470, shared.
   Check `nvidia-smi`, set `CUDA_VISIBLE_DEVICES`, pass `cuda`, start with small
-  batches.
+  batches. Multi-GPU training uses the two K20c cards through
+  `run.sh python -m torch.distributed.run --standalone --nproc-per-node 2
+  scripts/train.py ... cuda`; see `docs/platforms/iapetus/usage.md`.
 - **CPU:** 6 physical cores, 30 GiB RAM, no scheduler; the ranking protocol
   runs with `--pyxtal-cores 6`.
 - **Disk:** the root filesystem, holding the checkouts, is 233 GiB with about

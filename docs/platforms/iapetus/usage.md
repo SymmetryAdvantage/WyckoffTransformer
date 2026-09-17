@@ -72,6 +72,45 @@ and the GTX 750 Ti has 2 GiB, so start with a small batch size.
 For long CPU or GPU work, use `tmux` or another session manager so it survives
 terminal disconnection.
 
+## Multi-GPU training
+
+Training can run on both K20c cards at once. Launch `torchrun` as a module, since
+`run.sh` resolves only `python` against the venv. Pass `cuda`, and choose the cards
+with `CUDA_VISIBLE_DEVICES`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 run python -m torch.distributed.run --standalone \
+    --nproc-per-node 2 scripts/train.py <model.yaml> <dataset> cuda
+```
+
+How a config behaves on several GPUs (its `train_batch_size` is the global
+batch), resuming, and what is supported are in
+[distributed_training.md](../../distributed_training.md). What is specific to
+this host:
+
+- **NCCL works on the K20c pair.** The image's NCCL is 2.23.4. Checked on
+  2026-09-17 with an all-reduce across both cards and a full training run.
+- **Use the two K20c cards, not the GTX 750 Ti.** DDP steps at the pace of the
+  slowest rank, and every rank holds a full copy of the dataset and the model on
+  its card, which the 750 Ti's 2 GiB limits.
+- **Expect a speed-up only for large batches or models.** On these cards DDP
+  adds about 6 ms per step. The smoke model at a global batch of 512 is *slower*
+  on two cards (1.50 s against 1.15 s an epoch). At 4096 it is 1.5x faster, and
+  per-card memory roughly halves. Figures are in
+  [distributed_training.md](../../distributed_training.md#performance).
+- **Check both cards first.** GPU 1 has hung on context creation before (see
+  [troubleshooting.md](troubleshooting.md)). A hung rank stalls the other in
+  NCCL until the collective times out.
+- **Smoke test**, about a minute of training and a minute of evaluation and
+  generation, with W&B offline so it does not add a run to the project:
+
+  ```bash
+  CUDA_VISIBLE_DEVICES=0,1 WANDB_MODE=offline run python -m torch.distributed.run \
+      --standalone --nproc-per-node 2 scripts/train.py \
+      yamls/models/mp_20/NextToken/distributed/ddp_smoke.yaml mp_20 cuda \
+      --run-path /mnt/hdd/kna/wyformer/runs/dev_distributed
+  ```
+
 ## ORB on GPU
 
 On iapetus, ORB uses a split device path: CPU-only Warp constructs neighbour

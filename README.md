@@ -82,6 +82,11 @@ python scripts/tokenise_a_dataset.py <dataset-name> <path-to-tokenizer-yaml> --t
 python scripts/train.py <path-to-model-yaml> <dataset-name> <device>
 ```
 The model weights are saved to `runs/<run-id>`, and to WanDB, along with the processor metadata. See [here](yamls/models/README.md) for the list of configs. Adding `--pilot` will run the model for a small number of epochs.
+### Several GPUs of one node
+```bash
+torchrun --standalone --nproc-per-node <n-gpus> scripts/train.py <path-to-model-yaml> <dataset-name> cuda
+```
+`train_batch_size` stays the global batch, so a config trains the same run on any number of GPUs. See [distributed training](docs/distributed_training.md).
 ### Resuming an interrupted run
 Training writes `runs/<run-id>/last_checkpoint.pt` every `optimisation.checkpoint_period` epochs
 (defaulting to `validation_period`) and once more when the loop ends. It holds the weights, the

@@ -1,10 +1,10 @@
 from typing import Tuple, Dict, Optional, List, Any, Union, Set
 import importlib
+import inspect
 import math
 import os
 import random
 import time
-from random import randint
 import logging
 from functools import partial
 from pathlib import Path
@@ -15,6 +15,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch import Tensor
+from torch.nn.parallel import DistributedDataParallel
 from omegaconf import OmegaConf, DictConfig
 from tqdm import trange
 import wandb
@@ -23,6 +24,7 @@ from wandb.sdk.data_types._private import MEDIA_TMP
 
 
 from wyckoff_transformer.paths import cache_root, runs_root
+from wyckoff_transformer.distributed import DistributedContext, SINGLE_PROCESS
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
 from wyckoff_transformer.censored import CensoredMinDiagnostics, CensoredMinLoss
@@ -409,6 +411,21 @@ class WyckoffTrainer():
     #: reason as the two above: trainers built by tests via __new__ skip __init__.
     checkpoint_period = 1
 
+    #: Where this process sits among the training processes; see
+    #: wyckoff_transformer.distributed. Class defaults for the same reason as the ones above.
+    distributed = SINGLE_PROCESS
+
+    #: The DistributedDataParallel wrapper the training forward pass goes through, or None
+    #: when training in one process. `model` stays the bare module: evaluation, generation
+    #: and every state_dict go through it, so nothing else sees a `module.` prefix or
+    #: triggers a collective.
+    ddp_model = None
+
+    #: Where the shape of each training step -- known_seq_len and the head -- is drawn
+    #: from. The global `random` module in one process; under DDP a stream shared by every
+    #: rank, which is what keeps them taking the same step.
+    step_rng = random
+
     def __init__(
         self,
         model: nn.Module,
@@ -451,6 +468,7 @@ class WyckoffTrainer():
         condition_on_cell_size: bool = True,
         resume: bool = False,
         reschedule: bool = False,
+        distributed: DistributedContext = SINGLE_PROCESS,
     ):
         """
         Initializes the WyckoffTrainer.
@@ -540,9 +558,21 @@ class WyckoffTrainer():
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
                 `weights_path`, which starts a *new* run from someone else's weights.
+            distributed: This process's place among the ranks of a DDP run. The training
+                loader then yields this rank's shard of a global `train_batch_size`, which
+                must divide by the world size; see wyckoff_transformer.distributed and
+                docs/distributed_training.md.
         """
         if isinstance(target, str):
             target = TargetClass[target]
+        self.distributed = distributed
+        if distributed.enabled:
+            if target == TargetClass.NextToken and not multiclass_next_token_with_order_permutation:
+                raise NotImplementedError(
+                    "Distributed training supports NextToken only with "
+                    "multiclass_next_token_with_order_permutation: the other path trains on "
+                    "the whole split every step, which every rank would merely repeat.")
+            self.step_rng = random.Random(distributed.shared_seed)
         if target != TargetClass.Scalar:
             self.cascade_target_indices = cascade_target_indices(
                 cascade_order, cascade_is_target, token_engineers)
@@ -665,7 +695,9 @@ class WyckoffTrainer():
                 augmented_storage_device=augmented_storage_device,
                 target_name=target_name,
                 extra_fields=extra_fields)
-            self.train_loader = AugmentedCascadeLoader.from_dataset(self.train_dataset)
+            self.train_loader = AugmentedCascadeLoader.from_dataset(
+                self.train_dataset, rank=distributed.rank, world_size=distributed.world_size,
+                seed=distributed.shared_seed)
             self.max_sequence_length = self.train_dataset.max_sequence_length
         else:
             self.train_dataset = None
@@ -874,6 +906,25 @@ class WyckoffTrainer():
                     self.cascade_target_count * n_slots)
                 logger.info("Start token loss weight: %.5f", self.start_loss_weight)
 
+        if distributed.enabled and self.train_loader is not None:
+            # Last, once the weights are final: wrapping broadcasts rank 0's parameters.
+            # find_unused_parameters because a NextToken step runs one head of several; the
+            # head is the same on every rank (step_rng), so the unused set agrees. The
+            # buffers are constant tables, so there is nothing to broadcast every step.
+            # torch 2.14 renamed the switch; older builds on other platforms only know the
+            # old name. Either way the buffers are still synchronised once, at wrapping.
+            no_buffer_sync = (
+                {"forward_sync_buffers": False}
+                if "forward_sync_buffers" in inspect.signature(DistributedDataParallel).parameters
+                else {"broadcast_buffers": False})
+            self.ddp_model = DistributedDataParallel(
+                self.model,
+                device_ids=[self.device] if self.device.type == "cuda" else None,
+                find_unused_parameters=True,
+                **no_buffer_sync)
+            for parameter in self._criterion_parameters():
+                torch.distributed.broadcast(parameter.data, src=0)
+
 
     def start_tokens_to_classes(self, start_tokens: Tensor) -> Tensor:
         """The class index `forward_start` scores for each start token."""
@@ -929,8 +980,19 @@ class WyckoffTrainer():
         nobody chose.
         """
         yield from self.model.parameters()
+        yield from self._criterion_parameters()
+
+
+    def _criterion_parameters(self):
         if isinstance(self.criterion, nn.Module):
             yield from self.criterion.parameters()
+
+
+    def _all_reduce_criterion_gradients(self):
+        """Average the criterion's gradients over ranks, which DDP does not see."""
+        for parameter in self._criterion_parameters():
+            if parameter.grad is not None:
+                parameter.grad.copy_(self.distributed.all_reduce_mean(parameter.grad))
 
 
     @property
@@ -1264,7 +1326,8 @@ class WyckoffTrainer():
                     production_training: bool = False,
                     no_test: bool = False,
                     resume: bool = False,
-                    reschedule: bool = False):
+                    reschedule: bool = False,
+                    distributed: DistributedContext = SINGLE_PROCESS):
         if run_path is None:
             run_path = runs_root()
         config = OmegaConf.create(config_dict)
@@ -1395,6 +1458,7 @@ class WyckoffTrainer():
             production_training=production_training,
             resume=resume,
             reschedule=reschedule,
+            distributed=distributed,
             **config.model.WyckoffTrainer_args)
 
 
@@ -1443,13 +1507,19 @@ class WyckoffTrainer():
         no_batch: bool = False,
         testing: bool = False,
         return_n_samples: bool = False,
-        rescale_to_viable: bool = True) -> Tensor | tuple[Tensor, int]:
+        rescale_to_viable: bool = True,
+        model: Optional[nn.Module] = None) -> Tensor | tuple[Tensor, int]:
         """
         Computes loss on the dataset.
 
         Args:
+            model: What to run the forward pass through; `self.model` by default. Training
+                passes the DDP wrapper, whose backward pass averages the gradients.
             return_n_samples: also return the number of examples the summed loss was computed
-                over. Needed to rescale a mini-batch loss to a whole-split estimate.
+                over. Needed to rescale a mini-batch loss to a whole-split estimate. From a
+                sharded loader it is this rank's share of the global batch instead, which
+                is what the summed loss has to be divided by for the mean over ranks to be
+                the mean over the global batch.
             rescale_to_viable: put the summed loss on the scale of a pass over every example
                 viable at this known_seq_len. What evaluation wants, since it sums over every
                 known_seq_len and so has to weight each one by how much data reaches it.
@@ -1499,20 +1569,22 @@ class WyckoffTrainer():
                     known_seq_len, known_cascade_len, return_chosen_indices=True)
 
         cond = self.build_cond(dataset, batch_selection)
+        if model is None:
+            model = self.model
 
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
             # No padding, as we have already discarded the padding
-            prediction = self.model(start_tokens, masked_data, None, known_cascade_len, cond=cond)
+            prediction = model(start_tokens, masked_data, None, known_cascade_len, cond=cond)
         elif self.target == TargetClass.NumUniqueTokens:
             # No padding, as we have already discarded the padding
-            prediction = self.model(start_tokens, masked_data, None, None, cond=cond)
+            prediction = model(start_tokens, masked_data, None, None, cond=cond)
         elif self.target == TargetClass.Scalar:
             logger.debug("Start tokens size: %s", start_tokens.size())
             #logger.debug("Start tokens isnan: %s", start_tokens.isnan().any())
             #logger.debug("Masked data isnan: %s", any((a.isnan().any() for a in masked_data)))
             #logger.debug("Padding mask isnan: %s", padding_mask.isnan().any())
-            prediction = self.model(start_tokens, masked_data, padding_mask, None, cond=cond)
+            prediction = model(start_tokens, masked_data, padding_mask, None, cond=cond)
             if self.scalar_loss == "censored":
                 # [batch, n_outputs]; the criterion splits the columns itself, and a
                 # bare squeeze() would fuse them for a batch of one.
@@ -1534,6 +1606,16 @@ class WyckoffTrainer():
         else:
             loss = self.criterion(prediction, target)
         n_samples = start_tokens.size(0)
+        if loader is not None and not no_batch and loader.sharded:
+            # This rank holds a shard of the global batch, and the shards differ in size when
+            # the global batch is a whole viable set that does not divide evenly. Weighing
+            # every rank by its share of the global batch rather than by its own size makes
+            # the mean over ranks -- what DDP takes of the gradients -- the mean over the
+            # global batch. A rank whose share is empty ran a stand-in example so that it
+            # still joins the backward pass; it must contribute nothing.
+            n_samples = loader.last_batch_share
+            if loader.last_batch_is_filler:
+                loss = loss * 0.
         if (rescale_to_viable and self.target == TargetClass.NextToken
                 and self.multiclass_next_token_with_order_permutation):
             # The batch holds as many examples viable at this known_seq_len as the data allows,
@@ -1555,20 +1637,24 @@ class WyckoffTrainer():
         self.model.train()
         if hasattr(self.optimizer, "train"):
             self.optimizer.train()
-        for _ in trange(self.train_loader.batches_per_epoch, leave=False):
+        forward_model = self.model if self.ddp_model is None else self.ddp_model
+        for _ in trange(self.train_loader.batches_per_epoch, leave=False,
+                        disable=not self.distributed.is_main):
             self.optimizer.zero_grad(set_to_none=True)
             if self.target in (TargetClass.NextToken, TargetClass.NumUniqueTokens):
                 known_cascade_len = (
-                    self.cascade_target_indices[randint(0, self.cascade_target_count - 1)]
+                    self.cascade_target_indices[
+                        self.step_rng.randint(0, self.cascade_target_count - 1)]
                     if self.target == TargetClass.NextToken else 0)
                 if self.multiclass_next_token_with_order_permutation:
                     # Weight each known_seq_len by how much data reaches it here, in the
                     # sampling, rather than in the loss. clip_grad_norm survives this and does
                     # not survive the alternative; it also never draws a known_seq_len no
                     # example is viable at.
-                    known_seq_len = self.train_dataset.sample_known_seq_len()
+                    known_seq_len = self.train_dataset.sample_known_seq_len(self.step_rng)
                 else:
-                    known_seq_len = randint(0, self.train_dataset.max_sequence_length - 1)
+                    known_seq_len = self.step_rng.randint(
+                        0, self.train_dataset.max_sequence_length - 1)
             elif self.target == TargetClass.Scalar:
                 # Use full sequences
                 known_cascade_len = None
@@ -1587,7 +1673,7 @@ class WyckoffTrainer():
                 # the other ~130 configs are tuned against that scale.)
                 loss, n_samples = self.get_loss(
                     self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
-                    rescale_to_viable=False, return_n_samples=True)
+                    rescale_to_viable=False, return_n_samples=True, model=forward_model)
                 loss = loss / n_samples
                 if self.predict_start:
                     # Rides along every step rather than taking steps of its own; see
@@ -1596,8 +1682,9 @@ class WyckoffTrainer():
                         self.train_dataset, self.train_loader)
                     loss = loss + self.start_loss_weight * start_loss / start_n_samples
             else:
-                loss = self.get_loss(
-                    self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader)
+                loss, n_samples = self.get_loss(
+                    self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
+                    return_n_samples=True, model=forward_model)
             if self.target == TargetClass.NumUniqueTokens:
                 # Predictions are [batch_size, cascade_size]
                 # Unreduced MSE is [batch_size, cascade_size]
@@ -1606,8 +1693,15 @@ class WyckoffTrainer():
                 # non-target columns here, which are filled in by an engineer rather than
                 # predicted and so must not train a head. NextToken needs no such filter:
                 # it computes one head per step, and train_epoch only ever draws a target.
-                loss = loss[:, list(self.cascade_target_indices)].mean()
+                if self.train_loader.sharded:
+                    # The mean over the global batch, as in get_loss; see there.
+                    loss = loss[:, list(self.cascade_target_indices)].sum() / (
+                        n_samples * self.cascade_target_count)
+                else:
+                    loss = loss[:, list(self.cascade_target_indices)].mean()
             loss.backward()
+            if self.distributed.enabled:
+                self._all_reduce_criterion_gradients()
             # Measure the norm whether or not it is constrained: an infinite max_norm makes
             # clip_grad_norm_ a no-op that still returns the pre-clip norm. Worth logging even
             # when clipping is on -- a threshold that binds on every step is not catching
@@ -1618,7 +1712,9 @@ class WyckoffTrainer():
             self.optimizer.step()
             if self.scheduler_steps_per_batch:
                 self.scheduler.step()
-            wandb.log({"loss.batch.train": loss,
+            # The gradients are already averaged, so the norm agrees across ranks; the loss
+            # is this rank's shard and is averaged here to log the global batch's.
+            wandb.log({"loss.batch.train": self.distributed.all_reduce_mean(loss),
                        "grad_norm": grad_norm,
                        "known_seq_len": known_seq_len,
                        "known_cascade_len": known_cascade_len})
@@ -1667,22 +1763,35 @@ class WyckoffTrainer():
         # noise. A fixed seed also makes the metric comparable from checkpoint to checkpoint.
         # The training stream is restored afterwards so the monitor cannot alter the run.
         rng_state = torch.get_rng_state()
-        cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        if self.distributed.enabled:
+            cuda_rng_state = self._cuda_rng_states() or None
+        else:
+            cuda_rng_state = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+        # A sharded loader draws its batches from its own generator, which manual_seed does
+        # not reach; it is rewound to the same point for both iterates.
+        generator = self.train_loader.generator
+        generator_state = None if generator is None else generator.get_state()
+        # Offset by rank, so the ranks' estimates stay independent of each other.
+        lag_seed = self.LAG_EVAL_SEED + self.distributed.rank
         try:
-            torch.manual_seed(self.LAG_EVAL_SEED)
+            torch.manual_seed(lag_seed)
             loss_x = self.evaluate(self.train_dataset, self.train_loader).sum().item()
             for p, zi in zip(params, z):
                 p.copy_(zi)
             try:
-                torch.manual_seed(self.LAG_EVAL_SEED)
+                torch.manual_seed(lag_seed)
+                if generator is not None:
+                    generator.set_state(generator_state)
                 loss_z = self.evaluate(self.train_dataset, self.train_loader).sum().item()
             finally:
                 for p, xi in zip(params, x):
                     p.copy_(xi)
         finally:
             torch.set_rng_state(rng_state)
+            if generator is not None:
+                generator.set_state(generator_state)
             if cuda_rng_state is not None:
-                torch.cuda.set_rng_state_all(cuda_rng_state)
+                self._set_cuda_rng_states(cuda_rng_state)
         metrics["loss_x"] = loss_x
         metrics["loss_z"] = loss_z
         metrics["loss_x_minus_z"] = loss_x - loss_z
@@ -1707,7 +1816,8 @@ class WyckoffTrainer():
             dataset: The dataset to evaluate on.
             loader: The loader to use for batching.
         Returns:
-            The average loss on the dataset: one entry per *target* cascade field, in the
+            The average loss on the dataset, averaged over ranks under DDP: one entry per
+            *target* cascade field, in the
             order of `self.cascade_target_order`, not one per cascade field. A non-target
             field is filled in by its engineer rather than predicted, so it has no head and
             no loss; it used to occupy a permanently-zero slot here, which reached wandb as
@@ -1729,7 +1839,8 @@ class WyckoffTrainer():
                 for _ in range(loader.batches_per_epoch):
                     loss += self.get_loss(dataset, self.max_sequence_length - 1, None, loader=loader, testing=True)
             # Above we check that the batch size is the same for all batches
-            return loss / self.evaluation_samples / loader.batches_per_epoch
+            return self.distributed.all_reduce_mean(
+                loss / self.evaluation_samples / loader.batches_per_epoch)
 
         loss = torch.zeros(self.cascade_target_count, device=self.device)
 
@@ -1801,7 +1912,9 @@ class WyckoffTrainer():
                 start_loss += batch_loss * (len(dataset) / n_samples)
             # First, as the start token is the first thing generated; see loss_field_names.
             loss = torch.cat([start_loss, loss])
-        return loss / self.evaluation_samples / len(dataset)
+        # Every rank evaluates, and the mean is what they all act on: early stopping and the
+        # plateau schedule must take the same decision everywhere.
+        return self.distributed.all_reduce_mean(loss / self.evaluation_samples / len(dataset))
 
 
     @torch.no_grad()
@@ -1829,7 +1942,8 @@ class WyckoffTrainer():
             prediction = prediction.reshape(-1, self.criterion.n_outputs)
             for key, value in self.censored_diagnostics(prediction, target).items():
                 totals[key] = totals.get(key, 0.) + value
-        return {key: (value / loader.batches_per_epoch).item() for key, value in totals.items()}
+        return {key: self.distributed.all_reduce_mean(value / loader.batches_per_epoch).item()
+                for key, value in totals.items()}
 
 
     @property
@@ -1865,9 +1979,19 @@ class WyckoffTrainer():
             best_val_loss: Best total validation loss seen so far.
             best_val_epoch: Epoch that achieved it, which is what early stopping counts from.
 
+        Under DDP every rank calls this, since gathering the per-rank state is a collective,
+        and rank 0 alone writes. Each rank's own RNG and unsharded loader positions go under
+        `per_rank`; what the ranks share -- weights, optimiser, schedule, the step stream in
+        `rng.python`, the training loader's shared generator -- is saved once.
+
         Returns:
             The path written.
         """
+        per_rank = None
+        if self.distributed.enabled:
+            per_rank = self.distributed.all_gather_object(self._rank_local_state())
+            if not self.distributed.is_main:
+                return self.checkpoint_path
         checkpoint = {
             "format_version": CHECKPOINT_FORMAT_VERSION,
             "epoch": int(epoch),
@@ -1885,23 +2009,74 @@ class WyckoffTrainer():
             "epochs": self.epochs,
             "loaders": {name: loader.state_dict() for name, loader in self._loaders().items()},
             "rng": {
-                "python": random.getstate(),
+                # The stream the step shapes are drawn from: the global one in a single
+                # process, the rank-shared one under DDP. Same format either way.
+                "python": self.step_rng.getstate(),
                 "torch": torch.get_rng_state(),
-                # Gated on the run's own device rather than on a GPU being present: reading
-                # the CUDA RNG initialises a context on the default device, which a CPU run
-                # has no business doing and which fails outright when someone else's job is
-                # already filling that card.
-                "cuda": (torch.cuda.get_rng_state_all()
-                         if self.device.type == "cuda" else []),
+                "cuda": self._cuda_rng_states(),
             },
             # A plain string: the checkpoint is read back with weights_only=True, which
             # accepts primitives and tensors and nothing else.
             "wandb_run_id": None if wandb.run is None else str(wandb.run.id),
         }
+        if per_rank is not None:
+            checkpoint["per_rank"] = per_rank
         atomic_torch_save(checkpoint, self.checkpoint_path)
         logger.info("Wrote the resume checkpoint for epoch %d to %s", epoch, self.checkpoint_path)
         self.mirror_checkpoint_to_wandb(force=epoch >= self.epochs)
         return self.checkpoint_path
+
+    def _cuda_rng_states(self) -> List[Tensor]:
+        """The CUDA RNG states a checkpoint carries: none for a CPU run.
+
+        Gated on the run's own device rather than on a GPU being present: reading the CUDA
+        RNG initialises a context on the default device, which a CPU run has no business
+        doing and which fails outright when someone else's job is already filling that
+        card. Under DDP only this rank's device, for the same reason: every rank sees every
+        card of the node, and reading them all puts a context of each rank on each card.
+        """
+        if self.device.type != "cuda":
+            return []
+        if self.distributed.enabled:
+            return [torch.cuda.get_rng_state(self.device)]
+        return torch.cuda.get_rng_state_all()
+
+    def _set_cuda_rng_states(self, states: List[Tensor]) -> None:
+        """Restore what `_cuda_rng_states` returned in this same process."""
+        if self.distributed.enabled:
+            torch.cuda.set_rng_state(states[0], self.device)
+        else:
+            torch.cuda.set_rng_state_all(states)
+
+    def _rank_local_state(self) -> Dict[str, Any]:
+        """What differs between the ranks and a resume has to give back to each."""
+        return {
+            "torch": torch.get_rng_state(),
+            "cuda": self._cuda_rng_states(),
+            "loaders": {name: loader.state_dict() for name, loader in self._loaders().items()
+                        if not loader.sharded},
+        }
+
+    def _restore_rank_local_state(self, checkpoint: Dict[str, Any]) -> None:
+        """Give this rank back its own RNG and loader positions, when it has them."""
+        per_rank = checkpoint.get("per_rank")
+        if per_rank is None or len(per_rank) != self.distributed.world_size:
+            # A checkpoint of a single process, or of a different number of ranks: the
+            # shared state still restores exactly, and the per-rank streams start afresh --
+            # reusing one rank's for all of them would make the ranks draw alike.
+            logger.warning(
+                "The checkpoint holds per-rank state for %s ranks and this run has %d; "
+                "reseeding the per-rank random streams.",
+                "no" if per_rank is None else len(per_rank), self.distributed.world_size)
+            torch.manual_seed(self.distributed.rank_seed())
+            return
+        mine = per_rank[self.distributed.rank]
+        torch.set_rng_state(mine["torch"].to(torch.uint8).cpu())
+        if mine["cuda"] and self.device.type == "cuda":
+            self._set_cuda_rng_states([mine["cuda"][0].to(torch.uint8).cpu()])
+        for name, loader in self._loaders().items():
+            if not loader.sharded and name in mine["loaders"]:
+                loader.load_state_dict(mine["loaders"][name])
 
     def mirror_checkpoint_to_wandb(self, force: bool = False) -> bool:
         """Copy the resume checkpoint into the run's W&B files, so a purge is survivable.
@@ -2002,7 +2177,14 @@ class WyckoffTrainer():
                         raise
             else:
                 logger.warning("The checkpoint holds no %s loader state; reshuffling it.", name)
-        random.setstate(checkpoint["rng"]["python"])
+        self.step_rng.setstate(checkpoint["rng"]["python"])
+        if self.distributed.enabled:
+            self._restore_rank_local_state(checkpoint)
+            return {
+                "epoch": int(checkpoint["epoch"]),
+                "best_val_loss": float(checkpoint["best_val_loss"]),
+                "best_val_epoch": int(checkpoint["best_val_epoch"]),
+            }
         torch.set_rng_state(checkpoint["rng"]["torch"].to(torch.uint8).cpu())
         # `map_location` has moved these onto the GPU; the setter takes CPU ByteTensors only.
         cuda_state = [state.to(torch.uint8).cpu() for state in checkpoint["rng"]["cuda"]]
@@ -2065,7 +2247,8 @@ class WyckoffTrainer():
                 logger.info(
                     "Resuming at epoch %d of %d; best validation loss %.4f at epoch %d.",
                     start_epoch, self.epochs, best_val_loss, best_val_epoch)
-        self.save_start_token_distribution()
+        if self.distributed.is_main:
+            self.save_start_token_distribution()
 
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
@@ -2074,7 +2257,8 @@ class WyckoffTrainer():
         wandb.define_metric("known_seq_len", hidden=True)
         wandb.define_metric("known_cascade_len", hidden=True)
 
-        for epoch in (train_tqdm := trange(start_epoch, self.epochs)):
+        for epoch in (train_tqdm := trange(start_epoch, self.epochs,
+                                           disable=not self.distributed.is_main)):
             self.train_epoch()
             if epoch % self.validation_period == 0 or epoch == self.epochs - 1:
                 train_loss = self.evaluate(self.train_dataset, self.train_loader)
@@ -2123,13 +2307,14 @@ class WyckoffTrainer():
                     # first epoch of one.
                     best_val_loss = float(total_val_loss)
                     best_val_epoch = epoch
-                    atomic_torch_save(self.model.state_dict(), best_model_params_path)
-                    best_model_artifact = wandb.Artifact(
-                        name=f"best_model_{wandb.run.id}",
-                        type="model",
-                        metadata={"epoch": epoch})
-                    best_model_artifact.add_file(best_model_params_path)
-                    wandb.log_artifact(best_model_artifact)
+                    if self.distributed.is_main:
+                        atomic_torch_save(self.model.state_dict(), best_model_params_path)
+                        best_model_artifact = wandb.Artifact(
+                            name=f"best_model_{wandb.run.id}",
+                            type="model",
+                            metadata={"epoch": epoch})
+                        best_model_artifact.add_file(best_model_params_path)
+                        wandb.log_artifact(best_model_artifact)
                     train_tqdm.set_description(
                         f"Epoch {epoch}; loss_epoch.val {total_val_loss.item():.4f} "
                         f"saved to {best_model_params_path}")
@@ -2552,7 +2737,13 @@ def train_from_config(
     production_training: bool = False,
     no_test: bool = False,
     resume: bool = False,
-    reschedule: bool = False):
+    reschedule: bool = False,
+    distributed: DistributedContext = SINGLE_PROCESS):
+    """Train the run W&B has open, then generate from and evaluate its best weights.
+
+    Under DDP every rank calls this with the W&B run of the same id -- disabled everywhere
+    but rank 0 -- and rank 0 alone writes the run directory, logs artifacts and generates.
+    """
 
     if run_path is None:
         run_path = runs_root()
@@ -2563,35 +2754,46 @@ def train_from_config(
         checkpoint_path = this_run_path / CHECKPOINT_FILENAME
         # `runs/` is per-machine and may be purged; the checkpoint is mirrored to W&B
         # precisely so that is recoverable rather than a silent restart. Short-circuit:
-        # the download is only attempted when there is no local copy to use.
-        if (not checkpoint_path.exists()
-                and restore_checkpoint_from_wandb(this_run_path) is None):
+        # the download is only attempted when there is no local copy to use. Rank 0 alone
+        # asks W&B; the other ranks read the file it leaves, on the same node.
+        have_checkpoint = True
+        if distributed.is_main:
+            have_checkpoint = (checkpoint_path.exists()
+                               or restore_checkpoint_from_wandb(this_run_path) is not None)
+        if not distributed.broadcast_object(have_checkpoint):
             raise FileNotFoundError(
                 f"Asked to resume run {wandb.run.id}, but it has no checkpoint at "
                 f"{checkpoint_path} and none mirrored to W&B. A run that died "
                 f"before writing one has to be started over.")
-        rescheduled = check_resume_config(
-            config_dict, this_run_path / "config.yaml", reschedule=reschedule)
-        logger.info("Resuming run %s from %s", wandb.run.id, checkpoint_path)
-        if rescheduled:
-            # The run's own config.yaml is what every later link is held to, so it has to
-            # become the schedule the run is actually on -- otherwise the next resume diffs
-            # against a horizon nothing is following any more and needs --reschedule to get
-            # past a change that already happened.
-            logger.warning(
-                "RESCHEDULING run %s onto a new horizon:\n%s",
-                wandb.run.id, "\n".join(rescheduled))
-            OmegaConf.save(config_dict, this_run_path / "config.yaml")
-            wandb.run.summary["rescheduled_at_epoch"] = wandb.run.summary.get("epoch")
+        # Rank 0 alone: it may rewrite config.yaml below, which another rank must not be
+        # reading at the time, and a refusal on rank 0 ends the whole job anyway.
+        if distributed.is_main:
+            rescheduled = check_resume_config(
+                config_dict, this_run_path / "config.yaml", reschedule=reschedule)
+            logger.info("Resuming run %s from %s", wandb.run.id, checkpoint_path)
+            if rescheduled:
+                # The run's own config.yaml is what every later link is held to, so it has to
+                # become the schedule the run is actually on -- otherwise the next resume diffs
+                # against a horizon nothing is following any more and needs --reschedule to get
+                # past a change that already happened.
+                logger.warning(
+                    "RESCHEDULING run %s onto a new horizon:\n%s",
+                    wandb.run.id, "\n".join(rescheduled))
+                OmegaConf.save(config_dict, this_run_path / "config.yaml")
+                wandb.run.summary["rescheduled_at_epoch"] = wandb.run.summary.get("epoch")
+        distributed.barrier()
     else:
-        this_run_path.mkdir(parents=True, exist_ok=False)
-        # Before the model is built, so that it is built from the run's own copy. Not on
-        # resume: the run already has the copy it was trained with -- or, if it predates
-        # them, only the package data could be what it used, and copying today's would
-        # claim otherwise.
-        save_package_data(this_run_path)
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule)
-    if not resume:
+        if distributed.is_main:
+            this_run_path.mkdir(parents=True, exist_ok=False)
+            # Before the model is built, so that it is built from the run's own copy. Not on
+            # resume: the run already has the copy it was trained with -- or, if it predates
+            # them, only the package data could be what it used, and copying today's would
+            # claim otherwise.
+            save_package_data(this_run_path)
+        # The other ranks build their models from that copy.
+        distributed.barrier()
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule, distributed=distributed)
+    if not resume and distributed.is_main:
         # A resumed run wrote all of these on its first attempt, and their W&B artifacts with
         # them; the config one is what check_resume_config just held it to.
         tokenizers_engineers = wandb.Artifact(name=f"processors_{wandb.run.id}", type="processors")
@@ -2607,6 +2809,9 @@ def train_from_config(
         run_config_artifact.add_file(config_save_path)
         wandb.log_artifact(run_config_artifact)
     trainer.train()
+    if not distributed.is_main:
+        # Generation needs neither the other ranks nor their GPUs.
+        return
     config = OmegaConf.create(config_dict)
     if config.model.WyckoffTrainer_args.target == "NextToken" and \
         config.evaluation.get("n_structures_to_generate", 0) > 0:
