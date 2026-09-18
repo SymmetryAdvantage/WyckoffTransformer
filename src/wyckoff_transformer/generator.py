@@ -60,6 +60,7 @@ class WyckoffGenerator():
         self.stops = stops
         self.calibrators = None
         self.tail_calibrators = None
+        self.start_calibrator = None
         self.token_engineers = token_engineers
 
 
@@ -83,6 +84,13 @@ class WyckoffGenerator():
 
         with torch.no_grad():
             self.model.eval()
+            if getattr(self.model, "predict_start", False):
+                # `start_classes` is set on the dataset by WyckoffTrainer for such a model.
+                start_classes = dataset.start_classes
+                start_cond = None if cond_builder is None else cond_builder(dataset, slice(None))
+                self.start_calibrator = TemperatureScaling().to(start_classes.device).fit(
+                    self.model.forward_start(start_classes.size(0), cond=start_cond),
+                    start_classes)
             self.calibrators = []
             self.tail_calibrators = []
             for known_cascade_len, cascade_name in enumerate(self.cascade_order):
@@ -126,6 +134,22 @@ class WyckoffGenerator():
                     # Use model's device as a fallback
                     model_device = next(self.model.parameters()).device
                     self.tail_calibrators.append(TemperatureScaling().to(model_device))
+
+
+    @torch.no_grad()
+    def sample_start_classes(
+            self, batch_size: int, cond: Optional[Tensor] = None, temperature: float = 1) -> Tensor:
+        """Draw start token classes from a model built with predict_start.
+
+        Returns:
+            [batch_size] class indices, as `WyckoffTrainer.start_classes_to_tokens` reads them.
+        """
+        self.model.eval()
+        logits = self.model.forward_start(batch_size, cond=cond)
+        if self.start_calibrator is not None:
+            logits = self.start_calibrator(logits)
+        probabilities = torch.nn.functional.softmax(logits / temperature, dim=1)
+        return torch.multinomial(probabilities, num_samples=1).squeeze(1)
 
 
     @torch.no_grad()

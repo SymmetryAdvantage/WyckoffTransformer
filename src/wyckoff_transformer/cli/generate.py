@@ -283,8 +283,9 @@ def main():
     parser.add_argument("--calibrate", action="store_true", help="Calibrate the generator.")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="Softmax temperature for every generated cascade field. "
-                             "Below 1 sharpens, above 1 flattens. The start token is "
-                             "drawn from the saved space-group distribution either way.")
+                             "Below 1 sharpens, above 1 flattens. It also applies to the "
+                             "space group of a model with predict_start; otherwise the "
+                             "space group is drawn from the saved distribution either way.")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode.")
     parser.add_argument("--required-elements", "--r", type=str,
                         help="Required elements for constrained generation (e.g., 'Li-S'). "
@@ -319,7 +320,8 @@ def main():
                         help="Generate only in these space groups, by number, spread "
                              "evenly over them. The space group is this model's start "
                              "token, so it is a conditioning input; omit it to sample "
-                             "from the training distribution.")
+                             "from the training distribution, or, for a model with "
+                             "predict_start, from the model given the conditioning.")
     parser.add_argument("--sg-dist", type=str, default=None,
                         help="Override the initial space group distribution using tensors cached under cache/<dataset>.")
     parser.add_argument("--condition", action="append", metavar="NAME=VALUE", default=None,

@@ -260,6 +260,10 @@ class CascadeTransformer(nn.Module):
         # n_start = 109
 
         model_args = dict(config.model.CascadeTransformer_args)
+        if model_args.get("predict_start", False):
+            # One class per start token the tokeniser knows: for a one-hot start that is one
+            # per space group, not one per column of the encoding.
+            model_args["n_start_classes"] = len(tokenisers[config.model.start_token])
         # The relational bias is the one submodule that needs the tokenisers themselves:
         # it reads the element vocabulary to build its table of physical pair descriptors,
         # and the cascade order to know which cascade fields carry elements and site
@@ -302,6 +306,8 @@ class CascadeTransformer(nn.Module):
                  concat_start_to_prediction_input_embedding_dim: Optional[int] = None,
                  condition_dim: Optional[int] = None,
                  relational_attention_bias: Optional[dict] = None,
+                 predict_start: bool = False,
+                 n_start_classes: Optional[int] = None,
                  engineers_dir: Optional[Path] = None):
         """
         Expects tokens in the following format:
@@ -350,6 +356,12 @@ class CascadeTransformer(nn.Module):
                 biases to the attention logits; see wyckoff_transformer.cascade.relational.
                 Beyond the hyperparameters of `RelationalAttentionBias` the dict carries
                 `tokenisers` and `cascade_order`, which `from_config_and_tokenisers` fills in.
+            predict_start: If True, the model also predicts the start token -- the space
+                group -- instead of only being given it, through `forward_start`. The
+                sequence is then generated as p(start | cond) * p(sites | start, cond), with
+                both factors sharing one encoder. See docs/space_group_prediction.md.
+            n_start_classes: Number of start token values `forward_start` scores. Filled in
+                by `from_config_and_tokenisers` from the start tokeniser.
             engineers_dir: where frozen tables are read from, see CascadeEmbedding.
         """
         super().__init__()
@@ -471,6 +483,48 @@ class CascadeTransformer(nn.Module):
             self.the_prediction_head = percepron_generator(
                 prediction_head_size, outputs, num_fully_connected_layers,
                 dropout=prediction_perceptron_dropout)
+
+        self.predict_start = predict_start
+        if predict_start:
+            if not n_start_classes:
+                raise ValueError("predict_start needs n_start_classes")
+            if relational_attention_bias is not None:
+                # The relational bias is a function of the start token, which is exactly
+                # what is not known yet when it is being predicted.
+                raise ValueError("predict_start is incompatible with relational_attention_bias")
+            # Stands in for the start token while it is unknown. The encoder reads nothing
+            # else at that point, so all it has to go on is the conditioning, which AdaLN
+            # delivers to every layer. N(0, 1), as nn.Embedding would initialise a start
+            # token of the categorial kind; its scale is immaterial under the LayerNorms.
+            self.start_query = nn.Parameter(torch.randn(self.d_model))
+            self.start_prediction_head = percepron_generator(
+                self.d_model, n_start_classes, num_fully_connected_layers,
+                dropout=prediction_perceptron_dropout)
+        else:
+            self.start_query = None
+            self.start_prediction_head = None
+
+
+    def forward_start(self, batch_size: int, cond: Tensor|None = None) -> Tensor:
+        """Scores for the start token, before anything of the sequence is known.
+
+        Arguments:
+            batch_size: Number of examples. Needed explicitly, as an unconditional model
+                has no input to read it from.
+            cond: Tensor of shape ``[batch_size, condition_dim]``, as for `forward`.
+        Returns:
+            Tensor of shape ``[batch_size, n_start_classes]`` with unnormalised scores.
+        """
+        if not getattr(self, "predict_start", False):
+            raise ValueError("This model was not built with predict_start")
+        data = self.start_query.view(1, 1, -1).expand(batch_size, 1, -1)
+        if getattr(self, "condition_dim", None) is not None:
+            if cond is None:
+                raise ValueError("condition_dim is set but cond is not provided")
+            transformer_output = self.transformer_encoder(data, cond=cond)
+        else:
+            transformer_output = self.transformer_encoder(data)
+        return self.start_prediction_head(transformer_output[:, 0])
 
 
     def forward(self,

@@ -392,6 +392,11 @@ class WyckoffTrainer():
     #: `formula_conditioning_width` and wyckoff_transformer.chemical_system.
     chemical_system_conditioning = False
 
+    #: Whether the model scores the start token (CascadeTransformer_args.predict_start),
+    #: adding p(space group | cond) to the loss and drawing the space group from it at
+    #: generation. A class default for the same reason as the ones above.
+    predict_start = False
+
     #: Set by `--resume`: train() continues from `last_checkpoint.pt` instead of epoch 0.
     resume = False
 
@@ -621,6 +626,12 @@ class WyckoffTrainer():
             raise ValueError(f"Unknown target: {target}")
         
         self.model = model
+        self.predict_start = bool(getattr(model, "predict_start", False))
+        if self.predict_start and not (
+                target == TargetClass.NextToken and multiclass_next_token_with_order_permutation):
+            raise ValueError(
+                "predict_start is implemented for target=NextToken with "
+                "multiclass_next_token_with_order_permutation only")
         if compile_model:
             # Transformer doesn't support fullgraph=True
             self.compiled_model = torch.compile(self.model, fullgraph=False)
@@ -838,6 +849,75 @@ class WyckoffTrainer():
         self.multiclass_next_token_with_order_permutation = multiclass_next_token_with_order_permutation
         self.evaluation_samples = evaluation_samples
         self.start_token_distribution = start_token_distribution
+
+        self.start_class_vectors = None
+        self.start_loss_weight = None
+        if self.predict_start:
+            if self.model.start_type == "one_hot":
+                # Class i is the i-th space group in ascending order, and this row is the
+                # encoding the model reads for it.
+                start_tokeniser = tokenisers[start_name]
+                self.start_class_vectors = start_tokeniser.encode_spacegroups(
+                    sorted(start_tokeniser), dtype=torch.float32, device=self.device)
+            for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
+                if ds is not None:
+                    ds.start_classes = self.start_tokens_to_classes(ds.start_tokens)
+            if self.train_dataset is not None:
+                # train_epoch draws known_seq_len in proportion to the examples viable there
+                # and the cascade field uniformly, so one step's loss is, in expectation, the
+                # per-structure site NLL times N / (targets * slots). The start token is one
+                # more term of that NLL, once per structure; weighted by the same factor it
+                # joins the objective in its true proportion, and the site steps stay exactly
+                # the ones a run without predict_start takes.
+                n_slots = self.train_dataset._known_seq_len_cum_weights[-1]
+                self.start_loss_weight = len(self.train_dataset) / (
+                    self.cascade_target_count * n_slots)
+                logger.info("Start token loss weight: %.5f", self.start_loss_weight)
+
+
+    def start_tokens_to_classes(self, start_tokens: Tensor) -> Tensor:
+        """The class index `forward_start` scores for each start token."""
+        if self.model.start_type == "categorial":
+            return start_tokens.to(torch.int64)
+        unique_vectors, inverse = torch.unique(start_tokens, dim=0, return_inverse=True)
+        vectors = self.start_class_vectors.to(unique_vectors.device)
+        matches = (unique_vectors.unsqueeze(1) == vectors.unsqueeze(0)).all(dim=-1)
+        if not bool((matches.sum(dim=1) == 1).all()):
+            raise ValueError("A start token matches no space group of the tokeniser, or several")
+        return matches.to(torch.int64).argmax(dim=1)[inverse]
+
+
+    def start_classes_to_tokens(self, classes: Tensor) -> Tensor:
+        """Inverse of `start_tokens_to_classes`: what the model reads for each class."""
+        if self.model.start_type == "categorial":
+            return classes
+        return self.start_class_vectors.to(classes.device)[classes]
+
+
+    @property
+    def loss_field_names(self) -> Tuple[str, ...]:
+        """Labels for the vector `evaluate` returns: the start token first when predicted."""
+        if getattr(self, "predict_start", False):
+            return (self.start_name,) + self.cascade_target_order
+        return self.cascade_target_order
+
+
+    def get_start_loss(
+            self,
+            dataset: AugmentedCascadeDataset,
+            loader: Optional[AugmentedCascadeLoader] = None,
+            no_batch: bool = False) -> Tuple[Tensor, int]:
+        """Summed cross-entropy of the predicted start token, and the examples it covers."""
+        if loader is not None and not no_batch:
+            # Every example is viable at known_seq_len 0, and drawing through the length
+            # index leaves the loader's shuffle position, which the checkpoint carries, alone.
+            batch_selection = loader.get_next_viable_batch(0)
+        else:
+            batch_selection = slice(None)
+        target = dataset.start_classes[batch_selection]
+        cond = self.build_cond(dataset, batch_selection)
+        prediction = self.model.forward_start(target.size(0), cond=cond)
+        return self.criterion(prediction, target), target.size(0)
 
 
     def trainable_parameters(self):
@@ -1509,6 +1589,12 @@ class WyckoffTrainer():
                     self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
                     rescale_to_viable=False, return_n_samples=True)
                 loss = loss / n_samples
+                if self.predict_start:
+                    # Rides along every step rather than taking steps of its own; see
+                    # start_loss_weight in __init__ for why this weight is the right one.
+                    start_loss, start_n_samples = self.get_start_loss(
+                        self.train_dataset, self.train_loader)
+                    loss = loss + self.start_loss_weight * start_loss / start_n_samples
             else:
                 loss = self.get_loss(
                     self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader)
@@ -1708,6 +1794,13 @@ class WyckoffTrainer():
                             dataset.viable_count(known_seq_len) / n_samples)
             # ln(P) = ln p(t_n|t_n-1, ..., t_1) + ... + ln p(t_2|t_1)
             # We are minimising the negative log likelihood of the whole sequences
+        if getattr(self, "predict_start", False) and self.target == TargetClass.NextToken:
+            start_loss = torch.zeros(1, device=self.device)
+            for _ in range(self.evaluation_samples):
+                batch_loss, n_samples = self.get_start_loss(dataset, loader, no_batch=loader is None)
+                start_loss += batch_loss * (len(dataset) / n_samples)
+            # First, as the start token is the first thing generated; see loss_field_names.
+            loss = torch.cat([start_loss, loss])
         return loss / self.evaluation_samples / len(dataset)
 
 
@@ -2007,11 +2100,16 @@ class WyckoffTrainer():
                 else:
                     total_val_loss = raw_losses['val'].sum()
                     for name, loss in raw_losses.items():
-                        # evaluate() returns one entry per target field, so this zips against
-                        # cascade_target_order; a non-target field has no loss to report.
+                        # evaluate() returns one entry per target field, plus the start token
+                        # when the model predicts it, so this zips against loss_field_names;
+                        # a non-target field has no loss to report.
                         loss_dict[name] = {
-                            field: loss[i] for i, field in enumerate(self.cascade_target_order)}
+                            field: loss[i] for i, field in enumerate(self.loss_field_names)}
                         loss_dict[name]["total"] = loss.sum().item()
+                        if self.predict_start:
+                            # The NLL of the sites given the space group: the same quantity
+                            # a model that is handed the space group reports as `total`.
+                            loss_dict[name]["total_given_start"] = loss[1:].sum().item()
                 logged = {"loss.epoch": loss_dict,
                           "lr": self.optimizer.param_groups[0]['lr'],
                           "epoch": epoch}
@@ -2077,7 +2175,9 @@ class WyckoffTrainer():
             calibrate: Whether to calibrate the generation probabilities on the validation dataset.
             compute_validity_per_known_sequence_length: Whether to compute the formal validity of
                 the generated tensors separately for each known sequence length.
-            start_tensor: Optional tensor of start tokens. If None, sampled from the training distribution.
+            start_tensor: Optional tensor of start tokens. If None, drawn from the model given
+                `cond` for a model with predict_start, and from the saved training
+                distribution otherwise.
             required_element_set: If set (including an empty set), activates element-constrained
                 generation. A set of required element token IDs or a dash-separated string (e.g. "Li-O")
                 that MUST appear in every generated structure.
@@ -2085,8 +2185,9 @@ class WyckoffTrainer():
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
                 defines a custom pool. Only used when element-constrained generation is active.
             temperature: Softmax temperature for sampling, applied to every generated
-                cascade field. It does not touch the start token: the space group is
-                drawn from the saved empirical distribution, not from the model.
+                cascade field, and to the start token when the model predicts it. Otherwise
+                the start token is not touched: the space group is drawn from the saved
+                empirical distribution, not from the model.
             cond: Optional tensor of shape [n_structures, len(condition_features)] carrying
                 the scalar conditioning features in their configured order, in physical
                 units (any condition_transform is applied here, not by the caller).
@@ -2120,9 +2221,7 @@ class WyckoffTrainer():
             if self.val_dataset is None:
                 raise ValueError("Calibration requires a validation dataset")
             generator.calibrate(self.val_dataset, cond_builder=self.build_cond)
-        if start_tensor is None:
-            start_tensor = self._sample_start_tokens_from_distribution(n_structures)
-        else:
+        if start_tensor is not None:
             if start_tensor.size(0) != n_structures:
                 raise ValueError("Custom start tensor must have the same number of samples as requested structures.")
             if hasattr(self, 'train_dataset') and self.train_dataset is not None:
@@ -2169,6 +2268,15 @@ class WyckoffTrainer():
             random_indices = torch.randint(
                 0, self.train_dataset.num_examples, (n_structures,), device=self.device)
             cond = self.build_cond(self.train_dataset, random_indices)
+
+        if start_tensor is None:
+            if getattr(self, "predict_start", False):
+                # Drawn from the model given this row's conditioning, which is why the
+                # conditioning has to be settled first.
+                start_tensor = self.start_classes_to_tokens(
+                    generator.sample_start_classes(n_structures, cond=cond, temperature=temperature))
+            else:
+                start_tensor = self._sample_start_tokens_from_distribution(n_structures)
 
         if allowed_element_mask is not None and allowed_element_mask.size(0) != n_structures:
             raise ValueError(
