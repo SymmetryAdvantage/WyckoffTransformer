@@ -16,13 +16,14 @@ from pathlib import Path
 from wyckoff_transformer import paths
 from wyckoff_transformer.system_prior import (
     DEFAULT_SG_KAPPA,
+    SYSTEM_PRIOR_FILE_NAME,
     SystemSpaceGroupPrior,
     prior_from_tensor_cache,
 )
 
 #: Where `build` puts its artifact when the caller does not say, next to the tensors
 #: it was derived from.
-DEFAULT_ARTIFACT_NAME = "system_prior.npz"
+DEFAULT_ARTIFACT_NAME = SYSTEM_PRIOR_FILE_NAME
 
 
 def default_artifact_path(dataset: str, cache_root: Path | None = None) -> Path:

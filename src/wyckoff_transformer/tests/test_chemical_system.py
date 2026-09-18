@@ -5,8 +5,10 @@ if a count can leak into it the relaxed mode has quietly become the strict one -
 and it has to reach the model in the same layout at training and at sampling
 time, in the same slot the composition would have occupied.
 """
+import tempfile
 import unittest
 import unittest.mock
+from pathlib import Path
 
 import torch
 
@@ -207,6 +209,89 @@ class TestTrainerLayout(unittest.TestCase):
         built = trainer.build_cond(self._dataset(), selection)
         self.assertEqual(built.shape, (2, 1 + N_ELEMENTS))
         self.assertTrue(torch.equal(built[:, 0], torch.tensor([2.0, 0.0])))
+
+
+class TestSaveSystemPrior(unittest.TestCase):
+    """A chemsys run has to carry the prior it will be sampled with.
+
+    Nothing else the run saves can stand in for it, and rebuilding it needs the tensor
+    cache the run trained on -- which the machine doing the sampling may not have.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.run_path = Path(self._tmp.name) / "run"
+        self.run_path.mkdir()
+        self.cache = Path(self._tmp.name) / "cache"
+        (self.cache / "lemat").mkdir(parents=True)
+
+    def _trainer(self, chemical_system_conditioning=True, dataset="lemat"):
+        from wyckoff_transformer.trainer import WyckoffTrainer
+
+        trainer = WyckoffTrainer.__new__(WyckoffTrainer)
+        trainer.chemical_system_conditioning = chemical_system_conditioning
+        trainer.run_path = self.run_path
+        trainer.dataset = dataset
+        trainer.tokeniser_config = {"name": "lemat_sg_multiplicity"}
+        return trainer
+
+    def _patches(self, wandb_mock):
+        return (
+            unittest.mock.patch("wyckoff_transformer.trainer.wandb", wandb_mock),
+            unittest.mock.patch("wyckoff_transformer.trainer.cache_root",
+                                return_value=self.cache),
+        )
+
+    def test_an_unconditioned_run_writes_nothing(self):
+        wandb_mock = unittest.mock.MagicMock()
+        with unittest.mock.patch("wyckoff_transformer.trainer.wandb", wandb_mock):
+            self.assertIsNone(self._trainer(chemical_system_conditioning=False).save_system_prior())
+        self.assertFalse((self.run_path / "system_prior.npz").exists())
+        wandb_mock.save.assert_not_called()
+
+    def test_a_prior_already_in_the_run_is_mirrored_but_not_rebuilt(self):
+        """A PBS chain calls this at the start of every link; only the first pays."""
+        (self.run_path / "system_prior.npz").write_bytes(b"npz")
+        wandb_mock = unittest.mock.MagicMock()
+        build, cache = self._patches(wandb_mock)
+        with build, cache, unittest.mock.patch(
+                "wyckoff_transformer.system_prior.prior_from_tensor_cache") as from_cache:
+            self._trainer().save_system_prior()
+        from_cache.assert_not_called()
+        wandb_mock.save.assert_called_once()
+        wandb_mock.log_artifact.assert_not_called()
+
+    def test_the_cached_prior_is_copied_rather_than_rebuilt(self):
+        (self.cache / "lemat" / "system_prior.npz").write_bytes(b"npz")
+        wandb_mock = unittest.mock.MagicMock()
+        build, cache = self._patches(wandb_mock)
+        with build, cache, unittest.mock.patch(
+                "wyckoff_transformer.system_prior.prior_from_tensor_cache") as from_cache:
+            path = self._trainer().save_system_prior()
+        from_cache.assert_not_called()
+        self.assertEqual(path.read_bytes(), b"npz")
+        wandb_mock.save.assert_called_once()
+        wandb_mock.log_artifact.assert_called_once()
+
+    def test_a_cold_run_builds_it_from_its_own_tensor_cache(self):
+        wandb_mock = unittest.mock.MagicMock()
+        build, cache = self._patches(wandb_mock)
+        with build, cache, unittest.mock.patch(
+                "wyckoff_transformer.system_prior.prior_from_tensor_cache") as from_cache:
+            self._trainer().save_system_prior()
+        from_cache.assert_called_once_with(
+            dataset="lemat", config_name="lemat_sg_multiplicity")
+        from_cache.return_value.save.assert_called_once_with(
+            self.run_path / "system_prior.npz")
+        wandb_mock.log_artifact.assert_called_once()
+
+    def test_a_trainer_that_cannot_name_its_dataset_refuses(self):
+        """Silently skipping is the bug: the run would finish and be unsamplable."""
+        wandb_mock = unittest.mock.MagicMock()
+        build, cache = self._patches(wandb_mock)
+        with build, cache, self.assertRaises(ValueError):
+            self._trainer(dataset=None).save_system_prior()
 
 
 if __name__ == "__main__":

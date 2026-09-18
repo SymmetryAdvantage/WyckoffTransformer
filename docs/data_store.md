@@ -254,6 +254,15 @@ run id it downloads each missing file of `REQUIRED_RUN_FILES`
 into the run directory. New code must not make a run directory the only place an
 output exists.
 
+The same applies to derived data a run needs to be *sampled*, not only to the
+weights. A `chemical_system_conditioning` run cannot generate anything without the
+(chemical system, space group) prior built from the tensor cache it trained on, so
+`WyckoffTrainer.save_system_prior` writes `system_prior.npz` into the run directory,
+mirrors it into the run's W&B files and logs it once as an artifact; the optional
+counterpart of `ensure_run_files` is `ensure_system_prior`. Before that existed, the
+prior was nowhere at all and the run was unsamplable on any machine without the 6.5 GB
+cache — see `docs/chemical_system_sampler.md`.
+
 **`last_checkpoint.pt` needs its own mechanism**, and it has one. It holds
 mid-training resume state — optimiser, scheduler, RNG, loader position — and
 `scripts/platforms/aspire2a/train_in_pbs.sh` chains PBS jobs by resuming from it across the queue's

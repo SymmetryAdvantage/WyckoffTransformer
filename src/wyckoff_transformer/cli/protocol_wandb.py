@@ -50,6 +50,7 @@ from typing import Optional
 import torch
 
 from wyckoff_transformer.paths import runs_root, wandb_dir
+from wyckoff_transformer.system_prior import SYSTEM_PRIOR_FILE_NAME
 from wyckoff_transformer.tokenization import WYCKOFF_MAPPINGS_FILENAME
 from wyckoff_transformer.wyckoff_processor import MODEL_ENGINEERS_DIRNAME
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
@@ -127,6 +128,40 @@ def ensure_run_files(run, run_dir: Path) -> None:
                     f"model files in {run_dir}/ by hand and re-run."
                 ) from exc
     ensure_run_engineers(run, run_dir)
+
+
+def ensure_system_prior(run, run_dir: Path) -> Optional[Path]:
+    """The run's own ``system_prior.npz``, fetched from W&B if it is not already local.
+
+    Optional, unlike :data:`REQUIRED_RUN_FILES`: only a `chemical_system_conditioning` run
+    has one, and runs trained before `WyckoffTrainer.save_system_prior` existed carry none
+    at all. Hence None rather than an exception -- the caller falls back to the cache and
+    says what to do about it.
+
+    The run's files are tried first and the artifacts second, the same order and for the
+    same reason as `ensure_run_files`: walking every artifact of a chained run means
+    listing hundreds of checkpoints.
+    """
+    target = run_dir / SYSTEM_PRIOR_FILE_NAME
+    if target.is_file():
+        return target
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        logger.info("Downloading %s -> %s", SYSTEM_PRIOR_FILE_NAME, target)
+        run.file(SYSTEM_PRIOR_FILE_NAME).download(root=str(run_dir), replace=True)
+        return target
+    except Exception as exc:  # noqa: BLE001 - absence is one of the expected answers
+        logger.info("Run %s has no %s among its files (%s); trying its artifacts",
+                    run.id, SYSTEM_PRIOR_FILE_NAME, exc)
+    for artifact in reversed(list(run.logged_artifacts())):
+        if SYSTEM_PRIOR_FILE_NAME not in {file.name for file in artifact.files()}:
+            continue
+        logger.info("Downloading %s from artifact %s -> %s",
+                    SYSTEM_PRIOR_FILE_NAME, artifact.name, run_dir)
+        artifact.download(root=str(run_dir))
+        if target.is_file():
+            return target
+    return None
 
 
 def ensure_run_engineers(run, run_dir: Path) -> None:
@@ -249,22 +284,37 @@ def generate_genes(
         from wyckoff_transformer.paths import cache_root
         from wyckoff_transformer.system_prior import SystemSpaceGroupPrior
 
+        dataset_name = run.config.get("dataset")
         prior_path = system_prior
         if prior_path is None:
-            dataset_name = run.config.get("dataset")
-            if dataset_name:
-                candidate = cache_root() / dataset_name / "system_prior.npz"
-                if candidate.is_file():
-                    prior_path = candidate
+            # The run's own, which is the only one guaranteed to share the checkpoint's
+            # element tokens. Runs trained before it was saved have none, so the cache the
+            # run trained on is the fallback -- and that only works on a machine that has it.
+            prior_path = ensure_system_prior(run, runs_root() / run_id)
+        if prior_path is None and dataset_name:
+            candidate = cache_root() / dataset_name / SYSTEM_PRIOR_FILE_NAME
+            if candidate.is_file():
+                prior_path = candidate
         if prior_path is None or not Path(prior_path).is_file():
             raise ValueError(
-                f"Run {run_id} uses chemical_system_conditioning; pass --system-prior "
-                f"pointing to system_prior.npz (checked {prior_path})."
+                f"Run {run_id} uses chemical_system_conditioning, but carries no "
+                f"{SYSTEM_PRIOR_FILE_NAME} and none is cached for {dataset_name!r}. Build "
+                f"one from the tensor cache the run trained on -- `wyformer-system-prior "
+                f"build {dataset_name}` -- and pass it as --system-prior."
             )
         logger.info("Sampling chemical systems and space groups from %s", prior_path)
         prior = SystemSpaceGroupPrior.load(prior_path)
-        draws = prior.sample(attempted, required=None, allowed=None)
         elements_tokeniser = trainer.tokenisers["elements"]
+        # The same guard `wyformer-generate` applies, and it matters more here: the prior
+        # may have come from the cache rather than from the run, and a prior built over a
+        # different vocabulary would decode every system into the wrong elements silently.
+        vocabulary = [str(symbol) for symbol in elements_tokeniser.to_token]
+        if list(prior.element_symbols) != vocabulary:
+            raise ValueError(
+                f"The prior at {prior_path} was built over {prior.n_elements} element tokens "
+                f"and run {run_id} knows {len(vocabulary)}; they have to come from the same "
+                "dataset, or a system would decode into different elements.")
+        draws = prior.sample(attempted, required=None, allowed=None)
         composition_cond = draws.conditioning_block(len(elements_tokeniser), device=device)
         start_tensor = draws.start_tensor(
             trainer.tokenisers[trainer.start_name], trainer.model.start_type, device=device
@@ -534,7 +584,8 @@ def build_parser() -> argparse.ArgumentParser:
                           "energy_above_hull=VALUE on multi-channel models).")
     gen.add_argument("--system-prior", type=Path, default=None,
                      help="Path to a system_prior.npz. For chemical_system_conditioning models, "
-                          "defaults to cache/<dataset>/system_prior.npz.")
+                          "defaults to the one the run carries in its W&B files, and failing "
+                          "that to cache/<dataset>/system_prior.npz.")
     gen.add_argument("--temperature", type=float, default=1.0,
                      help="Softmax temperature for every generated cascade field. Below 1 "
                           "sharpens the sampler, above 1 flattens it. Recorded in "

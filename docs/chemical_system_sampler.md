@@ -235,6 +235,41 @@ one, since a system is stored as element *tokens*.
 `--chemical-system`, `--space-group` and `--sg-dist`: a plan already says what
 each row is asked for and where it starts.
 
+## A run carries its own prior
+
+Since 2026-09-18 a `chemical_system_conditioning` run writes `system_prior.npz`
+into its run directory at the start of training, mirrors it into its W&B files
+and logs it once as an artifact
+(`WyckoffTrainer.save_system_prior`). The build is skipped when the run directory
+or `cache/<dataset>/` already holds one, so a chained PBS run pays the minute
+only on its first link.
+
+This is not convenience. The prior has to be built from the tensor cache the run
+trained on -- any other has different element tokens, and a system would decode
+into different elements -- so a run that does not carry one can only be sampled
+on a machine that still has that 6.5 GB cache.
+`wyformer-protocol-wandb chemsys_e_hull_sg_adamw_wsd-20260916-201605` refused to
+start for exactly this reason on 2026-09-18: the prior had never been written
+down anywhere, on any machine, and the run had been trained on
+`lemat_bulk_fmax1_stress`. It was rebuilt and uploaded by hand (661590 systems,
+5127342 rows, 228 space groups, 92 element tokens, held-out novelty rate 0.0559).
+
+Nine runs in the project use `chemical_system_conditioning` and none carried a
+prior. The same file was uploaded on 2026-09-18 to the three other *finished*
+runs on `lemat_bulk_fmax1_stress` -- `chemsys_e_hull_adamw_wsd-20260915-004642`
+(the reference run the `_sg` config diffs against), `flowing-totem-1886`
+(`azbo14vf`) and `pilot-chemsys_e_hull_adamw_wsd-20260916-210421`. That dataset
+has one tokeniser config, `lemat_bulk_fmax1_sg_multiplicity`, and all four runs
+were trained with it, so the prior is the same file for all of them. The
+remaining five are on `lemat_bulk_fmax1` and `lemat_bulk_fmax1_pilot`, which are
+superseded, and were left alone.
+
+`wyformer-protocol-wandb` therefore resolves the prior in three steps:
+`--system-prior` if given, then the run's own -- from its files, falling back to
+its artifacts (`cli.protocol_wandb.ensure_system_prior`) -- and only then
+`cache/<dataset>/system_prior.npz`. Wherever it came from, its element vocabulary
+is checked against the checkpoint's before a single structure is drawn.
+
 ## What this does not claim
 
 - **It is a prior over inputs, not over structures.** Nothing here estimates

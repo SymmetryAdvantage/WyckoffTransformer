@@ -4,6 +4,7 @@ import inspect
 import math
 import os
 import random
+import shutil
 import time
 import logging
 from functools import partial
@@ -394,6 +395,12 @@ class WyckoffTrainer():
     #: `formula_conditioning_width` and wyckoff_transformer.chemical_system.
     chemical_system_conditioning = False
 
+    #: The dataset the run trains on, as `from_config` read it off `config.dataset`. Kept
+    #: because a `chemical_system_conditioning` run has to be able to name the tensor cache
+    #: its system prior comes from; see `save_system_prior`. None when a trainer was built
+    #: by hand rather than from a config.
+    dataset = None
+
     #: Whether the model scores the start token (CascadeTransformer_args.predict_start),
     #: adding p(space group | cond) to the loss and drawing the space group from it at
     #: generation. A class default for the same reason as the ones above.
@@ -457,6 +464,7 @@ class WyckoffTrainer():
         start_token_distribution: Optional[Dict[str, Any]] = None,
         processor: Optional[WyckoffProcessor] = None,
         tokeniser_config: Optional[DictConfig] = None,
+        dataset: Optional[str] = None,
         production_training: bool = False,
         condition_feature: Optional[str] = None,
         condition_transform: Optional[str] = None,
@@ -507,6 +515,8 @@ class WyckoffTrainer():
             start_token_distribution: Optional pre-computed distribution of start tokens.
             processor: Optional WyckoffProcessor instance.
             tokeniser_config: Configuration for the tokenisers.
+            dataset: Name of the dataset under `cache/`, for the derived data a run has to
+                be able to rebuild -- currently the chemical-system prior.
             production_training: If True, merges all dataset splits (train/val/test) for training.
             condition_feature: Name of the feature to condition on via AdaLN, or a list of
                 names for several. Each occupies one column of the conditioning vector, in
@@ -588,6 +598,7 @@ class WyckoffTrainer():
         )
         self.cascade_is_target = cascade_is_target
         self.tokeniser_config = tokeniser_config
+        self.dataset = dataset
         # Nothing else will work in foreseeable future
         self.dtype = torch.int64
         if batch_size is not None:
@@ -1294,6 +1305,76 @@ class WyckoffTrainer():
         return distribution_path
 
 
+    def save_system_prior(self) -> Optional[Path]:
+        """Put the run's (chemical system, space group) prior where generation can find it.
+
+        A `chemical_system_conditioning` model is unusable without one: it is conditioned
+        on a system and a space group per structure, and generation has to draw those from
+        the training split of *this run's* tensor cache -- any other prior has different
+        element tokens and would decode a system into the wrong elements. Nothing else the
+        run saves can stand in for it.
+
+        Building it takes about a minute and reads the 6.5 GB tensor cache, so a run that
+        does not carry its own can only be sampled on a machine that still has the cache it
+        trained on. That is how `wyformer-protocol-wandb` came to refuse to run against
+        chemsys_e_hull_sg_adamw_wsd-20260916-201605: the prior had never been written down
+        anywhere, on any machine.
+
+        Cheap on the common paths: the run directory first, then the prior built next to the
+        tensor cache by `wyformer-system-prior build`, and only a cold run with neither pays
+        for the scan. The file is mirrored into the run's W&B files, so
+        `cli.protocol_wandb.ensure_system_prior` can fetch it by name, and logged once as an
+        artifact, like the start-token distribution above.
+
+        Returns:
+            The path it now sits at, or None when the run does not condition on the system.
+        """
+        if not self.chemical_system_conditioning:
+            return None
+        if self.run_path is None:
+            raise ValueError("run_path must be set to save the system prior")
+        from wyckoff_transformer.system_prior import (  # noqa: PLC0415
+            SYSTEM_PRIOR_FILE_NAME,
+            prior_from_tensor_cache,
+        )
+
+        prior_path = self.run_path / SYSTEM_PRIOR_FILE_NAME
+        built_here = not prior_path.is_file()
+        if built_here:
+            if self.dataset is None:
+                raise ValueError(
+                    "A chemical_system_conditioning run needs a system prior, which is built "
+                    "from the tensor cache it trained on, but this trainer does not know "
+                    f"which dataset that is. Pass dataset= to the constructor, or put a "
+                    f"{SYSTEM_PRIOR_FILE_NAME} in {self.run_path} by hand.")
+            cached = cache_root() / self.dataset / SYSTEM_PRIOR_FILE_NAME
+            if cached.is_file():
+                logger.info("Copying the system prior from %s", cached)
+                shutil.copyfile(cached, prior_path)
+            else:
+                config_name = None
+                if self.tokeniser_config is not None:
+                    config_name = self.tokeniser_config.get("name")
+                logger.info(
+                    "Building the system prior from the %s tensor cache; this reads the "
+                    "whole cache once and takes about a minute", self.dataset)
+                prior_from_tensor_cache(
+                    dataset=self.dataset, config_name=config_name).save(prior_path)
+        if wandb.run is not None:
+            # A run file, because that is the slot `ensure_system_prior` looks in first: an
+            # artifact is found by walking every artifact the run ever logged, and a chained
+            # training run logs hundreds of checkpoints.
+            wandb.save(str(prior_path), base_path=str(self.run_path), policy="now")
+            if built_here:
+                # The durable copy, once. A PBS chain calls this at the start of every link
+                # and the prior does not change between them, so logging it each time would
+                # mint versions of an 11 MB file that nothing would read.
+                artifact = wandb.Artifact(name=f"system_prior_{wandb.run.id}", type="dataset_stats")
+                artifact.add_file(prior_path)
+                wandb.log_artifact(artifact)
+        return prior_path
+
+
     def _sample_start_tokens_from_distribution(self, n_structures: int) -> torch.Tensor:
         if self.start_token_distribution is None:
             if self.train_dataset is not None and self.val_dataset is not None:
@@ -1455,6 +1536,9 @@ class WyckoffTrainer():
             start_token_distribution=distribution,
             processor=processor,
             tokeniser_config=config.tokeniser,
+            # .get, not .dataset: a run trained before the key was recorded still has to
+            # load for generation, and only a chemsys run needs to know its dataset.
+            dataset=config.get("dataset"),
             production_training=production_training,
             resume=resume,
             reschedule=reschedule,
@@ -2249,6 +2333,7 @@ class WyckoffTrainer():
                     start_epoch, self.epochs, best_val_loss, best_val_epoch)
         if self.distributed.is_main:
             self.save_start_token_distribution()
+            self.save_system_prior()
 
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")

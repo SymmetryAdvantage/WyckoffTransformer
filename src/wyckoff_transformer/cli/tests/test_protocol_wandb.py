@@ -157,6 +157,61 @@ class TestEnsureRunFiles(unittest.TestCase):
         older.download.assert_not_called()
 
 
+class TestEnsureSystemPrior(unittest.TestCase):
+    """A chemsys run's prior comes from the run itself, and its absence is not an error."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.run_dir = Path(self._tmp.name)
+        self.prior = self.run_dir / "system_prior.npz"
+
+    def test_a_local_copy_is_not_fetched_again(self):
+        self.prior.write_bytes(b"npz")
+        run = MagicMock()
+        self.assertEqual(pw.ensure_system_prior(run, self.run_dir), self.prior)
+        run.file.assert_not_called()
+        run.logged_artifacts.assert_not_called()
+
+    def test_downloads_from_the_run_files(self):
+        run = MagicMock()
+        run.id = "r1"
+        run.file.return_value.download.side_effect = (
+            lambda root, replace: self.prior.write_bytes(b"npz"))
+        self.assertEqual(pw.ensure_system_prior(run, self.run_dir), self.prior)
+        run.file.assert_called_once_with("system_prior.npz")
+        run.logged_artifacts.assert_not_called()
+
+    def test_falls_back_to_the_artifact(self):
+        run = MagicMock()
+        run.id = "r1"
+        run.file.return_value.download.side_effect = RuntimeError("404")
+        other = MagicMock()
+        other.name = "best_model_r1:v3"
+        other_file = MagicMock()
+        other_file.name = "best_model_params.pt"
+        other.files.return_value = [other_file]
+        prior_artifact = MagicMock()
+        prior_artifact.name = "system_prior_r1:v0"
+        prior_file = MagicMock()
+        prior_file.name = "system_prior.npz"
+        prior_artifact.files.return_value = [prior_file]
+        prior_artifact.download.side_effect = lambda root: self.prior.write_bytes(b"npz")
+        run.logged_artifacts.return_value = [prior_artifact, other]
+
+        self.assertEqual(pw.ensure_system_prior(run, self.run_dir), self.prior)
+        prior_artifact.download.assert_called_once_with(root=str(self.run_dir))
+        other.download.assert_not_called()
+
+    def test_a_run_that_carries_none_returns_none(self):
+        """Runs trained before the prior was saved have one nowhere; the caller says so."""
+        run = MagicMock()
+        run.id = "r1"
+        run.file.return_value.download.side_effect = RuntimeError("404")
+        run.logged_artifacts.return_value = []
+        self.assertIsNone(pw.ensure_system_prior(run, self.run_dir))
+
+
 class TestEnsureRunEngineers(unittest.TestCase):
     """A run's own engineers come from its processors artifact, when it logged them."""
 
@@ -533,6 +588,86 @@ class TestGenerateGenes(unittest.TestCase):
         self.assertEqual(kwargs["composition_cond"], "COMP_COND")
         self.assertEqual(kwargs["start_tensor"], "START_T")
         self.assertEqual(kwargs["allowed_element_mask"], "ELEM_MASK")
+
+    def _chemsys_trainer(self):
+        trainer = MagicMock()
+        trainer.condition_features = ()
+        trainer.chemical_system_conditioning = True
+        trainer.start_name = "spacegroup_number"
+        trainer.tokenisers = {"elements": MagicMock(), "spacegroup_number": MagicMock()}
+        trainer.generate_structures.return_value = [{"i": i} for i in range(20)]
+        return trainer
+
+    def test_the_prior_is_taken_from_the_run_before_the_cache(self):
+        """The run's own is the only one guaranteed to share the checkpoint's element tokens."""
+        trainer = self._chemsys_trainer()
+        prior = MagicMock()
+        prior.sample.return_value = MagicMock()
+        run_mock = MagicMock()
+        run_mock.config = {"dataset": "lemat_bulk_fmax1_stress"}
+        api_mock = MagicMock()
+        api_mock.run.return_value = run_mock
+        from_run = Path("/runs/r/system_prior.npz")
+
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch.object(pw, "ensure_system_prior", return_value=from_run) as ensure, \
+             patch("wandb.Api", return_value=api_mock), \
+             patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load",
+                   return_value=prior) as load, \
+             patch("pathlib.Path.is_file", return_value=True):
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+            )
+        ensure.assert_called_once()
+        self.assertEqual(load.call_args.args[0], from_run)
+
+    def test_a_run_with_no_prior_anywhere_says_how_to_build_one(self):
+        trainer = self._chemsys_trainer()
+        run_mock = MagicMock()
+        run_mock.config = {"dataset": "lemat_bulk_fmax1_stress"}
+        api_mock = MagicMock()
+        api_mock.run.return_value = run_mock
+
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch.object(pw, "ensure_system_prior", return_value=None), \
+             patch("wandb.Api", return_value=api_mock), \
+             patch("pathlib.Path.is_file", return_value=False):
+            with self.assertRaises(ValueError) as caught:
+                pw.generate_genes(
+                    run_id="r", entity="e", project="p", n_genes=10,
+                    oversample=1.15, device="cpu", output_path=self.out,
+                )
+        self.assertIn("wyformer-system-prior build lemat_bulk_fmax1_stress", str(caught.exception))
+
+    def test_a_prior_over_another_vocabulary_is_refused(self):
+        """A cached prior from a different dataset would decode systems into other elements."""
+        trainer = self._chemsys_trainer()
+        trainer.tokenisers["elements"].to_token = ["Li", "O", "Na"]
+        prior = MagicMock()
+        prior.element_symbols = ["Li", "O"]
+        prior.n_elements = 2
+        run_mock = MagicMock()
+        run_mock.config = {"dataset": "lemat_bulk_fmax1_stress"}
+        api_mock = MagicMock()
+        api_mock.run.return_value = run_mock
+
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch.object(pw, "ensure_system_prior", return_value=Path("/p/system_prior.npz")), \
+             patch("wandb.Api", return_value=api_mock), \
+             patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load",
+                   return_value=prior), \
+             patch("pathlib.Path.is_file", return_value=True):
+            with self.assertRaises(ValueError) as caught:
+                pw.generate_genes(
+                    run_id="r", entity="e", project="p", n_genes=10,
+                    oversample=1.15, device="cpu", output_path=self.out,
+                )
+        self.assertIn("2 element tokens", str(caught.exception))
+        trainer.generate_structures.assert_not_called()
 
     def test_temperature_reaches_the_generator(self):
         """The sweep is only a sweep if the cohort was actually drawn at T."""

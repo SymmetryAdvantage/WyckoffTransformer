@@ -93,6 +93,12 @@ logger = logging.getLogger(__name__)
 #: How ``Ba-Ti-O`` is spelled on a command line. Shared with `chemical_system`.
 SYSTEM_DELIMITER = "-"
 
+#: What a built prior is called, wherever it sits: next to the tensor cache it was
+#: derived from, in the run directory of the model it was built for, and in that run's
+#: W&B files. One name, so `wyformer-system-prior build`, `WyckoffTrainer` and
+#: `cli.protocol_wandb` cannot disagree about what to look for.
+SYSTEM_PRIOR_FILE_NAME = "system_prior.npz"
+
 #: Pseudo-counts of back-off mixed into every `p(G | S)`. Fitted on the held-out
 #: split of `lemat_bulk_fmax1`: -3.2646 nats/row at 100, -3.2648 at 50, -3.2704 at
 #: 150, so the optimum is a plateau and the exact value is not load-bearing.
