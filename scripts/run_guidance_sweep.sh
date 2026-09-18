@@ -117,10 +117,29 @@ relax_arm() {
         --pyxtal-cores "$cpu_cores" --devices cuda:0 --workers-per-device "$workers"
 }
 
+# refresh_checkpoint <run>: make the next screen fetch this run's *final* weights.
+#
+# ensure_run_files skips a file that is already in runs/<id>/, so a best_model_params.pt
+# downloaded from the same run earlier -- mid-training, for a diagnosis -- would be used
+# silently in place of the finished one. That only applies to a run trained elsewhere; the
+# CFG run's own directory holds the weights its training wrote, which are authoritative.
+refresh_checkpoint() {
+    local run=$1 dir stamp
+    dir="$(wyformer_path WYFORMER_RUNS "$repo_root/runs")/$run"
+    stamp="$dir/.checkpoint_refreshed"
+    if [ -f "$stamp" ] || [ ! -f "$dir/best_model_params.pt" ]; then
+        return 0
+    fi
+    log "$run: setting aside the local best_model_params.pt so the final one is fetched"
+    mv "$dir/best_model_params.pt" "$dir/best_model_params.superseded-$(date +%Y%m%d-%H%M%S).pt"
+    touch "$stamp"
+}
+
 base_dir="$out/$base_run/w1"
 cfg_dir() { echo "$out/$cfg_run/w$1"; }
 
 wait_finished "$base_run"
+refresh_checkpoint "$base_run"
 screen_arm "$base_run" 1 "$base_dir" || log "WARNING: base screen failed"
 wait_finished "$cfg_run"
 for scale in $screen_scales; do
