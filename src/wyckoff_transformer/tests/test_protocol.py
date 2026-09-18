@@ -426,6 +426,21 @@ class TestDeviceMemoryBudget(unittest.TestCase):
         self.assertEqual(budgets["cuda:0"].total_mb, 3500)
         self.assertGreater(budgets["cuda:1"].total_mb, 0)
 
+    @patch("torch.cuda.is_available", return_value=True)
+    @patch("torch.cuda.empty_cache")
+    def test_reserve_calls_empty_cache_on_cuda(self, mock_empty_cache, mock_cuda_avail):
+        budget = DeviceMemoryBudget("cuda:0", 4000)
+        with budget.reserve(1000):
+            pass
+        mock_empty_cache.assert_called_once()
+
+    @patch("torch.cuda.empty_cache")
+    def test_reserve_does_not_call_empty_cache_on_cpu(self, mock_empty_cache):
+        budget = DeviceMemoryBudget("cpu", 4000)
+        with budget.reserve(1000):
+            pass
+        mock_empty_cache.assert_not_called()
+
 
 class TestLogmRoundoffFilter(unittest.TestCase):
     """SciPy's logm chatter must go without taking a real warning with it.

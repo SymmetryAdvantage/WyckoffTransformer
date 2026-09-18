@@ -992,6 +992,13 @@ class DeviceMemoryBudget:
         try:
             yield
         finally:
+            if self.device.startswith("cuda"):
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except Exception:
+                    pass
             with self._cond:
                 self._available_mb.value += claim
                 self._cond.notify_all()
@@ -1646,6 +1653,14 @@ def _prescreen_one(
             row["volume_ratio"] = round(relaxed.get_volume() / volume_before, 4)
         row["backend"] = getattr(_WORKER_PRERELAX_CALCULATOR, "last_backend", None)
         relaxed.calc = None
+    finally:
+        if _WORKER_DEVICE and _WORKER_DEVICE.startswith("cuda"):
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
     row["seconds"] = round(time.time() - started, 2)
     return row, relaxed
 
@@ -2025,6 +2040,14 @@ def _basinhop_one(
                 minima.append((key, minimum.atoms, minimum.energy_per_atom))
         else:
             row["error"] = "the walk found no minimum"
+    finally:
+        if _WORKER_DEVICE and _WORKER_DEVICE.startswith("cuda"):
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
     row["seconds"] = round(time.time() - started, 2)
     return row, minima
 
@@ -2246,20 +2269,29 @@ def _relax_one(
     )
     try:
         with cm:
-            with time_limit(timeout):
-                relaxed, energy, (relaxed_fixed, energy_fixed) = relax_trial(
-                    atoms_in=atoms,
-                    calculator=_WORKER_CALCULATOR,
-                    trial_dir=Path(trial_dir),
-                    label=f"gene {index} trial {trial}",
-                    release_symmetry=release_symmetry,
-                    rattle=rattle,
-                    seed=_trial_seed(index, trial),
-                    fmax=fmax,
-                    prerelax_calculator=_WORKER_PRERELAX_CALCULATOR,
-                    prerelax_fmax=prerelax_fmax,
-                    prerelax_max_expansion=prerelax_max_expansion,
-                )
+            try:
+                with time_limit(timeout):
+                    relaxed, energy, (relaxed_fixed, energy_fixed) = relax_trial(
+                        atoms_in=atoms,
+                        calculator=_WORKER_CALCULATOR,
+                        trial_dir=Path(trial_dir),
+                        label=f"gene {index} trial {trial}",
+                        release_symmetry=release_symmetry,
+                        rattle=rattle,
+                        seed=_trial_seed(index, trial),
+                        fmax=fmax,
+                        prerelax_calculator=_WORKER_PRERELAX_CALCULATOR,
+                        prerelax_fmax=prerelax_fmax,
+                        prerelax_max_expansion=prerelax_max_expansion,
+                    )
+            finally:
+                if _WORKER_DEVICE and _WORKER_DEVICE.startswith("cuda"):
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    except Exception:
+                        pass
     except Timeout as exc:
         row["status"] = row["status_fixed"] = "timeout"
         row["error"] = str(exc)
