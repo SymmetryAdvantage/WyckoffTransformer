@@ -168,6 +168,29 @@ sweep](temperature_sweep.md) -- where the cold arms' runaway tail was what made 
 expensive. And formal validity falls with w, so the high-w arms need a larger `--oversample`
 to fill a 1000-gene cohort; `run_guidance_sweep.sh` scales it with w for that reason.
 
+## The baseline arm, gene level (2026-09-19)
+
+The baseline finished its 40,000 epochs on 2026-09-19 (best val NLL 16.892, artifact
+`best_model_ehull_adamw_wsd_5x-20260912-115321:v31`, epoch 39,999). Its cohort, 1000 genes
+at `energy_above_hull = 0`, screened before any relaxation:
+
+| | baseline arm | archive, row-weighted |
+|---|---|---|
+| formal validity of the draw | 0.984 | — |
+| unique gene | 0.998 | — |
+| novel gene (no LeMat-Bulk fingerprint) | 0.584 | — |
+| archive-known gene | 0.416 | — |
+| known **and** on the archive hull | 0.089 (21.4% of known) | 3.2% |
+| known **and** within 0.1 eV/atom | 0.374 (90% of known) | 31.4% |
+| median archive e_hull of known genes | 0.014 | 0.205 |
+
+The conditioning is therefore *not* inert at the gene level: among the genes it reproduces
+from the archive, on-hull ones are enriched about sevenfold over the archive's own rate, and
+the median known gene is at 0.014 eV/atom against the archive's 0.205. That is the bar
+guidance has to beat, and it is a higher one than the 2026-09-15 reading of the
+three-channel `relational_e_all` cohort (9.2% of known genes on the hull, median 0.080)
+suggested.
+
 ## Evaluation plan
 
 All arms are drawn at `--condition energy_above_hull=0` with 1000 genes, and
