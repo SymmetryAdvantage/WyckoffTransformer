@@ -171,7 +171,7 @@ only.
 
 `scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh` runs the end-to-end W&B evaluation
 pipeline (`wyformer-protocol-wandb`: generation -> screen -> relax -> score -> upload to W&B)
-utilizing a full 4-GPU node (`select=1:ngpus=4:ncpus=64:mem=440gb:node_pool=4gpu`):
+utilizing a full 4-GPU node (`select=1:ngpus=4:ncpus=64:mem=440gb`):
 
 ```bash
 # Submit a full 1000-gene protocol run to aiq3 (up to 24 h):

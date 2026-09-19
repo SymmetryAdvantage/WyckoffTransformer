@@ -19,7 +19,7 @@
 #   - 462 GB RAM (node_pool=4gpu)
 #
 # PBS resource request:
-#   select=1:ngpus=4:ncpus=64:mem=440gb:node_pool=4gpu
+#   select=1:ngpus=4:ncpus=64:mem=440gb
 #
 # Queue routing:
 #   Submitted to -q ai:
@@ -43,7 +43,7 @@
 #PBS -N wyf_protocol
 #PBS -q ai
 #PBS -P 11001786
-#PBS -l select=1:ngpus=4:ncpus=64:mem=440gb:node_pool=4gpu
+#PBS -l select=1:ngpus=4:ncpus=64:mem=440gb
 #PBS -l walltime=23:59:59
 #PBS -j oe
 #PBS -o /scratch/users/nus/kna/WyFormer/logs/
@@ -188,7 +188,6 @@ WALLTIME="23:59:59"
 NGPUS=4
 NCPUS=64
 MEM="440gb"
-NODE_POOL="4gpu"
 
 DEVICES="cuda:0,cuda:1,cuda:2,cuda:3"
 WORKERS_PER_DEVICE=4
@@ -362,7 +361,7 @@ QSUB_ARGS=(
     -N "$JOB_NAME"
     -q "$QUEUE"
     -P "$PROJECT"
-    -l "select=1:ngpus=$NGPUS:ncpus=$NCPUS:mem=$MEM:node_pool=$NODE_POOL"
+    -l "select=1:ngpus=$NGPUS:ncpus=$NCPUS:mem=$MEM"
     -l "walltime=$WALLTIME"
     -j oe
     -o "$LOGS_DIR/"
@@ -374,7 +373,7 @@ echo "Submitting wyformer-protocol-wandb to ASPIRE 2A PBS"
 echo "run id      : $RUN_ID"
 echo "output dir  : $OUTPUT_DIR"
 echo "branch      : $BRANCH @ ${COMMIT:0:8}"
-echo "resources   : select=1:ngpus=$NGPUS:ncpus=$NCPUS:mem=$MEM:node_pool=$NODE_POOL"
+echo "resources   : select=1:ngpus=$NGPUS:ncpus=$NCPUS:mem=$MEM"
 echo "queue       : $QUEUE (routes to $([ "$PILOT" -eq 1 ] && echo "aidev" || echo "aiq3"))"
 echo "walltime    : $WALLTIME"
 echo "job name    : $JOB_NAME"
