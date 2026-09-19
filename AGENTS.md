@@ -5,11 +5,7 @@
 Every other LeMat variant in `data/` and `cache/` — `lemat_bulk_fmax1`,
 `lemat_bulk_ehull`, `lemat_bulk_ehull_wp20`, and the `_pilot` subsamples — is superseded.
 Use them **only** to analyse runs already trained on them, never for new training,
-evaluation or caching. They predate `scripts/recover_mp_forces.py`, so they either drop
-the 30,679 Materials Project rows whose archived forces are empty (a `max_force <= X` cut
-drops NaN for every X) or carry a fabricated `max_force` of 0.0415 against a true median
-of 0.088. `python scripts/audit_lemat_variants.py` reports what any variant on disk was
-built with.
+evaluation or caching.
 
 # Where data lives
 Untracked datasets, `cache/`, `runs/` and W&B's directory live outside the checkout,
@@ -27,12 +23,6 @@ in the checkout; untracked ones live in the store, which is also where a new
 dataset is written. There is no `data_root()` -- with two places it would be
 ambiguous. Once a machine has a config file it is authoritative: a missing key
 is an error, never a fallback to the checkout.
-
-The data store and the cache are replicated across machines by
-`scripts/store_sync.sh`; tracked datasets travel by git.
-
-`runs/` is **not**. It is per-machine working output, shared between the worktrees
-on one machine and, on a cluster, placed on scratch.
 
 **Results belong in W&B, not in `runs/`.** Anything a run produces that is worth
 keeping must be logged as a W&B artifact; new code must not make a run directory
@@ -91,9 +81,9 @@ checkout's interpreter by path, or the launcher your platform documents; which o
 applies is host-specific and lives in `docs/platforms/<platform>/`.
 
 # Project conventions
-This is a research project, which means that ideas will be tried and discarded. As such, it is extremly important to avoid confusion. In particular:
+This is a research project, which means that ideas will be tried and discarded. As such, it is extremely important to avoid confusion. In particular:
 1. When describing the results of an experiment, note the date, git commit hash and applicable WanDB runs
 2. Files in docs/archive/ are not maintained - there is no need to update them, but they might contradict the state of the code base and later findings
-3. In general, files docs/*.md are supposed to be current - correct them if you notice a contradiction
-4. In geheral, files yamls/ are supposed to be immutable to preserve reproducibility and data-cache-config-run correspondence. They can be edited if asked explicitely or to fix a bug
+3. In general, files in docs/*.md are supposed to be current - correct them if you notice a contradiction
+4. In general, files in yamls/ are supposed to be immutable to preserve reproducibility and data-cache-config-run correspondence. They can be edited if asked explicitly or to fix a bug
 5. By default, run with WanDB online logging enabled - unless there is a specific reason not to, such as avoiding overwriting
