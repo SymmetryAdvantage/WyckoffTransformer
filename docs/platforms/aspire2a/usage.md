@@ -167,6 +167,30 @@ only.
 
 ---
 
+## Running full de novo evaluation on a 4-GPU node
+
+`scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh` runs the end-to-end W&B evaluation
+pipeline (`wyformer-protocol-wandb`: generation -> screen -> relax -> score -> upload to W&B)
+utilizing a full 4-GPU node (`select=1:ngpus=4:ncpus=64:mem=440gb:node_pool=4gpu`):
+
+```bash
+# Submit a full 1000-gene protocol run to aiq3 (up to 24 h):
+bash scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh <run-id>
+
+# For conditional models:
+bash scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh <run-id> --condition energy_above_hull=0
+
+# Smoke test (2 h walltime, routes to aidev):
+bash scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh <run-id> --pilot
+```
+
+The script defaults to `--workers-per-gpu 4` (16 relaxation workers across the 4 GPUs),
+which was measured on the A100-SXM4-40GB to hit the saturation knee (~22 struct/min/GPU,
+88 struct/min across the node) while maintaining high scaling efficiency and low CUDA
+scheduling contention. PyXtal structure generation is assigned `--pyxtal-cores 60`.
+
+---
+
 ## An interactive GPU session
 
 ```bash
