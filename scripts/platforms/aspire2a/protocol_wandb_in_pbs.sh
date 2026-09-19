@@ -69,7 +69,7 @@ run_job_payload() {
     echo "=========================================================="
     echo "wyformer-protocol-wandb on full 4-GPU node"
     echo "pbs job   : ${PBS_JOBID:-<interactive>}   node: $(hostname)"
-    echo "commit    : $(git rev-parse --short HEAD) (${BRANCH})"
+    echo "commit    : ${COMMIT:0:8} (${BRANCH})"
     echo "date      : $(date -Is)"
     echo "run id    : $RUN_ID"
     echo "output dir: $OUTPUT_DIR"
@@ -390,4 +390,4 @@ fi
 
 JOB_ID=$("$QSUB" "${QSUB_ARGS[@]}" "$SCRIPT_PATH")
 echo "Submitted PBS job: $JOB_ID"
-echo "Log file will appear at: $LOGS_DIR/${JOB_NAME}.o${JOB_ID%%.*}"
+echo "Log file: $LOGS_DIR/${JOB_ID}.OU"

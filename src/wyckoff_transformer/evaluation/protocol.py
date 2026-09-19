@@ -273,11 +273,15 @@ def load_reference_fingerprints(
 
     if fingerprint_cache is not None:
         fingerprint_cache = Path(fingerprint_cache)
-        fingerprint_cache.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(fingerprint_cache, "wb") as handle:
-            pickle.dump(fingerprints, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        logger.info("Cached %d reference fingerprints to %s",
-                    len(fingerprints), fingerprint_cache)
+        try:
+            fingerprint_cache.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(fingerprint_cache, "wb") as handle:
+                pickle.dump(fingerprints, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.info("Cached %d reference fingerprints to %s",
+                        len(fingerprints), fingerprint_cache)
+        except OSError as exc:
+            logger.warning("Could not persist reference fingerprints to %s (%s); continuing with in-memory set",
+                           fingerprint_cache, exc)
     return fingerprints
 
 
