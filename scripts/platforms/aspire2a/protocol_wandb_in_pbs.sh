@@ -123,6 +123,9 @@ run_job_payload() {
     if [ -n "$SYSTEM_PRIOR" ]; then
         CMD+=(--system-prior "$SYSTEM_PRIOR")
     fi
+    if [ -n "$LEMAT_CIF_CSV" ]; then
+        CMD+=(--lemat-cif-csv "$LEMAT_CIF_CSV")
+    fi
     if [ -n "$FROM_ARTIFACT" ]; then
         if [ "$FROM_ARTIFACT" = "__CONST__" ]; then
             CMD+=(--from-artifact)
@@ -205,6 +208,7 @@ STAGES="screen,generate,relax,score"
 MLIP="orb_conserv_inf"
 PRERELAX_MLIP=""
 SYSTEM_PRIOR=""
+LEMAT_CIF_CSV=""
 FROM_ARTIFACT=""
 SKIP_GENERATE=0
 UPLOAD=1
@@ -231,6 +235,7 @@ Options:
     --condition-value VAL      Shorthand for condition value
     --temperature T            Sampling temperature (default: 1.0)
     --system-prior PATH        Path to system_prior.npz
+    --lemat-cif-csv PATH       Path to LeMat CIF export or dataset splits directory
     --stages STAGES            Comma-separated stages (default: screen,generate,relax,score)
     --mlip MLIP                Scoring MLIP (default: orb_conserv_inf)
     --prerelax-mlip MLIP       Pre-relaxation MLIP (e.g. nep89)
@@ -261,6 +266,7 @@ while [ $# -gt 0 ]; do
         --condition-value)  CONDITION_VALUE=${2:?--condition-value needs a value}; shift 2 ;;
         --temperature)      TEMPERATURE=${2:?--temperature needs a float}; shift 2 ;;
         --system-prior)     SYSTEM_PRIOR=${2:?--system-prior needs a path}; shift 2 ;;
+        --lemat-cif-csv)    LEMAT_CIF_CSV=${2:?--lemat-cif-csv needs a path}; shift 2 ;;
         --stages)           STAGES=${2:?--stages needs a value}; shift 2 ;;
         --mlip)             MLIP=${2:?--mlip needs a value}; shift 2 ;;
         --prerelax-mlip)    PRERELAX_MLIP=${2:?--prerelax-mlip needs a value}; shift 2 ;;
@@ -347,6 +353,7 @@ SPEC="$RUNS_DIR/.jobspec/protocol-${RUN_ID}-$(date +%Y%m%d-%H%M%S).sh"
     printf 'MLIP=%q\n'                "$MLIP"
     printf 'PRERELAX_MLIP=%q\n'       "$PRERELAX_MLIP"
     printf 'SYSTEM_PRIOR=%q\n'        "$SYSTEM_PRIOR"
+    printf 'LEMAT_CIF_CSV=%q\n'       "$LEMAT_CIF_CSV"
     printf 'FROM_ARTIFACT=%q\n'       "$FROM_ARTIFACT"
     printf 'UPLOAD=%q\n'              "$UPLOAD"
     printf 'SKIP_GENERATE=%q\n'       "$SKIP_GENERATE"

@@ -634,6 +634,24 @@ class TestNoveltyReference(unittest.TestCase):
             reference = build_novelty_reference(["F"])
         self.assertEqual(sorted(reference.index), ["mp-1", "mp-2"])
 
+    def test_resolves_reference_cif_sources_from_split_directory(self):
+        from wyckoff_transformer.evaluation.structure_novelty import (
+            _resolve_reference_cif_sources,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            single = tmp / "export.csv.gz"
+            single.touch()
+            self.assertEqual(_resolve_reference_cif_sources(single), [single])
+
+            ds_dir = tmp / "dataset"
+            ds_dir.mkdir()
+            (ds_dir / "val.csv.gz").touch()
+            (ds_dir / "train.csv.gz").touch()
+            sources = _resolve_reference_cif_sources(ds_dir, splits=["train", "val"])
+            self.assertEqual(sorted(sources), sorted([ds_dir / "train.csv.gz", ds_dir / "val.csv.gz"]))
+
 
 class TestReferenceChoice(unittest.TestCase):
     """Novelty is judged against the current LeMat-Bulk variant, and only one of them."""

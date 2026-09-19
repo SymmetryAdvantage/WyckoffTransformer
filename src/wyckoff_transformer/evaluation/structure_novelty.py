@@ -107,17 +107,84 @@ def collect_reference_ids(
     return hits
 
 
+def _resolve_reference_cif_sources(
+    lemat_cif_csv: Optional[Path] = None,
+    cache: Optional[Path] = None,
+    splits: Optional[Sequence[str]] = None,
+) -> list[Path]:
+    """Find the CSV file(s) providing reference CIF geometries."""
+    from wyckoff_transformer.paths import data_path
+    from wyckoff_transformer.evaluation.protocol import (
+        DEFAULT_REFERENCE_CACHE,
+        DEFAULT_REFERENCE_SPLITS,
+    )
+
+    target = lemat_cif_csv if lemat_cif_csv is not None else DEFAULT_LEMAT_CIF_CSV
+    resolved = resolve_store_path(target)
+
+    if resolved.is_file():
+        return [resolved]
+
+    if resolved.is_dir():
+        eff_splits = splits or DEFAULT_REFERENCE_SPLITS
+        split_files = [
+            resolved / f"{s}.csv.gz"
+            for s in eff_splits
+            if (resolved / f"{s}.csv.gz").is_file()
+        ]
+        if split_files:
+            return split_files
+        csvs = sorted(resolved.glob("*.csv*"))
+        if csvs:
+            return csvs
+        raise FileNotFoundError(f"No CSV files found in directory {resolved}")
+
+    # If lemat_cif_csv was not explicitly given (or matched default) and the file is missing,
+    # fall back to the dataset directory matching the reference cache (e.g. lemat_bulk_fmax1_stress).
+    if lemat_cif_csv is None or lemat_cif_csv == DEFAULT_LEMAT_CIF_CSV:
+        cache_path_obj = resolve_store_path(
+            cache if cache is not None else DEFAULT_REFERENCE_CACHE
+        )
+        dataset_name = cache_path_obj.parent.name
+        dataset_dir = data_path(dataset_name)
+        if dataset_dir.is_dir():
+            eff_splits = splits or DEFAULT_REFERENCE_SPLITS
+            ordered_splits = [s for s in ("val", "test") if s in eff_splits] + [
+                s for s in eff_splits if s not in ("val", "test")
+            ]
+            split_files = [
+                dataset_dir / f"{s}.csv.gz"
+                for s in ordered_splits
+                if (dataset_dir / f"{s}.csv.gz").is_file()
+            ]
+            if split_files:
+                return split_files
+            csvs = sorted(dataset_dir.glob("*.csv*"))
+            if csvs:
+                return csvs
+
+    raise FileNotFoundError(
+        f"No LeMat-Bulk CIF export at {resolved}. Structure novelty "
+        f"needs the reference geometries; pass --lemat-cif-csv."
+    )
+
+
 def load_reference_structures(
     ids: Iterable[str],
     lemat_cif_csv: Optional[Path] = None,
     chunksize: int = DEFAULT_CHUNKSIZE,
+    cache: Optional[Path] = None,
+    splits: Optional[Sequence[str]] = None,
 ) -> dict[str, "object"]:
-    """Read the named LeMat-Bulk structures out of the CIF export.
+    """Read the named LeMat-Bulk structures out of the CIF export or dataset splits.
 
     Args:
         ids: ``immutable_id``s to read.
-        lemat_cif_csv: The export.  Defaults to :data:`DEFAULT_LEMAT_CIF_CSV`.
+        lemat_cif_csv: The export.  Defaults to :data:`DEFAULT_LEMAT_CIF_CSV` or the
+            dataset matching *cache*.
         chunksize: Rows per chunk; the file is ~1 GB gzipped.
+        cache: Reference cache path used to infer dataset when *lemat_cif_csv* is default.
+        splits: Splits to search when loading from dataset directory.
 
     Returns:
         ``immutable_id`` -> ``pymatgen`` ``Structure``.  Ids the export does not
@@ -132,36 +199,35 @@ def load_reference_structures(
 
     _quiet_cif_parser_warnings()
 
-    lemat_cif_csv = (
-        resolve_store_path(lemat_cif_csv if lemat_cif_csv is not None else DEFAULT_LEMAT_CIF_CSV)
-    )
     wanted = set(ids)
     if not wanted:
         return {}
-    if not lemat_cif_csv.is_file():
-        raise FileNotFoundError(
-            f"No LeMat-Bulk CIF export at {lemat_cif_csv}. Structure novelty "
-            f"needs the reference geometries; pass --lemat-cif-csv."
-        )
+
+    sources = _resolve_reference_cif_sources(
+        lemat_cif_csv, cache=cache, splits=splits
+    )
 
     structures: dict[str, object] = {}
-    for chunk in pd.read_csv(
-        lemat_cif_csv, chunksize=chunksize, usecols=["immutable_id", "cif"]
-    ):
-        for immutable_id, cif in zip(chunk["immutable_id"], chunk["cif"]):
-            if immutable_id not in wanted:
-                continue
-            try:
-                structures[immutable_id] = Structure.from_str(cif, fmt="cif")
-            except Exception as exc:
-                logger.warning("Reference %s: unreadable CIF (%s)", immutable_id, exc)
+    for source in sources:
+        for chunk in pd.read_csv(
+            source, chunksize=chunksize, usecols=["immutable_id", "cif"]
+        ):
+            for immutable_id, cif in zip(chunk["immutable_id"], chunk["cif"]):
+                if immutable_id not in wanted or immutable_id in structures:
+                    continue
+                try:
+                    structures[immutable_id] = Structure.from_str(cif, fmt="cif")
+                except Exception as exc:
+                    logger.warning("Reference %s: unreadable CIF (%s)", immutable_id, exc)
+            if len(structures) >= len(wanted):
+                break
         if len(structures) >= len(wanted):
             break
 
     if len(structures) < len(wanted):
         logger.warning(
             "Read %d of %d reference structures from %s",
-            len(structures), len(wanted), lemat_cif_csv,
+            len(structures), len(wanted), [str(s) for s in sources],
         )
     return structures
 
@@ -211,7 +277,7 @@ def build_novelty_reference(
         len(hits), len(ids),
     )
     structures = load_reference_structures(
-        ids, lemat_cif_csv=lemat_cif_csv, chunksize=chunksize
+        ids, lemat_cif_csv=lemat_cif_csv, chunksize=chunksize, cache=cache, splits=splits
     )
     unresolved = sorted(set(ids) - set(structures))
     if unresolved:
