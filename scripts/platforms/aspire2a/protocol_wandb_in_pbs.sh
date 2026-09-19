@@ -62,6 +62,7 @@ run_job_payload() {
     [ -f "${JOB_SPEC:?no JOB_SPEC provided to PBS job}" ] || die "spec file not found: $JOB_SPEC"
     # shellcheck source=/dev/null
     . "$JOB_SPEC"
+    SKIP_GENERATE=${SKIP_GENERATE:-0}
 
     cd "$REPO"
     mkdir -p "$LOGS_DIR"
@@ -131,6 +132,9 @@ run_job_payload() {
     fi
     if [ "$UPLOAD" -eq 0 ]; then
         CMD+=(--no-upload)
+    fi
+    if [ "$SKIP_GENERATE" -eq 1 ]; then
+        CMD+=(--skip-generate)
     fi
 
     if [ ${#CONDITIONS[@]} -gt 0 ]; then
@@ -202,6 +206,7 @@ MLIP="orb_conserv_inf"
 PRERELAX_MLIP=""
 SYSTEM_PRIOR=""
 FROM_ARTIFACT=""
+SKIP_GENERATE=0
 UPLOAD=1
 PILOT=0
 DRY_RUN=0
@@ -230,6 +235,7 @@ Options:
     --mlip MLIP                Scoring MLIP (default: orb_conserv_inf)
     --prerelax-mlip MLIP       Pre-relaxation MLIP (e.g. nep89)
     --from-artifact [VERSION]  Re-score from existing W&B protocol artifact (default: latest)
+    --skip-generate            Reuse existing wyckoff_genes.json.gz in output dir
     --no-upload                Skip write-back to W&B
     --pilot                    Short test (2h walltime, routes to aidev)
     --workers-per-gpu N        Relaxation workers per GPU (default: 4, based on saturation benchmark)
@@ -265,6 +271,7 @@ while [ $# -gt 0 ]; do
                 FROM_ARTIFACT="__CONST__"; shift 1
             fi
             ;;
+        --skip-generate)    SKIP_GENERATE=1; shift ;;
         --no-upload)        UPLOAD=0; shift ;;
         --pilot)            PILOT=1; shift ;;
         --workers-per-gpu)  WORKERS_PER_DEVICE=${2:?--workers-per-gpu needs an integer}; shift 2 ;;
@@ -342,6 +349,7 @@ SPEC="$RUNS_DIR/.jobspec/protocol-${RUN_ID}-$(date +%Y%m%d-%H%M%S).sh"
     printf 'SYSTEM_PRIOR=%q\n'        "$SYSTEM_PRIOR"
     printf 'FROM_ARTIFACT=%q\n'       "$FROM_ARTIFACT"
     printf 'UPLOAD=%q\n'              "$UPLOAD"
+    printf 'SKIP_GENERATE=%q\n'       "$SKIP_GENERATE"
     printf 'CONDITION_VALUE=%q\n'     "${CONDITION_VALUE:-}"
 
     if [ ${#CONDITIONS[@]} -gt 0 ]; then
