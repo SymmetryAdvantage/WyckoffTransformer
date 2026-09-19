@@ -1,7 +1,6 @@
 # This host is zeus
 
-Linked as `CLAUDE.local.md` by `scripts/platforms/zeus/env_init.sh`. A brief; the
-full pages are in `docs/platforms/zeus/`.
+A brief; the full pages are in `docs/platforms/zeus/`.
 
 - **Environment:** a plain host venv, no container, no scheduler. torch is built
   locally and installed from `/mnt/hdd/torch_wheels/`.
