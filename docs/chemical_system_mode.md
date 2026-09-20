@@ -172,3 +172,8 @@ weaker conditioning costs more than the wider decoding buys is unmeasured.
   every gene, which is not comparable across genes.
   `gene_likelihood.gene_log_likelihoods` raises rather than producing it
   silently.
+
+## See also
+
+- [Conditioning on the chemical system and the space group](chemical_system_conditioning.md)
+  — what naming a system is worth, measured on the pooled protocol runs

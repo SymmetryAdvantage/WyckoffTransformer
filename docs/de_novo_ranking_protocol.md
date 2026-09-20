@@ -457,4 +457,5 @@ entries (~25 GB resident while it does).
 - [CrySPR trial and stage spread](cryspr_trial_and_stage_spread.md) — where the trial and stage numbers come from
 - [CrySPR reconstruction report](cryspr_reconstruction_report.md) — the rattle stage, the DoF breakdown, and the 79% reconstruction ceiling
 - [Sampling temperature](temperature_sweep.md) — what the readouts do as the sampler is sharpened or flattened
+- [Conditioning on the chemical system and the space group](chemical_system_conditioning.md) — what the accumulated protocol artifacts say about where the budget should go
 - [Every `e_hull` in this repository](e_hull_definitions.md) — the six definitions, which agree, and which must never be mixed

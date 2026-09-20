@@ -295,3 +295,13 @@ is checked against the checkpoint's before a single structure is drawn.
 - **The novelty rate is a held-out estimate, not a target.** 5.5% is how often
   the val split lands in a system train never saw, under the same random split.
   It is not a claim about how often a *useful* new system appears.
+
+## What it is worth, measured
+
+[`chemical_system_conditioning.md`](chemical_system_conditioning.md) prices this
+sampler against the unconditional one over the twelve protocol runs accumulated
+by 2026-09-20: drawing (system, space group) from the training-matched prior
+lands in the same cells as sampling the space group alone (KL 0.029 nats against
+the training marginal, versus 0.010), so the gain has to come from a prior that
+is *not* training-matched — and which way that prior should point depends on the
+readout, because system crowding raises MetaSUN and lowers SUN.
