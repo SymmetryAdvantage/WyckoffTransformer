@@ -7,10 +7,12 @@ model:
       - elements
       - site_symmetries
       - sites_enumeration
+      - multiplicity
     embedding_size:
       elements: 16
       site_symmetries: 16
       sites_enumeration: 8
+      multiplicity: 0
   WyckoffTrainer_args:
     multiclass_next_token_with_order_permutation: false
     target: Scalar
@@ -35,8 +37,9 @@ model:
     concat_token_presence: false
     aggregate_after_encoder: true
     mixer_layers: 1
-    token_aggregation: mean
-    include_start_in_aggregation: true
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
     aggregation_inclsion: aggr
     outputs: 1
     num_fully_connected_layers: 3
