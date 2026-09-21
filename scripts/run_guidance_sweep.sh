@@ -38,6 +38,9 @@ poll=${POLL_S:-900}
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo_root" || exit 1
+# refresh_checkpoint needs wyformer_path to find the runs store.
+# shellcheck source=scripts/wyformer_paths.sh
+. scripts/wyformer_paths.sh
 export WANDB_ENTITY=${WANDB_ENTITY:-symmetry-advantage}
 
 log() { echo "[guidance_sweep $(date '+%F %T')] $*"; }
