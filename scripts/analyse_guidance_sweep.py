@@ -200,12 +200,52 @@ def read_arm(label: str, directory: Path, index: dict | None) -> dict:
         arm["failures"] = failure_breakdown(structures)
         unique = structures[structures["unique_structure"].astype(bool)]
         arm["median_orb_e_hull"] = float(unique["e_above_hull"].median(skipna=True))
+        arm["conditional"] = metastability_by_gene_novelty(unique)
     relaxations_path = directory / RELAXATIONS_FILE
     if relaxations_path.is_file():
         relaxations = pd.read_csv(relaxations_path)
         arm["trials"] = int(len(relaxations))
         arm["relax_hours"] = float(relaxations["seconds"].sum(skipna=True)) / 3600
     return arm
+
+
+def metastability_by_gene_novelty(unique: pd.DataFrame) -> dict:
+    """P(metastable | gene known) and P(metastable | gene novel), with their denominators.
+
+    The decomposition that decided the 2026-09-21 retrieval finding
+    (docs/negative_data_strategy.md): conditioning on e_hull made the model *better* at
+    recalling memorised near-hull entries and *worse* on novel genes, because maximum
+    likelihood has no negative gradient and a conditioning channel can only partition
+    mass, never suppress it. Guidance is the one lever here that extrapolates rather than
+    partitions, so whether it moves the *novel* half is the question this study exists to
+    answer -- and it is invisible in MetaSUN, which mixes the two.
+
+    Rates are conditional, so each has its own denominator; they are not per sampled gene.
+    """
+    scored = unique[unique["e_above_hull"].notna()]
+    out = {}
+    for label, mask in (("known", ~scored["gene_novel"].astype(bool)),
+                        ("novel", scored["gene_novel"].astype(bool))):
+        subset = scored[mask]
+        out[label] = {
+            "n": int(len(subset)),
+            "metastable": int((subset["e_above_hull"] <= METASTABLE).sum()),
+            "stable": int((subset["e_above_hull"] <= STABLE).sum()),
+            "median_e_hull": float(subset["e_above_hull"].median()) if len(subset) else None,
+            # The fat unstable tail the retrieval finding measured, as its mirror image.
+            "above_0.3": int((subset["e_above_hull"] > 0.3).sum()),
+        }
+    return out
+
+
+#: Conditional rows: (section, key, label). Denominator is that section's own `n`.
+CONDITIONAL_ROWS = (
+    ("known", "metastable", "P(metastable | gene known)"),
+    ("novel", "metastable", "P(metastable | gene novel)"),
+    ("known", "stable", "P(stable | gene known)"),
+    ("novel", "stable", "P(stable | gene novel)"),
+    ("novel", "above_0.3", "P(e_hull > 0.3 | gene novel)"),
+)
 
 
 #: Archive rows: (key, label), counts under counts["archive"].
@@ -295,6 +335,43 @@ def stage_table(args) -> None:
         add(f"{label} per sampled gene [95% CI]", cells)
         add(f"  vs {args.reference} [95% CI]", differences)
 
+    # Conditional on the sampled gene's novelty, each with its own denominator: the
+    # decomposition the retrieval finding turned on. Not per sampled gene.
+    if reference.get("conditional"):
+        for section, key, label in CONDITIONAL_ROWS:
+            cells, differences, sizes = [], [], []
+            for arm in arms:
+                conditional = arm.get("conditional")
+                if not conditional or not conditional[section]["n"]:
+                    cells.append(None)
+                    differences.append(None)
+                    sizes.append(None)
+                    continue
+                k, n = conditional[section][key], conditional[section]["n"]
+                low, high = wilson(k, n)
+                cells.append(f"{k / n:.3f} [{low:.3f}, {high:.3f}]")
+                sizes.append(n)
+                if arm is reference:
+                    differences.append("reference")
+                    continue
+                k0, n0 = reference["conditional"][section][key], reference["conditional"][section]["n"]
+                d_low, d_high = newcombe(k, n, k0, n0)
+                p_value = stats.fisher_exact([[k, n - k], [k0, n0 - k0]])[1]
+                differences.append(
+                    f"{k / n - k0 / n0:+.3f} [{d_low:+.3f}, {d_high:+.3f}] p={p_value:.3g}")
+                tests.setdefault(label, {})[arm["label"]] = {
+                    "difference": round(k / n - k0 / n0, 4),
+                    "newcombe_95": [round(d_low, 4), round(d_high, 4)],
+                    "fisher_p": float(p_value),
+                }
+            add(f"{label} [95% CI]", cells)
+            add(f"  vs {args.reference} [95% CI]", differences)
+            add("  n (unique structures with a hull energy)", sizes)
+        for section in ("known", "novel"):
+            add(f"median ORB e_hull, gene {section}",
+                [None if not arm.get("conditional") or arm["conditional"][section]["median_e_hull"] is None
+                 else round(arm["conditional"][section]["median_e_hull"], 4) for arm in arms])
+
     add("median archive e_hull of known genes",
         [None if arm.get("archive_median_e_hull") is None else round(arm["archive_median_e_hull"], 4)
          for arm in arms])
@@ -323,6 +400,7 @@ def stage_table(args) -> None:
                 "guidance_scale", "generation_condition", "sampling_temperature",
                 "formal_gene_validity", "generation_attempted")},
             "counts": arm["counts"],
+            "conditional": arm.get("conditional"),
             "shape": arm["shape"],
             "archive_median_e_hull": arm.get("archive_median_e_hull"),
             "median_orb_e_hull": arm.get("median_orb_e_hull"),
