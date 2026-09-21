@@ -1,0 +1,82 @@
+# 5× capacity gene-energy critic, apples-to-apples with min_energy_adamw_wsd.yaml.
+#
+# What changed (everything else is identical):
+#   d_model:  40 → 96   (elements 16→40, site_symmetries 16→40, sites_enumeration 8→16)
+#   FFN:     128 → 320
+#   ~350k parameters  vs  ~68k  (≈ 5.1×)
+#
+# Batch sizes are halved from 25000→12500 because the activation buffer scales
+# linearly with d_model: the original config peaked at ~39 GiB on an A100-40GB
+# with d_model=40, so d_model=96 at 25000 would OOM.
+#
+# compile_model is disabled because DDP + torch.compile has not been tested
+# (see docs/distributed_training.md); this config is intended for 4-GPU runs.
+
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - multiplicity
+    embedding_size:
+      elements: 40
+      site_symmetries: 40
+      sites_enumeration: 16
+      multiplicity: 0
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: gene_min_formation_energy_per_atom
+    scalar_loss: mse
+    evaluation_samples: 1
+    train_batch_size: 12500
+    val_batch_size: 12500
+    test_batch_size: 12500
+    compile_model: false
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 320
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2130
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 250
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 2859
+tokeniser:
+  name: lemat_bulk_fmax1_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000

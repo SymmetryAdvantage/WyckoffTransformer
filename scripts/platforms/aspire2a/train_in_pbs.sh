@@ -430,6 +430,7 @@ submit_mode() {
         printf 'JOB_BUDGET=%q\n'       "$JOB_BUDGET"
         printf 'NEEDS_DATA_PKL=%q\n'   "$NEEDS_DATA_PKL"
         printf 'DEVICE=%q\n'           "$DEVICE"
+        printf 'NGPUS=%q\n'            "$NGPUS"
         printf 'NCPUS_REQUESTED=%q\n'  "$NCPUS"
         printf 'WANDB_OFFLINE=%q\n'    "$OFFLINE"
         # printf reprints its format for every argument and once for none, so an empty
@@ -709,11 +710,23 @@ job_mode() {
 
     # --- train --------------------------------------------------------------
     local rc
-    timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
-        "${IN_CONTAINER[@]}" python scripts/train.py "$CONFIG" "$DATASET" "$DEVICE" \
-            --run-path "$RUNS_DIR" \
-            ${TRAIN_EXTRA[@]+"${TRAIN_EXTRA[@]}"} \
-            ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+    local NGPUS_EFFECTIVE=${NGPUS:-1}
+    if [ "$NGPUS_EFFECTIVE" -gt 1 ]; then
+        # DDP: torchrun launches one process per GPU on this single node.
+        timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
+            "${IN_CONTAINER[@]}" python -m torch.distributed.run \
+                --standalone --nproc-per-node "$NGPUS_EFFECTIVE" \
+                scripts/train.py "$CONFIG" "$DATASET" "$DEVICE" \
+                --run-path "$RUNS_DIR" \
+                ${TRAIN_EXTRA[@]+"${TRAIN_EXTRA[@]}"} \
+                ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+    else
+        timeout --signal=TERM --kill-after=180 "$TRAIN_TIMEOUT" \
+            "${IN_CONTAINER[@]}" python scripts/train.py "$CONFIG" "$DATASET" "$DEVICE" \
+                --run-path "$RUNS_DIR" \
+                ${TRAIN_EXTRA[@]+"${TRAIN_EXTRA[@]}"} \
+                ${RESUME_ARGS[@]+"${RESUME_ARGS[@]}"}
+    fi
     rc=$?
 
     echo "----------------------------------------------------------"
