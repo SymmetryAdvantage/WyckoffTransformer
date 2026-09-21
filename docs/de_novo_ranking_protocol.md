@@ -458,4 +458,5 @@ entries (~25 GB resident while it does).
 - [CrySPR reconstruction report](cryspr_reconstruction_report.md) — the rattle stage, the DoF breakdown, and the 79% reconstruction ceiling
 - [Sampling temperature](temperature_sweep.md) — what the readouts do as the sampler is sharpened or flattened
 - [Conditioning on the chemical system and the space group](chemical_system_conditioning.md) — what the accumulated protocol artifacts say about where the budget should go
+- [Protocol evaluation at E_hull=0.05](ehull_adamw_wsd_5x_ehull005_protocol.md) — ranking protocol evaluated on ehull_adamw_wsd_5x-20260912-115321 at target e_hull=0.05
 - [Every `e_hull` in this repository](e_hull_definitions.md) — the six definitions, which agree, and which must never be mixed
