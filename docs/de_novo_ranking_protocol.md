@@ -1,16 +1,10 @@
 # The de novo ranking protocol
 
-A development-time evaluation for comparing WyFormer variants by MetaSUN, at
-roughly 80% of the cost of a faithful LeMat-GenBench run — 2.4 trials per gene
-against 3, over the same four relaxation stages, on one MLIP rather than three.
+A development-time evaluation for comparing WyFormer variants by MetaSUN.
 Implemented as `wyformer-protocol` (`wyckoff_transformer.cli.protocol`) for a
 gene file on disk, and `wyformer-protocol-wandb`
 (`wyckoff_transformer.cli.protocol_wandb`) to run it end to end against a W&B
 run and log the results back.
-
-This is a *ranking* instrument, not a leaderboard predictor. It is deliberately
-biased in ways that cancel between arms; the final submission still goes through
-the full protocol with the three-model ensemble.
 
 The reasoning behind every default — the power analysis, the stage design, the
 trial schedule, the potential and hull choices — is in [the rationale
@@ -18,8 +12,7 @@ notes](archive/de_novo_ranking_protocol_rationale.md).
 
 ## How many genes
 
-**Generate 1000 genes per arm.** That is the MetaSUN cohort size the power
-analysis calls for (945, rounded up), and it is also `wyformer-generate`'s
+**Generate 1000 genes per arm,** `wyformer-generate`'s
 default `--firm-n-samples`. Larger readouts need more — ~1,900 to develop
 against `e_hull ≤ 0.05`, and ~10,000 for SUN (`e_hull ≤ 0`), which is far out of
 reach at this scale — which is why development is done against the 0.1 eV/atom
@@ -47,8 +40,7 @@ unconstrained stage before it. All three are recorded in `manifest.json`.
 
 ## The four stages
 
-Each stage needs different hardware, so each one is separately runnable and
-none of them waits on another's resource:
+Each stage needs different hardware, so each one is separately runnable:
 
 | stage | what it needs | cost | output |
 |---|---|---|---|
@@ -57,9 +49,9 @@ none of them waits on another's resource:
 | `relax` | the MLIP, on GPU | ~2-8 s per trial per K20c-class GPU | `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `cifs/`, `cifs_fixed_symmetry/` |
 | `score` | the hull parquet and LeMat-Bulk geometry in RAM | 8–20 min on 2026-09-15 (zeus, shared load): mostly the relaxed-structure symmetry detection, then ~3 min for the novelty reference | `funnel.json`, updated `structures*.csv` |
 
-Two further stages are optional, and neither is part of `--stage all`. Both are
+Three further stages are optional, and none is part of `--stage all`. All are
 alternative *sources of starting structures* rather than steps of the cascade,
-and neither changes a default.
+and none changes a default.
 
 `template` adds one [template-matched start](cryspr_template_starts.md) per gene
 — a training structure's lattice and coordinates instead of a PyXtal draw — as
@@ -70,8 +62,15 @@ relaxes ten times the usual draws on a cheap potential under fixed symmetry,
 drops the ones that landed on the same structure, and hands `relax --relax-from
 prescreen` the schedule's *usual* number of lowest-energy survivors — so the
 expensive relaxation count is unchanged and only the choice of start improves.
-That, and the two-stage `--prerelax-mlip nep89`, are the two
-[NEP89 variants](de_novo_ranking_protocol_nep89_variants.md).
+
+`basinhop` searches rather than narrowing a fixed set: from each draw it walks
+between symmetry-preserving minima on the cheap potential and offers everything
+it found to the same selection, writing `basinhop.extxyz` for `relax
+--relax-from basinhop`.
+
+Those two, the two-stage `--prerelax-mlip nep89` and NEP89-first
+(`--prescreen-release-symmetry --prescreen-rattle --prescreen-select 1`) are the
+four [NEP89 variants](de_novo_ranking_protocol_nep89_variants.md).
 
 ```bash
 wyformer-protocol genes.json.gz --output-dir run/ --stage screen
@@ -97,10 +96,7 @@ and `--no-resume` starts over.
 
 **A broken worker is not a failed trial.** A CUDA error such as `unspecified
 launch failure` poisons the worker's context, and every later trial on it
-then fails in milliseconds. One card on iapetus did this to 750 of the 2324
-trials of `ehull-ssops-20260904-235534`, whose MSUN then read a third lower
-than a comparable model's while its MSUN per relaxed structure was the same.
-The pool stages (generate, prescreen, basinhop, relax) therefore run under
+then fails in milliseconds. The pool stages (generate, prescreen, basinhop, relax) therefore run under
 `wyckoff_transformer.cli.worker_pool`, which:
 
 - stops giving work to a worker that reported a GPU error, lets the other
@@ -116,21 +112,17 @@ The pool stages (generate, prescreen, basinhop, relax) therefore run under
 - writes a trial it still could not answer (three attempts, or no device left)
   with an error that `--resume` recognises and re-runs.
 
-Each stage records what it had to do in `manifest.json` (`relax_worker_faults`,
-`relax_pool_breaks`, `relax_hung_workers`, `relax_trials_retried`,
-`relax_trials_unanswered`, `relax_retired_devices`, with the same fields for
-`pyxtal_`, `prescreen_` and `basinhop_`). A stage that leaves unanswered trials
-raises once its outputs are written, and `score` refuses a run with any, so
-that such a run is not scored and uploaded as the model's numbers. The fix is
-`--resume`; `--allow-incomplete` scores what there is.
+Each stage records what it had to do in `manifest.json` (`relax_pool_rounds`,
+`relax_worker_faults`, `relax_pool_breaks`, `relax_hung_workers`,
+`relax_trials_retried`, `relax_trials_unanswered`, `relax_retired_devices`, with
+the same fields for `pyxtal_`, `prescreen_` and `basinhop_`). A stage that
+leaves unanswered trials raises once its outputs are written, and `score`
+refuses a run with any, so that such a run is not scored and uploaded as the
+model's numbers. The fix is `--resume`; `--allow-incomplete` scores what there
+is.
 
 **A resumed row must come from the inputs it is resumed with.** Stage logs are
-keyed by `(gene index, trial)` and nothing else. `protocol_ehull5x-20260904-213346`
-v1 and v2 were produced by re-running `wyformer-protocol-wandb` without
-`--no-resume`: it sampled a fresh gene file over the old one and then resumed the
-old draws and relaxations as the new genes' trials. 2392 of the 2804 successful
-relaxations, and 789 of the 998 structures scored, belong to a gene other than
-the one they were scored as (audit of 2026-09-15). Every output therefore records
+keyed by `(gene index, trial)` and nothing else. Every output therefore records
 its lineage under `lineage` in `manifest.json`: an `id` of its own and the
 `parent` it was built from. That parent is the gene cohort's digest for
 `screen.json` and `pyxtal.csv`, and the id of the source log for `prescreen.csv`,
@@ -193,9 +185,23 @@ Drop `--condition` for an unconditional run.
 - **Conditioning targets default to 0 for stability channels.** Datasets are
   not loaded here, so conditioning cannot be sampled from the training
   distribution. Features `energy_above_hull`, `delta_e_polymorph`, and
-  `max_force` default to 0 if not specified via CLI. Other features must be
-  passed with `--condition NAME=VALUE` (or `--condition-value` for a
-  single-channel model). An unconditional run takes neither.
+  `max_force` default to 0 (`DEFAULT_CONDITION_TARGETS`) if not specified via
+  CLI. Other features must be passed with `--condition NAME=VALUE` (or
+  `--condition-value` for a single-channel model). An unconditional run takes
+  neither.
+- **`energy_above_hull=0` is off-support, and it is still the default.** At 0
+  only memorised rows carry the label, so the conditional is queried at the
+  edge of its support and behaves partly as a retrieval index. On
+  `ehull_adamw_wsd_5x-20260912-115321`, target 0.05 gave MetaSUN 0.395 against
+  0.267 at 0.00 (z = 6.1) and gene novelty 0.605 against 0.554 — an MLIP-free
+  quantity, so not a relaxation artefact
+  ([the E_hull=0.05 evaluation](ehull_adamw_wsd_5x_ehull005_protocol.md),
+  commit `5810e9b`, 2026-09-21). The default stays 0 regardless: every
+  accumulated artifact and every `protocol/` summary in W&B was produced at it,
+  and a ranking instrument is worth more consistent than optimal. So read a
+  conditioned model's MetaSUN as a *floor*, compare arms only at the same
+  target, and pass `--condition energy_above_hull=0.05` when the question is
+  what the model can do rather than how it ranks.
 - **`--temperature` re-draws the cohort, nothing else.** It rescales the logits
   of every generated cascade field; the start token still comes from the run's
   saved space-group distribution, so the space-group marginal is held fixed.
@@ -207,11 +213,11 @@ Drop `--condition` for an unconditional run.
   already holds `best_model_params.pt`, `wyckoff_processor.json` and
   `spacegroup_distribution.json`; otherwise they are downloaded from the run.
 - **What lands on the run.** Summary metrics are written into `run.summary` with a hierarchical `protocol/` layout:
-  - `protocol/gene/`: Gene-level metrics from the initial screen: `sampled`, `valid_gene`, `unique_gene`, `novel_gene`, `validity_rate`, `uniqueness_rate`, `novelty_rate`, and `vun_per_sampled_gene`.
+  - `protocol/gene/`: Gene-level metrics from the initial screen: `sampled`, `valid_gene`, `unique_gene`, `gene_novel`, `gene_known`, `sampled_novel`, `sampled_known`, `valid_gene_rate`, `unique_gene_rate`, and `gene_novelty_rate`. The three rates are per sampled gene, except `gene_novelty_rate`, which is per *unique* gene.
   - `protocol/fixed_symmetry/`: Structure-based metrics evaluated on the lowest-energy structures relaxed under fixed symmetry (pre-rattling): `structure`, `valid_structure`, `unique_structure`, `novel_structure`, `metastable`, `stable`, `metastable_among_novel`, `stable_among_novel`, `sun_per_sampled_gene`, `metasun_per_sampled_gene`, etc.
   - `protocol/free/`: Structure-based metrics evaluated on the lowest-energy structures chosen after symmetry release and rattling: `structure`, `valid_structure`, `unique_structure`, `novel_structure`, `metastable`, `stable`, `metastable_among_novel`, `stable_among_novel`, `sun_per_sampled_gene`, `metasun_per_sampled_gene`, etc.
 
-  `screen.json`, `pyxtal.extxyz`, `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `funnel.json`, `manifest.json`, `cifs/`, and `cifs_fixed_symmetry/` go into an artifact named `protocol_<run-id>` of type `protocol_eval`. `--no-upload` runs everything and skips only the write-back; `--wandb-entity` / `--wandb-project` override where the run is looked up.
+  The generated gene file, `screen.json`, `pyxtal.extxyz`, `pyxtal.csv`, `relaxations.csv`, `structures.csv`, `structures_fixed_symmetry.csv`, `funnel.json`, `manifest.json`, `cifs/`, and `cifs_fixed_symmetry/` go into an artifact named `protocol_<run-id>` of type `protocol_eval`, plus `prescreen.csv` and `prescreen_selection.csv` when a wide-then-narrow run produced them. `cryspr/` does not. `--no-upload` runs everything and skips only the write-back; `--wandb-entity` / `--wandb-project` override where the run is looked up.
 
 The same hardware, trial-schedule, MLIP and reference flags as `wyformer-protocol`
 are accepted and passed straight through.
@@ -241,8 +247,8 @@ sampled → valid gene → unique gene (keep counts)
 ```
 
 **Structure metrics are computed separately along two tracks:**
-1. **Fixed symmetry (pre-rattling)**: Structures relaxed through the two symmetric stages (`0_fix_cell` and `2_sym_cell+pos`), keeping the sampled space group and Wyckoff orbit constraints intact. Evaluated and scored into `structures_fixed_symmetry.csv`, `cifs_fixed_symmetry/`, and `protocol/fixed_symmetry/`.
-2. **Free (post-rattling)**: Structures chosen after symmetry release (`2b_free_cell+pos`) and rattling (`3_rattle`), which can break symmetry and escape symmetric stationary points. Evaluated and scored into `structures.csv`, `cifs/`, and `protocol/free/`.
+1. **Fixed symmetry (pre-rattling)**: Structures relaxed through the two symmetric stages (`1_fix-cell` and `2_sym_cell+pos`), keeping the sampled space group and Wyckoff orbit constraints intact. Evaluated and scored into `structures_fixed_symmetry.csv`, `cifs_fixed_symmetry/`, and `protocol/fixed_symmetry/`.
+2. **Free (post-rattling)**: Structures chosen after symmetry release (`3_no-sym_cell+pos`) and rattling (`4_rattle_no-sym`), which can break symmetry and escape symmetric stationary points. Evaluated and scored into `structures.csv`, `cifs/`, and `protocol/free/`.
 
 Both tracks undergo the same structure scoring pipeline:
 - CIF reading and structural validity (pymatgen check).
@@ -297,19 +303,21 @@ for that gene.
 That is what makes the reference affordable. LeMat-Bulk has 5.3M entries and
 the matcher needs a `Structure` per candidate, which is far too much to hold;
 but only entries whose fingerprint collides with a generated one can ever reach
-it. On `upi73i4k`'s 2500 genes, 627 fingerprints collide, over **795** reference
-structures — a median of 1 candidate each and never more than 6 (measured
-against `lemat_bulk_ehull`). So the reference is built per run: one streaming
-pass over the Wyckoff cache for the colliding `immutable_id`s, then one chunked
-pass over `lemat_pbe.csv.gz` for their geometry.
+it. For a thousand-gene cohort that is a few hundred fingerprints over a few
+hundred entries, a median of one candidate each. So the reference is built per
+run: one streaming pass over the Wyckoff cache for the colliding
+`immutable_id`s, then one chunked pass over `lemat_pbe.csv.gz` for their
+geometry. Each run records what it actually found in `manifest.json` under
+`novelty_reference`; the last counts published against
+[`lemat_bulk_ehull`](archive/lemat_bulk_ehull_rescore.md#the-collision-measurement)
+have not been re-measured against the current variant.
 
 **A colliding entry without geometry is refused, not dropped.** An entry missing
 from `lemat_pbe.csv.gz`, or whose CIF does not parse, cannot be matched against,
 and a structure whose only candidates were such entries would be scored novel.
 `build_novelty_reference` therefore raises `UnresolvedReferenceError` rather than
 scoring around the hole. No such entry exists today: every one of the 5,327,342
-`immutable_id`s of `lemat_bulk_fmax1_stress` (and of the 4,207,723 of
-`lemat_bulk_ehull`) is in the 5,335,299-row export (checked 2026-09-15).
+`immutable_id`s of `lemat_bulk_fmax1_stress` is in the 5,335,299-row export (checked 2026-09-15).
 
 ### The novelty reference
 
@@ -325,52 +333,16 @@ records none, so that gene novelty and structure novelty in one funnel always
 come from the same reference. The fingerprint set is cached beside the
 reference it was computed from (`--reference-fingerprint-cache` defaults to
 `gene_fingerprints.pkl.gz` in the reference's directory, with the splits in the
-name when they are not all three); before 2026-09-15 it was one fixed path, so
-passing another `--reference-cache` alone silently reused `lemat_bulk_ehull`'s
-fingerprints.
+name when they are not all three).
 
-**Protocol artifacts scored before 2026-09-15 used `lemat_bulk_ehull`**
-(changed on top of commit `600a2ab`). That variant lacks 1.12M of the current
-variant's rows — everything above `max_force` 0.02 eV/Å, the Materials Project
-rows with empty forces, Yb and actinide chemistry — so a generated structure
-matching one of them counted as novel. Gene novelty, `novel_structure`,
-MetaSUN, SUN and the novelty crossings of such an artifact are **not comparable**
-with a run scored against `lemat_bulk_fmax1_stress` until it is re-scored
-(`--from-artifact --stages screen,score`); validity, uniqueness, `metastable`
-and `stable` do not depend on the reference. Re-scored on 2026-09-15 with
-`--from-artifact --stages screen,score`, `lemat_bulk_ehull` → `lemat_bulk_fmax1_stress`
-(free readout unless marked; every other funnel entry unchanged):
-
-| run | artifact | gene novelty | novel structure | MetaSUN | SUN | MetaSUN, fixed symmetry |
-|---|---|---|---|---|---|---|
-| `e9ywwsie` | v4 → **v5** | 0.672 → 0.663 | 0.665 → 0.653 | 0.278 → 0.268 | 0.006 → 0.005 | 0.161 → 0.153 |
-| `ehull-ssops-20260904-235534` | v2 → **v3** | 0.643 → 0.631 | 0.622 → 0.612 | 0.289 → 0.281 | 0.006 → 0.006 | 0.197 → 0.190 |
-| `ehull5x-20260904-213346` | v3 → **v4** | 0.580 → 0.557 | 0.594 → 0.579 | 0.268 → 0.255 | 0.014 → 0.012 | 0.185 → 0.172 |
-| `19qbxo6l` | v3 → **v4** | 0.673 → 0.665 | 0.588 → 0.580 | 0.193 → 0.188 | 0.007 → 0.007 | 0.103 → 0.099 |
-| `e_all_adamw_wsd-20260909-001225` | v1 → **v2** | 0.698 → 0.690 | 0.608 → 0.603 | 0.210 → 0.206 | 0.003 → 0.002 | 0.107 → 0.103 |
-| `relational_e_all_adamw_wsd-20260909-234259` | v0 → **v1** | 0.725 → 0.686 | 0.672 → 0.636 | 0.197 → 0.169 | 0.011 → 0.006 | 0.110 → 0.085 |
-| `upi73i4k`\* | v3 → **v4** | 0.670 → 0.660 | 0.638 → 0.633 | 0.256 → 0.250 | 0.005 → 0.005 | 0.161 → 0.154 |
-
-\* Not a pure re-score; see below.
-
-The relational run loses the most: 2.8 points of MetaSUN and half its SUN. Its
-generated structures are disproportionately ones the current variant has and
-`lemat_bulk_ehull` did not, so its MetaSUN lead over `e_all_adamw_wsd` went
-from −0.013 to −0.037. In every run the re-screen kept validity, uniqueness and
-the counts exactly, and no gene went from known to novel.
-
-**`upi73i4k` also had its gene 860 re-relaxed.** `score` refused v3
-(`IncompleteStageError`): all three trials of gene 860 (K24Cl36H90O132, 282
-atoms) had failed with a CUDA out-of-memory error on a 2 GiB card. v3 was scored
-on 2026-09-12, before that check existed, and counted the gene as having no
-structure. On 2026-09-16 those three trials were re-run on zeus with `relax
---resume` (one worker on each RTX 6000 Ada, `--relax-timeout 1800`, the same
-draws from `pyxtal.extxyz`), then `screen` and `score` against
-`lemat_bulk_fmax1_stress`. The other 2365 trials were kept. So v4 differs from v3
-by that one gene as well as by the reference: `structure` 997 → 998,
-`valid_structure` 904 → 905. The gene relaxed to a valid, novel structure at 0.101
-eV/atom above the hull, just outside `metastable`, so `metastable` and `stable`
-are unchanged.
+**Protocol artifacts scored before 2026-09-15 used `lemat_bulk_ehull`**, which
+lacks 1.12M of the current variant's rows. Gene novelty, `novel_structure`,
+MetaSUN, SUN and the novelty crossings of such an artifact are **not
+comparable** with a run scored against `lemat_bulk_fmax1_stress` until it is
+re-scored (`--from-artifact --stages screen,score`); validity, uniqueness,
+`metastable` and `stable` do not depend on the reference. The seven artifacts
+migrated on 2026-09-15/16, and what each one's numbers moved by, are in
+[the re-score record](archive/lemat_bulk_ehull_rescore.md).
 
 ## The settings, in brief
 
@@ -391,7 +363,7 @@ notes](archive/de_novo_ranking_protocol_rationale.md).
 
 The scoring half is implemented here rather than imported — LeMat-GenBench is
 not on PyPI and its pinned `torch_scatter` wheels hold torch at 2.6, which
-cannot coexist with our `torch ==2.11.0`.
+cannot coexist with our `torch >=2.10.0`.
 
 | module | replaces |
 |---|---|
@@ -404,7 +376,7 @@ Novelty is *not* a port: it is our own `evaluation/novelty.py`, which predates
 the benchmark and answers the same question with `StructureMatcher` rather than
 with a hash.
 
-`tests/test_genbench_equivalence.py` pins the ported half against the originals
+`src/wyckoff_transformer/tests/test_genbench_equivalence.py` pins the ported half against the originals
 and skips when LeMat-GenBench is absent:
 
 ```bash
@@ -420,7 +392,7 @@ for the equivalence results and the one-hot-encoding trap.
 | path | what | note |
 |---|---|---|
 | `cache/lemat_bulk_fmax1_stress/data.pkl.gz` | LeMat-Bulk in the Wyckoff representation, 5,327,342 rows over train/val/test; the novelty reference | built by [the LeMat pipeline](lemat_bulk_pipeline.md); `--reference-cache` overrides |
-| `cache/lemat_bulk_fmax1_stress/gene_fingerprints.pkl.gz` | 4,826,004 distinct gene fingerprints of all three splits (3,959,797 in `lemat_bulk_ehull`) | built on first `screen`, beside the reference |
+| `cache/lemat_bulk_fmax1_stress/gene_fingerprints.pkl.gz` | 4,826,004 distinct gene fingerprints of all three splits | built on first `screen`, beside the reference |
 | `data/lemat-bulk/lemat_pbe.csv.gz` | LeMat-Bulk CIFs, by `immutable_id` | the geometry `StructureMatcher` needs; `--lemat-cif-csv` overrides |
 
 The hull parquet is fetched from HuggingFace and cached there. The first `screen`
@@ -452,11 +424,12 @@ entries (~25 GB resident while it does).
 ## See also
 
 - [The rationale notes](archive/de_novo_ranking_protocol_rationale.md) — why every default is what it is
-- [The NEP89 variants](de_novo_ranking_protocol_nep89_variants.md) — two-stage NEP89→ORB, and wide-then-narrow
+- [The NEP89 variants](de_novo_ranking_protocol_nep89_variants.md) — two-stage NEP89→ORB, wide-then-narrow, NEP89-first, and basin hopping
 - [Improving de novo quality](archive/de_novo_quality_plan.md) — what to change in the model
-- [CrySPR trial and stage spread](cryspr_trial_and_stage_spread.md) — where the trial and stage numbers come from
-- [CrySPR reconstruction report](cryspr_reconstruction_report.md) — the rattle stage, the DoF breakdown, and the 79% reconstruction ceiling
+- [CrySPR trial and stage spread](archive/cryspr_trial_and_stage_spread.md) — where the trial and stage numbers come from
+- [CrySPR reconstruction report](archive/cryspr_reconstruction_report.md) — the rattle stage, the DoF breakdown, and the 79% reconstruction ceiling
 - [Sampling temperature](temperature_sweep.md) — what the readouts do as the sampler is sharpened or flattened
 - [Conditioning on the chemical system and the space group](chemical_system_conditioning.md) — what the accumulated protocol artifacts say about where the budget should go
 - [Protocol evaluation at E_hull=0.05](ehull_adamw_wsd_5x_ehull005_protocol.md) — ranking protocol evaluated on ehull_adamw_wsd_5x-20260912-115321 at target e_hull=0.05
+- [The `lemat_bulk_ehull` re-score](archive/lemat_bulk_ehull_rescore.md) — the one-time reference migration of 2026-09-15/16, and what it moved
 - [Every `e_hull` in this repository](e_hull_definitions.md) — the six definitions, which agree, and which must never be mixed

@@ -3072,7 +3072,10 @@ def build_parser() -> argparse.ArgumentParser:
             "positional degrees of freedom, ending in a '*' bin. A bare integer "
             "gives every gene the same number. The default spends one trial on "
             "the fifth of genes with no free coordinates, where a second one "
-            "provably changes nothing, and two on the rest."
+            "provably changes nothing, two up to 2 DoF, and three above that, "
+            "where a third still earns 3.8-4.4 points of p(e_hull <= 0.1). That "
+            "is 2.37 trials per gene, 99%% of a flat three-trial budget at 0.8x "
+            "its cost."
         ),
     )
 

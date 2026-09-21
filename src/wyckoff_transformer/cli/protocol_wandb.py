@@ -552,7 +552,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Comma-separated subset of %s to run, in this order. The optional "
             "stages %s are accepted but not in the default: 'template' adds one "
             "template-matched start per gene, 'prescreen' narrows a widened draw "
-            "down to the schedule's usual count on a cheap potential."
+            "down to the schedule's usual count on a cheap potential, and "
+            "'basinhop' walks between symmetry-preserving minima on that same "
+            "potential and offers what it finds to the same selection. The last "
+            "two feed --relax-from."
             % (",".join(protocol_cli.STAGES), ",".join(protocol_cli.OPTIONAL_STAGES))
         ),
     )
