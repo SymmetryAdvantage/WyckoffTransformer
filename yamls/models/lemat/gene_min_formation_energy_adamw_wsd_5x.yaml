@@ -1,0 +1,86 @@
+# LeMat-Bulk gene_min_formation_energy_per_atom-conditioned WyFormer at 5x capacity,
+# apples-to-apples with yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x.yaml.
+#
+# Everything else -- optimiser, peak lr, schedule, batch size, tokeniser, dropout,
+# clipping, network capacity (d_model=120, nhead=8, dim_feedforward=320, 3 layers) --
+# is held identical to ehull_adamw_wsd_5x.yaml to enable direct comparison.
+#
+# Differences from ehull_adamw_wsd_5x.yaml:
+#   1. condition_feature: gene_min_formation_energy_per_atom (instead of energy_above_hull)
+#   2. condition_transform: omitted (identity). gene_min_formation_energy_per_atom spans
+#      ~ -5 to +5 eV/atom (median -0.14, mean -0.21, p01 -2.72, p99 2.20). Because it
+#      takes negative values, log1p cannot be applied. The distribution is already
+#      zero-centred with std ~ 1.0, so values pass directly in physical units (eV/atom).
+
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    # 3x the baseline, preserving the 2:2:1 split between the three cascade fields.
+    # These sum to d_model = 120.
+    embedding_size:
+      elements: 48
+      site_symmetries: 48
+      sites_enumeration: 24
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature: gene_min_formation_energy_per_atom
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 1
+    TransformerEncoderLayer_args:
+      # 120 / 8 = 15 per head
+      nhead: 8
+      dim_feedforward: 320
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 500
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.
+  epochs: 40000
+tokeniser:
+  name: lemat_bulk_fmax1_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000
