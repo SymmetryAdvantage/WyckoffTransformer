@@ -58,10 +58,11 @@ CascadeTransformer_args:
 * The 2,859-epoch cutoff was explicitly documented as a "proof of concept" horizon to fit within a single job link, cutting short the planned 20,000-epoch schedule.
 * Under Warmup-Stable-Decay (WSD), the majority of optimization gains occur during the decay phase. Chaining the run to complete 10,000–20,000 epochs allows the optimizer to converge to significantly lower loss.
 
-### 2.6 Issue 6: Range Restriction and Target Cancellation
+### 2.6 Issue 6: Range Restriction — Composition Dominates Formation Energy
 * As shown in [`docs/gene_selection_measurements.md`](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/docs/gene_selection_measurements.md), formation energy is dominated by elemental composition.
 * When ranking candidate genes on convex hull distance ($E_{\text{hull}}$) or comparing polymorphs of the same composition, subtracting the composition hull cancels the elemental baseline, leaving an error floor of ~0.12–0.20 eV/atom.
-* Training directly on `energy_above_hull` or `delta_e_polymorph` focuses model capacity directly on the structural ranking signal.
+* **Why not train on hull-derived targets?** `energy_above_hull` and `delta_e_polymorph` are *database-dependent quantities* — they shift whenever an entry is added to or removed from the convex hull. Formation energy per atom is a genuine physical property of a structure, invariant to the state of any database. Training on hull distance would couple the model to a snapshot of the database rather than to physics, making predictions non-portable and semantically fragile.
+* **Implication:** The model should continue to predict formation energy (a physical quantity), but downstream evaluation and screening should subtract composition-level baselines (e.g. hull interpolation) to isolate the structural ranking signal. Reducing the 0.06 eV/atom MAE on formation energy is the path to sharper hull ranking, not changing the target.
 
 ---
 
