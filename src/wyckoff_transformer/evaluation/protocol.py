@@ -203,10 +203,15 @@ def load_genes(path: Path) -> list[dict]:
 
 
 #: Columns :func:`record_to_augmented_fingerprint` reads.
+#:
+#: ``site_symmetries_augmented`` rather than ``site_symmetries``: the oriented
+#: symbol travels with the enumeration index, since a relabelling can change it.
+#: A cache without the column is refused rather than mis-fingerprinted; see
+#: ``docs/wyckoff_augmentation_audit.md``.
 _FINGERPRINT_COLUMNS = (
     "spacegroup_number",
     "elements",
-    "site_symmetries",
+    "site_symmetries_augmented",
     "sites_enumeration_augmented",
 )
 

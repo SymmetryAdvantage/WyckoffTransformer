@@ -116,7 +116,12 @@ def _record(elements, symmetries, enumerations, space_group=1, augmented=None):
         "spacegroup_number": space_group,
     }
     if augmented is not None:
-        record["sites_enumeration_augmented"] = frozenset(map(tuple, augmented))
+        # Paired with the symbols, which a relabelling can change; these fixtures
+        # permute only the indices. See docs/wyckoff_augmentation_audit.md.
+        variants = tuple(map(tuple, augmented))
+        record["sites_enumeration_augmented"] = variants
+        record["site_symmetries_augmented"] = tuple(
+            tuple(symmetries) for _ in variants)
     return record
 
 

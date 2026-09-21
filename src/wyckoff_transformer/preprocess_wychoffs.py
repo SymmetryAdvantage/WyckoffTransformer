@@ -171,6 +171,10 @@ def enumerate_wychoffs_by_ss(
         stop_token=max_multiplicity + 1, mask_token=max_multiplicity + 2, pad_token=0, default_value=0)
     _save_engineer(multiplicity_engineer, "multiplicity")
 
+    # The spherical-harmonic signature is no longer an engineered *field*: no
+    # current tokeniser config asks for it, and as package data it was 633 KB of
+    # per-token float vectors nothing read.  It survives only as the intermediate
+    # `harmonic_cluster` is clustered from, so it is built and not saved.
     harmonic_size = 2 * (spherical_harmonics_degree + 1) * len(reference_vectors)
     harmonic_engineer = FeatureEngineer(
         signature_by_sg_ss_enum, ("spacegroup_number", "site_symmetries", "sites_enumeration"),
@@ -184,7 +188,6 @@ def enumerate_wychoffs_by_ss(
         # In case of making an invalid request, we need to have a default value
         # CONSIDER using nan
         default_value=np.zeros(harmonic_size))
-    _save_engineer(harmonic_engineer, "harmonic_site_symmetries")
 
     enum_to_cluster, cluster_to_enum = clasterize_harmonics(harmonic_engineer)
     # Here we actually know the tokens - as this is their birthplace

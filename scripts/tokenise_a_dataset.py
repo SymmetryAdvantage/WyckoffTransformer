@@ -7,7 +7,12 @@ import gzip
 import logging
 
 from wyckoff_transformer.paths import cache_root
-from wyckoff_transformer.tokenization import TENSOR_CACHE_SUFFIX, WyckoffProcessor, save_tensor_cache
+from wyckoff_transformer.tokenization import (
+    TENSOR_CACHE_SUFFIX,
+    WyckoffProcessor,
+    save_tensor_cache,
+    warn_if_obsolete,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,9 @@ def main():
     if args.debug:
         logging.basicConfig(level=logging.DEBUG)
     config = omegaconf.OmegaConf.load(args.config_file)
+    # Re-tokenising an obsolete config is legitimate -- it is how a cache an old
+    # model needs is rebuilt -- so this says so rather than refusing.
+    warn_if_obsolete(config, "re-tokenising a dataset")
     tokenizer_root_path = Path(__file__).parent.parent.resolve() / "yamls" / "tokenisers"
     tokenizer_full_name = args.config_file.resolve().relative_to(tokenizer_root_path).with_suffix('')
     if config.name != str(tokenizer_full_name):

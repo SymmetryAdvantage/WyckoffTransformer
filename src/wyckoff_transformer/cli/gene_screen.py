@@ -92,8 +92,18 @@ def score_genes(
     regressor,
     reference: pd.DataFrame,
     augmentation_samples: int = 1,
+    hull_lookup: "HullLookup | None" = None,
 ) -> pd.DataFrame:
-    """Predict clean formation energies and compare every usable gene to its hull."""
+    """Predict clean formation energies and compare every usable gene to its hull.
+
+    Args:
+        hull_lookup: A :class:`~wyckoff_transformer.formula_energy.screen.HullLookup`
+            to reuse.  Building one scans the whole PBE reference to index it by
+            element, which costs far more than scoring a batch of genes; a caller
+            that scores several batches -- a screening loop topping a cohort up
+            to a budget -- should build one and pass it in.  Omitted, one is
+            built here and thrown away, which is right for a single call.
+    """
     validate_regressor(regressor)
     output = pd.DataFrame(index=pd.RangeIndex(len(genes), name="index"))
     output["formula"] = pd.NA
@@ -141,7 +151,7 @@ def score_genes(
         prediction.detach().cpu().numpy()
     )
 
-    lookup = HullLookup(reference)
+    lookup = hull_lookup if hull_lookup is not None else HullLookup(reference)
     hulls = {}
     for formula in supported["formula"].unique():
         try:

@@ -15,10 +15,17 @@ from wyckoff_transformer.gene_energy import (
 
 
 def _row(elements, symmetries, enumerations, energy):
+    """One row of the gene table.
+
+    The augmentation carries a site-symmetry tuple per enumeration variant, since
+    a relabelling can change the oriented symbol (docs/wyckoff_augmentation_audit.md).
+    These fixtures permute only the indices, so every variant repeats *symmetries*.
+    """
     return {
         "spacegroup_number": 1,
         "elements": elements,
         "site_symmetries": symmetries,
+        "site_symmetries_augmented": [list(symmetries)] * len(enumerations),
         "sites_enumeration_augmented": enumerations,
         "formation_energy_per_atom": energy,
     }
@@ -94,6 +101,7 @@ class TestGeneScreen(unittest.TestCase):
                 "multiplicity": [1],
                 "site_symmetries": ["1"],
                 "sites_enumeration": [0],
+                "site_symmetries_augmented": [["1"]],
                 "sites_enumeration_augmented": [[0]],
                 "spacegroup_number": 1,
             },
@@ -102,6 +110,7 @@ class TestGeneScreen(unittest.TestCase):
                 "multiplicity": [1],
                 "site_symmetries": ["1"],
                 "sites_enumeration": [0],
+                "site_symmetries_augmented": [["1"]],
                 "sites_enumeration_augmented": [[0]],
                 "spacegroup_number": 1,
             },

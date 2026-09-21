@@ -39,7 +39,6 @@ PACKAGE_DIR = Path(preprocess_wychoffs.__file__).resolve().parent
 PACKAGE_DATA_SHA256 = {
     "wyckoffs_enumerated_by_ss.json": "ed3ad3777b1eec3273461f7e4dac44f32325d3a80c5813cb3404694334d4694b",
     "engineers/harmonic_cluster.json": "75b7694ad3c1ca394682ef1b10af8e0f394167cfeda6a8b1afd26105471f9d36",
-    "engineers/harmonic_site_symmetries.json": "c4a93b47892805c1901fc6a240679d575f1d9cc6bd29c055e2bf2022da8dd68b",
     "engineers/multiplicity.json": "e4126ef022763e4e349160c1123fba422d31524cf3e459ec10299c67dd0fbee4",
     "engineers/sites_enumeration.json": "c5bd41d86bb3b107eaeb3f1af877d4d517970bd5fbe085cea9fddcc3330979ca",
     "engineers/site_symmetry_ops.json": "5f954fdade2e5b92067cad2b5c500eb4c51b7da43c7a5ef3d700bfeae47b6d61",

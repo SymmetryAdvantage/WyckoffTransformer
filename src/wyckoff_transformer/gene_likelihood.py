@@ -102,16 +102,27 @@ def gene_representations(record: Dict) -> Tuple[List[Tuple[tuple, ...]], np.ndar
         triples, and the log count of distinct orderings of each.
     """
     elements = list(record["elements"])
-    symmetries = list(record["site_symmetries"])
     variants = record.get("sites_enumeration_augmented")
+    symmetry_variants = record.get("site_symmetries_augmented")
     # A record missing the column reads back as NaN once it has been through a
     # DataFrame, which is neither None nor empty and is not iterable either.
-    if variants is None or not isinstance(variants, (list, tuple, set, frozenset)):
-        variants = [record["sites_enumeration"]]
-    elif not variants:
-        variants = [record["sites_enumeration"]]
+    def _usable(value):
+        return isinstance(value, (list, tuple, set, frozenset)) and len(value) > 0
+
+    if _usable(variants) and _usable(symmetry_variants):
+        # The symbol travels with the index: a relabelling can change it, so the
+        # pair is what names a position. See docs/wyckoff_augmentation_audit.md.
+        pairs = list(zip(symmetry_variants, variants))
+    elif _usable(variants):
+        raise KeyError(
+            "This record carries 'sites_enumeration_augmented' without "
+            "'site_symmetries_augmented', so it predates the fix to the Wyckoff "
+            "augmentation; its likelihood would be computed over mis-named positions. "
+            "See docs/wyckoff_augmentation_audit.md.")
+    else:
+        pairs = [(list(record["site_symmetries"]), record["sites_enumeration"])]
     distinct: Dict[frozenset, Tuple[tuple, ...]] = {}
-    for enumeration in variants:
+    for symmetries, enumeration in pairs:
         sites = tuple(zip(elements, symmetries, enumeration))
         if len(sites) != len(elements):
             raise ValueError(

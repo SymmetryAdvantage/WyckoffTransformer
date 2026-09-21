@@ -27,6 +27,63 @@ from wyckoff_transformer.wyckoff_processor import (
     argsort_multiple,
 )
 
+#: Key a tokeniser config sets to say it must not be used for new work.
+#:
+#: Its value is the reason, in prose, and the reason is what a caller is shown --
+#: a bare flag would leave whoever hits it guessing whether the config is merely
+#: old or actively wrong.  Nothing is deleted when a config becomes obsolete:
+#: models were trained with it and have to keep loading, so inference warns and
+#: only training refuses.
+OBSOLETE_KEY = "obsolete"
+
+
+class ObsoleteTokeniserError(ValueError):
+    """Training was asked for a tokeniser configuration that must not be used."""
+
+
+def obsolete_reason(config) -> Optional[str]:
+    """Why this tokeniser config is obsolete, or None if it is not."""
+    if config is None:
+        return None
+    getter = getattr(config, "get", None)
+    if getter is None:
+        return None
+    reason = config.get(OBSOLETE_KEY)
+    if reason is None or reason is False:
+        return None
+    return str(reason)
+
+
+def warn_if_obsolete(config, context: str = "") -> Optional[str]:
+    """Log why an obsolete tokeniser is obsolete, and carry on.
+
+    For the paths that have to keep working: loading a checkpoint for inference,
+    re-scoring an old run, reading a cache that was tokenised with it.  Refusing
+    there would make previously trained models unloadable, which is a worse
+    outcome than a noisy one.
+    """
+    reason = obsolete_reason(config)
+    if reason is None:
+        return None
+    name = config.get("name", "<unnamed>")
+    logger.warning(
+        "Tokeniser configuration %r is obsolete%s: %s", name,
+        f" ({context})" if context else "", reason)
+    return reason
+
+
+def refuse_if_obsolete(config, context: str = "") -> None:
+    """Raise rather than start training on an obsolete tokeniser configuration."""
+    reason = obsolete_reason(config)
+    if reason is None:
+        return
+    name = config.get("name", "<unnamed>")
+    raise ObsoleteTokeniserError(
+        f"Tokeniser configuration {name!r} is obsolete and must not be trained on"
+        f"{f' ({context})' if context else ''}: {reason}"
+    )
+
+
 WYCKOFF_MAPPINGS_FILENAME = "wyckoffs_enumerated_by_ss.json"
 _PACKAGE_MAPPINGS_PATH = Path(__file__).parent / WYCKOFF_MAPPINGS_FILENAME
 

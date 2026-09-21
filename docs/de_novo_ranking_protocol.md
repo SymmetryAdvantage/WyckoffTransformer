@@ -424,6 +424,7 @@ entries (~25 GB resident while it does).
 ## See also
 
 - [The rationale notes](archive/de_novo_ranking_protocol_rationale.md) — why every default is what it is
+- [Rules of engagement](rules_of_engagement.md) — the four inference modes that end in this protocol, and what each one filters before it gets here
 - [The NEP89 variants](de_novo_ranking_protocol_nep89_variants.md) — two-stage NEP89→ORB, wide-then-narrow, NEP89-first, and basin hopping
 - [Improving de novo quality](archive/de_novo_quality_plan.md) — what to change in the model
 - [CrySPR trial and stage spread](archive/cryspr_trial_and_stage_spread.md) — where the trial and stage numbers come from

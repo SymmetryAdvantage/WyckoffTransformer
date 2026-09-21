@@ -212,25 +212,70 @@ class FeatureEngineer():
         augmented_field_orginal_name: str,
         original_max_len: int,
         **tensor_args):
-        """
+        """One engineered tensor per equivalent description of the structure.
+
+        The engineer is a lookup keyed by a sequence-level field (the space
+        group) and one or more token-level fields.  A relabelling changes some of
+        those token-level fields and not others, so the query for variant *i* has
+        to take each level from that level's own variant *i* where it has one,
+        and from the record otherwise.
+
+        The rule this replaced took the last level from the variant and every
+        other level from the record.  That is wrong whenever a relabelling moves
+        more than one level: in 26 orthorhombic space groups it changes the
+        oriented site-symmetry symbol as well as the enumeration index, so the
+        query named a third Wyckoff position -- and the pair is legal, so the
+        lookup succeeded and returned the wrong features silently.  See
+        ``docs/wyckoff_augmentation_audit.md``.
+
         Args:
-            record: The record to process
-            augmented_field_orginal_name: The original name of the field containing the augmented variants
-                e. g. "sites_enumeration"
-            original_max_len: The maximum length of the sequence
-            **tensor_args: Additional arguments for the torch.tensor
+            record: The record to process.
+            augmented_field_orginal_name: The field whose variants set how many
+                equivalent descriptions there are, e.g. ``sites_enumeration``.
+                It must be one of the engineer's token-level keys.
+            original_max_len: The maximum length of the sequence.
+            **tensor_args: Additional arguments for ``torch.tensor``.
+
         Returns:
-            A list of tensors with the augmented features processed by the engineer
+            One padded tensor per variant.
         """
-        # We need to unravel the augmented field
         augmented_field = f"{augmented_field_orginal_name}_augmented"
         augmentation_variants = record.at[augmented_field]
+        n_variants = len(augmentation_variants)
+
         # WARNING(kazeevn): only one structure is supported:
-        # The first input is sequence-level, the next two are token-level
-        this_db = self.db.xs(record.at[self.db.index.names[0]], level=0)
-        assert len(self.db.index.names) == 3
-        assert self.db.index.names[2] == augmented_field_orginal_name
-        queries = [list(map(tuple, zip(record.at[self.db.index.names[1]], variant))) for variant in augmentation_variants]
+        # the first input is sequence-level, the rest are token-level.
+        names = list(self.db.index.names)
+        this_db = self.db.xs(record.at[names[0]], level=0)
+        token_levels = names[1:]
+        if augmented_field_orginal_name not in token_levels:
+            raise ValueError(
+                f"{self.db.name!r} is keyed on {token_levels} and cannot be augmented "
+                f"along {augmented_field_orginal_name!r}.")
+
+        per_level = []
+        for level in token_levels:
+            variants = record.get(f"{level}_augmented")
+            if variants is not None and len(variants) == n_variants:
+                per_level.append(list(variants))
+            elif level == augmented_field_orginal_name:
+                per_level.append(list(augmentation_variants))
+            else:
+                # A level no relabelling moves -- multiplicity is one, being a
+                # normaliser invariant -- repeats the record's own value.
+                per_level.append([record.at[level]] * n_variants)
+
+        queries = []
+        for variant in range(n_variants):
+            columns = [level[variant] for level in per_level]
+            lengths = {len(column) for column in columns}
+            if len(lengths) != 1:
+                raise ValueError(
+                    f"Variant {variant} of {self.db.name!r} has {lengths} sites across "
+                    f"{token_levels}; the augmented columns must stay aligned.")
+            queries.append(list(columns[0]) if len(columns) == 1
+                           else list(map(tuple, zip(*columns))))
+
         padding_function = partial(
             self.pad_and_stop,
             original_max_len=original_max_len,
@@ -273,6 +318,49 @@ def argsort_multiple(*tensors, dim: int):
 
     raise NotImplementedError("Only one or two tensors are supported")
 
+
+
+#: Fields whose meaning depends on another field, and so cannot be augmented alone.
+#:
+#: ``sites_enumeration`` is an index *within* a site-symmetry symbol, and a
+#: relabelling can change the symbol -- in 26 orthorhombic space groups the
+#: normaliser permutes the crystal axes.  Augmenting the index while holding the
+#: symbol fixed hands the model a pair naming a third position, and the pair is
+#: legal so nothing raises.  ``wyckoff_letters`` names the position outright, so
+#: it desynchronises under any non-trivial relabelling.
+#: See ``docs/wyckoff_augmentation_audit.md``.
+AUGMENTATION_COMPANIONS = {
+    "sites_enumeration": ("site_symmetries", "wyckoff_letters"),
+    "site_symmetries": ("sites_enumeration", "wyckoff_letters"),
+}
+
+
+def validate_augmented_token_fields(config) -> None:
+    """Refuse a config that augments one half of a position's name and not the other.
+
+    A config already marked ``obsolete`` is let through: the models trained on it
+    have to keep loading, and the marker already says what is wrong with it.
+    Training on one is refused separately, in ``scripts/train.py``.
+    """
+    from wyckoff_transformer.tokenization import obsolete_reason  # noqa: PLC0415
+
+    if obsolete_reason(config) is not None:
+        return
+    augmented = set(config.augmented_token_fields)
+    token_fields = config.get("token_fields", {})
+    present = set(token_fields.get("pure_categorical", []) or [])
+    present.update(token_fields.get("engineered", {}) or {})
+    for field in sorted(augmented):
+        for companion in AUGMENTATION_COMPANIONS.get(field, ()):
+            if companion in present and companion not in augmented:
+                raise ValueError(
+                    f"{field!r} is augmented but {companion!r} is not, and the two name "
+                    f"one Wyckoff position between them. Training on that pairs a "
+                    f"relabelled {field} with an unrelabelled {companion}, which in 26 "
+                    "orthorhombic space groups names a third position entirely. Add "
+                    f"{companion!r} to augmented_token_fields, or drop {field!r} from it. "
+                    "See docs/wyckoff_augmentation_audit.md."
+                )
 
 class WyckoffProcessor:
     """
@@ -507,7 +595,7 @@ class WyckoffProcessor:
         from pandarallel import pandarallel  # noqa: PLC0415
         from wyckoff_transformer.tokenization import (  # noqa: PLC0415
             EnumeratingTokeniser, SpaceGroupEncoder, PassThroughTokeniser,
-            tokenise_engineer)
+            tokenise_engineer, warn_if_obsolete)
         config = self.config
         dtype = getattr(torch, config.dtype)
         include_stop = config.get("include_stop", True)
@@ -649,6 +737,8 @@ class WyckoffProcessor:
                                 torch.tensor(tuple(dict_.values()), dtype=dtype)).to_list()
 
             if "augmented_token_fields" in config:
+                validate_augmented_token_fields(config)
+                warn_if_obsolete(config, "tokenising")
                 # WARNING Cell variable field defined in loopPylintW0640:cell-var-from-loop
                 for field in config.augmented_token_fields:
                     augmented_field = f"{field}_augmented"

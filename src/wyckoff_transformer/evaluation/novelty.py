@@ -6,6 +6,44 @@ import pandas as pd
 from joblib import Parallel, delayed
 from pymatgen.analysis.structure_matcher import StructureMatcher
 
+from wyckoff_transformer.data import (
+    AUGMENTED_SITE_SYMMETRIES,
+    AUGMENTED_SITES_ENUMERATION,
+)
+
+
+def augmented_variants(row: Dict | Series):
+    """The equivalent descriptions of one record, as ``(symmetries, enumeration)`` pairs.
+
+    A Wyckoff position is named by its space group, its oriented site-symmetry
+    symbol and its index *within that symbol*, so an equivalent description has
+    to carry both -- in 26 orthorhombic space groups a relabelling changes the
+    symbol.  Records written before that was understood carry only
+    ``sites_enumeration_augmented``, and pairing those indices with the
+    unrelabelled symbols names a third position that is neither the original nor
+    its image.  Such a record is refused rather than silently mis-fingerprinted;
+    ``docs/wyckoff_augmentation_audit.md`` has the migration.
+    """
+    enumerations = row[AUGMENTED_SITES_ENUMERATION]
+    try:
+        symmetries = row[AUGMENTED_SITE_SYMMETRIES]
+    except (KeyError, IndexError):
+        symmetries = None
+    if symmetries is None or (hasattr(symmetries, "__len__") and len(symmetries) == 0):
+        raise KeyError(
+            f"This record has {AUGMENTED_SITES_ENUMERATION!r} but no "
+            f"{AUGMENTED_SITE_SYMMETRIES!r}, so it predates the fix to the Wyckoff "
+            "augmentation and cannot be fingerprinted correctly. Migrate the cache "
+            "with scripts/migrate_augmented_site_symmetries.py; see "
+            "docs/wyckoff_augmentation_audit.md."
+        )
+    if len(symmetries) != len(enumerations):
+        raise ValueError(
+            f"{AUGMENTED_SITE_SYMMETRIES} has {len(symmetries)} variants and "
+            f"{AUGMENTED_SITES_ENUMERATION} has {len(enumerations)}; they are built "
+            "together and must stay aligned.")
+    return zip(symmetries, enumerations)
+
 
 def record_to_augmented_fingerprint(row: Dict|Series) -> tuple:
     """
@@ -14,22 +52,18 @@ def record_to_augmented_fingerprint(row: Dict|Series) -> tuple:
         row contains the Wyckoff information:
         - spacegroup_number
         - elements
-        - site_symmetries
+        - site_symmetries_augmented
         - sites_enumeration_augmented
     Returns:
         frozenset of all possible Wyckoff representations of the structure.
     """
     return (
         row["spacegroup_number"],
-        frozenset(            
-            map(lambda enumertaion:
-                frozenset(Counter(
-                    map(
-                        tuple,
-                        zip(row["elements"], row["site_symmetries"], enumertaion)
-                    )
-                ).items()), row["sites_enumeration_augmented"]
-            )
+        frozenset(
+            frozenset(Counter(
+                map(tuple, zip(row["elements"], symmetries, enumeration))
+            ).items())
+            for symmetries, enumeration in augmented_variants(row)
         )
     )
 
@@ -40,22 +74,16 @@ def record_to_anonymous_fingerprint(row: Dict|Series) -> tuple:
     Args:
         row contains the Wyckoff information:
         - spacegroup_number
-        - site_symmetries
+        - site_symmetries_augmented
         - sites_enumeration_augmented
     Returns:
         frozenset of all possible Wyckoff representations of the structure, without taking elements into account.
     """
     return (
         row["spacegroup_number"],
-        frozenset(            
-            map(lambda enumertaion:
-                frozenset(Counter(
-                    map(
-                        tuple,
-                        zip(row["site_symmetries"], enumertaion)
-                    )
-                ).items()), row["sites_enumeration_augmented"]
-            )
+        frozenset(
+            frozenset(Counter(map(tuple, zip(symmetries, enumeration))).items())
+            for symmetries, enumeration in augmented_variants(row)
         )
     )
 
@@ -64,16 +92,10 @@ def count_and_freeze(data):
     return frozenset(Counter(data).items())
 
 def record_to_relaxed_AFLOW_fingerprint(row: Dict|Series) -> tuple:
-    sites = frozenset(            
-            map(lambda enumertaion:
-                frozenset(Counter(
-                    map(
-                        tuple,
-                        zip(row["site_symmetries"], enumertaion)
-                    )
-                ).items()), row["sites_enumeration_augmented"]
-            )
-        )
+    sites = frozenset(
+        frozenset(Counter(map(tuple, zip(symmetries, enumeration))).items())
+        for symmetries, enumeration in augmented_variants(row)
+    )
     element_counts = defaultdict(int)
     for element, multiplicity in zip(row["elements"], row["multiplicity"]):
         element_counts[element] += multiplicity
@@ -94,15 +116,15 @@ def record_to_strict_AFLOW_fingerprint(row: Dict|Series) -> tuple:
         row contains the Wyckoff information:
         - spacegroup_number
         - elements
-        - site_symmetries
+        - site_symmetries_augmented
         - sites_enumeration_augmented
     Returns:
         frozenset of all possible Wyckoff representations of the structure.
     """
     all_variants = []
-    for enumeration in row["sites_enumeration_augmented"]:
+    for symmetries, enumeration in augmented_variants(row):
         per_element_wyckoffs = defaultdict(list)
-        for element, site_symmetry, site_enumeration in zip(row["elements"], row["site_symmetries"], enumeration):
+        for element, site_symmetry, site_enumeration in zip(row["elements"], symmetries, enumeration):
             per_element_wyckoffs[element].append((site_symmetry, site_enumeration))
         all_variants.append(count_and_freeze(map(count_and_freeze, per_element_wyckoffs.values())))
     return (

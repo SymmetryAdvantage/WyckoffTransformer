@@ -8,6 +8,7 @@ import wandb
 import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
+from wyckoff_transformer.tokenization import refuse_if_obsolete, warn_if_obsolete
 from wyckoff_transformer.paths import runs_root, wandb_dir
 from wyckoff_transformer.distributed import init_distributed, shutdown_distributed
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: E402
@@ -46,6 +47,10 @@ def main():
                              "to the new schedule. Every other config difference is still "
                              "refused. Use it to land a run on a deadline -- bringing the decay "
                              "forward -- not to change what is being trained.")
+    parser.add_argument("--allow-obsolete-tokeniser", action="store_true",
+        help="Train on a tokeniser configuration marked obsolete. Only for "
+             "reproducing a previous run; the reason it is obsolete is logged, "
+             "and the resulting model inherits whatever it says.")
     parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
                         help="W&B entity to log under. Pinned by default so a run's home does not "
                              "depend on the shell's W&B configuration.")
@@ -85,8 +90,15 @@ def main():
 
     tokeniser_config_path = Path(__file__).parent.parent.resolve() / "yamls" / "tokenisers" / f"{config.tokeniser.name}.yaml"
     tokeniser_config = OmegaConf.load(tokeniser_config_path)
-    if len(tokeniser_config.get("augmented_token_fields", [])) > 1:
-        raise ValueError("Only one augmented field is supported")
+    if args.allow_obsolete_tokeniser:
+        warn_if_obsolete(tokeniser_config, "training, --allow-obsolete-tokeniser was given")
+    else:
+        refuse_if_obsolete(tokeniser_config, "training")
+    # Several augmented fields are supported: AugmentedCascadeDataset draws one
+    # variant index per example and gathers every augmented field with it, so
+    # they stay paired -- which is what `site_symmetries` alongside
+    # `sites_enumeration` needs, the two naming one Wyckoff position between them.
+    # The dataset asserts they have equal variant counts.
     config['tokeniser'] = tokeniser_config
     config['production_training'] = args.production
 

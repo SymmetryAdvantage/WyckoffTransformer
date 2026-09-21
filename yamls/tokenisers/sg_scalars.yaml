@@ -1,4 +1,11 @@
 # For the code to work, must be the same as the file name
+obsolete: >-
+  The augmentation pairs each site's unrelabelled oriented site-symmetry symbol
+  with its relabelled enumeration index. In 26 orthorhombic space groups a
+  relabelling changes the symbol, so the pair names a third Wyckoff position --
+  the model is shown it as an equivalent description of the one it was given.
+  Kept because models were trained with it and must keep loading; use
+  der_tokenizer_v1 for new work. See docs/wyckoff_augmentation_audit.md.
 name: sg_scalars
 dtype: uint8
 # not only memory savings, but also debug assist!

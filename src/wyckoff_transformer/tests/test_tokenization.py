@@ -331,6 +331,9 @@ class TestFeatureEngineer(unittest.TestCase):
             {
                 "sg": 1,
                 "ss": ["m", "n"],
+                # The middle key is augmented alongside the index: a relabelling
+                # can change it. See docs/wyckoff_augmentation_audit.md.
+                "ss_augmented": [["m", "n"], ["m", "n"]],
                 "sites_enumeration_augmented": [["a", "b"], ["b", "a"]],
             }
         )
@@ -981,6 +984,7 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
                 {
                     "sg": 1,
                     "ss": ["m"],
+                    "ss_augmented": [["m"], ["m"]],
                     "sites_enumeration_augmented": [["a"], ["b"]],
                 }
             ),

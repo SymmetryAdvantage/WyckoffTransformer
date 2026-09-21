@@ -27,10 +27,13 @@ logger = logging.getLogger(__name__)
 FORMATION_ENERGY_COLUMN = "formation_energy_per_atom"
 GENE_MIN_FORMATION_ENERGY_COLUMN = "gene_min_formation_energy_per_atom"
 
+#: ``site_symmetries_augmented`` rather than ``site_symmetries``: a relabelling
+#: can change the oriented symbol, so the symbol travels with the index.
+#: See ``docs/wyckoff_augmentation_audit.md``.
 _FINGERPRINT_COLUMNS = (
     "spacegroup_number",
     "elements",
-    "site_symmetries",
+    "site_symmetries_augmented",
     "sites_enumeration_augmented",
 )
 

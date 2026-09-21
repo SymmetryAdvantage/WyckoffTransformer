@@ -1,4 +1,10 @@
 # For the code to work, must be the same as the file name
+obsolete: >-
+  Declares the engineered field harmonic_site_symmetries, which was removed: no
+  current configuration used it and it cost 633 KB of package data. The
+  spherical-harmonic signature survives only as the intermediate harmonic_cluster
+  is clustered from. Models trained with this configuration keep loading, from the
+  engineers stored in their own run directory.
 name: harmonic_cluster
 # uint8 doesn't fit pure_sequence_length
 # uint16 fails with

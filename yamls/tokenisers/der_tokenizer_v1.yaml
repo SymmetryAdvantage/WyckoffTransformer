@@ -1,0 +1,109 @@
+# For the code to work, must be the same as the file name
+name: der_tokenizer_v1
+# The union of lemat_bulk_fmax1_sg_multiplicity (every scalar field) and
+# lemat_bulk_ehull_sg_multiplicity_ssops (the site-symmetry operations), on the
+# corrected Wyckoff augmentation.  Both parents are obsolete; this is what
+# replaces them for new work.
+#
+# What is different from either parent, and why it matters:
+#
+#   site_symmetries is augmented alongside sites_enumeration.
+#
+# An enumeration index is an index *within* an oriented site-symmetry symbol, and
+# in 26 orthorhombic space groups a relabelling changes that symbol -- the
+# normaliser permutes the crystal axes, so `2..` becomes `.2.`.  Augmenting the
+# index alone hands the model a (symbol, index) pair naming a third Wyckoff
+# position, presented as an equivalent description of the one it was given, and
+# the pair is legal so nothing complains.  See docs/wyckoff_augmentation_audit.md.
+#
+# Anything keyed on a field a relabelling moves has to be recomputed per variant,
+# which is why site_symmetry_ops_id is augmented_engineered here.
+
+# tokens will be just numbered in a random order, withot a guarantee of reproducibility
+dtype: int16
+# uint8 is not enough for LeMat-Bulk, which has more than 256 tokens per field
+# not only memory savings, but also debug assist!
+# if we forget to propely convert dtype somewhere ahead
+# torch will highly likely complain about it
+token_fields:
+  pure_categorical:
+    - site_symmetries
+    - elements
+    # We don't use the original Wyckoff letter, but the enumeration
+    # for each site symmetry, hence the order is not important,
+    # and it's a bona fide categorical field.
+    - sites_enumeration
+  engineered:
+    # Not augmented, and that is a statement rather than an omission: a
+    # normaliser element maps a Wyckoff position to one of the same multiplicity,
+    # so this value is the same for every equivalent description.  Augmenting it
+    # would store the same number once per variant.
+    multiplicity:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+      - sites_enumeration
+    # The site symmetry expressed the way SpaceGroupEncoder expresses the space
+    # group: wp.get_site_symmetry_object().to_matrix_representation().ravel() for
+    # the canonical Wyckoff position of each (sg, ss) pair, with the columns that
+    # are constant over the whole 230-group enumeration dropped. 1146 pairs, 46
+    # surviving binary columns, pairwise distinct within every space group -- which
+    # is the scope that matters, since the model receives the space group through
+    # the start token.
+    #
+    # This is the id form: the token carries an integer, and the model expands it
+    # through engineers/site_symmetry_ops_id_table.json, which holds the 1149 x 46
+    # vectors (1146 real + MASK, STOP, PAD) once. The dense sibling field,
+    # site_symmetry_ops, stores the 46 floats on every token instead: identical
+    # input to the encoder, but [n_structures, 62, 46] resident -- 85 GiB of int64
+    # for this dataset, against 2 GB for the ids.
+    #
+    # No dtype override: an id fits the int16 default, unlike the float vector.
+    site_symmetry_ops_id:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+  augmented_engineered:
+    # Keyed on site_symmetries, which a relabelling changes, so the ops of an
+    # equivalent description are not the ops of the original.  Unlike
+    # multiplicity this is not a normaliser invariant and has to be stored per
+    # variant -- it is the one field here whose augmentation costs real memory.
+    site_symmetry_ops_id:
+      augmented_input: site_symmetries
+augmented_token_fields:
+  # must be named <field-name>_augmented in the dataframe
+  # These two name one Wyckoff position between them and are augmented together;
+  # wyckoff_processor.validate_augmented_token_fields refuses one without the other.
+  - sites_enumeration
+  - site_symmetries
+sequence_fields:
+  space_group:
+    - spacegroup_number
+  # AdaLN conditioning features, taken as-is from the dataframe. The ORDER HERE IS NOT
+  # what the model sees -- that is fixed by `condition_feature` in the model yaml, which
+  # is what the AdaLN weights are tied to. This list only decides which columns reach the
+  # tensor cache, so it is a superset: a column listed here and unused costs one float per
+  # structure, while a column the model wants and the cache lacks is a KeyError at startup.
+  #
+  # energy_above_hull   eV/atom, >= 0, against LeMat-Bulk's own phase diagram.
+  # delta_e_polymorph   eV/atom, >= 0, above the best polymorph of the same reduced formula
+  #                     present in this dataset. What e_hull cannot say: whether this is
+  #                     the best structure known for its composition.
+  # max_force           eV/A, in [0, 1] by construction of the dataset. How converged the
+  #                     relaxation that produced this row actually was.
+  no_processing:
+    - energy_above_hull
+    - delta_e_polymorph
+    - max_force
+    # The observed minimum of formation_energy_per_atom over the full dataset
+    # for this augmentation-invariant Wyckoff gene. It is the scalar target of
+    # the gene-energy screener, not a conditioning channel.
+    - gene_min_formation_energy_per_atom
+    - band_gap
+  # converts a Counter into tokens, uses the specified field name embedding
+  # Basically, aimed at e. g.
+  # {Element Nd: 1.0, Element Al: 8.0, Element Cu: 4.0}
+  counters:
+    composition: elements

@@ -69,9 +69,12 @@ DEFAULT_INDEX_PATH = Path("cache/lemat_bulk_fmax1_stress") / INDEX_FILE_NAME
 INDEX_COLUMNS = ("anon_hash", "letters", "composition", "energy_above_hull")
 
 #: Columns of the Wyckoff cache that :func:`record_anonymous_hash` reads.
+#: ``site_symmetries_augmented`` rather than ``site_symmetries``: the oriented
+#: symbol travels with the enumeration index, since a relabelling can change it.
+#: See ``docs/wyckoff_augmentation_audit.md``.
 _ANONYMOUS_COLUMNS = (
     "spacegroup_number",
-    "site_symmetries",
+    "site_symmetries_augmented",
     "sites_enumeration_augmented",
 )
 

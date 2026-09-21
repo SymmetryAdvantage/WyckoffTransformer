@@ -165,12 +165,18 @@ def timed_smact_validity_from_record(record: Dict, apply_gcd: bool=True) -> bool
 def record_to_augmented_fingerprints(row):
     """
     Computes a fingerprint for each possible Wyckoff position enumeration.
+
+    The oriented site-symmetry symbol travels with the enumeration index, because
+    a relabelling can change it -- see ``docs/wyckoff_augmentation_audit.md``.
     """
+    from wyckoff_transformer.evaluation.novelty import augmented_variants  # noqa: PLC0415
+
     spacegroup_number = row["spacegroup_number"]
-    def get_augmentation_fingerprint(augmentation):
-        site_symmetries = frozenset(map(tuple, zip(row["elements"], row["site_symmetries"], augmentation)))
-        return (spacegroup_number, site_symmetries)
-    return frozenset(map(get_augmentation_fingerprint, row["sites_enumeration_augmented"]))
+    return frozenset(
+        (spacegroup_number,
+         frozenset(map(tuple, zip(row["elements"], symmetries, enumeration))))
+        for symmetries, enumeration in augmented_variants(row)
+    )
 
 
 def generated_to_fingerprint(wy_dict, letter_to_ss, letter_to_enum):

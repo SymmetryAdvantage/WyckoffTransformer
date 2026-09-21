@@ -1,10 +1,10 @@
 """Helpers for reading crystal datasets and deriving symmetry-site records."""
 
 from collections import Counter
-from functools import partial
+from functools import lru_cache, partial
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 import logging
 import warnings
 
@@ -26,6 +26,64 @@ logger = logging.getLogger(__name__)
 def read_cif(cif: str) -> Structure:
     """Read a CIF string into a pymatgen structure."""
     return CifParser.from_str(cif).parse_structures(primitive=False)[0]
+
+
+#: Written alongside ``sites_enumeration_augmented`` and aligned with it index for
+#: index.  See :func:`augmented_sites` for why it has to exist.
+AUGMENTED_SITE_SYMMETRIES = "site_symmetries_augmented"
+AUGMENTED_SITES_ENUMERATION = "sites_enumeration_augmented"
+
+
+@lru_cache(maxsize=1)
+def _ss_from_letter() -> dict:
+    from wyckoff_transformer.tokenization import load_wyckoff_mappings  # noqa: PLC0415
+
+    return load_wyckoff_mappings().ss_from_letter
+
+
+def augmented_sites(
+    space_group: int,
+    wyckoff_letters: Sequence[str],
+    wychoffs_enumerated_by_ss: dict,
+    wychoffs_augmentation: dict,
+    ss_from_letter: Optional[dict] = None,
+) -> Tuple[Tuple[tuple, ...], Tuple[tuple, ...]]:
+    """The equivalent descriptions of one gene, as *paired* symmetry and enumeration.
+
+    A Wyckoff position is identified by its space group, its oriented
+    site-symmetry symbol and its index *within that symbol*.  The relabellings in
+    ``wychoffs_augmentation`` permute letters, and in 26 orthorhombic space groups
+    a relabelling sends a letter to one with a **different** symbol -- ``2..`` to
+    ``.2.`` -- because the normaliser permutes the crystal axes.  International
+    Tables makes the same point with ``I222``.
+
+    So an augmentation cannot be expressed as a new enumeration vector alone: the
+    symbol has to travel with it, or the pair ``(old symbol, new index)`` names a
+    third position that is neither the original nor its image.  That is what this
+    function exists to prevent, and
+    ``docs/wyckoff_augmentation_audit.md`` records what it cost to find.
+
+    Returns:
+        ``(site_symmetries, sites_enumeration)``, each a tuple of per-variant
+        tuples, aligned index for index.  Variants are deduplicated **as pairs**
+        -- two relabellings that agree on the indices but not on the symbols are
+        genuinely different descriptions -- and sorted, so the order does not
+        depend on the iteration order of the frozenset the relabellings are held
+        in and a cache is reproducible.
+    """
+    if ss_from_letter is None:
+        ss_from_letter = _ss_from_letter()
+    symbols = ss_from_letter[space_group]
+    enumerations = wychoffs_enumerated_by_ss[space_group]
+    variants = {
+        (
+            tuple(symbols[augmentator[letter]] for letter in wyckoff_letters),
+            tuple(enumerations[augmentator[letter]] for letter in wyckoff_letters),
+        )
+        for augmentator in wychoffs_augmentation[space_group]
+    }
+    ordered = sorted(variants)
+    return tuple(pair[0] for pair in ordered), tuple(pair[1] for pair in ordered)
 
 
 def pyxtal_notation_to_sites(
@@ -61,16 +119,11 @@ def pyxtal_notation_to_sites(
         "spacegroup_number": pyxtal_record["group"],
     }
     if wychoffs_augmentation is not None:
-        augmented_enumeration = [
-            [
-                wychoffs_enumerated_by_ss[pyxtal_record["group"]][augmentator[letter]]
-                for letter in sites_dict["wyckoff_letters"]
-            ]
-            for augmentator in wychoffs_augmentation[pyxtal_record["group"]]
-        ]
-        sites_dict["sites_enumeration_augmented"] = frozenset(
-            map(tuple, augmented_enumeration)
-        )
+        symmetries, enumerations = augmented_sites(
+            pyxtal_record["group"], sites_dict["wyckoff_letters"],
+            wychoffs_enumerated_by_ss, wychoffs_augmentation, ss_from_letter)
+        sites_dict[AUGMENTED_SITE_SYMMETRIES] = symmetries
+        sites_dict[AUGMENTED_SITES_ENUMERATION] = enumerations
     return sites_dict
 
 
@@ -159,16 +212,11 @@ def structure_to_sites(
         "spacegroup_number": pyxtal_structure.group.number,
     }
     if wychoffs_augmentation is not None:
-        augmented_enumeration = [
-            [
-                wychoffs_enumerated_by_ss[pyxtal_structure.group.number][augmentator[letter]]
-                for letter in sites_dict["wyckoff_letters"]
-            ]
-            for augmentator in wychoffs_augmentation[pyxtal_structure.group.number]
-        ]
-        sites_dict["sites_enumeration_augmented"] = frozenset(
-            map(tuple, augmented_enumeration)
-        )
+        symmetries, enumerations = augmented_sites(
+            pyxtal_structure.group.number, sites_dict["wyckoff_letters"],
+            wychoffs_enumerated_by_ss, wychoffs_augmentation)
+        sites_dict[AUGMENTED_SITE_SYMMETRIES] = symmetries
+        sites_dict[AUGMENTED_SITES_ENUMERATION] = enumerations
     return sites_dict
 
 
