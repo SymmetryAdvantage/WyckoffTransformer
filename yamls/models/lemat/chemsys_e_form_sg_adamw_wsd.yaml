@@ -1,0 +1,116 @@
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    embedding_size:
+      elements: 16
+      site_symmetries: 16
+      sites_enumeration: 8
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature:
+      - gene_min_formation_energy_per_atom
+    chemical_system_conditioning: true
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    # The one change against the parent: the space group is scored and sampled by the model.
+    predict_start: true
+    # condition_dim is deliberately absent: with the chemical system in the vector its
+    # width follows the element vocabulary, so it is derived data rather than a choice.
+    # The trainer computes it and refuses a config that states a different number.
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 128
+      # Zero, not merely reduced: see note 1 at the top.
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      # We also don't need them as we ensure that batches all have the same length in WychoffTrainer
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      # Peak rate, reached at the end of warmup. 3x the 1e-3 that is standard for a small
+      # transformer, on the grounds that a 50000-example batch is far quieter than the ~512
+      # such defaults assume. This is the single least-established number in the file and the
+      # first thing worth a short sweep -- try 1e-3 and 1e-2 over a few thousand epochs and
+      # read loss.epoch.val, since the schedule makes the early curve comparable across them.
+      lr: 0.003
+      # AdamW decouples the decay from the gradient, so this is a true weight-norm constraint.
+      # Deliberately at torch's default rather than the 0.1 used in LLM pretraining: this model
+      # is underfitting, so decay is here to bound the weight-norm growth that fed the
+      # averaging failure (|x| grew 2.5e-6 per step in t1c9ehzp), not to regularise.
+      weight_decay: 0.01
+      # Left at torch's defaults, recorded explicitly so a change is visible in a diff. The
+      # 0.9/0.95 pair common in LLM pretraining exists for runs of ~1e5 steps; at 1.8M steps
+      # beta2=0.999 is still a very short window.
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      # total_steps is injected by the trainer as epochs * batches_per_epoch; do not set it
+      # here, or it will silently disagree with the run length.
+      #
+      # 0.2% of 1.8M steps is ~3600 steps of warmup -- generous in absolute terms, and the
+      # usual fractions (1-2%) would spend over a hundred thousand steps ramping up.
+      warmup_fraction: 0.002
+      # An epoch is 90 batches on this dataset, so `epochs: 20000` is 1.8M optimiser steps,
+      # roughly 19 h at the measured 3.5 s/epoch. 20% of that is 360000 steps, about 4 hours.
+      # The decay is where most of the improvement appears in WSD; it is not a cool-down
+      # formality, so do not kill the run before it completes.
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      # Hägele et al. 2024 (arXiv:2405.18392) found 1-sqrt to beat linear and cosine at equal
+      # budget. It lies below linear for the whole decay: steepest right at the start, then
+      # flattening towards zero, so most of the decay phase is spent at a small rate rather
+      # than easing down gradually. That is the intended behaviour, not a misconfiguration.
+      decay_shape: 1-sqrt
+  # 250, not the 1000 the parent uses. wjwmgjag turned upward somewhere between epochs 3000
+  # and 6000 and, at one validation per 1000 epochs, that was four points spread over six
+  # hours before it was legible. Validation is two batches against 90 for training, so the
+  # extra points are nearly free, and the run becomes cheap to abandon rather than expensive
+  # to diagnose. Note this also sets checkpoint_period, which defaults to it.
+  validation_period: 250
+  # Above `epochs`, so it can never fire. With WSD that is deliberate: the loss is expected to
+  # sit flat through the stable phase and only fall in the last 20%, which is exactly the shape
+  # patience-based stopping would cut short.
+  early_stopping_patience_epochs: 1000000
+  # A spike guard, not a step-size control. Roughly twice the largest gradient norm seen at any
+  # model state measured, so it fires only on a genuine outlier. Watch the `grad_norm` metric:
+  # if it sits at this value the threshold has become the learning rate, which is how run
+  # lu4xqw0w spent 100k epochs degrading while its loss weighting was silently normalised away.
+  clip_grad_norm: 10.
+  epochs: 20000
+tokeniser:
+  name: lemat_bulk_fmax1_sg_multiplicity
+evaluation:
+  n_structures_to_generate: 10000
