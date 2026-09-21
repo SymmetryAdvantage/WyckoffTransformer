@@ -24,6 +24,31 @@ Sampling the $e_{\text{hull}}$-conditioned model at $e_{\text{hull}} = 0.05$ eV/
 
 Conditioning on $e_{\text{hull}} = 0.0$ over-constrains generation to well-explored, crowded regions in LeMat-Bulk where the hull is heavily occupied. Relaxing the target to $0.05$ eV/atom expands exploration into novel compositions and geometries while keeping energies safely below the 0.1 eV/atom metastability threshold.
 
+### Caveat: the baseline was scored on different hardware
+
+The $e_{\text{hull}} = 0.0$ baseline (`:v2`) was run on **aspire2a** (4 GPUs,
+device budgets 34376, 60 PyXtal cores); this run was on **iapetus**. The MLIP
+checkpoint, hull revision, novelty reference, `fmax`, tolerance factor and trial
+schedule are identical, but on the most matched population available
+(known gene **and** zero positional DoF, where the energy is close to a pure
+calculator readout) iapetus reads ~0.025–0.030 eV/atom *higher* than aspire2a.
+
+That offset works **against** this run, so the conclusion is conservative: the
++0.124 MetaSUN gain would widen, not shrink, if both arms were scored on one
+machine. Two qualifications follow:
+
+- The generation-stage gains are unaffected by hardware — gene novelty
+  ($0.556 \to 0.606$) is computed from the generator's output against the
+  fingerprint reference with no MLIP involved.
+- The apparent *loss* of stable/SUN structures ($0.064 \to 0.027$, $0.012 \to
+  0.009$) is a threshold-at-zero statistic and is therefore the quantity most
+  sensitive to the offset. Do not read it as established until one cohort is
+  re-relaxed on the other machine.
+
+Full three-arm comparison against the filtered unconditional model, and what the
+sweep implies for the conditioning strategy, in
+[negative_data_strategy.md](negative_data_strategy.md).
+
 ---
 
 ## The Funnel Comparison
