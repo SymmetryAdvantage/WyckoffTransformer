@@ -1,13 +1,20 @@
-# Two NEP89 variants of the de novo ranking protocol
+# Four NEP89 variants of the de novo ranking protocol
 
 [The protocol](de_novo_ranking_protocol.md) spends almost all of its wall time
 in one place: the ORB relaxation of one to three PyXtal draws per gene, four
 stages each. Everything before it is cheap and everything after it is cheap.
-Both variants here attack that stage with the same lever — a potential that is
-two to three orders of magnitude cheaper per force call — and differ in what
+All four variants here attack that stage with the same lever — a potential that
+is two to three orders of magnitude cheaper per force call — and differ in what
 they spend the savings on.
 
-**Neither is a default.** `--stage all` still runs screen → generate → relax →
+| variant | what it does | where it stands |
+|---|---|---|
+| 1 — [two-stage NEP89 → ORB](#variant-1--two-stage-nep89--orb) | pre-relax every trial, then hand ORB the geometry | **real but small.** +2.1 points of reconstruction (*p* = 0.044), no MetaSUN gain (*p* = 0.56), 7-9% less ORB time. Worth it for the GPU saving alone |
+| 2 — [wide-then-narrow](#variant-2--wide-then-narrow) | draw 10x, relax them all cheaply, keep the usual count | **the clear winner.** +8.7 points of reconstruction (*p* = 8.5e-9) at 34% less ORB time, for 26.2 CPU-s/gene |
+| 3 — [NEP89 first](#variant-3--nep89-first-orb-only-to-refine) | run the whole schedule on NEP89, ORB refines one winner | **proposed, not measured.** One ORB relaxation per gene against 2.4, betting everything on NEP89's within-gene ordering (median Spearman 0.77) |
+| 4 — [basin hopping](#variant-4--symmetry-constrained-basin-hopping) | walk between adjacent minima instead of redrawing | **a flat null.** 0.555 against baseline 0.556, 7 won / 8 lost, *p* = 1.0, despite 36,000 hops |
+
+**None is a default.** `--stage all` still runs screen → generate → relax →
 score with a single ORB relaxation per trial and no pre-relaxation, and every
 flag below is off unless it is passed. That is deliberate: the trial schedule,
 the stage design and the reported numbers all rest on measurements taken with
@@ -21,7 +28,7 @@ across 89 elements, distributed as a plain-text NEP file in the GPUMD 4.0
 release and run here through `calorine`'s CPU implementation. Measured on this
 host, one force call on a 16-atom cell costs **0.8 ms** on a single thread,
 against tens to hundreds of ms for ORB. That ratio is the whole argument for
-both variants.
+every variant here.
 
 The 89 elements are H through Bi plus Ac, Th, Pa, U, Np and Pu. Within that
 range it omits **Po, At, Rn, Fr and Ra**, and it has nothing above Pu. The
@@ -566,6 +573,21 @@ quality.** On the oracle's reconstruction readout it wins: +2.1 points, *p* =
 against 21 lost, *p* = 0.56. Both readouts agree on the cost, 7-9% less ORB time
 for free. So it is worth switching on for the GPU saving, and not worth
 attributing a quality gain to.
+
+**Variant 4 is a flat null, and that is itself informative.** The
+basin-hopping arm reconstructed 0.555 against the baseline's 0.556 — 7 genes
+won, 8 lost, *p* = 1.0 — despite 36,000 hops. The reason is visible in the
+candidate pool it built: 7.3 distinct minima per gene above 10 DoF, against
+27.2 for the same budget spent on independent draws. A walk samples a
+neighbourhood well and the space badly, and the failure mode the protocol is up
+against is missing *distant* basins, not resolving nearby ones. That is the
+result [the search ideas](de_novo_search_ideas.md) lean on to rule out two
+proposals built on relaxation-path information, which is local for the same
+reason.
+
+**Variant 3 has not been measured.** It is a settings change to the `prescreen`
+stage rather than new code, so running it costs nothing but the cohort; what it
+needs is a cohort to run on.
 
 **The expansion guard is a net loss — do not turn it on.** NEP89 inflates a
 loose PyXtal cell in 28.8% of draws (median ratio 0.860, 14.1% by >20%, 5.6% by
