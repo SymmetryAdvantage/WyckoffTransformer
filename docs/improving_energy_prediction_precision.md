@@ -74,6 +74,6 @@ CascadeTransformer_args:
 | **P0** | **Convergence Conditioning** | Add `condition_feature: max_force` (`log1p`, scale 0.05); query at 0 force | Filters incomplete DFT relaxation noise (~1.2 meV MAE reduction demonstrated) |
 | **P1** | **Model Capacity** | Scale $d_{\text{model}}$ to $\ge 96$–128 (embeddings 32/32/16), 4–6 layers, FFN 256–512 | Resolves capacity bottleneck on 5.1M dataset |
 | **P1** | **Training Horizon** | Run full WSD schedule (10,000–20,000 epochs) across chained PBS jobs | Allows proper convergence during WSD decay |
-| **P2** | **Relational Bias** | Enable [`RelationalAttentionBias`](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/src/wyckoff_transformer/cascade/relational.py#L30-L60) (electronegativity differences, radius ratios) | Direct chemical bonding priors in attention logits |
+| ~~P2~~ | ~~Relational Bias~~ | ~~Enable `RelationalAttentionBias` (electronegativity differences, radius ratios)~~ | **Tried; no improvement on generative model** |
 | **P2** | **Censored Loss** | Use `scalar_loss: censored` to predict $\min(E \mid g)$ and excess scale $s(g)$ | Unbiases predictions from upper-bound DFT sampling |
 | **P3** | **Ensembling** | Train 5–10 seeds (Wren protocol) | Reduces epistemic error $\tau(g)$ and provides calibrated uncertainty |
