@@ -193,10 +193,29 @@ suggested.
 
 ## Evaluation plan
 
-All arms are drawn at `--condition energy_above_hull=0` with 1000 genes, and
-all are relaxed on the same hardware with the same settings (zeus GPU 1, after
-training). Relaxing on CPU is 11× slower per trial here, and 1 trial in 80
-exceeded the 300 s `--relax-timeout` there, a handicap GPU arms would not share.
+**Two conditioning targets, 0.05 first.** `energy_above_hull = 0` — what
+`DEFAULT_CONDITION_TARGETS` applies to any conditioned model — is off-support:
+about 3% of the training rows sit there, and a cohort drawn at it comes out
+bimodal, a spike of memorised on-hull genes beside a fatter unstable tail. At
+0.05 the same checkpoint is statistically indistinguishable from a model
+trained only on the `e_hull ≤ 0.1` slice (MetaSUN 0.395 against 0.420, n.s.;
+P(metastable | novel gene) 0.549 against 0.561), where at 0 it reads 0.267 and
+0.415. Measured 2026-09-21 on the baseline checkpoint; see
+`docs/negative_data_strategy.md`.
+
+So 0.05 is where guidance should be *judged*, and 0 is where it might be
+*needed*. Guidance extrapolates away from the unconditional distribution
+instead of partitioning it, which is the one lever here that could make an
+off-support target usable — and if it cannot, that is worth knowing too, since
+0 is the default every conditioned model is sampled at. `run_guidance_study.sh`
+runs the 0.05 sweep first and the 0 sweep after it, so they never contend for
+the GPU.
+
+All arms are 1000 genes and all are relaxed on the same GPU of the same host.
+That is not a convenience: protocol arms are not comparable across machines
+(iapetus reads 0.025–0.030 eV/atom above aspire2a on the same structures), and
+on zeus CPU relaxation is 11× slower per trial with 1 trial in 80 exceeding the
+300 s `--relax-timeout`, a handicap GPU arms would not share.
 
 1. **Training curves.** The two runs' `loss.epoch.val.total` at matched epochs,
    and the CFG run's `val_unconditional - val` gap.
@@ -205,9 +224,10 @@ exceeded the 300 s `--relax-timeout` there, a handicap GPU arms would not share.
    gene novelty and cohort shape, plus the **archive e_hull** of the genes a
    cohort reproduces. Every generated gene whose fingerprint is in LeMat-Bulk
    already has a PBE e_hull there (the minimum over the archive's structures on
-   that gene), so the share of known genes on the hull measures how well the
-   cohort follows `e_hull = 0` without relaxing anything
-   (`scripts/analyse_guidance_sweep.py index`, then `table`).
+   that gene), so the archive e_hull of the genes a cohort reproduces measures
+   how well it follows its target without relaxing anything
+   (`scripts/analyse_guidance_sweep.py index`, then `table`). Both targets are
+   screened at every scale; only the relaxed arms are rationed.
 
    The null to read it against is a model that ignores its condition and
    reproduces training genes in proportion to their frequency. Over
@@ -225,9 +245,18 @@ exceeded the 300 s `--relax-timeout` there, a handicap GPU arms would not share.
    this study) come out at 0.092 on the hull, 0.584 within 0.1, and a median of
    0.080: conditioning moves the distribution, but most known genes stay off
    the hull.
-3. **Relaxed arms**: the baseline, CFG w = 1, and the two most promising guided
-   scales from step 2, through the full protocol. The readouts are MetaSUN,
-   SUN, metastable, stable and novel structure, each per sampled gene.
+3. **Relaxed arms**, through the full protocol: at 0.05 the baseline and CFG
+   w = 1, 2, 3; at 0 the baseline and CFG w = 1, 2. The readouts are MetaSUN,
+   SUN, metastable, stable and novel structure per sampled gene — **and, above
+   all, metastability split by whether the sampled gene is novel.** The
+   2026-09-21 result localises everything interesting to that split: at the
+   off-support target the conditioned model matched an unconditional one on
+   known genes and lost on novel ones. MetaSUN mixes the two, so a guidance
+   effect on the novel half could cancel against the known half and read as
+   nothing. `analyse_guidance_sweep.py` reports P(metastable | gene novel) and
+   P(metastable | gene known) with their own denominators, plus the share of
+   novel-gene structures above 0.3 eV/atom, which is the tail the off-support
+   target fattens.
 
 ## Reproduce
 

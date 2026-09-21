@@ -14,6 +14,7 @@
 #   SCREEN_SCALES  guidance scales screened on the CFG run   (default "0 1 1.5 2 3 5")
 #   RELAX_SCALES   of those, the ones relaxed and scored      (default "1 2 3")
 #   CONDITION      the generation target                      (default energy_above_hull=0)
+#   ARM_PREFIX     arm-name prefix, e.g. guidance-c0p05       (default "guidance")
 #   GPU            nvidia-smi index to relax on               (default 1)
 #   WORKERS        relaxation workers on that GPU             (default 6)
 #   CPU_CORES      PyXtal cores                               (default 16)
@@ -41,8 +42,10 @@ export WANDB_ENTITY=${WANDB_ENTITY:-symmetry-advantage}
 
 log() { echo "[guidance_sweep $(date '+%F %T')] $*"; }
 
-# 1.5 -> w1p5: an arm name may not contain a dot.
-arm_name() { echo "guidance-w${1//./p}"; }
+# 1.5 -> w1p5: an arm name may not contain a dot. ARM_PREFIX distinguishes sweeps that
+# differ in something other than the guidance scale -- the conditioning target above all,
+# since the same scales at two targets would otherwise claim one artifact name.
+arm_name() { echo "${ARM_PREFIX:-guidance}-w${1//./p}"; }
 
 # run_state <run>: "<W&B state> <last validation epoch> <configured epochs>".
 run_state() {
