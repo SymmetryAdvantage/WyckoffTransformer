@@ -43,10 +43,12 @@ CascadeTransformer_args:
 * Total trainable parameters are under 50,000. Across 5.1M diverse materials containing elements from H to U, $d_{\text{model}} = 40$ cannot capture subtle electronic and steric interactions.
 * The training curves show zero overfitting (Train MAE 0.0589 vs Val MAE 0.0601), indicating the network is heavily capacity-constrained.
 
-### 2.3 Issue 3: Missing Relaxation Quality / DFT Convergence Conditioning
+### 2.3 Issue 3: ~~Missing Relaxation Quality / DFT Convergence Conditioning~~ (Rejected)
 * Structures in `lemat_bulk_fmax1_stress` have residual forces up to 1.0 eV/Å (and Materials Project calculations often converged on energy criteria with residual forces ~0.086 eV/Å).
 * Without `condition_feature: max_force`, the model must fit a single energy target across structures with varying degrees of unfinished relaxation, introducing irreducible label noise.
-* Restoring `condition_feature: max_force` (via AdaLN with `log1p` transform and scale 0.05) allows the model to learn $E(\text{gene}, F_{\text{max}})$ and query the clean-relaxation limit ($F_{\text{max}} = 0$) at screening time.
+* **However**, the curvature-based study in [`docs/unconverged_relaxation_energy.md`](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/docs/unconverged_relaxation_energy.md) measured the actual energy left on the table by incomplete relaxation at only **0.08 meV/atom** (population-weighted median) — negligible at the current ~50 meV MAE.
+* **Furthermore**, as documented in [`docs/dirty_data_conditioning.md`](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/docs/dirty_data_conditioning.md#L357-L405), residual force/stress distributions are **database-provenance markers** (OQMD vs Alexandria vs MP), not genuine convergence indicators. Conditioning on them primarily teaches the model which database a row came from, introducing spurious bias.
+* **Verdict:** Not recommended. If label denoising ever becomes necessary (MAE < 5 meV), prefer curvature-based label correction (½ **g**ᵀ**H**⁻¹**g**, already implemented in [`cryspr/gradient_matched.py`](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/src/wyckoff_transformer/cryspr/gradient_matched.py#L268-L289)) over model conditioning.
 
 ### 2.4 Issue 4: MSE on Observed Minima vs. Censored Likelihood
 * A Wyckoff gene fixes the space group and site symmetries, but leaves continuous atomic coordinates and unit cell parameters free, specifying a manifold of possible structures.
@@ -71,7 +73,7 @@ CascadeTransformer_args:
 | Priority | Area | Action | Expected Gain |
 |---|---|---|---|
 | **P0** | **Physical Pooling** | Use `token_aggregation: weighted_mean`, `aggregation_weight: multiplicity`, `include_start_in_aggregation: false` | Eliminates multiplicity weighting distortion across sites |
-| **P0** | **Convergence Conditioning** | Add `condition_feature: max_force` (`log1p`, scale 0.05); query at 0 force | Filters incomplete DFT relaxation noise (~1.2 meV MAE reduction demonstrated) |
+| ~~P0~~ | ~~Convergence Conditioning~~ | ~~Add `condition_feature: max_force`~~ | **Rejected.** Conditions on database provenance, not convergence ([dirty_data_conditioning.md](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/docs/dirty_data_conditioning.md#L399-L405)); curvature study ([unconverged_relaxation_energy.md](file:///home/users/nus/kna/scratch/WyFormer/worktrees/energy-best/docs/unconverged_relaxation_energy.md)) found only 0.08 meV/atom median correction — negligible at 50 meV MAE |
 | **P1** | **Model Capacity** | Scale $d_{\text{model}}$ to $\ge 96$–128 (embeddings 32/32/16), 4–6 layers, FFN 256–512 | Resolves capacity bottleneck on 5.1M dataset |
 | **P1** | **Training Horizon** | Run full WSD schedule (10,000–20,000 epochs) across chained PBS jobs | Allows proper convergence during WSD decay |
 | ~~P2~~ | ~~Relational Bias~~ | ~~Enable `RelationalAttentionBias` (electronegativity differences, radius ratios)~~ | **Tried; no improvement on generative model** |
