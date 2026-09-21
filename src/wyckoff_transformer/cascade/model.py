@@ -532,7 +532,9 @@ class CascadeTransformer(nn.Module):
                 cascade: List[Tensor],
                 padding_mask: Tensor|None,
                 prediction_head: int|None,
-                cond: Tensor|None = None) -> Tensor:
+                cond: Tensor|None = None,
+                start_cond: Tensor|None = None,
+                start_batch_size: int|None = None) -> Tensor | Tuple[Tensor, Tensor]:
         """
         Arguments:
             start: Tensor of shape ``[batch_size]`` with the start token.
@@ -542,8 +544,12 @@ class CascadeTransformer(nn.Module):
                 model works in two stages. Firstly, a vector is prepared wih Encoder and
                 various tweaks. Then, the vector is passed to a perceptron aka prediction head.
             cond: Tensor of shape ``[batch_size, condition_dim]`` with the conditioning vector for AdaLN.
+            start_cond: Optional tensor of shape ``[start_batch_size, condition_dim]`` for predicting
+                start token logits within the same forward pass (e.g. for DDP compatibility).
+            start_batch_size: Optional integer specifying start batch size if start_cond is None.
         Returns:
-            Tensor of shape ``[batch_size, seq_len, output_dim]`` with the predictions.
+            Tensor of shape ``[batch_size, seq_len, output_dim]`` with the predictions, or a tuple
+            ``(prediction, start_prediction)`` if start_cond or start_batch_size is provided.
         """
         logging.debug("Cascade len: %i", len(cascade))
         cascade_embedding = self.embedding(cascade)
@@ -656,5 +662,13 @@ class CascadeTransformer(nn.Module):
         prediction_input = torch.cat(prediction_inputs, dim=1)
         logger.debug("Prediction input size: %s", prediction_input.size())
         if prediction_head is None:
-            return self.the_prediction_head(prediction_input)
-        return self.prediction_heads[prediction_head](prediction_input)
+            prediction = self.the_prediction_head(prediction_input)
+        else:
+            prediction = self.prediction_heads[prediction_head](prediction_input)
+
+        if start_cond is not None or start_batch_size is not None:
+            n_start = start_cond.size(0) if start_cond is not None else start_batch_size
+            start_prediction = self.forward_start(n_start, cond=start_cond)
+            return prediction, start_prediction
+
+        return prediction

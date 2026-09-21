@@ -426,5 +426,69 @@ class TestSingleProcessContext(unittest.TestCase):
         self.assertIs(WyckoffTrainer.step_rng, random)
 
 
+class _TinyPredictStartModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.head = nn.Linear(1, N_CLASSES)
+        self.start_prediction_head = nn.Linear(1, 3)
+        self.start_query = nn.Parameter(torch.randn(1))
+        self.predict_start = True
+
+    def forward(self, start_tokens, masked_data, padding_mask, known_cascade_len, cond=None,
+                start_cond=None, start_batch_size=None):
+        out = self.head(start_tokens.float().unsqueeze(-1))
+        if start_cond is not None or start_batch_size is not None:
+            n_start = start_cond.size(0) if start_cond is not None else start_batch_size
+            start_pred = self.forward_start(n_start, cond=start_cond)
+            return out, start_pred
+        return out
+
+    def forward_start(self, batch_size, cond=None):
+        return self.start_prediction_head(self.start_query.expand(batch_size, 1))
+
+
+def _predict_start_worker(rank: int, out_dir: str):
+    context = _join(rank, out_dir)
+    try:
+        torch.manual_seed(0)
+        trainer = WyckoffTrainer.__new__(WyckoffTrainer)
+        trainer.target = TargetClass.NextToken
+        trainer.multiclass_next_token_with_order_permutation = True
+        trainer.predict_start = True
+        trainer.start_loss_weight = 1.0
+        trainer.condition_feature = None
+        trainer.cascade_target_count = 1
+        trainer.cascade_target_indices = (0,)
+        trainer.cascade_order = ("field1",)
+        trainer.device = torch.device("cpu")
+        trainer.clip_grad_norm = None
+        trainer.criterion = nn.CrossEntropyLoss(reduction="sum")
+        trainer.model = _TinyPredictStartModel()
+        trainer.train_dataset = _constant_row_dataset(LENGTHS, batch_size=4)
+        trainer.train_dataset.start_classes = trainer.train_dataset.start_tokens
+        trainer.build_cond = lambda dataset, selection, **kwargs: None
+        trainer.optimizer = torch.optim.SGD(trainer.model.parameters(), lr=0.01)
+        trainer.scheduler = None
+        trainer.scheduler_steps_per_batch = False
+        trainer.trainable_parameters = lambda: trainer.model.parameters()
+        _distribute(trainer, context)
+        with patch("wyckoff_transformer.trainer.wandb"):
+            for _ in range(2):
+                trainer.train_epoch()
+        torch.save(trainer.model.state_dict(), Path(out_dir) / f"rank{rank}.pt")
+    finally:
+        dist.destroy_process_group()
+
+
+class TestDistributedPredictStart(unittest.TestCase):
+    def test_predict_start_trains_under_ddp(self):
+        with tempfile.TemporaryDirectory() as out_dir:
+            _spawn(_predict_start_worker, out_dir)
+            weights = [torch.load(Path(out_dir) / f"rank{rank}.pt", weights_only=True)
+                       for rank in range(WORLD_SIZE)]
+            for key, val in weights[0].items():
+                torch.testing.assert_close(weights[1][key], val)
+
+
 if __name__ == "__main__":
     unittest.main()

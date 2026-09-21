@@ -185,21 +185,34 @@ class TestTrainingPaths(unittest.TestCase):
                 self.assertFalse(any(call.get("drop_condition") for call in calls))
 
     def test_train_epoch_drops_conditions_on_start(self):
+        # The start token is scored inside get_loss's forward pass (so DDP sees the start
+        # head), from a condition train_epoch builds: both have to drop.
         trainer = self._trainer()
         trainer.predict_start = True
         trainer.start_loss_weight = 1.0
-        start_calls = []
+        trainer.criterion = lambda prediction, target: prediction
+        trainer.train_dataset.start_classes = torch.zeros(4, dtype=torch.int64)
+        trainer.train_loader.get_next_viable_batch.return_value = slice(None)
+        cond_calls, loss_calls = [], []
 
-        def fake_start_loss(*args, **kwargs):
-            start_calls.append(kwargs)
-            return trainer.model.weight.sum() * 0, 4
+        def fake_cond(*args, **kwargs):
+            cond_calls.append(kwargs)
+            return None
 
-        with patch.object(WyckoffTrainer, "get_loss", side_effect=lambda *a, **k: (trainer.model.weight.sum() * 0, 4)), \
-                patch.object(WyckoffTrainer, "get_start_loss", side_effect=fake_start_loss), \
+        def fake_loss(*args, **kwargs):
+            loss_calls.append(kwargs)
+            zero = trainer.model.weight.sum() * 0
+            return zero, 4, zero
+
+        with patch.object(WyckoffTrainer, "get_loss", side_effect=fake_loss), \
+                patch.object(WyckoffTrainer, "build_cond", side_effect=fake_cond), \
                 patch("wyckoff_transformer.trainer.wandb"):
             trainer.train_epoch()
-        self.assertEqual(len(start_calls), 2)
-        self.assertTrue(all(call.get("drop_condition") for call in start_calls))
+        self.assertEqual(len(cond_calls), 2)
+        self.assertTrue(all(call.get("drop_condition") for call in cond_calls))
+        self.assertEqual(len(loss_calls), 2)
+        self.assertTrue(all(call.get("drop_condition") for call in loss_calls))
+        self.assertTrue(all(call.get("start_batch_size") == 4 for call in loss_calls))
 
     def test_evaluate_conditions_start_unless_asked_not_to(self):
         trainer = self._trainer()

@@ -1750,7 +1750,9 @@ class WyckoffTrainer():
         rescale_to_viable: bool = True,
         model: Optional[nn.Module] = None,
         drop_condition: bool = False,
-        unconditional: bool = False) -> Tensor | tuple[Tensor, int]:
+        unconditional: bool = False,
+        start_cond: Optional[Tensor] = None,
+        start_batch_size: Optional[int] = None) -> Union[Tensor, Tuple[Tensor, int], Tuple[Tensor, int, Tensor]]:
         """
         Computes loss on the dataset.
 
@@ -1769,6 +1771,8 @@ class WyckoffTrainer():
                 known_seq_len and so has to weight each one by how much data reaches it.
                 Training draws known_seq_len from that same distribution instead (see
                 AugmentedCascadeDataset.sample_known_seq_len) and so passes False.
+            start_cond: Conditioning tensor for start prediction head (e.g. for predict_start in DDP).
+            start_batch_size: Start batch size when start_cond is None.
         """
         logging.debug("Known sequence length: %i", known_seq_len)
         logging.debug("Known cascade length: %s", str(known_cascade_len))
@@ -1817,10 +1821,16 @@ class WyckoffTrainer():
         if model is None:
             model = self.model
 
+        start_prediction = None
         # Step 2: Get the prediction
         if self.target == TargetClass.NextToken:
             # No padding, as we have already discarded the padding
-            prediction = model(start_tokens, masked_data, None, known_cascade_len, cond=cond)
+            if start_cond is not None or start_batch_size is not None:
+                prediction, start_prediction = model(
+                    start_tokens, masked_data, None, known_cascade_len, cond=cond,
+                    start_cond=start_cond, start_batch_size=start_batch_size)
+            else:
+                prediction = model(start_tokens, masked_data, None, known_cascade_len, cond=cond)
         elif self.target == TargetClass.NumUniqueTokens:
             # No padding, as we have already discarded the padding
             prediction = model(start_tokens, masked_data, None, None, cond=cond)
@@ -1872,7 +1882,11 @@ class WyckoffTrainer():
             if n_viable != n_samples:
                 loss = loss * (n_viable / n_samples)
         if return_n_samples:
+            if start_prediction is not None:
+                return loss, n_samples, start_prediction
             return loss, n_samples
+        if start_prediction is not None:
+            return loss, start_prediction
         return loss
 
 
@@ -1916,17 +1930,30 @@ class WyckoffTrainer():
                 # and the learning rate stops being a function of train_batch_size.
                 # (The non-multiclass branch below keeps its summed loss: the learning rates in
                 # the other ~130 configs are tuned against that scale.)
-                loss, n_samples = self.get_loss(
-                    self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
-                    rescale_to_viable=False, return_n_samples=True, model=forward_model,
-                    drop_condition=True)
-                loss = loss / n_samples
                 if self.predict_start:
                     # Rides along every step rather than taking steps of its own; see
                     # start_loss_weight in __init__ for why this weight is the right one.
-                    start_loss, start_n_samples = self.get_start_loss(
-                        self.train_dataset, self.train_loader, drop_condition=True)
-                    loss = loss + self.start_loss_weight * start_loss / start_n_samples
+                    # Computed inside the same forward pass so that DDP sees the start head.
+                    start_batch_selection = (
+                        self.train_loader.get_next_viable_batch(0)
+                        if self.train_loader is not None else slice(None))
+                    start_target = self.train_dataset.start_classes[start_batch_selection]
+                    start_cond = self.build_cond(
+                        self.train_dataset, start_batch_selection, drop_condition=True)
+                    loss, n_samples, start_prediction = self.get_loss(
+                        self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
+                        rescale_to_viable=False, return_n_samples=True, model=forward_model,
+                        drop_condition=True, start_cond=start_cond,
+                        start_batch_size=start_target.size(0))
+                    loss = loss / n_samples
+                    start_loss = self.criterion(start_prediction, start_target)
+                    loss = loss + self.start_loss_weight * start_loss / start_target.size(0)
+                else:
+                    loss, n_samples = self.get_loss(
+                        self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,
+                        rescale_to_viable=False, return_n_samples=True, model=forward_model,
+                        drop_condition=True)
+                    loss = loss / n_samples
             else:
                 loss, n_samples = self.get_loss(
                     self.train_dataset, known_seq_len, known_cascade_len, loader=self.train_loader,

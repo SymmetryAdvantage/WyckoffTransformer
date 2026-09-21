@@ -21,8 +21,8 @@ model:
       - gene_min_formation_energy_per_atom
     chemical_system_conditioning: true
     train_batch_size: 50000
-    val_batch_size: 50000
-    test_batch_size: 50000
+    val_batch_size: 100000
+    test_batch_size: 100000
     compile_model: true
   CascadeTransformer_args:
     start_type: one_hot

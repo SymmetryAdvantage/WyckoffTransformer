@@ -19,8 +19,8 @@ model:
     evaluation_samples: 1
     chemical_system_conditioning: true
     train_batch_size: 50000
-    val_batch_size: 50000
-    test_batch_size: 50000
+    val_batch_size: 30543
+    test_batch_size: 30818
     compile_model: true
   CascadeTransformer_args:
     start_type: one_hot
