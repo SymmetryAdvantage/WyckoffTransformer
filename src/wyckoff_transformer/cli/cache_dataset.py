@@ -50,6 +50,7 @@ from wyckoff_transformer.data import (
     filter_noisy_pymatgen_warnings,
     get_composition_from_symmetry_sites,
     read_cif,
+    silence_spglib_warnings,
     structure_to_sites,
 )
 from wyckoff_transformer.dataset_cache import (
@@ -315,10 +316,12 @@ def main() -> None:
     # do not each repeat what is already known. Said once here because the
     # alternative -- saying it half a million times -- is what this replaces.
     filter_noisy_pymatgen_warnings()
+    silence_spglib_warnings()
     logger.info(
         "Suppressed for this build: pymatgen's CIF coordinate-rounding note "
-        "(read_cif) and its missing-Pauling-electronegativity note for the "
-        "noble gases (both expected, neither actionable)")
+        "(read_cif), its missing-Pauling-electronegativity note for the noble "
+        "gases, and spglib's failed-symmetry notes from the tolerance retries "
+        "(SPGLIB_WARNING=ON keeps the last of these)")
     frames = cache_dataset(
         args.dataset,
         max_sites=args.max_sites,

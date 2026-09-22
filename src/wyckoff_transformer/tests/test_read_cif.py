@@ -1,4 +1,5 @@
 """The pymatgen warnings a bulk build would otherwise repeat until it drowns."""
+import os
 import unittest
 import warnings
 from unittest.mock import MagicMock, patch
@@ -94,6 +95,25 @@ class TestNoisyPymatgenWarnings(unittest.TestCase):
         with warnings.catch_warnings():
             data.filter_noisy_pymatgen_warnings()
         self.assertEqual(warnings.filters, before)
+
+
+class TestSpglibWarnings(unittest.TestCase):
+    """spglib prints from C, so this is an environment switch, not a filter."""
+
+    def test_it_asks_spglib_to_be_quiet(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SPGLIB_WARNING", None)
+            data.silence_spglib_warnings()
+            self.assertEqual(os.environ["SPGLIB_WARNING"], "OFF")
+
+    def test_the_value_is_the_one_spglib_compares_against(self):
+        # spglib uses strcmp, so "off" and "0" would leave the messages on.
+        self.assertEqual(data.SPGLIB_WARNINGS_OFF, "OFF")
+
+    def test_a_caller_who_wants_them_keeps_them(self):
+        with patch.dict(os.environ, {"SPGLIB_WARNING": "ON"}):
+            data.silence_spglib_warnings()
+            self.assertEqual(os.environ["SPGLIB_WARNING"], "ON")
 
 
 if __name__ == "__main__":

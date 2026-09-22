@@ -6,6 +6,7 @@ from multiprocessing import Pool
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 import logging
+import os
 import warnings
 
 import numpy as np
@@ -60,6 +61,30 @@ def filter_noisy_pymatgen_warnings() -> None:
     """
     for message in NOISY_PYMATGEN_WARNINGS:
         warnings.filterwarnings("ignore", message=message, category=UserWarning)
+
+
+#: spglib's own value for "print no warnings". Exactly this, and uppercase:
+#: spglib compares with ``strcmp``, so ``off`` and ``0`` leave them on.
+SPGLIB_WARNINGS_OFF = "OFF"
+
+
+def silence_spglib_warnings() -> None:
+    """Stop spglib printing failed-symmetry notes to stderr for this process.
+
+    :func:`kick_pyxtal_until_it_works` walks the tolerance over eight orders of
+    magnitude, and spglib prints ``ssm_get_exact_positions failed`` for each
+    attempt that does not resolve -- the attempts the retry exists to survive.
+    The messages come from ``fprintf(stderr, ...)`` inside the C library, so no
+    Python warning filter reaches them, and redirecting file descriptor 2 would
+    swallow whatever else wrote there, including a real error.
+
+    spglib reads ``SPGLIB_WARNING`` afresh for each message (verified against
+    2.7.0 by disassembly and by running it), so setting it here, after the
+    library is loaded, works -- and a ``Pool``'s workers inherit the
+    environment. ``setdefault`` leaves an explicit ``SPGLIB_WARNING`` alone, so
+    a caller who wants the messages can still have them.
+    """
+    os.environ.setdefault("SPGLIB_WARNING", SPGLIB_WARNINGS_OFF)
 
 
 def read_cif(cif: str) -> Structure:
