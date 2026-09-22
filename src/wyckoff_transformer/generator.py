@@ -6,8 +6,6 @@ import numpy as np
 from pymatgen.core.periodic_table import Element
 
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
-from wyckoff_transformer.tokenization import FeatureEngineer
-from wyckoff_transformer.preprocess_wychoffs import inverse_series
 
 logger = logging.getLogger(__name__)
 
@@ -322,12 +320,6 @@ class WyckoffGenerator():
             else:
                 raise NotImplementedError("Mask should be a scalar or a vector")
                     
-        # We have a problem. Engeineers by default can only work with data, not output of other engineers.
-        if 'harmonic_site_symmetries' in self.cascade_order and 'sites_enumeration' not in self.cascade_order:
-            cluster_to_enum = inverse_series(self.token_engineers["harmonic_cluster"].db)
-            self.token_engineers['sites_enumeration'] = FeatureEngineer(
-                cluster_to_enum, mask_token=None, stop_token=None, pad_token=None)
-            
         cascade_index_by_name = {name: idx for idx, name in enumerate(self.cascade_order)}
         if len(start.size()) > 1:
             start_converted = list(map(tuple, start.tolist()))
@@ -421,14 +413,6 @@ class WyckoffGenerator():
                                     f"Engineer for {cascade_name} reads {input_field}, which "
                                     "is generated later in the cascade and is still MASK here")
                             this_cascade_input = generated[cascade_index_by_name[input_field]][:, known_seq_len]
-                        elif cascade_name == 'harmonic_site_symmetries' and input_field == 'sites_enumeration':
-                            # Since we don't natively support either two engineers for one field or
-                            # chainging engineers, we do this hack
-                            enumerations = self.token_engineers['sites_enumeration'].get_feature_from_token_batch(
-                                start_converted, [
-                                    generated[cascade_index_by_name['site_symmetries']][:, known_seq_len].tolist(),
-                                    generated[cascade_index_by_name['harmonic_cluster']][:, known_seq_len].tolist()])
-                            this_cascade_input = enumerations
                         else:
                             raise NotImplementedError(
                                 f"Unknown input field {input_field} for engineer {cascade_name}")
@@ -456,12 +440,6 @@ class WyckoffGenerator():
                                 generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(),
                                 generated[cascade_index_by_name['sites_enumeration']][structure_index, known_seq_len].item()
                             ) in self.token_engineers["multiplicity"].db)
-                    elif "harmonic_cluster" in cascade_index_by_name:
-                        enum_validity.append(
-                            (this_start,
-                                generated[cascade_index_by_name['site_symmetries']][structure_index, known_seq_len].item(),
-                                generated[cascade_index_by_name['harmonic_cluster']][structure_index, known_seq_len].item()
-                            ) in self.token_engineers["sites_enumeration"].db)
                 if ss_validitity:
                     global_ss_validitity.append(np.mean(ss_validitity))
                 if enum_validity:

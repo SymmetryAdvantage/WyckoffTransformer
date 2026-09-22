@@ -38,9 +38,7 @@ PACKAGE_DIR = Path(preprocess_wychoffs.__file__).resolve().parent
 #: Package-relative path -> sha256 of the committed bytes.
 PACKAGE_DATA_SHA256 = {
     "wyckoffs_enumerated_by_ss.json": "ed3ad3777b1eec3273461f7e4dac44f32325d3a80c5813cb3404694334d4694b",
-    "engineers/harmonic_cluster.json": "75b7694ad3c1ca394682ef1b10af8e0f394167cfeda6a8b1afd26105471f9d36",
     "engineers/multiplicity.json": "e4126ef022763e4e349160c1123fba422d31524cf3e459ec10299c67dd0fbee4",
-    "engineers/sites_enumeration.json": "c5bd41d86bb3b107eaeb3f1af877d4d517970bd5fbe085cea9fddcc3330979ca",
     "engineers/site_symmetry_ops.json": "5f954fdade2e5b92067cad2b5c500eb4c51b7da43c7a5ef3d700bfeae47b6d61",
     "engineers/site_symmetry_ops_id.json": "7b3259f2cad6132b7ed8c6d149d65f9d674c2147e7f22634bf5e67c2523a2e25",
     "engineers/site_symmetry_ops_id_table.json": "8df417f15924989d8f1b891eeee93eeb1dd53d164d5e649f750057c9b25fede1",
@@ -118,35 +116,6 @@ class TestRegenerationReproducesCommittedData(unittest.TestCase):
                     differences[:10], [],
                     f"{relative}: regeneration differs in {len(differences)} places. A "
                     f"dependency update is the likely cause; see this module's docstring.")
-
-
-class TestClusterAssignmentIsDeterministic(unittest.TestCase):
-    """Degenerate Wyckoff positions tie; the tie must not be broken by float noise."""
-
-    @staticmethod
-    def _distances(noise: float) -> pd.DataFrame:
-        # Enumerations 0 and 1 are equally close to clusters 2 and 5 -- up to noise, as
-        # KMeans leaves them -- and enumeration 2 is closest to cluster 0.
-        values = np.array([
-            [0.9, 0.9, 0.1, 0.9, 0.9, 0.2],
-            [0.9, 0.9, 0.1 + noise, 0.9, 0.9, 0.2 - noise],
-            [0.05, 0.9, 0.9, 0.9, 0.9, 0.9],
-        ])
-        index = pd.MultiIndex.from_tuples(
-            [(218, "-4..", 0), (218, "-4..", 1), (218, "-4..", 2)],
-            names=["spacegroup_number", "site_symmetries", "sites_enumeration"])
-        return pd.DataFrame(values, index=index)
-
-    def test_ties_go_to_the_lowest_enumeration_whatever_the_noise(self):
-        expected = [2, 5, 0]
-        for noise in (-1e-15, 0.0, 1e-15):
-            with self.subTest(noise=noise):
-                mapping = preprocess_wychoffs.assign_to_clusters(self._distances(noise))
-                self.assertEqual(mapping.tolist(), expected)
-
-    def test_a_real_difference_is_not_a_tie(self):
-        mapping = preprocess_wychoffs.assign_to_clusters(self._distances(-1e-3))
-        self.assertEqual(mapping.tolist(), [5, 2, 0])
 
 
 def _tiny_datasets() -> dict:

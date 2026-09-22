@@ -756,7 +756,6 @@ class TestTensorToPyxtal(unittest.TestCase):
             "site_symmetries": tok.EnumeratingTokeniser.from_token_set({"m"}),
             "sites_enumeration": tok.EnumeratingTokeniser.from_token_set({0}),
             "wyckoff_letters": tok.EnumeratingTokeniser.from_token_set({"a"}),
-            "harmonic_cluster": tok.EnumeratingTokeniser.from_token_set({7}),
         }
         sg = tok.PassThroughTokeniser(values_count=2)
         sg.to_token = tok.TupleDict({(1, 0): 1})
@@ -865,34 +864,6 @@ class TestTensorToPyxtal(unittest.TestCase):
         )
         self.assertEqual(result["species"], ["Cl"])
         self.assertEqual(result["numIons"], [4])
-
-    def test_tensor_to_pyxtal_harmonic_mode(self):
-        tokenisers = self._build_tokenisers_for_modes()
-        element = tokenisers["elements"]["Na"]
-        ss_idx = tokenisers["site_symmetries"]["m"]
-        cluster_idx = tokenisers["harmonic_cluster"][7]
-        enum_token = tokenisers["sites_enumeration"][0]
-
-        fe = tok.FeatureEngineer(
-            data={((1, 0), ss_idx, cluster_idx): enum_token},
-            inputs=("spacegroup_number", "site_symmetries", "harmonic_cluster"),
-            name="sites_enumeration",
-        )
-        processor = tok.WyckoffProcessor(
-            config={},
-            tokenisers=tokenisers,
-            token_engineers={"sites_enumeration": fe},
-        )
-        result = processor.tensor_to_pyxtal(
-            space_group_tensor=torch.tensor([1, 0], dtype=torch.int64),
-            wp_tensor=torch.tensor([[element, ss_idx, cluster_idx]], dtype=torch.int64),
-            cascade_order=("elements", "site_symmetries", "harmonic_cluster"),
-            letter_from_ss_enum_idx={1: {"m": {enum_token: "a"}}},
-            ss_from_letter={1: {"a": "m"}},
-            wp_index={1: {"m": {"a": (1, 1)}}},
-        )
-        self.assertEqual(result["group"], 1)
-        self.assertEqual(result["sites"], [["1a"]])
 
     def test_tensor_to_pyxtal_rejects_invalid_tokens_and_constraints(self):
         tokenisers = self._build_tokenisers_for_modes()

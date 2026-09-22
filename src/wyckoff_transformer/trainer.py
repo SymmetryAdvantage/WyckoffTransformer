@@ -2571,8 +2571,7 @@ class WyckoffTrainer():
             generated_tensors = generator.generate_tensors(
                 start_tensor, temperature=temperature, compute_validity=False, cond=cond)
 
-        # Non-target fields are filled in by their engineers (harmonic_site_symmetries,
-        # site_symmetry_ops_id, ...). They are inputs to the model, not part of the generated
+        # Non-target fields are filled in by their engineers (site_symmetry_ops_id, ...). They are inputs to the model, not part of the generated
         # structure, and a vector-valued one cannot be stacked with the [batch, length] token
         # fields anyway. Dropped back to front so the surviving indices stay valid.
         generated_cascade_order = list(self.cascade_order)

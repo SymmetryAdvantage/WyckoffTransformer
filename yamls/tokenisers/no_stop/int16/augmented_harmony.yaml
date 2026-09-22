@@ -1,10 +1,12 @@
 # For the code to work, must be the same as the file name
 obsolete: >-
-  Declares the engineered field harmonic_site_symmetries, which was removed: no
-  current configuration used it and it cost 633 KB of package data. The
-  spherical-harmonic signature survives only as the intermediate harmonic_cluster
-  is clustered from. Models trained with this configuration keep loading, from the
-  engineers stored in their own run directory.
+  Declares harmonic_site_symmetries and/or harmonic_cluster. Both were removed,
+  together with the spherical-harmonic signature they were derived from: no current
+  configuration used them and they cost 764 KB of package data between them, plus
+  engineers/sites_enumeration.json, the cluster-to-enumeration inverse that only
+  harmonic_cluster decoding read. Models trained with this configuration keep
+  loading, from the engineers stored in their own run directory; they cannot be
+  retrained without restoring the builder.
 name: no_stop/int16/augmented_harmony
 # uint8 doesn't fit pure_sequence_length
 # uint16 fails with

@@ -6,7 +6,8 @@ obsolete: >-
   the model is shown it as an equivalent description of the one it was given.
   Kept because models were trained with it and must keep loading; use
   der_tokenizer_v1 for new work. See docs/wyckoff_augmentation_audit.md.
-  It also declares harmonic_site_symmetries, which was removed as unused.
+  It also declares harmonic_site_symmetries and harmonic_cluster, both removed as
+  unused along with the spherical-harmonic signature they came from.
 name: with_stop/augmented/harmonic_cluster
 # uint8 doesn't fit pure_sequence_length
 # uint16 fails with

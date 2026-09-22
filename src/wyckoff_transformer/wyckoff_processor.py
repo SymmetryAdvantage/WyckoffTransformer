@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
-generation_modes = Enum('GenerationModes', ["SiteSymmetry", "WyckoffLetters", "HarmonicCluster"])
+generation_modes = Enum('GenerationModes', ["SiteSymmetry", "WyckoffLetters"])
 
 # Engineered field definitions and the frozen lookup tables that go with them are
 # committed package data, written by preprocess_wychoffs and held fixed by
@@ -806,7 +806,6 @@ class WyckoffProcessor:
             raise ValueError("Tokenisers are not initialised")
         ss_pyxtal_cascde_order = ("elements", "site_symmetries", "sites_enumeration")
         letters_pyxtal_cascade_order = ("elements", "wyckoff_letters")
-        harmonic_pyxtal_cascade_order = ("elements", "site_symmetries", "harmonic_cluster")
         # A subset rather than an equality: a cascade may carry auxiliary fields that a
         # structure is not decoded from, such as site_symmetry_ops_id, which is a
         # deterministic function of fields already present. Requiring equality here would
@@ -814,8 +813,7 @@ class WyckoffProcessor:
         candidates = [
             (order, mode) for order, mode in (
                 (ss_pyxtal_cascde_order, generation_modes.SiteSymmetry),
-                (letters_pyxtal_cascade_order, generation_modes.WyckoffLetters),
-                (harmonic_pyxtal_cascade_order, generation_modes.HarmonicCluster))
+                (letters_pyxtal_cascade_order, generation_modes.WyckoffLetters))
             if set(order).issubset(cascade_order)]
         if not candidates:
             raise NotImplementedError(f"Unsupported cascade: {tuple(cascade_order)}")
@@ -868,17 +866,6 @@ class WyckoffProcessor:
                 except KeyError:
                     logger.info("Invalid combination: space group %i, wp letter %s", space_group_real, wp_letter)
                     return
-            elif mode == generation_modes.HarmonicCluster:
-                element_idx, ss_idx, cluster_idx = this_token_cascade.tolist()
-                ss = self.tokenisers["site_symmetries"].to_token[ss_idx]
-                try:
-                    # WARNING tuple might fail for some SG encodings
-                    enum = self.token_engineers["sites_enumeration"].db.loc[tuple(space_group_input), ss_idx, cluster_idx]
-                except KeyError:
-                    logger.info("Invalid combination: space group %i, site symmetry %s, cluster token %i", space_group_real,
-                                ss, cluster_idx)
-                    return
-                wp_letter = letter_from_ss_enum_idx[space_group_real][ss][enum]
             else:
                 raise NotImplementedError("Unsupported cascade")
             try:
