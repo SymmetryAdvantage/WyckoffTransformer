@@ -56,8 +56,22 @@ local_cache=$(wyformer_path WYFORMER_CACHE) || exit 1
 [[ -n "$local_data" && -n "$local_cache" ]] \
     || die "no store configured here: create $(wyformer_config_file); see docs/data_store.md"
 
+ssh_cmd=(ssh)
+rsync_cmd=(rsync)
+if [[ "$remote" == *aspire2a* ]]; then
+    pw_file="/home/kna/.ssh/aspire2a.txt"
+    [[ -f "$pw_file" ]] || pw_file="${HOME}/.ssh/aspire2a.txt"
+    if [[ -f "$pw_file" ]]; then
+        command -v sshpass >/dev/null 2>&1 || die "sshpass is required for $remote but not installed"
+        ssh_cmd=(sshpass -f "$pw_file" ssh)
+        rsync_cmd=(sshpass -f "$pw_file" rsync)
+    else
+        die "remote is $remote but password file $pw_file does not exist"
+    fi
+fi
+
 echo "reading the store config on $remote ..."
-remote_config=$(ssh "$remote" 'cat "${XDG_CONFIG_HOME:-$HOME/.config}/wyformer/paths.env"') \
+remote_config=$("${ssh_cmd[@]}" "$remote" 'cat "${XDG_CONFIG_HOME:-$HOME/.config}/wyformer/paths.env"') \
     || die "cannot read ~/.config/wyformer/paths.env on $remote; create it there first"
 remote_data=$(wyformer_config_value WYFORMER_DATA <<< "$remote_config") \
     || die "$remote's paths.env does not set WYFORMER_DATA"
@@ -84,7 +98,7 @@ rsync_flags=(-aHW --update --info=progress2 --human-readable
 stamp=$(date +%Y%m%d-%H%M%S)
 
 sync_one() {
-    local store="$1" local_root="$2" remote_root="$3" rel="$4"
+    local store="$1" local_root="$2" remote_root="$3" rel="${4#/}"
     local src dst backup_root
     # Trailing slashes matter: <src>/ copies the contents into <dst>.
     if [[ "$direction" == "pull" ]]; then
@@ -99,7 +113,7 @@ sync_one() {
     src="${src%/}/"
     [[ $go -eq 1 && "$direction" == "pull" ]] && mkdir -p "$dst"
     printf '\n=== %s %s: %s -> %s\n' "$direction" "$store" "$src" "$dst"
-    rsync "${rsync_flags[@]}" --backup --backup-dir="$backup_root" "$src" "$dst"
+    "${rsync_cmd[@]}" "${rsync_flags[@]}" --backup --backup-dir="$backup_root" "$src" "$dst"
 }
 
 if [[ ${#subpaths[@]} -eq 0 ]]; then
