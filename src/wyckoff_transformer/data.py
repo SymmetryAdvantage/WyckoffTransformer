@@ -22,9 +22,35 @@ from wyckoff_transformer.tokenization import load_wyckoff_mappings
 logger = logging.getLogger(__name__)
 
 
+#: pymatgen's note that it snapped fractional coordinates to ideal values while
+#: parsing a CIF.  The count in it varies from structure to structure, which is
+#: what makes it worth filtering by hand: Python deduplicates a warning by its
+#: text, so "8 fractional coordinates" and "7 fractional coordinates" are two
+#: different warnings to it and neither is ever collapsed.
+CIF_ROUNDING_WARNING = (
+    r"Issues encountered while parsing CIF: \d+ fractional coordinates rounded "
+    r"to ideal values to avoid issues with finite precision\."
+)
+
+
 def read_cif(cif: str) -> Structure:
-    """Read a CIF string into a pymatgen structure."""
-    return CifParser.from_str(cif).parse_structures(primitive=False)[0]
+    """Read a CIF string into a pymatgen structure.
+
+    pymatgen's coordinate-rounding note is dropped.  Rounding to ideal values is
+    what symmetry determination wants, the note says nothing a caller can act
+    on, and a dataset build parses millions of CIFs -- enough of them rounded to
+    bury every other line of a six-hour rebuild's log.
+
+    It is filtered here rather than by each caller because a caller cannot
+    reliably do it: ``warnings.filterwarnings`` is per process, so a filter set
+    around a ``Pool`` only reaches the workers by being inherited across
+    ``fork``, and nothing says a caller uses a Pool, or that ``fork`` is the
+    start method.  Every other warning is left alone.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message=CIF_ROUNDING_WARNING, category=UserWarning)
+        return CifParser.from_str(cif).parse_structures(primitive=False)[0]
 
 
 #: Written alongside ``sites_enumeration_augmented`` and aligned with it index for

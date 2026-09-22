@@ -225,6 +225,9 @@ def cache_dataset(
 ) -> dict[str, pd.DataFrame]:
     """Symmetrise every split of *dataset* and write the cache.  Returns the frames."""
     dataset_dir = data_path(dataset)
+    # Said once, because read_cif drops it every time: about 9% of LeMat-Bulk's
+    # CIFs carry it, which is half a million lines over a full build.
+    logger.info("pymatgen's CIF coordinate-rounding note is suppressed (see data.read_cif)")
     frames = {}
     for split in SPLITS:
         csv_path = split_csv(dataset_dir, split)
