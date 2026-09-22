@@ -116,11 +116,16 @@ relax_arm() {
         log "$dir: scored already"
         return 0
     fi
-    log "$dir: generate, relax, score"
-    CUDA_VISIBLE_DEVICES=$gpu OMP_NUM_THREADS=1 .venv/bin/wyformer-protocol-wandb "$run" \
+    log "$dir: generate, relax, score on GPU $gpu"
+    # --devices names the card, and CUDA_VISIBLE_DEVICES is deliberately NOT set here.
+    # Each relax worker pins itself by writing the index out of its own device string into
+    # CUDA_VISIBLE_DEVICES before CUDA initialises (protocol._pin_worker_device), which
+    # *overwrites* anything inherited: `CUDA_VISIBLE_DEVICES=1 --devices cuda:0` put every
+    # worker on physical card 0 -- the one the colleague was training on -- on 2026-09-22.
+    OMP_NUM_THREADS=1 .venv/bin/wyformer-protocol-wandb "$run" \
         --output-dir "$dir" --condition "$condition" --guidance-scale "$scale" \
         --arm "$(arm_name "$scale")" --skip-generate --stages generate,relax,score \
-        --pyxtal-cores "$cpu_cores" --devices cuda:0 --workers-per-device "$workers"
+        --pyxtal-cores "$cpu_cores" --devices "cuda:$gpu" --workers-per-device "$workers"
 }
 
 # refresh_checkpoint <run>: make the next screen fetch this run's *final* weights.
