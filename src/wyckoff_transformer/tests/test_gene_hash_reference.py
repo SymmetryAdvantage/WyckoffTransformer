@@ -24,7 +24,6 @@ from wyckoff_transformer.evaluation.protocol import (
     default_fingerprint_cache,
     load_reference_fingerprints,
 )
-from wyckoff_transformer.paths import resolve_store_path
 
 pytestmark = pytest.mark.needs_cache
 
@@ -32,7 +31,7 @@ pytestmark = pytest.mark.needs_cache
 @pytest.fixture(scope="module")
 def key_table():
     path = default_key_table_path(
-        resolve_store_path(DEFAULT_REFERENCE_CACHE), DEFAULT_REFERENCE_SPLITS)
+        DEFAULT_REFERENCE_CACHE, DEFAULT_REFERENCE_SPLITS)
     if not path.is_file():
         pytest.skip(f"No key table at {path}; build it with gene_hash.build_reference_table")
     return GeneKeyTable.load(path)
@@ -53,10 +52,10 @@ def test_the_table_has_one_key_per_fingerprint_class(key_table):
 
 def test_a_sample_of_the_reference_is_in_its_own_table(key_table):
     """Every archive row must be found by the table built from it."""
-    import pandas as pd  # noqa: PLC0415
+    from wyckoff_transformer.dataset_cache import load_split  # noqa: PLC0415
 
-    frames = pd.read_pickle(resolve_store_path(DEFAULT_REFERENCE_CACHE))
-    sample = frames["val"].sample(n=min(20000, len(frames["val"])), random_state=0)
+    frame = load_split(DEFAULT_REFERENCE_CACHE, "val")
+    sample = frame.sample(n=min(20000, len(frame)), random_state=0)
     assert key_table.contains(keys_from_frame(sample)).all()
 
 

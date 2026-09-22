@@ -320,35 +320,28 @@ def build_reference_table(
 ) -> GeneKeyTable:
     """Key every row of the reference archive and build the table.
 
-    One streaming pass over the same pickle
+    One streaming pass over the same cache
     :func:`~wyckoff_transformer.evaluation.protocol.load_reference_fingerprints`
     reads.  The result is two orders of magnitude smaller than the fingerprint
     set it replaces, so unlike that set it is worth keeping on a GPU.
     """
-    import pandas as pd  # noqa: PLC0415
+    from wyckoff_transformer.dataset_cache import (  # noqa: PLC0415
+        cache_exists, iter_splits, resolve_cache)
 
-    from wyckoff_transformer.paths import resolve_store_path  # noqa: PLC0415
-
-    cache = resolve_store_path(cache)
-    if not cache.is_file():
-        raise FileNotFoundError(f"No Wyckoff gene cache at {cache}")
-    frames = pd.read_pickle(cache)
-    missing = [split for split in splits if split not in frames]
-    if missing:
-        raise KeyError(f"{cache} has no split(s) {missing}; found {sorted(frames)}")
+    cache = resolve_cache(cache)
+    if not cache_exists(cache):
+        raise FileNotFoundError(f"No Wyckoff gene cache in {cache}")
 
     chunks, rows = [], 0
-    for split in list(splits):
-        frame = frames[split]
+    # A split at a time, and only the four columns a key is made of: the
+    # reference is ~25 GB in full and the keys are ~16 bytes a row, so reading
+    # the whole thing is what made this stage the memory ceiling it does not
+    # need to be.
+    for split, frame in iter_splits(cache, list(splits), columns=_RECORD_COLUMNS):
         chunks.append(keys_from_frame(frame))
         rows += len(frame)
         logger.info("Keyed split %s: %d rows", split, len(frame))
-        # The reference is ~25 GB unpickled and the keys are ~16 bytes a row, so
-        # each split is released as soon as it has been keyed rather than at the
-        # end: holding all three at once is what makes this stage the memory
-        # ceiling it does not need to be.
         del frame
-        del frames[split]
         gc.collect()
     keys = torch.cat(chunks) if chunks else torch.empty((0, 2), dtype=torch.int64)
 
@@ -365,7 +358,8 @@ def build_reference_table(
 
 def default_key_table_path(cache: Path, splits: Sequence[str]) -> Path:
     """Beside the reference it was built from, named for the splits it covers."""
-    cache = Path(cache)
+    from wyckoff_transformer.dataset_cache import as_cache_dir  # noqa: PLC0415
+
     stem = Path(GENE_KEY_TABLE_FILE).stem
     suffix = "" if tuple(splits) == ("train", "val", "test") else "_" + "_".join(splits)
-    return cache.parent / f"{stem}{suffix}.npz"
+    return as_cache_dir(cache) / f"{stem}{suffix}.npz"

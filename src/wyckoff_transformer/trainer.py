@@ -11,7 +11,6 @@ from functools import partial
 from pathlib import Path
 import gzip
 import json
-import pickle
 import numpy as np
 import torch
 from torch import nn
@@ -24,6 +23,8 @@ from huggingface_hub import snapshot_download
 from wandb.sdk.data_types._private import MEDIA_TMP
 
 
+from wyckoff_transformer.dataset_cache import (
+    available_splits, build_info, dataset_cache_dir, load_split)
 from wyckoff_transformer.paths import cache_root, runs_root
 from wyckoff_transformer.distributed import DistributedContext, SINGLE_PROCESS
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
@@ -270,6 +271,44 @@ def restore_checkpoint_from_wandb(run_path: Path) -> Path | None:
 def ensure_wandb_media_directory() -> None:
     """Restore W&B's media staging directory if a long-running job lost it from /tmp."""
     Path(MEDIA_TMP.name).mkdir(parents=True, exist_ok=True)
+
+
+def log_dataset_cache_provenance(dataset: str) -> None:
+    """Record in the W&B run which cache's records this run was tokenised from.
+
+    The dataset's *name* is in the run config already. What the name does not
+    say is whether the cache behind it holds the same thing as the one an
+    earlier run saw: a rebuild at another ``--max-sites``, symmetry tolerance or
+    site ordering produces a different dataset under the same name, and the
+    tensors a run trains on are two derivations removed from the CSVs.
+    :func:`~wyckoff_transformer.dataset_cache.build_info` answers that, and this
+    puts the answer where the run is, not only on the machine that built it.
+
+    In the W&B config beside ``code`` and ``distributed``, never in ``config``:
+    it says how a run was built rather than what it trains, and a resume has to
+    match ``config`` exactly.
+
+    ``None`` for a split means the cache records nothing -- built before the
+    record existed, or converted from the superseded pickle, whose options are
+    not recoverable. It is logged as ``None`` rather than omitted, so "the cache
+    does not say" and "nobody looked" stay distinguishable.
+    """
+    if wandb.run is None:
+        return                       # a diagnostic or a test, with no run to log to
+    try:
+        records = build_info(dataset_cache_dir(dataset))
+    except Exception as exc:         # noqa: BLE001 - never fail a run over provenance
+        # Tensors outlive the records they came from: a machine may hold
+        # tensors/ and no splits, which is a normal way to train on a cluster.
+        logger.warning("No cache provenance for %s: %s", dataset, exc)
+        records = None
+    else:
+        # Splits are normally built together, and three copies of one record is
+        # three times the noise in the run's config.
+        distinct = {json.dumps(record, sort_keys=True) for record in records.values()}
+        if len(distinct) == 1:
+            records = next(iter(records.values()))
+    wandb.config.update({"dataset_cache": records}, allow_val_change=True)
 
 
 def atomic_torch_save(obj: Any, path: Path) -> None:
@@ -1418,6 +1457,7 @@ class WyckoffTrainer():
             raise ValueError("Multiclass target with order permutation requires learned positional encoding only masked, ",
                             "otherwise the Transformer is not permutation invariant.")
         if load_datasets:
+            log_dataset_cache_provenance(config.dataset)
             tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
                 config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
                 tokenizer_path=run_path / "wyckoff_processor.json" if not use_cached_tensors else None)
@@ -2906,11 +2946,12 @@ def train_from_config(
 
         evaluator: Optional[StatisticalEvaluator] = None
         if not no_test:
-            data_cache_path = cache_root() / config.dataset / "data.pkl.gz"
-            with gzip.open(data_cache_path, "rb") as f:
-                datasets_pd = pickle.load(f)
-            datasets_pd.pop("train", None)
-            datasets_pd.pop("val", None)
+            data_cache_path = dataset_cache_dir(config.dataset)
+            # Only the test split: this used to unpickle all three -- 399 MB and
+            # 83 s for LeMat-Bulk -- and immediately drop two of them.
+            datasets_pd = {}
+            if "test" in available_splits(data_cache_path):
+                datasets_pd["test"] = load_split(data_cache_path, "test")
             if "test" not in datasets_pd:
                 logger.warning(
                     "Test split not found in data cache at %s; skipping test-set evaluation but still generating structures.",

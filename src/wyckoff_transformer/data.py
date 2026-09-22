@@ -15,7 +15,6 @@ from pymatgen.io.cif import CifParser
 from pymatgen.symmetry.analyzer import SymmetryUndeterminedError
 from pyxtal import pyxtal
 
-from wyckoff_transformer.paths import data_path
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
@@ -160,33 +159,29 @@ def structure_to_sites(
     wychoffs_augmentation: Optional[dict] = None,
     tol: float = 0.1,
     a_tol: float = 5.0,
-    max_wp: Optional[int] = None,
-    sort_by_letter: Optional[bool] = None,
+    sort_by_letter: bool = False,
 ) -> dict:
     """Convert a structure to a symmetry-site record.
 
-    `max_wp` truncates to that many sites, which silently changes the composition; it is
-    a way of bounding sequence length, not of rejecting a structure. Truncating has only
-    ever been done after sorting by Wyckoff letter, so that the sites kept are the
-    high-symmetry ones rather than whichever order pyxtal happened to return.
+    Every site of the structure is in the record. There is deliberately no way to
+    truncate one: keeping the first N Wyckoff positions bounds the sequence length by
+    silently changing the composition, so the row's energy labels come to describe a
+    compound that is not in it. `wyformer-cache-dataset --max-sites` drops an over-long
+    structure instead.
 
-    `sort_by_letter` separates that ordering from the truncation, and defaults to
-    whatever `max_wp` implies so existing callers are unaffected. Sorting without
-    truncating is what reproduces the site order of the caches already on disk -- which
-    matters when records from one of them are copied into another instead of recomputed.
+    `sort_by_letter` orders the sites by Wyckoff letter rather than however pyxtal
+    returned them. It is what every cache now on disk was built with, and therefore what
+    makes a new one comparable with them; it defaults to off so that the callers that
+    symmetrise a generated structure keep pyxtal's order.
     """
     pyxtal_structure = kick_pyxtal_until_it_works(structure, tol=tol, a_tol=a_tol)
     if len(pyxtal_structure.atom_sites) == 0:
         raise ValueError("pyxtal failed to convert the structure to symmetry sites.")
 
-    if sort_by_letter is None:
-        sort_by_letter = max_wp is not None
     if sort_by_letter:
         atom_sites = sorted(pyxtal_structure.atom_sites, key=lambda x: x.wp.letter)
     else:
         atom_sites = list(pyxtal_structure.atom_sites)
-    if max_wp is not None:
-        atom_sites = atom_sites[:max_wp]
     elements = []
     wyckoffs = []
     site_symmetries = []
@@ -299,9 +294,8 @@ def compute_symmetry_sites(
     n_jobs: Optional[int] = None,
     symmetry_precision: float = 0.1,
     symmetry_a_tol: float = 5.0,
-    max_wp: Optional[int] = None,
     scalar_columns: Optional[Sequence[str]] = None,
-    sort_by_letter: Optional[bool] = None,
+    sort_by_letter: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Compute symmetry-site records for one or more structure datasets.
 
@@ -320,7 +314,6 @@ def compute_symmetry_sites(
         wychoffs_augmentation=get_augmentation_dict(),
         tol=symmetry_precision,
         a_tol=symmetry_a_tol,
-        max_wp=max_wp,
         sort_by_letter=sort_by_letter,
     )
     result = {}
@@ -342,35 +335,3 @@ def compute_symmetry_sites(
             symmetry_dataset[column] = dataset[column]
         result[dataset_name] = symmetry_dataset
     return result
-
-
-def read_all_MP_csv(
-    mp_path: Optional[Path] = None,
-    n_jobs: Optional[int] = None,
-    symmetry_precision: float = 0.1,
-    symmetry_a_tol: float = 5.0,
-    max_wp: Optional[int] = None,
-    scalar_columns: Optional[Sequence[str]] = None,
-    sort_by_letter: Optional[bool] = None,
-) -> tuple[dict[str, pd.DataFrame], int]:
-    """Read all split CSVs for a dataset and convert them to symmetry-site records."""
-    if mp_path is None:
-        mp_path = data_path("mp_20")
-    datasets_pd = {}
-    for dataset_name in ("train", "test", "val"):
-        print(f"Reading dataset {dataset_name}...")
-        try:
-            datasets_pd[dataset_name] = read_MP(mp_path / f"{dataset_name}")
-        except FileNotFoundError:
-            logger.warning("Dataset %s not found.", dataset_name)
-    print("Computing symmetry sites...")
-    symmetry_datasets = compute_symmetry_sites(
-        datasets_pd,
-        n_jobs=n_jobs,
-        symmetry_precision=symmetry_precision,
-        symmetry_a_tol=symmetry_a_tol,
-        max_wp=max_wp,
-        scalar_columns=scalar_columns,
-        sort_by_letter=sort_by_letter,
-    )
-    return symmetry_datasets

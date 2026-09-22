@@ -50,6 +50,7 @@ Homepage = "https://github.com/SymmetryAdvantage/WyckoffTransformer"
 Issues = "https://github.com/SymmetryAdvantage/WyckoffTransformer/issues"
 
 [project.scripts]
+wyformer-cache-dataset = "wyckoff_transformer.cli.cache_dataset:main"
 wyformer-generate = "wyckoff_transformer.cli.generate:main"
 wyformer-cryspr   = "wyckoff_transformer.cli.relax:main"
 wyformer-protocol = "wyckoff_transformer.cli.protocol:main"

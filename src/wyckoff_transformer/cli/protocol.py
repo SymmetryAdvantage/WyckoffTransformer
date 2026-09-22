@@ -99,6 +99,7 @@ from wyckoff_transformer.evaluation.protocol import (
     positional_dof,
     read_screen,
     reference_identity,
+    same_reference,
     screen_genes,
     trials_for_dof,
     write_screen,
@@ -771,7 +772,9 @@ def require_screen_reference(output_dir: Path, cache: Path, splits) -> None:
     ``--reference-cache``.  Scoring a run screened against one reference with
     another would publish a funnel whose two halves disagree about what is
     known.  A screen that records no reference predates the record
-    (2026-09-15), when the default was ``lemat_bulk_ehull``.
+    (2026-09-15), when the default was ``lemat_bulk_ehull``.  One that names
+    ``<dataset>/data.pkl.gz`` predates the Parquet cache (2026-09-22) and means
+    the same corpus, which :func:`same_reference` allows.
 
     Raises:
         StaleOutputError: Unless the screen's recorded reference is *cache* over
@@ -780,7 +783,7 @@ def require_screen_reference(output_dir: Path, cache: Path, splits) -> None:
     record = (_read_manifest(output_dir).get(LINEAGE_KEY) or {}).get(SCREEN_FILE) or {}
     expected = reference_identity(cache, splits)
     recorded = record.get("reference")
-    if recorded == expected:
+    if same_reference(recorded, expected):
         return
     found = (
         "records no reference, so it predates 2026-09-15, when gene novelty was "

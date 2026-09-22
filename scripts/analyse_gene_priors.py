@@ -41,7 +41,8 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
-from wyckoff_transformer.paths import cache_root, data_path, resolve_store_path
+from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_cache
+from wyckoff_transformer.paths import data_path, resolve_store_path
 
 warnings.filterwarnings("ignore")
 
@@ -62,9 +63,8 @@ def dof_bins(dof: pd.Series) -> pd.Series:
     return pd.cut(dof, DOF_BINS, labels=DOF_LABELS)
 
 
-def load_cache(dataset: str) -> dict[str, pd.DataFrame]:
-    with gzip.open(cache_root() / dataset / "data.pkl.gz", "rb") as f:
-        return pickle.load(f)
+def load_dataset(dataset: str) -> dict[str, pd.DataFrame]:
+    return load_cache(dataset_cache_dir(dataset))
 
 
 # --------------------------------------------------------------------------- priors
@@ -238,7 +238,7 @@ def _transfer_worker(task: tuple) -> tuple:
 
 
 def cmd_prototype_transfer(args: argparse.Namespace) -> None:
-    cache = load_cache(args.dataset)
+    cache = load_dataset(args.dataset)
     train, test = cache["train"], cache["test"]
     train_cifs = pd.read_csv(data_path(args.dataset, "train.csv"), index_col=0)["cif"]
     test_cifs = pd.read_csv(data_path(args.dataset, "test.csv"), index_col=0)["cif"]

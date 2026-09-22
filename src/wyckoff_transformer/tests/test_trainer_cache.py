@@ -3,13 +3,11 @@ import pytest
 import warnings
 import torch
 import json
-import gzip
-import pickle
 import pandas as pd
 from pathlib import Path
 from omegaconf import OmegaConf
 
-from ..paths import cache_root
+from ..dataset_cache import dataset_cache_dir, load_split
 from ..trainer import WyckoffTrainer
 from ..evaluation.cdvae_metrics import timed_smact_validity_from_record
 from ..evaluation.statistical_evaluator import StatisticalEvaluator
@@ -63,10 +61,8 @@ class TestTrainedModelIOI8TYCX(unittest.TestCase):
         p1_percent = (df['spacegroup_number'] == 1).mean()
         
         config = OmegaConf.load(self.run_path / "config.yaml")
-        data_cache_path = cache_root() / config.dataset / "data.pkl.gz"
-        with gzip.open(data_cache_path, "rb") as f:
-            datasets_pd = pickle.load(f)
-            
+        datasets_pd = {"test": load_split(dataset_cache_dir(config.dataset), "test")}
+
         if 'structure' not in datasets_pd['test']:
             class MockStructure:
                 def __len__(self): return 1

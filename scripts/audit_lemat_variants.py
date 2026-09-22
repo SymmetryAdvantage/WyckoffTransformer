@@ -28,14 +28,13 @@ See ``docs/lemat_bulk_pipeline.md``. Run from a checkout with the stores attache
 from __future__ import annotations
 
 import argparse
-import gzip
 import logging
-import pickle
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.dataset_cache import cache_exists, dataset_cache_dir, load_cache
 from wyckoff_transformer.paths import cache_root, data_glob, data_path
 
 logger = logging.getLogger("audit_lemat_variants")
@@ -78,11 +77,6 @@ def load_splits(directory: Path) -> dict[str, pd.DataFrame]:
         if path.exists():
             frames[split] = pd.read_csv(path, usecols=lambda c: c in COLUMNS)
     return frames
-
-
-def load_cache(path: Path) -> dict[str, pd.DataFrame]:
-    with gzip.open(path, "rb") as handle:
-        return pickle.load(handle)
 
 
 def describe(name: str, frames: dict[str, pd.DataFrame], truth: pd.Series,
@@ -155,9 +149,9 @@ def main() -> None:
                 logger.warning("data/%s holds no split CSVs; skipped", name)
                 continue
         else:
-            path = cache_root() / name / "data.pkl.gz"
-            if not path.exists():
-                logger.warning("%s is missing; skipped", path)
+            path = dataset_cache_dir(name)
+            if not cache_exists(path):
+                logger.warning("%s holds no Wyckoff records; skipped", path)
                 continue
             frames = load_cache(path)
         records.append(describe(f"{store}/{name}", frames, truth, archive))

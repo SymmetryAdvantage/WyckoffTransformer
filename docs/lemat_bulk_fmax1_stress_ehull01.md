@@ -31,7 +31,7 @@ The energy criterion uses the `energy_above_hull` field, computed against the se
 ### Slicing Strategy
 Rather than re-running raw extraction, PyXtal spacegroup analysis, and tokenization from scratch (which would take ~20+ CPU hours and risk stochastic site ordering differences), `lemat_bulk_fmax1_stress_ehull01` is generated deterministically by **slicing the pre-tokenized tensors and DataFrames** of `lemat_bulk_fmax1_stress`:
 1. Slices every tensor and ragged list in `tensors/lemat_bulk_fmax1_sg_multiplicity.safetensors` along the example dimension where `energy_above_hull <= 0.1`.
-2. Slices split DataFrames in `data.pkl.gz`.
+2. Slices the split DataFrames of the dataset cache.
 3. Copies `tokenisers/lemat_bulk_fmax1_sg_multiplicity.json` untouched, ensuring 100% identical vocabulary, site symmetries, multiplicity mappings, and start token definitions.
 4. Generates updated `split_ids.json` matching the filtered `val` and `test` row indices.
 
@@ -60,7 +60,7 @@ cache/lemat_bulk_fmax1_stress_ehull01/
 │   └── lemat_bulk_fmax1_sg_multiplicity.safetensors  (1,996 MB)
 ├── tokenisers/
 │   └── lemat_bulk_fmax1_sg_multiplicity.json        (3.9 MB)
-├── data.pkl.gz                                       (128.7 MB)
+├── train.parquet, val.parquet, test.parquet          (128.7 MB pickled when built)
 └── split_ids.json                                    (520 KB)
 ```
 

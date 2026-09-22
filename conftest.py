@@ -2,7 +2,7 @@ import pytest
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--run-cache", action="store_true", default=False, help="run tests that require the cache file data.pkl.gz"
+        "--run-cache", action="store_true", default=False, help="run tests that require a built dataset cache"
     )
     parser.addoption(
         "--run-relax", action="store_true", default=False,

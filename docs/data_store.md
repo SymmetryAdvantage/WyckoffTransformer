@@ -8,7 +8,7 @@ has to be hand-linked.
 | --- | --- | --- |
 | Datasets tracked by git, plainly or through LFS | `<repo>/data`, via git | by git |
 | Untracked datasets | the **data store**, `WYFORMER_DATA` | `scripts/store_sync.sh` |
-| Tokenised tensors and pickled frames | the **cache**, `WYFORMER_CACHE` | `scripts/store_sync.sh` |
+| Tokenised tensors and Wyckoff records | the **cache**, `WYFORMER_CACHE` | `scripts/store_sync.sh` |
 | Run directories | `WYFORMER_RUNS` | no -- per machine |
 | W&B's local run directories | `WANDB_DIR` | no -- per machine |
 
@@ -97,6 +97,137 @@ is tracked and whose CSVs are not -- resolves to the store as a whole, so the
 store's copy must be complete for anything the code reads. `python -m
 wyckoff_transformer.paths` lists every name present in both places.
 
+## The dataset cache: one Parquet file per split
+
+`cache/<dataset>/` holds the Wyckoff records as `train.parquet`, `val.parquet`
+and `test.parquet`, beside the tokenised `tensors/`, the `tokenisers/` and
+whatever else is derived from them. **The cache is the directory**, not a file
+inside it.
+
+Read and write it through `wyckoff_transformer.dataset_cache`, never with
+`pandas.read_parquet` directly -- a column holds `pymatgen` `Element`s, a
+`Counter` and a `frozenset` of augmentation variants, and the module's metadata
+is what turns the stored strings, maps and nested lists back into them:
+
+```python
+from wyckoff_transformer.dataset_cache import (
+    dataset_cache_dir, iter_splits, load_cache, load_split, save_cache)
+
+load_cache(dataset_cache_dir("mp_20"))                        # every split
+load_split("cache/lemat_bulk_fmax1_stress", "test")           # one split
+load_split(cache, "train", columns=("elements", "spacegroup_number"))
+save_cache({"train": frame}, dataset_cache_dir("new_dataset"))
+
+for split, frame in iter_splits(cache, columns=("elements",)):  # split by split
+    ...
+```
+
+`iter_splits` is what a loop over splits should use when it keeps only a
+summary. It holds one frame at a time, and on a cache still in the superseded
+format it reads that file once rather than once per split.
+
+### What built it
+
+Each split records what wrote it, in its own Parquet schema metadata:
+
+```json
+{"tool": "wyformer-cache-dataset", "built": "2026-09-22T09:48:53+00:00",
+ "version": "1.0.7", "commit": "773726d...", "dirty": true,
+ "options": {"max_sites": 61, "symmetry_precision": 0.1, "symmetry_a_tol": 5.0,
+             "sort_by_letter": true, "scalar_columns": null,
+             "observed_gene_minimum_over": ["train", "val", "test"]}}
+```
+
+```python
+from wyckoff_transformer.dataset_cache import build_info, provenance
+
+build_info("cache/lemat_bulk_fmax1_stress")            # every split
+build_info(cache, "train")                              # one
+save_cache(frames, cache, provenance("my-tool", cutoff=0.1))   # writing one
+```
+
+`options` holds what changes the **contents** — a cap, a tolerance, an ordering —
+not what only changes how long the build takes, such as the worker count. Two
+caches with the same options hold the same thing.
+
+It lives in the file rather than a `build.json` beside it for three reasons: a
+split copied to another machine takes its provenance with it; splits written at
+different times each say so, which matters because `slice_dataset_by_ehull.py`
+and `migrate_cache_to_parquet.py` write them one at a time; and anything that
+opens the Parquet can read it.
+
+`build_info` returns `None` where there is no record — a split written before
+this existed, one still in the superseded format, or one converted from it,
+whose original build options are in the pickle nowhere and are genuinely not
+knowable. **`None` means "not recorded", never "built with the defaults".**
+
+Two options record themselves in the data and so are not the point of this:
+`--observed-gene-minimum-target` adds the `gene_min_formation_energy_per_atom`
+column, present exactly when it was passed; `--max-sites` bounds the longest
+row. What the column cannot say is *which splits the minimum was taken over* —
+it spans every split present at cache time, so the same flag over two splits and
+over three gives a different target under the same name. That is why
+`observed_gene_minimum_over` names them rather than being a boolean.
+
+A training run logs the record into its W&B config under `dataset_cache`, beside
+`code` and `distributed` and never in `config`, which a resume has to match
+exactly (`trainer.log_dataset_cache_provenance`). So "which cache did this run
+see" is answerable from the run, not only from the machine that built it. It is
+best-effort: a machine that holds `tensors/` but no split files -- a normal way
+to train on a cluster -- logs `null` and a warning rather than failing the run.
+
+`dirty` says the checkout had uncommitted changes, so `commit` does not fully
+describe the code that ran. It is recorded rather than refused, unlike a
+training run: rebuilding a cache is not a result, and a six-hour job should not
+die over an unstaged file.
+
+`columns=` is worth passing. Parquet reads only the bytes those columns occupy:
+four gene columns of LeMat-Bulk's training split take 0.1 s against 3 s for the
+whole 5.1M-row frame.
+
+### The format it replaced
+
+Until 2026-09-22 a cache was one `data.pkl.gz`, a pickle of
+`{split: DataFrame}`. Every reader still **falls back** to it, so no cache has
+to be converted to keep working, but nothing writes it any more. Three reasons:
+
+* `pickle.load` runs whatever the file says, and caches are copied between
+  machines, pulled from the store and shared with collaborators.
+* It was slow and all-or-nothing: `lemat_bulk_fmax1_stress` took 83 s to
+  unpickle 5.3M rows, and a caller that wanted one split paid all of it --
+  the post-training evaluation loaded 399 MB to read `test`. The same data as
+  Parquet reads in 3 s, one split in 0.3 s, a few columns in 0.1 s.
+* Nothing outside this repository could read it. Parquet opens in pandas,
+  polars, DuckDB and Arrow.
+
+It costs about 8% more disk: the energy columns are float64 noise, which
+compresses no better here than in gzip.
+
+Convert a cache built before the change:
+
+```bash
+python scripts/migrate_cache_to_parquet.py lemat_bulk_fmax1_stress   # or --all
+```
+
+It keeps the pickle -- a job on another machine may still be reading it, and
+nothing here can rebuild it. Delete it by hand once every machine sharing the
+store has been converted.
+
+One consequence is worth knowing before re-tokenising a converted cache. Caches
+built before the augmentation audit hold `sites_enumeration_augmented` as a
+`frozenset`, which has no order; Parquet writes it sorted, so the variants come
+back in a different order than the pickle gave them. Nothing a run measures
+changes: training draws a variant uniformly at random, both
+`record_to_augmented_fingerprint` and `gene_key` are order-independent by
+construction, and the token ids are not affected either, since
+`Tokenizer.from_token_set` numbers `sorted(all_tokens)`. But the tokenised
+tensors are not bit-identical to ones built from the pickle. An existing
+`tensors/` file is untouched.
+
+The derived sets beside the records -- `gene_fingerprints.pkl.gz`,
+`gene_ehull_index.pkl.gz` -- are still pickles. They are a set of tuples and a
+dict, not a table, and Parquet is the wrong shape for them.
+
 ## Finding things from code
 
 Never build one of these paths by hand. Use `wyckoff_transformer.paths`:
@@ -104,11 +235,13 @@ Never build one of these paths by hand. Use `wyckoff_transformer.paths`:
 ```python
 from wyckoff_transformer.paths import (
     cache_root, data_glob, data_path, data_store, resolve_store_path, runs_root, wandb_dir)
+from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_split
 
 data_path("mp_20", "train.csv")          # a dataset, looked up in both places
 data_glob("lemat_bulk*")                 # enumerate datasets across both places
 data_store()                             # the store itself, for tooling
-cache_root() / dataset / "data.pkl.gz"
+dataset_cache_dir("mp_20")               # a dataset's cache; never cache_root() / name
+load_split("cache/mp_20", "test")        # and never open a split's file yourself
 runs_root() / run_id
 wandb.init(dir=wandb_dir(), ...)         # never rely on WANDB_DIR being inherited
 resolve_store_path(args.reference)       # re-root a `data/`, `cache/` or `runs/` default

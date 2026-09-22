@@ -45,7 +45,7 @@ cache from 758 MB to 155 MB.
 The cut **drops** over-long structures, it does not truncate them: truncating to the
 first N Wyckoff positions changes the composition while leaving the band gap attached,
 so the label would describe a compound that is not in the row. That is
-`cache_a_dataset_reusing.py --max-sites`, not `cache_a_dataset.py --max-wp`.
+`wyformer-cache-dataset --max-sites`, which drops an over-long structure rather than truncating it.
 
 The CSVs keep all 147,417 rows; the cut lives in the cache, so a different cut can be
 made from the same source. Cached splits: 113,339 train, 14,177 val, 14,180 test
@@ -90,35 +90,26 @@ deliberately not done here.
 
 ## Usage
 
-Build the full cache, then cut it to 61 Wyckoff sites by reusing those symmetry
-records rather than recomputing them:
-
 ```bash
-python scripts/cache_a_dataset.py mp_2026_gga_gap --n-jobs 16 \
-    --scalar-columns dft_run_type \
-        mp_dft_uncorrected_energy_per_atom mp_dft_energy_per_atom \
-        mp_dft_formation_energy_per_atom mp_dft_energy_above_hull \
-        max_force max_force_missing stress stress_missing
-cp cache/mp_2026_gga_gap/data.pkl.gz /tmp/mp_gga_gap_full.pkl.gz
-python scripts/cache_a_dataset_reusing.py mp_2026_gga_gap \
-    --reuse /tmp/mp_gga_gap_full.pkl.gz \
-    --max-sites 61 --no-sort-by-letter --n-jobs 16 \
-    --scalar-columns band_gap dft_run_type \
-        mp_dft_uncorrected_energy_per_atom mp_dft_energy_per_atom \
-        mp_dft_formation_energy_per_atom mp_dft_energy_above_hull \
-        max_force max_force_missing stress stress_missing \
-        formation_energy_per_atom energy_above_hull
+wyformer-cache-dataset mp_2026_gga_gap --n-jobs 16 --max-sites 61 --no-sort-by-letter
 python scripts/tokenise_a_dataset.py mp_2026_gga_gap \
     yamls/tokenisers/lemat_bulk_ehull_sg_multiplicity.yaml --new-tokenizer
 ```
 
-The first step carries `band_gap`, `formation_energy_per_atom` and
-`energy_above_hull` automatically via `LEGACY_SCALAR_COLUMNS`; the second takes an
-explicit `--scalar-columns` that *replaces* that default, so they are listed there.
-`--no-sort-by-letter` is required because the reused records were built in pyxtal's
-own site order — unlike `lemat_bulk_ehull` and `lemat_bulk_fmax1`, this dataset was
-not built with `--sort-by-letter`. `--verify-reuse` (200 per split by default)
-recomputes a sample and aborts on any mismatch.
+Every label column of the split CSVs — `band_gap`, `dft_run_type`, the four
+`mp_dft_*`, `max_force`, `stress`, their `*_missing` indicators,
+`formation_energy_per_atom` and `energy_above_hull` — is carried without being
+named.
+
+`--no-sort-by-letter` keeps pyxtal's own site order, which is what the cache on
+disk has: unlike `lemat_bulk_ehull` and `lemat_bulk_fmax1`, this dataset was not
+built sorted by Wyckoff letter, and that is now the default, so it has to be
+turned off to reproduce it.
+
+Until 2026-09-22 this took two passes — a full cache, then a second one cutting to
+61 sites by reusing the first's symmetry records — and a `--scalar-columns` list
+repeated in both, because the second's list *replaced* the automatic one rather
+than adding to it. `wyformer-cache-dataset` does it in one pass from scratch.
 
 `lemat_bulk_ehull_sg_multiplicity.yaml` carries `band_gap` through `no_processing`
 as the model target alongside the `energy_above_hull` conditioning feature. A

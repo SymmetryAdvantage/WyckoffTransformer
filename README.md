@@ -46,7 +46,7 @@ Crystal symmetry plays a fundamental role in determining its physical, chemical,
 ## Running a pilot model
 To verify that the installation is working, run a pilot model. Next token prediction:
 ```bash
-python scripts/cache_a_dataset.py mp_20
+wyformer-cache-dataset mp_20
 python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
 python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
 ```
@@ -63,9 +63,11 @@ Available datasets (in GitHub): `alex_mp_20`, `mp_20`, `mp_20_biternary` (binary
 For any data to be used for training, we need to do two preprocessing steps.
 ### Compute and cache symmetry information
 ```bash
-python scripts/cache_a_dataset.py <dataset-name>
+wyformer-cache-dataset <dataset-name>
 ```
-This will create a pickled representaiton of the dataset in `cache/<dataset-name>/data.pkl.gz`. The script supports setting symmetry tolerance and _this is not done automatically_, the datasets which include tolerance in their name were obtained by manually using the command-line option.
+This runs pyxtal over every structure and writes the Wyckoff representation to `cache/<dataset-name>/{train,val,test}.parquet`, one file per split -- see [the data store](docs/data_store.md#the-dataset-cache-one-parquet-file-per-split), which also says how to convert a cache built before 2026-09-22. Every numeric, boolean and string column of the split CSVs is carried through as a per-structure label; `--scalar-columns` narrows that to a chosen few.
+
+`--max-sites N` **drops** structures with more than N Wyckoff sites. Nothing truncates a structure: keeping its first N sites would silently change its composition while leaving its energy labels attached. Symmetry tolerance is `--symmetry-precision` / `--symmetry-a-tol` and _is not set automatically_; the datasets whose name includes a tolerance were built by passing it.
 ### Tokenization
 The tokenization script serves two purposes: it produces the mapping from the real data to token ids, and saves the resulting tensors. To produce a new tokenizer:
 ```bash
@@ -106,7 +108,7 @@ To train and prepare representative checkpoints for datasets like `alex_mp_20` o
 First, cache and tokenize the dataset:
 
 ```bash
-python scripts/cache_a_dataset.py <dataset-name>
+wyformer-cache-dataset <dataset-name>
 python scripts/tokenise_a_dataset.py <dataset-name> yamls/tokenisers/<dataset-name>_sg_multiplicity.yaml --new-tokenizer
 ```
 Before training, ensure that your model configuration file points to the correct tokenizer. For example, in `yamls/models/NextToken/v6/base_sg_schedule_free.yaml`, update the tokenizer name to match your dataset:

@@ -670,7 +670,7 @@ class TestReferenceChoice(unittest.TestCase):
         from wyckoff_transformer.evaluation.protocol import DEFAULT_REFERENCE_CACHE
 
         self.assertEqual(DEFAULT_REFERENCE_CACHE,
-                         Path("cache/lemat_bulk_fmax1_stress/data.pkl.gz"))
+                         Path("cache/lemat_bulk_fmax1_stress"))
         for parser, argv in (
             (build_parser(), ["genes.json", "--output-dir", "out"]),
             (protocol_wandb.build_parser(), ["run", "--output-dir", "out"]),
@@ -683,16 +683,18 @@ class TestReferenceChoice(unittest.TestCase):
         from wyckoff_transformer.cryspr.template import DEFAULT_INDEX_PATH
         from wyckoff_transformer.evaluation.protocol import DEFAULT_REFERENCE_CACHE
 
-        self.assertEqual(DEFAULT_INDEX_PATH.parent, DEFAULT_REFERENCE_CACHE.parent)
+        self.assertEqual(DEFAULT_INDEX_PATH.parent, DEFAULT_REFERENCE_CACHE)
 
     def test_the_fingerprint_cache_follows_the_reference_and_its_splits(self):
         from wyckoff_transformer.evaluation.protocol import default_fingerprint_cache
 
-        cache = Path("cache/some_variant/data.pkl.gz")
-        self.assertEqual(default_fingerprint_cache(cache, ("train", "val", "test")),
-                         Path("cache/some_variant/gene_fingerprints.pkl.gz"))
-        self.assertEqual(default_fingerprint_cache(cache, ("train",)),
-                         Path("cache/some_variant/gene_fingerprints_train.pkl.gz"))
+        for cache in (Path("cache/some_variant"), Path("cache/some_variant/data.pkl.gz")):
+            # Either spelling of the cache names the same directory: the
+            # superseded pickle path still arrives from older command lines.
+            self.assertEqual(default_fingerprint_cache(cache, ("train", "val", "test")),
+                             Path("cache/some_variant/gene_fingerprints.pkl.gz"))
+            self.assertEqual(default_fingerprint_cache(cache, ("train",)),
+                             Path("cache/some_variant/gene_fingerprints_train.pkl.gz"))
 
     def _screen(self, reference_cache, fingerprint_cache=None):
         from wyckoff_transformer.cli.protocol import stage_screen
@@ -710,38 +712,51 @@ class TestReferenceChoice(unittest.TestCase):
         return load
 
     def test_the_screen_loads_the_fingerprints_of_the_reference_it_was_given(self):
-        load = self._screen(Path("cache/variant_b/data.pkl.gz"))
+        load = self._screen(Path("cache/variant_b"))
         self.assertEqual(load.call_args.kwargs["fingerprint_cache"],
                          Path("cache/variant_b/gene_fingerprints.pkl.gz"))
-        explicit = self._screen(Path("cache/variant_b/data.pkl.gz"), Path("/elsewhere.pkl.gz"))
+        explicit = self._screen(Path("cache/variant_b"), Path("/elsewhere.pkl.gz"))
         self.assertEqual(explicit.call_args.kwargs["fingerprint_cache"],
                          Path("/elsewhere.pkl.gz"))
 
     def test_the_screen_records_its_reference(self):
         from wyckoff_transformer.cli.protocol import LINEAGE_KEY, MANIFEST_FILE, SCREEN_FILE
 
-        self._screen(Path("cache/variant_b/data.pkl.gz"))
+        self._screen(Path("cache/variant_b"))
         record = json.loads((self.out / MANIFEST_FILE).read_text())[LINEAGE_KEY][SCREEN_FILE]
         self.assertEqual(record["reference"],
-                         {"cache": "variant_b/data.pkl.gz", "splits": ["train", "val", "test"]})
+                         {"cache": "variant_b", "splits": ["train", "val", "test"]})
         self.assertEqual(record["reference_fingerprints"], 0)
 
     def test_score_accepts_the_screens_reference_however_its_path_is_spelled(self):
         from wyckoff_transformer.cli.protocol import require_screen_reference
 
-        self._screen(Path("cache/variant_b/data.pkl.gz"))
+        self._screen(Path("cache/variant_b"))
         require_screen_reference(
-            self.out, Path("/mnt/store/cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+            self.out, Path("/mnt/store/cache/variant_b"), ("train", "val", "test"))
+
+    def test_score_accepts_a_screen_that_predates_the_parquet_cache(self):
+        # Screens written before 2026-09-22 name the cache as the pickle inside
+        # it.  Re-screening every one of them would change no verdict.
+        from wyckoff_transformer.cli.protocol import (
+            LINEAGE_KEY, MANIFEST_FILE, SCREEN_FILE, require_screen_reference,
+        )
+
+        self._screen(Path("cache/variant_b"))
+        manifest = json.loads((self.out / MANIFEST_FILE).read_text())
+        manifest[LINEAGE_KEY][SCREEN_FILE]["reference"]["cache"] = "variant_b/data.pkl.gz"
+        (self.out / MANIFEST_FILE).write_text(json.dumps(manifest))
+        require_screen_reference(self.out, Path("cache/variant_b"), ("train", "val", "test"))
 
     def test_score_refuses_a_screen_of_another_reference(self):
         from wyckoff_transformer.cli.protocol import StaleOutputError, require_screen_reference
 
-        self._screen(Path("cache/variant_a/data.pkl.gz"))
+        self._screen(Path("cache/variant_a"))
         with self.assertRaisesRegex(StaleOutputError, "variant_a.*variant_b"):
             require_screen_reference(
-                self.out, Path("cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+                self.out, Path("cache/variant_b"), ("train", "val", "test"))
         with self.assertRaisesRegex(StaleOutputError, r"\(train\)"):
-            require_screen_reference(self.out, Path("cache/variant_a/data.pkl.gz"), ("train",))
+            require_screen_reference(self.out, Path("cache/variant_a"), ("train",))
 
     def test_score_refuses_a_screen_that_predates_the_record(self):
         from wyckoff_transformer.cli.protocol import (
@@ -750,11 +765,11 @@ class TestReferenceChoice(unittest.TestCase):
 
         with self.assertRaisesRegex(StaleOutputError, "records no reference"):
             require_screen_reference(
-                self.out, Path("cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+                self.out, Path("cache/variant_b"), ("train", "val", "test"))
         _write_lineage(self.out, SCREEN_FILE, {"id": "s", "parent": "genes:sha256:x"})
         with self.assertRaisesRegex(StaleOutputError, "lemat_bulk_ehull"):
             require_screen_reference(
-                self.out, Path("cache/variant_b/data.pkl.gz"), ("train", "val", "test"))
+                self.out, Path("cache/variant_b"), ("train", "val", "test"))
 
 
 class TestRelaxedFingerprint(unittest.TestCase):

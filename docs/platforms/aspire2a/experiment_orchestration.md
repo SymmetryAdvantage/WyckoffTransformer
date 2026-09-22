@@ -124,20 +124,20 @@ dispatcher must guarantee both stages exist before the GPU job. Both stages are
 CPU work and must never run inside the 24 h GPU job (`use_cached_tensors=False`
 tokenises on the fly — acceptable only for pilots).
 
-**Stage 1 — dataset cache (`scripts/cache_a_dataset.py`)**
-`data/<dataset>/{train,val,test}.csv` → `cache/<dataset>/data.pkl.gz`
+**Stage 1 — dataset cache (`wyformer-cache-dataset`)**
+`data/<dataset>/{train,val,test}.csv` → `cache/<dataset>/{train,val,test}.parquet`
 (pyxtal symmetrisation, parallel by structure, slow). Depends on the raw CSVs,
 `symmetry_precision` / `symmetry_a_tol` / `max_wp`, and the symmetry code in
 `data.py` — **not** on model or tokeniser code. Fully shareable: build once,
-symlink `cache/<dataset>/data.pkl.gz` into every worktree. The existing
+symlink `cache/<dataset>/` into every worktree. The existing
 `data/<name>_tol_*` / `<name>_0.01_1_63` naming convention already folds the
 symmetry params into the dataset name, so param variants get separate cache
 dirs for free. Rebuild only when raw data or `data.py` symmetry code changes.
 
 **Stage 2 — tensor cache (`scripts/tokenise_a_dataset.py`)**
-`data.pkl.gz` + `yamls/tokenisers/<tok>.yaml` →
+the split Parquet files + `yamls/tokenisers/<tok>.yaml` →
 `cache/<dataset>/tensors/<tok>.safetensors` + `cache/<dataset>/tokenisers/<tok>.json`.
-Depends on `data.pkl.gz`, the tokeniser YAML, **and the tokenisation code**
+Depends on the dataset cache, the tokeniser YAML, **and the tokenisation code**
 (`tokenization.py`, `wyckoff_processor.py`, `cascade/`, `preprocess_wychoffs.py`).
 The current layout keys it only by tokeniser name → a code snapshot that changes
 tokenisation would read a stale or schema-mismatched cache. Handle it by

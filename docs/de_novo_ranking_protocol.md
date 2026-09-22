@@ -391,7 +391,7 @@ for the equivalence results and the one-hot-encoding trap.
 
 | path | what | note |
 |---|---|---|
-| `cache/lemat_bulk_fmax1_stress/data.pkl.gz` | LeMat-Bulk in the Wyckoff representation, 5,327,342 rows over train/val/test; the novelty reference | built by [the LeMat pipeline](lemat_bulk_pipeline.md); `--reference-cache` overrides |
+| `cache/lemat_bulk_fmax1_stress/` | LeMat-Bulk in the Wyckoff representation, 5,327,342 rows over train/val/test; the novelty reference | built by [the LeMat pipeline](lemat_bulk_pipeline.md); `--reference-cache` overrides |
 | `cache/lemat_bulk_fmax1_stress/gene_fingerprints.pkl.gz` | 4,826,004 distinct gene fingerprints of all three splits | built on first `screen`, beside the reference |
 | `data/lemat-bulk/lemat_pbe.csv.gz` | LeMat-Bulk CIFs, by `immutable_id` | the geometry `StructureMatcher` needs; `--lemat-cif-csv` overrides |
 

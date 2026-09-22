@@ -40,10 +40,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from wyckoff_transformer.paths import resolve_store_path
+from wyckoff_transformer.dataset_cache import load_cache
 
-LEMAT_CACHE = Path("cache/lemat_bulk_ehull/data.pkl.gz")
-MP20_CACHE = Path("cache/mp_20/data.pkl.gz")
+LEMAT_CACHE = Path("cache/lemat_bulk_ehull")
+MP20_CACHE = Path("cache/mp_20")
 DEFAULT_GENES = Path("generated/upi73i4k/wyckoff_genes_ehull0_n2500.json.gz")
 DEFAULT_STRUCTURES = Path("generated/upi73i4k/protocol/structures.csv")
 
@@ -91,12 +91,9 @@ def add_keys(df: pd.DataFrame) -> pd.DataFrame:
     return df.assign(fsg=df["fkey"] + "|" + df["spacegroup_number"].astype(str))
 
 
-def load_cache(path: Path) -> dict[str, pd.DataFrame]:
-    path = resolve_store_path(path)
+def load_dataset_cache(path: Path) -> dict[str, pd.DataFrame]:
     started = time.time()
-    data = pd.read_pickle(path)
-    if not isinstance(data, dict):
-        data = {"all": data}
+    data = load_cache(path)
     sizes = ", ".join(f"{k} {len(v)}" for k, v in data.items())
     print(f"loaded {path} in {time.time() - started:.0f}s: {sizes}", flush=True)
     return data
@@ -137,7 +134,7 @@ def report_uniqueness(df: pd.DataFrame, name: str, energy: str) -> pd.DataFrame:
 
 
 def cmd_uniqueness(args: argparse.Namespace) -> None:
-    data = load_cache(Path(args.cache))
+    data = load_dataset_cache(Path(args.cache))
     energy = pick_energy_column(next(iter(data.values())))
     print(f"energy column: {energy}", flush=True)
     data = {split: add_keys(df) for split, df in data.items()}
@@ -168,7 +165,7 @@ def cmd_uniqueness(args: argparse.Namespace) -> None:
 # signal
 # --------------------------------------------------------------------------- #
 def cmd_signal(args: argparse.Namespace) -> None:
-    data = load_cache(Path(args.cache))
+    data = load_dataset_cache(Path(args.cache))
     energy = pick_energy_column(data["train"])
     train, test = add_keys(data["train"]), add_keys(data["test"])
     truth = test[energy].values
@@ -285,7 +282,7 @@ def cmd_enrichment(args: argparse.Namespace) -> None:
         flush=True,
     )
 
-    train = add_keys(load_cache(Path(args.cache))["train"])
+    train = add_keys(load_dataset_cache(Path(args.cache))["train"])
     energy = pick_energy_column(train)
     generated["critic_formula"] = generated["fkey"].map(train.groupby("fkey")[energy].mean())
     generated["critic_formula_min"] = generated["fkey"].map(train.groupby("fkey")[energy].min())

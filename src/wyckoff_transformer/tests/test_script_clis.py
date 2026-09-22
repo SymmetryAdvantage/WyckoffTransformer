@@ -17,8 +17,9 @@ REPO = Path(__file__).resolve().parents[3]
 #: --help would run them.
 SCRIPTS = (
     "scripts/build_lemat_bulk_fmax.py",
-    "scripts/cache_a_dataset.py",
-    "scripts/cache_a_dataset_reusing.py",
+    "scripts/migrate_cache_to_parquet.py",
+    "scripts/migrate_augmented_site_symmetries.py",
+    "scripts/slice_dataset_by_ehull.py",
     "scripts/audit_ehull_conditioning.py",
     "scripts/tokenise_a_dataset.py",
     "scripts/train.py",

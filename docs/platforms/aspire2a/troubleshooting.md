@@ -283,8 +283,8 @@ See [usage.md](usage.md#working-in-a-git-worktree).
 ## `train_in_pbs.sh`: `the cached data for <dataset> ... is incomplete`
 
 Training jobs do not build caches. Build the missing tensor cache, tokeniser or
-`data.pkl.gz` first -- [usage.md](usage.md#adding-a-dataset-or-tokeniser-to-the-cache) --
-or, when only `data.pkl.gz` is missing and no post-training evaluation is wanted, submit
+`test.parquet` first -- [usage.md](usage.md#adding-a-dataset-or-tokeniser-to-the-cache) --
+or, when only the test split is missing and no post-training evaluation is wanted, submit
 with `--train-arg --no-test`.
 
 ---

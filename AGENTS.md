@@ -17,6 +17,17 @@ code reads itself, not variables from a shell profile. Resolve them through
 the environment. Shell launchers use `scripts/wyformer_paths.sh`, which follows the
 same rules. See `docs/data_store.md`.
 
+A dataset's cache is the **directory** `cache/<dataset>/`, holding one Parquet
+file per split. Read and write it through `wyckoff_transformer.dataset_cache`
+(`dataset_cache_dir`, `load_split`, `load_cache`, `save_cache`), never by naming
+a file inside it and never with `pandas.read_parquet`: the columns hold
+`Element`s, a `Counter` and a `frozenset`, and the module's metadata is what
+restores them. Pass `columns=` -- most callers want four of twenty. The
+superseded `data.pkl.gz` is still read and never written; `docs/data_store.md`
+says how to convert one. Anything that writes a cache passes `provenance(...)`
+naming the options that change its contents, so `build_info` can say what built
+it; a missing record means "not recorded", never "the defaults".
+
 `data_path()` looks a dataset up by its top-level name in two places: the store
 first, then `<repo>/data`. Datasets tracked by git, plainly or through LFS, stay
 in the checkout; untracked ones live in the store, which is also where a new

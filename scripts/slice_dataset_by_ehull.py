@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """Slice a cached dataset to retain only structures with energy_above_hull <= cutoff.
 
-This creates a new dataset cache directory with sliced .safetensors, data.pkl.gz,
-and copied tokenisers, preserving the exact vocabulary, site order, and token mappings
-of the source dataset in ~1 minute without re-running pyxtal or tokenisation.
+This creates a new dataset cache directory with sliced .safetensors, Wyckoff
+records and copied tokenisers, preserving the exact vocabulary, site order, and token
+mappings of the source dataset in ~1 minute without re-running pyxtal or tokenisation.
 """
 import argparse
-import gzip
 import json
 import logging
-import pickle
 import shutil
 import time
 from pathlib import Path
 import torch
 
+from wyckoff_transformer.dataset_cache import (
+    cache_exists, load_cache, provenance, save_cache)
 from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.tokenization import load_tensor_cache, save_tensor_cache
 
@@ -72,10 +72,9 @@ def slice_dataframe_cache(
     target_path: Path,
     ehull_cutoff: float,
 ) -> dict:
-    """Load data.pkl.gz, filter each split DataFrame, and save."""
+    """Load the Wyckoff records, filter each split DataFrame, and save."""
     logger.info("Loading DataFrame cache from %s ...", source_path)
-    with gzip.open(source_path, "rb") as f:
-        data_pd = pickle.load(f)
+    data_pd = load_cache(source_path)
 
     filtered_pd = {}
     for split, df in data_pd.items():
@@ -90,11 +89,10 @@ def slice_dataframe_cache(
             len(filtered_df),
         )
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Saving filtered DataFrame cache to %s ...", target_path)
-    with gzip.open(target_path, "wb") as f:
-        pickle.dump(filtered_pd, f)
-    logger.info("Saved %s (%.1f MB)", target_path.name, target_path.stat().st_size / 1e6)
+    save_cache(filtered_pd, target_path, provenance(
+        "slice_dataset_by_ehull", sliced_from=Path(source_path).name,
+        ehull_cutoff=ehull_cutoff))
     return filtered_pd
 
 
@@ -142,11 +140,9 @@ def main():
         shutil.copy2(source_tokeniser_json, target_tokeniser_json)
         logger.info("Copied tokeniser JSON to %s", target_tokeniser_json)
 
-    # 3. DataFrame cache (data.pkl.gz)
-    source_data_pkl = source_dir / "data.pkl.gz"
-    target_data_pkl = target_dir / "data.pkl.gz"
-    if source_data_pkl.exists():
-        filtered_pd = slice_dataframe_cache(source_data_pkl, target_data_pkl, args.ehull_cutoff)
+    # 3. The Wyckoff records
+    if cache_exists(source_dir):
+        filtered_pd = slice_dataframe_cache(source_dir, target_dir, args.ehull_cutoff)
         
         # 4. split_ids.json (for val and test)
         split_ids = {split: df.index.tolist() for split, df in filtered_pd.items() if split in ("val", "test")}

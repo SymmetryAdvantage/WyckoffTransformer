@@ -74,7 +74,7 @@ def main():
     df = df[df['max_force'] <= 0.02]
     print(f"Rows after force filter: {len(df)}")
     
-    # Wyckoff filtering is handled by cache_a_dataset.py
+    # Wyckoff filtering is handled by wyformer-cache-dataset --max-sites
     
     final_csv = output_dir / "lemat_pbe_20wyckoffs.csv.gz"
     df.to_csv(final_csv, index=False, compression='gzip')

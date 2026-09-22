@@ -2,11 +2,9 @@ import argparse
 import omegaconf
 from pathlib import Path
 from operator import itemgetter
-import pickle
-import gzip
 import logging
 
-from wyckoff_transformer.paths import cache_root
+from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_cache
 from wyckoff_transformer.tokenization import (
     TENSOR_CACHE_SUFFIX,
     WyckoffProcessor,
@@ -42,10 +40,9 @@ def main():
     tokenizer_full_name = args.config_file.resolve().relative_to(tokenizer_root_path).with_suffix('')
     if config.name != str(tokenizer_full_name):
         raise ValueError(f"Config inside file {config.name} does not match the file name {tokenizer_full_name}")
-    cache_path = cache_root() / args.dataset
+    cache_path = dataset_cache_dir(args.dataset)
     cache_path.mkdir(parents=True, exist_ok=True)
-    with gzip.open(cache_path / 'data.pkl.gz', "rb") as f:
-        datasets_pd = pickle.load(f)
+    datasets_pd = load_cache(cache_path)
     print("Loaded the dataset. It has the following sizes:")
     for name, dataset in datasets_pd.items():
         print(f"{name}: {len(dataset)}")

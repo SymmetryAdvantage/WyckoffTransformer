@@ -270,7 +270,7 @@ python -m wyckoff_transformer.formula_energy.hull_table --workers 16 \
   --output-file data/lemat-bulk/lemat_pbe_ehull.csv.gz
 python scripts/build_lemat_bulk_fmax.py --name lemat_bulk_fmax1 --max-force 1.0 --rebuild-labels
 python scripts/cache_a_dataset_reusing.py lemat_bulk_fmax1 \
-  --reuse cache/lemat_bulk_fmax1/data.pkl.gz \
+  --reuse cache/lemat_bulk_fmax1 \
   --scalar-columns energy_above_hull delta_e_polymorph max_force max_force_missing \
       formation_energy_per_atom \
   --observed-gene-minimum-target \
@@ -291,7 +291,11 @@ reaches a tensor.
 The dataset and the tensor cache are unchanged between `wjwmgjag` and `19qbxo6l`; only the
 config differs, so a rerun needs neither rebuilt.
 
-`cache_a_dataset_reusing.py` exists because the new dataset overlaps the old one by 4.0M
+The commands above are what was run at the time. Both caching scripts were replaced by
+`wyformer-cache-dataset` on 2026-09-22: it works from scratch only, carries every label
+column without being told to, and cannot truncate. `--max-sites` is unchanged.
+
+`cache_a_dataset_reusing.py` existed because the new dataset overlaps the old one by 4.0M
 of 4.5M rows, and `structure_to_sites` is a pure function of the structure and the
 tolerances, so those symmetry determinations can be copied instead of repeated: 4,007,053
 reused against 506,981 computed, 25 minutes rather than about six hours. It recomputes 200
@@ -300,8 +304,10 @@ sort-by-Wyckoff-letter convention of the existing caches were found in the first
 `structure_to_sites` only sorted when `max_wp` was set, so a naive reuse would have mixed
 two site orderings.
 
-`scripts/cache_a_dataset.py` still does the whole thing from scratch — about six hours —
-and needs two flags to land on the same cache:
+`scripts/cache_a_dataset.py` did the whole thing from scratch — about six hours — and
+needed two flags to land on the same cache (today `wyformer-cache-dataset
+lemat_bulk_fmax1 --n-jobs 16 --max-sites 61 --observed-gene-minimum-target` does it, and
+sorts by letter by default):
 
 ```
 python scripts/cache_a_dataset.py lemat_bulk_fmax1 --n-jobs 16 --sort-by-letter \
@@ -390,7 +396,7 @@ Per-row forces and stress invariants for the whole archive are cached in
 python scripts/recover_mp_forces.py all --run full
 python scripts/build_lemat_bulk_fmax.py --name lemat_bulk_fmax1_stress
 python scripts/cache_a_dataset_reusing.py lemat_bulk_fmax1_stress \
-  --reuse cache/lemat_bulk_fmax1/data.pkl.gz \
+  --reuse cache/lemat_bulk_fmax1 \
   --scalar-columns energy_above_hull delta_e_polymorph max_force max_force_missing \
       stress_hydrostatic stress_von_mises stress_missing formation_energy_per_atom \
   --observed-gene-minimum-target --max-sites 61 --n-jobs 8

@@ -13,11 +13,11 @@ those space groups.
 never parses a CIF, never runs pyxtal symmetry detection, and never touches a
 structure.  It rewrites two columns.
 
-    python scripts/migrate_augmented_site_symmetries.py cache/lemat_bulk_fmax1_stress/data.pkl.gz
+    python scripts/migrate_augmented_site_symmetries.py cache/lemat_bulk_fmax1_stress
 
 ``--output`` writes elsewhere instead of in place; ``--check`` reports what would
-change and writes nothing.  The old file is kept as ``<name>.pre-augmentation-fix``
-unless ``--no-backup``.
+change and writes nothing.  The old files are kept as
+``<split>.parquet.pre-augmentation-fix`` unless ``--no-backup``.
 
 Rebuild afterwards, in this order:
 
@@ -43,7 +43,8 @@ from wyckoff_transformer.data import (
     AUGMENTED_SITES_ENUMERATION,
     augmented_sites,
 )
-from wyckoff_transformer.paths import resolve_store_path
+from wyckoff_transformer.dataset_cache import (
+    build_info, load_cache, provenance, resolve_cache, save_split, split_path)
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
@@ -73,7 +74,7 @@ def migrate_frame(frame: pd.DataFrame, augmentation, enum_by_ss, ss_from_letter)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("cache", type=Path, help="A data.pkl.gz of split -> DataFrame.")
+    parser.add_argument("cache", type=Path, help="A dataset cache directory.")
     parser.add_argument("--output", type=Path, default=None, help="Write here instead of in place.")
     parser.add_argument("--check", action="store_true", help="Report and write nothing.")
     parser.add_argument("--no-backup", action="store_true")
@@ -82,9 +83,12 @@ def main() -> None:
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s: %(message)s")
 
-    cache = resolve_store_path(args.cache)
+    cache = resolve_cache(args.cache)
     logger.info("Reading %s", cache)
-    frames = pd.read_pickle(cache)
+    frames = load_cache(cache)
+    # Read before anything is renamed or overwritten: the new record carries the
+    # old one, so a migrated split still says how its rows were built.
+    previous = {split: build_info(cache, split) for split in frames}
 
     augmentation = get_augmentation_dict()
     mappings = load_wyckoff_mappings()
@@ -108,17 +112,23 @@ def main() -> None:
         print("--check: nothing written")
         return
 
-    target = Path(args.output) if args.output else cache
+    target = resolve_cache(args.output) if args.output else cache
     if target == cache and not args.no_backup:
-        backup = cache.with_suffix(cache.suffix + ".pre-augmentation-fix")
-        if not backup.exists():
-            cache.rename(backup)
-            logger.info("Kept the old cache as %s", backup)
-    pd.to_pickle(frames, target)
+        for split in frames:
+            current = split_path(cache, split)
+            backup = current.with_suffix(current.suffix + ".pre-augmentation-fix")
+            if current.is_file() and not backup.exists():
+                current.rename(backup)
+                logger.info("Kept the old split as %s", backup)
+    for split, frame in frames.items():
+        save_split(frame, target, split, build=provenance(
+            "migrate_augmented_site_symmetries",
+            rewrote=[AUGMENTED_SITE_SYMMETRIES, AUGMENTED_SITES_ENUMERATION],
+            supersedes=previous[split]))
     logger.info("Wrote %s", target)
 
     for name in DERIVED:
-        for candidate in target.parent.glob(name.replace(".", "*.", 1)):
+        for candidate in target.glob(name.replace(".", "*.", 1)):
             candidate.unlink()
             logger.info("Removed %s, which was derived from the old augmentation", candidate)
     print("Rebuild the fingerprint set and the key table before scoring anything.")

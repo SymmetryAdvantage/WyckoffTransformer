@@ -178,7 +178,7 @@ against a locally built torch, which is untested here — see
 Pilot training run, end to end:
 
 ```bash
-.venv/bin/python scripts/cache_a_dataset.py mp_20
+.venv/bin/wyformer-cache-dataset mp_20
 .venv/bin/python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
 ```

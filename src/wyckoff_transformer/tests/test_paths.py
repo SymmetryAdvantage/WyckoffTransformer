@@ -157,7 +157,7 @@ class TestFallbackWithoutConfig(_Isolated):
         self.assertEqual(cache_root(start=repo / "scripts"), repo / "cache")
 
     def test_repo_location_need_not_exist_yet(self):
-        """Writers such as scripts/cache_a_dataset.py create it -- on a fresh clone."""
+        """Writers such as wyformer-cache-dataset create it -- on a fresh clone."""
         repo = self.make_repo()
         self.assertEqual(runs_root(start=repo), repo / "runs")
         self.assertFalse((repo / "runs").exists())

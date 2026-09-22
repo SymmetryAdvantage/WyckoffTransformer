@@ -86,8 +86,9 @@ What it enforces, at submission and again at the start of every link:
   delete when its session ends; see [Working in a git worktree](#working-in-a-git-worktree).
   A worktree it launches from is locked with `git worktree lock`.
 - **The data is already cached.** The tensor cache and tokeniser JSON for the config's
-  tokeniser, and `data.pkl.gz` (read by the evaluation after training; `--train-arg
-  --no-test` waives it), must exist. Jobs build nothing: see
+  tokeniser, and `test.parquet` (read by the evaluation after training; `--train-arg
+  --no-test` waives it), must exist. A cache built before 2026-09-22 holds the test
+  split in `data.pkl.gz` instead, and either satisfies the check. Jobs build nothing: see
   [Adding a dataset or tokeniser to the cache](#adding-a-dataset-or-tokeniser-to-the-cache).
 
 Runs pinned before the branch joined the key (`.<dataset>__<config>.runid`) are not
@@ -319,7 +320,7 @@ the live-risk caveat in [environment.md](environment.md).
 ### Adding a dataset or tokeniser to the cache
 
 Training jobs never build caches: `train_in_pbs.sh` refuses to submit, and every link
-refuses to train, without the tensor cache, the tokeniser JSON and `data.pkl.gz`.
+refuses to train, without the tensor cache, the tokeniser JSON and `test.parquet`.
 Building one is the job of whoever needs it. Most experiments reuse an existing cache;
 one that changes tokenisation, or the tokenisation code, needs a **new tokeniser name**
 (or a separate cache root, `--cache-dir`), never a rebuild over a name other runs use.

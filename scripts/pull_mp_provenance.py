@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from wyckoff_transformer.dataset_cache import load_cache
 from wyckoff_transformer.paths import resolve_store_path
 
 DEFAULT_SOURCE = Path("data/lemat-bulk/lemat_pbe_ehull.csv.gz")
@@ -43,14 +44,11 @@ def mp_ids(source: Path) -> list[str]:
     """Every ``mp-`` immutable id in a LeMat-Bulk table.
 
     Accepts either the energy CSV, where the ids are the ``immutable_id``
-    column, or a tokenised cache pickle, where they are the index of each
-    split's frame.
+    column, or a dataset cache, where they are the index of each split's frame.
     """
-    if source.name.endswith(".pkl.gz"):
-        data = pd.read_pickle(source)
-        frames = data.values() if isinstance(data, dict) else [data]
+    if source.is_dir() or source.name.endswith(".pkl.gz"):
         ids = pd.Index([])
-        for frame in frames:
+        for frame in load_cache(source, columns=()).values():
             ids = ids.append(frame.index)
     else:
         ids = pd.Index(pd.read_csv(source, usecols=["immutable_id"])["immutable_id"])

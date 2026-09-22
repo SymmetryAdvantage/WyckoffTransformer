@@ -233,10 +233,10 @@ place, keeping the old file beside it.
 | artifact | rebuild? | what it costs |
 |---|---|---|
 | structures, CIFs, labels, splits | **no** | untouched |
-| `cache/<dataset>/data.pkl.gz` augmentation columns | **yes**, recomputed in place | one pass over the rows; ~25 GB resident for LeMat-Bulk |
+| `cache/<dataset>/` augmentation columns | **yes**, recomputed in place | one pass over the rows; ~25 GB resident for LeMat-Bulk |
 | `gene_fingerprints.pkl.gz` | **yes** | ~11 min; the migration deletes it so it cannot be read stale |
 | `gene_keys.npz` | **yes** | ~7 min; likewise deleted |
-| `cache/<dataset>/tensors/*.safetensors` | **only if you will train** | re-tokenise from the migrated `data.pkl.gz`; nothing upstream of it re-runs |
+| `cache/<dataset>/tensors/*.safetensors` | **only if you will train** | re-tokenise from the migrated cache; nothing upstream of it re-runs |
 | existing checkpoints | **no** -- and they cannot be | they were trained on the old augmentation; that is a property of the model, not of a cache |
 | stored protocol artifacts | **re-score** to be comparable | `--from-artifact --stages screen,score`, as in [the `lemat_bulk_ehull` re-score](archive/lemat_bulk_ehull_rescore.md) |
 

@@ -139,32 +139,42 @@ the `max_force <= 0.02` mistake in a new variable. `--max-stress 0` disables it.
 ### 5. Cache and tokenise
 
 ```bash
-python scripts/cache_a_dataset_reusing.py lemat_bulk_fmax1_stress \
-    --reuse cache/lemat_bulk_fmax1/data.pkl.gz \
-    --scalar-columns energy_above_hull delta_e_polymorph max_force max_force_missing \
-        stress_hydrostatic stress_von_mises stress_missing formation_energy_per_atom \
-    --observed-gene-minimum-target --max-sites 61 --n-jobs 8      # ~20 min with a reuse
+wyformer-cache-dataset lemat_bulk_fmax1_stress \
+    --observed-gene-minimum-target --max-sites 61 --n-jobs 16     # ~6 h from scratch
 
 python scripts/tokenise_a_dataset.py lemat_bulk_fmax1_stress \
     yamls/tokenisers/lemat_bulk_fmax1_sg_multiplicity.yaml --new-tokenizer
 ```
 
-Every scalar column a model or a screen will read has to be named here, or it is built and
-never reaches a tensor. The sort-by-Wyckoff-letter default is what makes the result
-comparable with the existing caches.
+Every numeric, boolean and string column of the split CSVs is carried into the cache as a
+per-structure label, so there is no list to keep in step with
+`build_lemat_bulk_fmax.py`; `--scalar-columns` narrows it if you want fewer. The
+sort-by-Wyckoff-letter default is what makes the result comparable with the existing
+caches.
+
+Until 2026-09-22 this step was `scripts/cache_a_dataset_reusing.py --reuse
+cache/lemat_bulk_fmax1`, which copied the 4.2M symmetry records the two variants share and
+took 20 minutes instead of six hours. It is gone: each reused row came from a cache whose
+build options this repository no longer records, `--max-wp` could only ever apply to the
+freshly computed half, and the saving was one-off. `wyformer-cache-dataset` is from
+scratch, once.
 
 #### Where the 61-Wyckoff-site cap is applied
 
-**At cache construction, not in the split CSVs**, by `--max-sites` in
-`cache_a_dataset_reusing.py`, which drops rows whose `site_symmetries` is longer than the
-cap. It lives there because the site count is only known after symmetry determination,
-which is what that step does — `build_lemat_bulk_fmax.py` never parses a structure.
+**At cache construction, not in the split CSVs**, by `wyformer-cache-dataset
+--max-sites`, which drops rows whose `site_symmetries` is longer than the cap, after
+symmetrising the chunk and before the labels are attached. It lives there because the site
+count is only known after symmetry determination, which is what that step does —
+`build_lemat_bulk_fmax.py` never parses a structure.
 
 Three consequences worth knowing:
 
-- **The CSVs are a superset of the cache.** Nothing records the cap on either side, so the
-  same split CSVs cached at a different `--max-sites` silently yield a different dataset.
-- **`scripts/cache_a_dataset.py` applies no cap at all.** The 4,581 structures above 61
+- **The CSVs are a superset of the cache.** The CSVs record no cap; since 2026-09-22 the
+  cache records the one it was built with, in each split's Parquet metadata
+  (`build_info`, [data_store.md](data_store.md#what-built-it)). A cache built before that
+  records nothing, so for those the same split CSVs cached at a different `--max-sites`
+  still silently yield a different dataset.
+- **Leaving `--max-sites` off applies no cap at all.** The 4,581 structures above 61
   sites then take the padded sequence width from 62 to 361, roughly sextupling resident
   memory and per-step cost, because every tensor is padded to the longest structure.
 - **Uncapped rows would otherwise leak into val and test.** They would be drawn into the
@@ -179,10 +189,8 @@ The cap is 61 because that is what the first LeMat cache used, recoverable only 
 that cache held exactly 224 fewer rows than the CSV it came from and exactly 224 of its
 rows exceeded 61 sites.
 
-With no cache to reuse, `scripts/cache_a_dataset.py lemat_bulk_fmax1_stress --n-jobs 16
---sort-by-letter --scalar-columns ...` does the same from scratch in about six hours, but
-has no site cap — filter the 4,581 structures above 61 Wyckoff sites first, or the padded
-width goes from 62 to 361.
+The cap is passed at cache time, so a cache built without `--max-sites` keeps those
+4,581 structures and the padded width goes from 62 to 361.
 
 ### Do not use `scripts/pipeline_lemat_20wyckoffs.py`
 

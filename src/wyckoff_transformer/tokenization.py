@@ -1,8 +1,6 @@
 from typing import Any, Dict, Iterable, NamedTuple, Set, FrozenSet, Optional, List, Tuple
 import json
-import gzip
 import logging
-import pickle
 import shutil
 from itertools import chain
 from operator import attrgetter, itemgetter
@@ -18,6 +16,7 @@ from pandarallel import pandarallel
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 
+from wyckoff_transformer.dataset_cache import load_cache
 from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.wyckoff_processor import (
     ENGINEERS_DIR,
@@ -568,8 +567,7 @@ def load_tensors_and_tokenisers(
             raise
         return tensors, tokenisers, token_engineers
     else:
-        with gzip.open(this_cache_path / 'data.pkl.gz', "rb") as f:
-            datasets_pd = pickle.load(f)
+        datasets_pd = load_cache(this_cache_path)
         # A saved processor carries its own config; the repository's YAML, which may
         # have changed or gone since, is only for building new tokenisers.
         config = None if tokenizer_path is not None else OmegaConf.load(

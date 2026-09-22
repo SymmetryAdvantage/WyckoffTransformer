@@ -1,8 +1,6 @@
 import unittest
 import inspect
-import io
 import json
-import pickle
 import sys
 import trace
 import tempfile
@@ -685,11 +683,7 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
         fake_datasets = {"train": pd.DataFrame([{"elements": ["H"]}])}
         with patch.object(tok, "tokenise_dataset", return_value=("tensors", "tokenisers", "engineers")) as mock_tok, \
              patch.object(tok.OmegaConf, "load", return_value=OmegaConf.create({})) as mock_cfg, \
-             patch.object(tok.gzip, "open") as mock_gzip_open:
-            in_memory = io.BytesIO()
-            pickle.dump(fake_datasets, in_memory)
-            in_memory.seek(0)
-            mock_gzip_open.return_value.__enter__.return_value = in_memory
+             patch.object(tok, "load_cache", return_value=fake_datasets):
 
             result = tok.load_tensors_and_tokenisers(
                 dataset="toy",
@@ -1042,11 +1036,9 @@ class TestTokenizationCoverageSmoke(unittest.TestCase):
         with patch.object(tok, "Group", side_effect=FakeGroup):
             _ = tok.get_wp_index()
 
-        # get_letter_from_ss_enum_idx
-        payload = pickle.dumps((None, {1: {"m": {0: "a"}}}))
-        with patch.object(tok.gzip, "open") as mock_open:
-            mock_open.return_value.__enter__.return_value = io.BytesIO(payload)
-            _ = tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True).get_letter_from_ss_enum_idx()
+        # get_letter_from_ss_enum_idx, which reads the packaged mappings, not a
+        # pickle: the gzip patch this used to carry had stopped doing anything.
+        _ = tok.EnumeratingTokeniser.from_token_set({0}, include_stop=True).get_letter_from_ss_enum_idx()
 
         # tensor_to_pyxtal
         tks = {

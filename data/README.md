@@ -18,7 +18,7 @@ structures with the same Wyckoff representation have the same energy; [analysis]
 
 If you modify the training data, be extremely careful that the target is _formation energy per atom_ and it's computed with same reference energies as WBM. Train / val split is entirely our choice, and can be modified freely.
 
-The different symlinks in `data` allow to define variants of the datasets to be processed with different tolerances. The tolerance is set in the `cache_a_dataset.py` script and _is not done automatically_.
+The different symlinks in `data` allow to define variants of the datasets to be processed with different tolerances. The tolerance is `wyformer-cache-dataset --symmetry-precision` / `--symmetry-a-tol` and _is not set automatically_.
 
 Tolerance didn't (2024) have a significant impact. Hence, for further experiments, just `mp_2022` seems to be a reasonable choice.
 
@@ -70,7 +70,7 @@ Not tracked -- too large for git, and replicated by `store_sync.sh` instead:
 | `lemat_bulk_fmax1_stress` | `scripts/build_lemat_bulk_fmax.py` |
 | `formula_energy/` | `wyckoff_transformer.formula_energy.dataset` |
 | `unique_fingerprints.parquet` | BAWL novelty reference, copied from LeMat-GenBench; see `wyckoff_transformer.evaluation.bawl_reference` |
-| every `cache/<dataset>` | `scripts/cache_a_dataset.py`, then `scripts/tokenise_a_dataset.py` |
+| every `cache/<dataset>` | `wyformer-cache-dataset`, then `scripts/tokenise_a_dataset.py` |
 
 Two entries have **no** recorded provenance and no producer in this repository.
 Establish it before relying on either, and do not assume they can be rebuilt:

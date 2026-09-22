@@ -1,6 +1,4 @@
-import gzip
 import json
-import pickle
 import unittest
 from pathlib import Path
 import tempfile
@@ -12,6 +10,7 @@ scripts_dir = Path(__file__).resolve().parents[3] / "scripts"
 if str(scripts_dir) not in sys.path:
     sys.path.insert(0, str(scripts_dir))
 from slice_dataset_by_ehull import slice_safetensors, slice_dataframe_cache
+from wyckoff_transformer.dataset_cache import load_cache, save_cache
 from wyckoff_transformer.tokenization import load_tensor_cache, save_tensor_cache
 
 
@@ -61,8 +60,8 @@ class TestSliceDatasetByEhull(unittest.TestCase):
         torch.testing.assert_close(sliced["val"]["augmented_list"][0], torch.tensor([10]))
 
     def test_slice_dataframe_cache(self):
-        source_path = self.tmp_path / "data.pkl.gz"
-        target_path = self.tmp_path / "target_data.pkl.gz"
+        source_path = self.tmp_path / "source"
+        target_path = self.tmp_path / "target"
 
         df_train = pd.DataFrame({
             "energy_above_hull": [0.01, 0.20, 0.05],
@@ -74,12 +73,11 @@ class TestSliceDatasetByEhull(unittest.TestCase):
             "formula": ["SiO2", "Al2O3"],
         }, index=["id4", "id5"])
 
-        with gzip.open(source_path, "wb") as f:
-            pickle.dump({"train": df_train, "val": df_val}, f)
+        save_cache({"train": df_train, "val": df_val}, source_path)
 
         filtered = slice_dataframe_cache(source_path, target_path, ehull_cutoff=0.1)
 
-        self.assertTrue(target_path.exists())
+        self.assertEqual(load_cache(target_path).keys(), {"train", "val"})
         self.assertEqual(len(filtered["train"]), 2)
         self.assertEqual(list(filtered["train"].index), ["id1", "id3"])
         self.assertEqual(len(filtered["val"]), 1)

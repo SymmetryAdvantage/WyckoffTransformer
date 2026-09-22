@@ -2,7 +2,7 @@ import json
 import torch
 from pathlib import Path
 from omegaconf import OmegaConf
-from wyckoff_transformer.paths import cache_root
+from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_cache
 from wyckoff_transformer.trainer import WyckoffTrainer
 
 def main():
@@ -47,11 +47,7 @@ def main():
     df['spacegroup_number'] = df['group']
     p1_percent = (df['spacegroup_number'] == 1).mean()
     
-    import gzip
-    import pickle
-    data_cache_path = cache_root() / config.dataset / "data.pkl.gz"
-    with gzip.open(data_cache_path, "rb") as f:
-        datasets_pd = pickle.load(f)
+    datasets_pd = load_cache(dataset_cache_dir(config.dataset))
         
     if 'structure' not in datasets_pd['test']:
         class MockStructure:

@@ -46,7 +46,7 @@ container writes stay host-owned.
 
 ```bash
 run python -m pytest      # pytest is not installed as a venv script
-run python scripts/cache_a_dataset.py mp_20
+run wyformer-cache-dataset mp_20
 run python scripts/tokenise_a_dataset.py mp_20 \
     yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
 run python scripts/train.py \

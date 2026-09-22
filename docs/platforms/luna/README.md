@@ -69,7 +69,7 @@ Confirmed working on 2026-09-07 with the setup described above:
 | torch provenance | `2.14.0+cu126` from `/usr/local/lib/python3.12/dist-packages` |
 | CUDA stack installed into the venv | none — all 11 packages reused from the container |
 | Locked versions honoured | matminer 0.10.1, pandas 2.3.3, scipy 1.17.1 |
-| `cache_a_dataset.py mp_20` | `cache/mp_20/data.pkl.gz` |
+| `wyformer-cache-dataset mp_20` | `cache/mp_20/{train,val,test}.parquet` |
 | `tokenise_a_dataset.py mp_20` | tensors + tokeniser written |
 | `train.py ... --pilot` | full 3-epoch run on one L40S, ~40 min including evaluation; writes `best_model_params.pt`, `generated_wp_no_calibration.json.gz`, `generated_wp_temperature_calibration.json.gz` |
 | `wyformer-generate --hf-model` | 1000 structures in 8.3 s on one L40S; 77 space groups, 0.7% P1 |

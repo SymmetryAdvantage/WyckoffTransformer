@@ -28,6 +28,7 @@ from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 
+from wyckoff_transformer.dataset_cache import cache_exists, iter_splits, resolve_cache
 from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
@@ -58,8 +59,8 @@ def collect_reference_ids(
     Args:
         fingerprints: The fingerprints to look for, from
             :meth:`~wyckoff_transformer.evaluation.protocol.GeneFingerprinter.fingerprint`.
-        cache: Pickle of split name -> DataFrame in the Wyckoff representation,
-            indexed by ``immutable_id``.  Defaults to the protocol's.
+        cache: A dataset cache directory in the Wyckoff representation, indexed
+            by ``immutable_id``.  Defaults to the protocol's.
         splits: Which splits count as known.  Defaults to all of them.
 
     Returns:
@@ -73,26 +74,20 @@ def collect_reference_ids(
     )
     from wyckoff_transformer.evaluation.novelty import record_to_augmented_fingerprint
 
-    cache = resolve_store_path(cache if cache is not None else DEFAULT_REFERENCE_CACHE)
+    cache = resolve_cache(cache if cache is not None else DEFAULT_REFERENCE_CACHE)
     splits = splits if splits is not None else DEFAULT_REFERENCE_SPLITS
 
     wanted = set(fingerprints)
     if not wanted:
         return {}
-    if not cache.is_file():
+    if not cache_exists(cache):
         raise FileNotFoundError(
-            f"No LeMat-Bulk gene cache at {cache}. Build it with the dataset "
-            f"caching scripts, or pass --reference-cache."
+            f"No LeMat-Bulk gene cache in {cache}. Build it with "
+            f"wyformer-cache-dataset, or pass --reference-cache."
         )
 
-    frames = pd.read_pickle(cache)
-    missing = [s for s in splits if s not in frames]
-    if missing:
-        raise KeyError(f"{cache} has no split(s) {missing}; found {sorted(frames)}")
-
     hits: dict[tuple, list[str]] = {}
-    for split in splits:
-        frame = frames[split]
+    for split, frame in iter_splits(cache, splits, columns=_FINGERPRINT_COLUMNS):
         columns = [frame[name].values for name in _FINGERPRINT_COLUMNS]
         for immutable_id, values in zip(frame.index.values, zip(*columns)):
             fingerprint = record_to_augmented_fingerprint(
@@ -142,10 +137,9 @@ def _resolve_reference_cif_sources(
     # If lemat_cif_csv was not explicitly given (or matched default) and the file is missing,
     # fall back to the dataset directory matching the reference cache (e.g. lemat_bulk_fmax1_stress).
     if lemat_cif_csv is None or lemat_cif_csv == DEFAULT_LEMAT_CIF_CSV:
-        cache_path_obj = resolve_store_path(
+        dataset_name = resolve_cache(
             cache if cache is not None else DEFAULT_REFERENCE_CACHE
-        )
-        dataset_name = cache_path_obj.parent.name
+        ).name
         dataset_dir = data_path(dataset_name)
         if dataset_dir.is_dir():
             eff_splits = splits or DEFAULT_REFERENCE_SPLITS

@@ -54,7 +54,7 @@
 # THE DATA IT NEEDS
 #
 # Nothing is built here. The tensor cache and tokeniser for the config's tokeniser
-# (and data.pkl.gz, which the post-training evaluation reads, unless
+# (and test.parquet, which the post-training evaluation reads, unless
 # --train-arg --no-test) must already exist in the cache store; the submitter and
 # every link refuse to run otherwise. The store is shared and kept read-only
 # (scripts/platforms/aspire2a/store_lock.sh), so building a new cache is a
@@ -149,17 +149,20 @@ require_committed() {
 }
 
 # Refuse to train without the cached data: a training job builds nothing (see THE DATA
-# IT NEEDS above). data.pkl.gz is read only by the evaluation after training, so a run
-# with --no-test ($4 = 0) does not need it.
+# IT NEEDS above). The test split is read only by the evaluation after training, so a
+# run with --no-test ($4 = 0) does not need it. A cache built before 2026-09-22 holds
+# it in data.pkl.gz instead of test.parquet, and either will do.
 check_training_data() {
-    local cache_dir=$1 dataset=$2 tokeniser=$3 needs_data_pkl=$4 missing=()
+    local cache_dir=$1 dataset=$2 tokeniser=$3 needs_test_split=$4 missing=()
     local f
     for f in "$cache_dir/$dataset/tensors/$tokeniser.safetensors" \
              "$cache_dir/$dataset/tokenisers/$tokeniser.json"; do
         [ -f "$f" ] || missing+=("$f")
     done
-    if [ "$needs_data_pkl" -eq 1 ] && [ ! -f "$cache_dir/$dataset/data.pkl.gz" ]; then
-        missing+=("$cache_dir/$dataset/data.pkl.gz (read by the evaluation after training; --train-arg --no-test skips it)")
+    if [ "$needs_test_split" -eq 1 ] \
+       && [ ! -f "$cache_dir/$dataset/test.parquet" ] \
+       && [ ! -f "$cache_dir/$dataset/data.pkl.gz" ]; then
+        missing+=("$cache_dir/$dataset/test.parquet (read by the evaluation after training; --train-arg --no-test skips it)")
     fi
     if [ ${#missing[@]} -gt 0 ]; then
         echo "error: the cached data for $dataset with tokeniser '$tokeniser' is incomplete:" >&2

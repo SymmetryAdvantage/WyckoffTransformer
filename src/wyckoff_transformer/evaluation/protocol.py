@@ -48,6 +48,8 @@ from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 
+from wyckoff_transformer.dataset_cache import (
+    LEGACY_CACHE_NAME, as_cache_dir, cache_exists, iter_splits, resolve_cache)
 from wyckoff_transformer.evaluation.novelty import record_to_augmented_fingerprint
 from wyckoff_transformer.paths import resolve_store_path
 
@@ -60,7 +62,7 @@ from wyckoff_transformer.paths import resolve_store_path
 logger = logging.getLogger(__name__)
 
 #: Default cache of LeMat-Bulk in the Wyckoff-gene representation, as written by
-#: the dataset caching scripts.  Holds ``train``/``val``/``test`` frames with the
+#: ``wyformer-cache-dataset``.  Holds ``train``/``val``/``test`` frames with the
 #: columns :func:`record_to_augmented_fingerprint` needs.
 #:
 #: ``lemat_bulk_fmax1_stress``, the current variant (docs/lemat_bulk_pipeline.md).
@@ -68,7 +70,11 @@ logger = logging.getLogger(__name__)
 #: 1.12M of the current variant's rows -- everything above ``max_force`` 0.02
 #: eV/A, the Materials Project rows with empty forces, Yb and actinide chemistry --
 #: so a generated structure matching one of those read as novel.
-DEFAULT_REFERENCE_CACHE = Path("cache/lemat_bulk_fmax1_stress/data.pkl.gz")
+#:
+#: The cache is the *directory*; until 2026-09-22 it was the ``data.pkl.gz``
+#: inside it, and that spelling still names the same thing wherever one is
+#: passed (:func:`~wyckoff_transformer.dataset_cache.as_cache_dir`).
+DEFAULT_REFERENCE_CACHE = Path("cache/lemat_bulk_fmax1_stress")
 
 #: Novelty must be judged against every LeMat-Bulk structure, not just the
 #: training split: the benchmark's reference is the whole corpus.
@@ -88,18 +94,39 @@ def default_fingerprint_cache(cache: Path, splits: Sequence[str]) -> Path:
         "gene_fingerprints.pkl.gz" if splits == DEFAULT_REFERENCE_SPLITS
         else f"gene_fingerprints_{'+'.join(splits)}.pkl.gz"
     )
-    return Path(cache).parent / name
+    return as_cache_dir(cache) / name
 
 
 def reference_identity(cache: Path, splits: Sequence[str]) -> dict:
     """What a novelty verdict was judged against, comparable across machines.
 
-    The dataset directory and file name, not the full path: the same store is
-    mounted at different places on different hosts, and a path given relative
-    to the store and the one it resolves to name the same reference.
+    The dataset directory's name, not the full path: the same store is mounted
+    at different places on different hosts, and a path given relative to the
+    store and the one it resolves to name the same reference.
     """
-    cache = Path(cache)
-    return {"cache": f"{cache.parent.name}/{cache.name}", "splits": list(splits)}
+    return {"cache": as_cache_dir(cache).name, "splits": list(splits)}
+
+
+def same_reference(recorded: Optional[dict], expected: dict) -> bool:
+    """Whether two :func:`reference_identity` records name the same corpus.
+
+    Records written before 2026-09-22 name the cache as
+    ``<dataset>/data.pkl.gz``, because the cache was that file rather than the
+    directory holding it.  It is the same corpus, and reading the change as a
+    different reference would condemn every run screened before it to a
+    re-screen that could not change a verdict.
+    """
+    if recorded is None:
+        return False
+    return _identity_key(recorded) == _identity_key(expected)
+
+
+def _identity_key(identity: dict) -> tuple[str, tuple[str, ...]]:
+    name = identity["cache"]
+    suffix = f"/{LEGACY_CACHE_NAME}"
+    if name.endswith(suffix):
+        name = name[:-len(suffix)]
+    return name, tuple(identity["splits"])
 
 #: Thresholds the funnel reports, in eV/atom.  0.1 is the metastability
 #: threshold LeMat-GenBench uses for MetaSUN; 0 is SUN.
@@ -249,7 +276,7 @@ def load_reference_fingerprints(
     Returns:
         The set of augmented Wyckoff fingerprints.
     """
-    cache = resolve_store_path(cache)
+    cache = resolve_cache(cache)
     if fingerprint_cache is not None:
         fingerprint_cache = resolve_store_path(fingerprint_cache)
     if fingerprint_cache is not None and Path(fingerprint_cache).is_file():
@@ -259,22 +286,20 @@ def load_reference_fingerprints(
                     len(fingerprints), fingerprint_cache)
         return fingerprints
 
-    if not cache.is_file():
+    if not cache_exists(cache):
         raise FileNotFoundError(
-            f"No LeMat-Bulk gene cache at {cache}. Build it with the dataset "
-            f"caching scripts, or pass --reference-cache."
+            f"No LeMat-Bulk gene cache in {cache}. Build it with "
+            f"wyformer-cache-dataset, or pass --reference-cache."
         )
-    frames = pd.read_pickle(cache)
-    missing = [s for s in splits if s not in frames]
-    if missing:
-        raise KeyError(f"{cache} has no split(s) {missing}; found {sorted(frames)}")
 
     fingerprints: set[tuple] = set()
-    for split in splits:
-        frame = frames[split]
+    for split, frame in iter_splits(cache, splits, columns=_FINGERPRINT_COLUMNS):
+        # A split and four columns at a time: the reference is 25 GB in full,
+        # and none of the rest of it says anything about a gene.
         fingerprints.update(_frame_fingerprints(frame))
         logger.info("Reference split %s: %d rows, %d fingerprints so far",
                     split, len(frame), len(fingerprints))
+        del frame
 
     if fingerprint_cache is not None:
         fingerprint_cache = Path(fingerprint_cache)

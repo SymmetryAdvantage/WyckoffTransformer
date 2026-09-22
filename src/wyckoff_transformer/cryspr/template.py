@@ -52,6 +52,7 @@ from typing import Iterable, Mapping, Optional, Sequence
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer.dataset_cache import cache_exists, iter_splits, resolve_cache
 from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
@@ -76,6 +77,14 @@ _ANONYMOUS_COLUMNS = (
     "spacegroup_number",
     "site_symmetries_augmented",
     "sites_enumeration_augmented",
+)
+
+#: What :func:`build_template_index` reads out of the reference cache: the
+#: anonymous fingerprint's columns plus the three the index itself carries.
+_INDEX_COLUMNS = _ANONYMOUS_COLUMNS + (
+    "wyckoff_letters",
+    "composition",
+    "energy_above_hull",
 )
 
 #: PyXtal symmetry tolerances tried, in order, when reading a template's orbits.
@@ -482,21 +491,16 @@ def build_index_frame(
     )
     from wyckoff_transformer.evaluation.novelty import record_to_anonymous_fingerprint
 
-    cache = resolve_store_path(cache if cache is not None else DEFAULT_REFERENCE_CACHE)
+    cache = resolve_cache(cache if cache is not None else DEFAULT_REFERENCE_CACHE)
     splits = splits if splits is not None else DEFAULT_REFERENCE_SPLITS
-    if not cache.is_file():
+    if not cache_exists(cache):
         raise FileNotFoundError(
-            f"No LeMat-Bulk gene cache at {cache}. Build it with the dataset "
-            f"caching scripts, or pass --reference-cache."
+            f"No LeMat-Bulk gene cache in {cache}. Build it with "
+            f"wyformer-cache-dataset, or pass --reference-cache."
         )
-    frames = pd.read_pickle(cache)
-    missing = [split for split in splits if split not in frames]
-    if missing:
-        raise KeyError(f"{cache} has no split(s) {missing}; found {sorted(frames)}")
 
     pieces = []
-    for split in splits:
-        frame = frames[split]
+    for split, frame in iter_splits(cache, splits, columns=_INDEX_COLUMNS):
         columns = [frame[name].values for name in _ANONYMOUS_COLUMNS]
         hashes = np.fromiter(
             (

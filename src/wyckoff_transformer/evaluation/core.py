@@ -14,7 +14,8 @@ import smact.screening
 import wandb
 import logging
 
-from wyckoff_transformer.paths import resolve_store_path, runs_root
+from wyckoff_transformer.dataset_cache import load_split
+from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
 
 logger = logging.getLogger(__name__)
@@ -447,9 +448,7 @@ def main():
         print(f"Run {run} non-GCD validity is {sum(optimised_validity) / len(generated_structures)}")
         gcd_validity_generated = list(map(partial(smact_validity_from_record, apply_gcd=True), generated_structures))
         print(f"Run {run} GCD validity is {sum(gcd_validity_generated) / len(generated_structures)}")
-    with gzip.open(resolve_store_path("cache/mp_20_biternary/data.pkl.gz"), "rb") as f:
-        dataset_pd = pd.read_pickle(f)
-    test_dataset = dataset_pd['test']
+    test_dataset = load_split("cache/mp_20_biternary", "test")
     # Compute SMACT for the test dataset
     test_smact_valid = test_dataset.composition.map(partial(smac_validity_from_counter, apply_gcd=False))
     test_smact_valid_naive = test_dataset.composition.map(lambda counter: smact_validity(tuple((elem.symbol for elem in counter.keys())), tuple(map(int, counter.values()))))
