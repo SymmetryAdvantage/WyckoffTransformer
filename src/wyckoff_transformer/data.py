@@ -33,6 +33,35 @@ CIF_ROUNDING_WARNING = (
 )
 
 
+#: pymatgen notes that a bulk build repeats until they bury every other line.
+#:
+#: The Pauling one is per element per process: ``Element.X`` is a
+#: ``cached_property``, so it warns the first time a noble gas is asked for its
+#: electronegativity and never again -- which looks like spam anyway once a Pool
+#: has two dozen workers, each warning afresh.  It is a permanent property of
+#: pymatgen's data, not of any dataset: Pauling never published a value for He,
+#: Ne or Ar, and the NaN is deliberate (see ``cascade/relational.py``).
+NOISY_PYMATGEN_WARNINGS = (
+    r"No Pauling electronegativity for \w+\.",
+)
+
+
+def filter_noisy_pymatgen_warnings() -> None:
+    """Silence :data:`NOISY_PYMATGEN_WARNINGS` from here on.
+
+    Process-wide, unless the caller is inside ``warnings.catch_warnings()``.
+    That is the only thing that works: the warnings come from inside pymatgen,
+    reached by several paths, so there is no one call to wrap -- and a filter
+    set before a ``Pool`` is created is inherited by its workers across
+    ``fork``, which is what stops each of them repeating it.
+
+    A **command** may do this to its own process.  A library function may not,
+    so the ones here wrap it in ``catch_warnings`` and put it back.
+    """
+    for message in NOISY_PYMATGEN_WARNINGS:
+        warnings.filterwarnings("ignore", message=message, category=UserWarning)
+
+
 def read_cif(cif: str) -> Structure:
     """Read a CIF string into a pymatgen structure.
 
@@ -260,26 +289,11 @@ def read_MP(
         print(f"Initial number of rows: {len(MP_df)}")
         MP_df.dropna(subset=["cif"], inplace=True)
         print(f"Number of rows after dropping NaN values: {len(MP_df)}")
+    # Set before the Pool exists so its workers inherit it across fork, and put
+    # back afterwards because this is a library function.  read_cif drops the
+    # CIF rounding note itself.
     with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=(
-                r"No Pauling electronegativity for \w+. "
-                "Setting to NaN. This has no physical meaning, and is "
-                "mainly done to avoid errors caused by the code expecting a float."
-            ),
-            category=UserWarning,
-        )
-        warnings.filterwarnings(
-            "ignore",
-            message=(
-                r"Issues encountered while parsing CIF: \d+"
-                " fractional coordinates rounded to ideal"
-                " values to avoid issues with finite precision."
-            ),
-            category=UserWarning,
-        )
-        print("Suppressed warnings: CIF rounding & Pauling electronegativity")
+        filter_noisy_pymatgen_warnings()
         with Pool(n_jobs) as pool:
             MP_df["structure"] = pool.map(read_cif, MP_df["cif"])
     MP_df.drop(columns=["cif"], inplace=True)

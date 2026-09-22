@@ -47,6 +47,7 @@ import pandas as pd
 from pandas.api import types as pdtypes
 
 from wyckoff_transformer.data import (
+    filter_noisy_pymatgen_warnings,
     get_composition_from_symmetry_sites,
     read_cif,
     structure_to_sites,
@@ -225,9 +226,6 @@ def cache_dataset(
 ) -> dict[str, pd.DataFrame]:
     """Symmetrise every split of *dataset* and write the cache.  Returns the frames."""
     dataset_dir = data_path(dataset)
-    # Said once, because read_cif drops it every time: about 9% of LeMat-Bulk's
-    # CIFs carry it, which is half a million lines over a full build.
-    logger.info("pymatgen's CIF coordinate-rounding note is suppressed (see data.read_cif)")
     frames = {}
     for split in SPLITS:
         csv_path = split_csv(dataset_dir, split)
@@ -313,6 +311,14 @@ def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    # Before any Pool exists, so its workers inherit the filter across fork and
+    # do not each repeat what is already known. Said once here because the
+    # alternative -- saying it half a million times -- is what this replaces.
+    filter_noisy_pymatgen_warnings()
+    logger.info(
+        "Suppressed for this build: pymatgen's CIF coordinate-rounding note "
+        "(read_cif) and its missing-Pauling-electronegativity note for the "
+        "noble gases (both expected, neither actionable)")
     frames = cache_dataset(
         args.dataset,
         max_sites=args.max_sites,
