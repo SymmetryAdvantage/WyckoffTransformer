@@ -1,13 +1,14 @@
 # Classifier-free guidance for the e_hull-conditioned WyFormer
 
-> **In progress.** Training started 2026-09-16 05:02 +08 on zeus GPU 1 at commit
-> `d3f4a5d`, as W&B run
-> [`ehull_adamw_wsd_5x_cfg-20260916-055000`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x_cfg-20260916-055000).
-> Its baseline, [`ehull_adamw_wsd_5x-20260912-115321`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x-20260912-115321),
-> was itself still training on aspire2a (epoch 23,000 of 40,000). No results yet.
-> An earlier run, `ehull_adamw_wsd_5x_cfg-20260916-015500`, used a different
-> encoding of the null condition, went unstable, and was stopped (see below);
-> it is tagged `superseded` on W&B.
+> **Complete, 2026-09-23.** Guidance works, at an on-support target. At
+> `e_hull = 0.05` it raises MetaSUN from the baseline's 0.346 to **0.479** at
+> w = 3 (+0.133, p = 2e-9) *and* raises gene novelty at the same time, which no
+> other knob here has done. At `e_hull = 0` — the default target — it buys
+> nothing (0.265 -> 0.269, n.s.). Runs:
+> [`ehull_adamw_wsd_5x_cfg-20260916-055000`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x_cfg-20260916-055000)
+> against its baseline
+> [`ehull_adamw_wsd_5x-20260912-115321`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x-20260912-115321),
+> trained at commit `d3f4a5d`, evaluated at `93fdd3e`.
 
 ## Why
 
@@ -135,7 +136,121 @@ difference at w = 1 carries replicate noise: MetaSUN replicate pairs differed by
 such noise.** w = 1, 2, 3 are cohorts from one checkpoint, so that is where the
 effect of guidance itself is read.
 
-## Early readings, epoch 500 of 40,000
+## Results
+
+Every arm: 1000 genes, ORB-v3 conservative-inf, the `lemat_bulk_fmax1_stress`
+novelty reference, relaxed on **zeus GPU 1** with `0:1,2:2,*:3` trials and a
+300 s timeout, scored 2026-09-22/23 at commit `93fdd3e`. Intervals are Wilson;
+differences are Newcombe with a Fisher exact p. Arms are W&B artifacts
+`protocol_<run>.guidance[-c0p05]-w<scale>` on their runs, with
+`guidance_sweep_ehull_adamw_wsd_5x_cfg-20260916-055000` carrying the tables.
+
+### Training: dropout cost nothing
+
+| | baseline | CFG |
+|---|---|---|
+| best val NLL | 16.892 | **16.793** |
+| final test NLL | 18.480 | 16.863 |
+| val NLL, unconditional | — | 18.091 |
+
+The CFG run ends 0.099 nats *below* its baseline, so training 10% of steps
+without the condition cost nothing measurable — within replicate noise either
+way. Its unconditional loss sits 1.30 nats above its conditional one, up from
+0.77 at epoch 500: the model leans on e_hull more as it trains, which is the
+quantity guidance extrapolates along.
+
+### At e_hull = 0.05, guidance buys stability *and* novelty
+
+Per sampled gene, free (post-rattle) track:
+
+| | baseline | w = 1 | w = 2 | w = 3 |
+|---|---|---|---|---|
+| formal validity of the draw | 0.990 | 0.993 | 0.977 | 0.905 |
+| novel gene | 0.614 | 0.607 | 0.598 | **0.662** (+0.048, p=0.029) |
+| metastable | 0.607 | 0.558 | 0.660 | **0.711** (+0.104, p=1e-6) |
+| **MetaSUN** | 0.346 | 0.336 | 0.394 (+0.048, p=0.030) | **0.479** (+0.133, p=2e-9) |
+| SUN | 0.013 | 0.004 | 0.009 | 0.012 (n.s.) |
+| P(metastable \| gene known) | 0.775 | 0.723 | 0.838 | **0.926** (+0.151, p=2e-8) |
+| P(metastable \| gene novel) | 0.550 | 0.498 | 0.594 | **0.662** (+0.112, p=5e-5) |
+| P(e_hull > 0.3 \| gene novel) | 0.057 | 0.086 | 0.030 | 0.032 (−0.025, p=0.029) |
+| median ORB e_hull | 0.075 | 0.082 | 0.063 | 0.057 |
+| mean atoms per gene | 20.6 | 19.6 | 21.8 | 27.3 |
+
+Four things worth separating:
+
+**Guidance is the whole effect.** w = 1 — the CFG model sampled conventionally —
+is at or slightly below the baseline (MetaSUN 0.336 against 0.346, n.s.;
+metastable −0.049, p = 0.03). Condition dropout alone buys nothing. Everything
+below comes from w > 1, which is a comparison within one checkpoint and so
+carries no seed or hardware noise.
+
+**It moves the half that was broken.** The 2026-09-21 retrieval finding
+localised the conditioned model's weakness to novel genes. Guidance lifts
+P(metastable | gene novel) from 0.550 to 0.662, a 20% relative gain, while
+cutting the unstable tail (e_hull > 0.3) almost in half. It also helps on known
+genes (0.775 → 0.926), but it is not *only* recall.
+
+**Novelty rises with it.** At w = 3 gene novelty is 0.662 against the
+baseline's 0.614 (p = 0.029). This is what distinguishes guidance from every
+other knob tried here: [sharpening the sampler](temperature_sweep.md) trades
+novelty for stability almost exactly one-for-one, and the 5x capacity increase
+bought stability at 0.58 novelty against 0.68. Guidance is not a temperature.
+The reason is visible in the cohort: guided genes are *larger* (27.3 atoms
+against 20.6), and larger cells are both less likely to be in the archive and,
+at this target, more likely to relax into something metastable.
+
+**SUN does not move.** 0.012 against 0.013, and the protocol resolves SUN at
+roughly ±0.01 on 1000 genes, so this says little either way; SUN needs ~10,000
+genes to develop against.
+
+The price is formal validity, 0.990 → 0.905, and relaxation cost, since the
+cells are bigger (7.1 worker-hours against 5.9). Both are affordable at w = 3.
+
+### At e_hull = 0, guidance cannot repair an off-support target
+
+| per sampled gene | baseline | w = 1 | w = 2 |
+|---|---|---|---|
+| metastable | 0.576 | 0.556 | 0.596 (n.s.) |
+| MetaSUN | 0.265 | 0.259 | 0.269 (n.s.) |
+| P(metastable \| gene novel) | 0.448 | 0.436 | 0.464 (n.s.) |
+| P(e_hull > 0.3 \| gene novel) | 0.127 | 0.108 | 0.138 (n.s.) |
+| median archive e_hull of known genes | 0.0141 | 0.0187 | **0.0027** |
+| known gene within 0.1 of the hull | 0.374 | 0.359 | 0.427 (+0.053, p=0.018) |
+
+Nothing that needs a relaxation moves. What *does* move is adherence in gene
+space: at w = 2 the median archive e_hull of the genes the cohort reproduces
+falls from 0.0141 to 0.0027 eV/atom, and more known genes are near-hull ones.
+So guidance is doing exactly what it claims — pushing the sample towards the
+target — and at this target that buys nothing downstream, because the target
+itself is off-support (~3% of rows). The bimodality is not something a sharper
+conditional can fix.
+
+Validity also collapses much faster here: 0.897 at w = 2 and 0.628 at w = 3,
+against 0.977 and 0.905 at 0.05. Pushing hard towards a target the model has
+little data for produces genes that are not self-consistent.
+
+### What to use
+
+`--condition energy_above_hull=0.05 --guidance-scale 3`. On the readout the
+protocol ranks on, that is 0.479 MetaSUN against 0.346 for the same recipe
+without guidance — the largest single gain any lever in this project has
+produced — at no cost in novelty and a modest cost in validity.
+
+### Open
+
+- **The optimum is past the last relaxed arm.** MetaSUN rises monotonically
+  through w = 3 and was not relaxed beyond it. w = 5 *was* screened (validity
+  0.626, gene novelty 0.769, mean 28.7 atoms), so the turnover is somewhere in
+  between; relaxing w = 4 and w = 5 is ~3 GPU-hours and would find it.
+- **p = 0.1 dropout is one point**, not a sweep, and the guidance scale
+  interacts with it.
+- **Cross-study comparisons are not established.** The filtered-model numbers
+  this is read against (MetaSUN 0.420, P(metastable | novel) 0.561) come from
+  iapetus, which reads 0.025–0.030 eV/atom above aspire2a on the same
+  structures; everything in this document is zeus GPU 1 and internally
+  consistent.
+
+## Appendix: early readings, epoch 500 of 40,000
 
 Not results -- the model is 1.25% trained and its cohorts are nothing like a finished
 model's -- but enough to say the machinery works and what it does.
@@ -168,7 +283,7 @@ sweep](temperature_sweep.md) -- where the cold arms' runaway tail was what made 
 expensive. And formal validity falls with w, so the high-w arms need a larger `--oversample`
 to fill a 1000-gene cohort; `run_guidance_sweep.sh` scales it with w for that reason.
 
-## The baseline arm, gene level (2026-09-19)
+## Appendix: the baseline arm at e_hull = 0, gene level (2026-09-19)
 
 The baseline finished its 40,000 epochs on 2026-09-19 (best val NLL 16.892, artifact
 `best_model_ehull_adamw_wsd_5x-20260912-115321:v31`, epoch 39,999). Its cohort, 1000 genes
@@ -191,7 +306,7 @@ guidance has to beat, and it is a higher one than the 2026-09-15 reading of the
 three-channel `relational_e_all` cohort (9.2% of known genes on the hull, median 0.080)
 suggested.
 
-## Evaluation plan
+## Appendix: the evaluation plan, as pre-registered
 
 **Two conditioning targets, 0.05 first.** `energy_above_hull = 0` — what
 `DEFAULT_CONDITION_TARGETS` applies to any conditioned model — is off-support:
@@ -261,33 +376,44 @@ on zeus CPU relaxation is 11× slower per trial with 1 trial in 80 exceeding the
 ## Reproduce
 
 ```bash
-# train (zeus); resumes itself after a crash
+# 1. Train (zeus). The supervisor resumes itself after a crash; ~8 days on a shared card.
 WANDB_ENTITY=symmetry-advantage nohup scripts/platforms/zeus/train_supervised.sh \
     yamls/models/lemat_bulk_ehull/ehull_adamw_wsd_5x_cfg.yaml lemat_bulk_fmax1_stress 1 \
-    ehull_adamw_wsd_5x_cfg-20260916-055000 > runs/.logs/cfg.log 2>&1 &
+    ehull_adamw_wsd_5x_cfg-20260916-055000 \
+    > "$(.venv/bin/python -c 'from wyckoff_transformer.paths import runs_root; print(runs_root())')/.logs/cfg.log" 2>&1 &
 
-# archive e_hull index, once per reference (~10 min, ~30 GB RAM)
+# 2. The archive e_hull index, once per reference (~10 min, ~30 GB RAM).
 .venv/bin/python scripts/analyse_guidance_sweep.py index
 
-# one arm: cohort + screen on CPU, then relax + score on the GPU
-run=ehull_adamw_wsd_5x_cfg-20260916-055000
-for w in 0 1 1.5 2 3 5; do
-    .venv/bin/wyformer-protocol-wandb $run --output-dir generated/$run/guidance/w$w \
-        --condition energy_above_hull=0 --guidance-scale $w --arm cfg-w$w \
-        --stages screen --no-upload
-done
-.venv/bin/wyformer-protocol-wandb $run --output-dir generated/$run/guidance/w2 \
-    --condition energy_above_hull=0 --guidance-scale 2 --arm cfg-w2 \
-    --skip-generate --stages generate,relax,score --devices cuda:0 --workers-per-device 4
-
-.venv/bin/python scripts/analyse_guidance_sweep.py table --reference base \
-    --arm base=generated/ehull_adamw_wsd_5x-20260912-115321/protocol \
-    --arm w1=generated/$run/guidance/w1 --arm w2=generated/$run/guidance/w2 \
-    --output-dir generated/$run/guidance/tables
+# 3. Both sweeps, end to end. Waits for both runs to finish training, screens every
+#    scale on the CPU, relaxes the pre-registered ones on GPU 1, tabulates, uploads.
+WANDB_ENTITY=symmetry-advantage GPU=1 nohup scripts/run_guidance_study.sh \
+    ehull_adamw_wsd_5x_cfg-20260916-055000 ehull_adamw_wsd_5x-20260912-115321 \
+    /mnt/hdd/kna/wyformer_generated > guidance_sweep.log 2>&1 &
 ```
+
+One arm by hand, if that is all you want:
+
+```bash
+run=ehull_adamw_wsd_5x_cfg-20260916-055000
+dir=/mnt/hdd/kna/wyformer_generated/target0p05/$run/w3
+.venv/bin/wyformer-protocol-wandb $run --output-dir $dir \
+    --condition energy_above_hull=0.05 --guidance-scale 3 --arm guidance-c0p05-w3 \
+    --oversample 3.64 --gen-device cpu --stages screen --no-upload
+.venv/bin/wyformer-protocol-wandb $run --output-dir $dir \
+    --condition energy_above_hull=0.05 --guidance-scale 3 --arm guidance-c0p05-w3 \
+    --skip-generate --stages generate,relax,score \
+    --pyxtal-cores 16 --devices cuda:1 --workers-per-device 6
+```
+
+**`--devices cuda:N` names the card; do not also set `CUDA_VISIBLE_DEVICES`.** Each
+relax worker pins itself by writing the index out of its own device string into
+`CUDA_VISIBLE_DEVICES` before CUDA initialises, which overwrites what it inherited:
+`CUDA_VISIBLE_DEVICES=1 ... --devices cuda:0` puts every worker on physical card 0.
 
 ## See also
 
 - [The de novo ranking protocol](de_novo_ranking_protocol.md), the instrument the arms are scored with
 - [Sampling temperature](temperature_sweep.md), the other sampling-time knob, and the sweep this one is modelled on
 - [Every `e_hull` in this repository](e_hull_definitions.md), for what the archive e_hull and the ORB hull each are
+- [The negative-data strategy](negative_data_strategy.md), for why conditioning alone cannot suppress mass, and where the on-support target finding comes from
