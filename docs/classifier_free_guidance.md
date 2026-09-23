@@ -423,6 +423,22 @@ on zeus CPU relaxation is 11× slower per trial with 1 trial in 80 exceeding the
    this study) come out at 0.092 on the hull, 0.584 within 0.1, and a median of
    0.080: conditioning moves the distribution, but most known genes stay off
    the hull.
+
+   **The index was rebuilt on 2026-09-23 after the Wyckoff augmentation fix**
+   (`de73401`, [the audit](wyckoff_augmentation_audit.md)). The old fingerprint
+   paired an un-relabelled site-symmetry symbol with a relabelled enumeration.
+   In 26 orthorhombic space groups this missed some merges and made some false
+   ones.
+   - The rebuilt `gene_ehull_index.pkl.gz` holds **4,823,981** fingerprints
+     over the same 5,327,342 rows, down from 4,826,004.
+   - The null above is unchanged at the precision shown: 0.0323 on the hull,
+     0.3136 within 0.1 eV/atom, median 0.2050 eV/atom, both before and after.
+   - Per-cohort archive e_hull and `known` counts that
+     `analyse_guidance_sweep.py table` reported before that date used the old
+     fingerprint, so they can differ slightly for genes in those 26 groups.
+     They are not comparable with later readings without a re-run.
+   - The pre-fix index is kept beside the new one as
+     `gene_ehull_index.pkl.gz.pre-augmentation-fix`.
 3. **Relaxed arms**, through the full protocol: at 0.05 the baseline and CFG
    w = 1, 2, 3; at 0 the baseline and CFG w = 1, 2. The readouts are MetaSUN,
    SUN, metastable, stable and novel structure per sampled gene — **and, above

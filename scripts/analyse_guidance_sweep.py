@@ -60,13 +60,14 @@ from wyckoff_transformer.cli.protocol import (
     SCREEN_FILE,
     STRUCTURES_FILE,
 )
+from wyckoff_transformer.dataset_cache import as_cache_dir, iter_splits, resolve_cache
 from wyckoff_transformer.evaluation.protocol import (
+    _FINGERPRINT_COLUMNS,
     DEFAULT_REFERENCE_CACHE,
     DEFAULT_REFERENCE_SPLITS,
     GeneFingerprinter,
     _frame_fingerprints,
 )
-from wyckoff_transformer.paths import resolve_store_path
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,8 @@ FUNNEL_COUNTS = (
 
 
 def index_path(reference_cache: Path) -> Path:
-    """Where the fingerprint -> archive e_hull index of *reference_cache* is kept: beside it."""
-    return Path(reference_cache).parent / INDEX_NAME
+    """Where the fingerprint -> archive e_hull index of *reference_cache* is kept: inside it."""
+    return as_cache_dir(reference_cache) / INDEX_NAME
 
 
 def build_index(reference_cache: Path, splits=DEFAULT_REFERENCE_SPLITS) -> dict:
@@ -104,12 +105,9 @@ def build_index(reference_cache: Path, splits=DEFAULT_REFERENCE_SPLITS) -> dict:
     the archive can hold several structures on one gene, and the question is
     whether the gene *has* a stable realisation.
     """
-    frames = pd.read_pickle(reference_cache)
     index: dict[tuple, list] = {}
-    for split in splits:
-        frame = frames[split]
-        if EHULL_COLUMN not in frame:
-            raise KeyError(f"{reference_cache}:{split} has no {EHULL_COLUMN} column")
+    columns = (*_FINGERPRINT_COLUMNS, EHULL_COLUMN)
+    for split, frame in iter_splits(reference_cache, splits, columns=columns):
         for fingerprint, e_hull in zip(_frame_fingerprints(frame), frame[EHULL_COLUMN].values):
             entry = index.get(fingerprint)
             if entry is None:
@@ -269,7 +267,7 @@ def count_rows(arm: dict):
 
 
 def stage_index(args) -> None:
-    cache = resolve_store_path(args.reference_cache)
+    cache = resolve_cache(args.reference_cache)
     path = index_path(cache)
     if path.is_file() and not args.force:
         raise SystemExit(f"{path} exists; pass --force to rebuild it")
@@ -282,7 +280,7 @@ def stage_index(args) -> None:
 def stage_table(args) -> None:
     from scipy import stats  # noqa: PLC0415
 
-    index = None if args.no_archive else load_index(resolve_store_path(args.reference_cache))
+    index = None if args.no_archive else load_index(resolve_cache(args.reference_cache))
     arms = []
     for spec in args.arm:
         label, separator, directory = spec.partition("=")
