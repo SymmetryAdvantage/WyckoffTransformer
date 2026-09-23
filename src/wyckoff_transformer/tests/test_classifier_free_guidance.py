@@ -184,6 +184,47 @@ class TestTrainingPaths(unittest.TestCase):
                 self.assertTrue(all(call["unconditional"] is unconditional for call in calls))
                 self.assertFalse(any(call.get("drop_condition") for call in calls))
 
+    def test_train_epoch_drops_conditions_on_start(self):
+        trainer = self._trainer()
+        trainer.predict_start = True
+        trainer.start_loss_weight = 1.0
+        start_calls = []
+
+        def fake_start_loss(*args, **kwargs):
+            start_calls.append(kwargs)
+            return trainer.model.weight.sum() * 0, 4
+
+        with patch.object(WyckoffTrainer, "get_loss", side_effect=lambda *a, **k: (trainer.model.weight.sum() * 0, 4)), \
+                patch.object(WyckoffTrainer, "get_start_loss", side_effect=fake_start_loss), \
+                patch("wyckoff_transformer.trainer.wandb"):
+            trainer.train_epoch()
+        self.assertEqual(len(start_calls), 2)
+        self.assertTrue(all(call.get("drop_condition") for call in start_calls))
+
+    def test_evaluate_conditions_start_unless_asked_not_to(self):
+        trainer = self._trainer()
+        trainer.predict_start = True
+        dataset = MagicMock(max_sequence_length=2)
+        dataset.viable_count.return_value = 5
+        dataset.__len__.return_value = 5
+        for unconditional in (False, True):
+            calls = []
+
+            def fake_loss(*args, **kwargs):
+                return torch.tensor(1.0)
+
+            def fake_start_loss(*args, **kwargs):
+                calls.append(kwargs)
+                return torch.tensor(1.0), 5
+
+            with self.subTest(unconditional=unconditional), \
+                    patch.object(WyckoffTrainer, "get_loss", side_effect=fake_loss), \
+                    patch.object(WyckoffTrainer, "get_start_loss", side_effect=fake_start_loss):
+                trainer.evaluate(dataset, unconditional=unconditional)
+                self.assertTrue(calls)
+                self.assertTrue(all(call["unconditional"] is unconditional for call in calls))
+                self.assertFalse(any(call.get("drop_condition") for call in calls))
+
 
 class _CondModel:
     """Logits that depend on the null indicator only: conditional rows favour token 0.
@@ -202,6 +243,11 @@ class _CondModel:
 
     def __call__(self, start, cascade, padding_mask, prediction_head, cond=None):
         self.batch_sizes.append(start.size(0))
+        null = cond[:, -1:]
+        return null * self.UNCONDITIONAL + (1 - null) * self.CONDITIONAL
+
+    def forward_start(self, batch_size, cond=None):
+        self.batch_sizes.append(batch_size)
         null = cond[:, -1:]
         return null * self.UNCONDITIONAL + (1 - null) * self.CONDITIONAL
 
@@ -269,12 +315,62 @@ class TestGuidedLogits(unittest.TestCase):
                 self.start, cond=self.cond, uncond=self.uncond, guidance_scale=-1.0)
 
 
+class TestGuidedStartLogits(unittest.TestCase):
+    def setUp(self):
+        self.batch_size = 3
+        self.cond = torch.zeros(3, 2)
+        self.uncond = torch.tensor([[0.0, 1.0]]).repeat(3, 1)
+
+    def _logits(self, scale):
+        model = _CondModel()
+        logits = _generator(model).guided_start_logits(
+            self.batch_size, self.cond, self.uncond, scale)
+        return logits, model
+
+    def test_scale_one_is_the_conditional_model_in_one_pass(self):
+        logits, model = self._logits(1.0)
+        self.assertTrue(torch.equal(logits[0], _CondModel.CONDITIONAL))
+        self.assertEqual(model.batch_sizes, [3])
+
+    def test_scale_zero_is_the_unconditional_model(self):
+        logits, _ = self._logits(0.0)
+        self.assertTrue(torch.allclose(logits[0, :2], _CondModel.UNCONDITIONAL[:2]))
+
+    def test_the_combination_extrapolates_in_one_doubled_pass(self):
+        logits, model = self._logits(3.0)
+        expected = _CondModel.UNCONDITIONAL + 3.0 * (
+            _CondModel.CONDITIONAL - _CondModel.UNCONDITIONAL)
+        self.assertTrue(torch.allclose(logits[:, :2], expected[:2].expand(3, 2)))
+        self.assertEqual(model.batch_sizes, [6])
+
+    def test_sampling_follows_the_guided_distribution(self):
+        n = 20000
+        cond = torch.zeros(n, 2)
+        torch.manual_seed(0)
+        drawn = _generator(_CondModel()).sample_start_classes(
+            n, cond=cond, uncond=torch.tensor([[0.0, 1.0]]).repeat(n, 1),
+            guidance_scale=2.0)
+        share = (drawn == 0).float().mean().item()
+        self.assertAlmostEqual(share, 1 / (1 + math.exp(-2.5)), delta=0.01)
+
+    def test_a_scale_other_than_one_needs_the_null_condition(self):
+        with self.assertRaisesRegex(ValueError, "uncond"):
+            _generator(_CondModel()).sample_start_classes(
+                self.batch_size, cond=self.cond, guidance_scale=2.0)
+
+    def test_a_negative_scale_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "non-negative"):
+            _generator(_CondModel()).sample_start_classes(
+                self.batch_size, cond=self.cond, uncond=self.uncond, guidance_scale=-1.0)
+
+
 class _Recorded(Exception):
     pass
 
 
 class _RecordingGenerator:
     calls: list = []
+    start_calls: list = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -283,10 +379,15 @@ class _RecordingGenerator:
         type(self).calls.append(kwargs)
         raise _Recorded
 
+    def sample_start_classes(self, *args, **kwargs):
+        type(self).start_calls.append((args, kwargs))
+        return torch.zeros(args[0], dtype=torch.int64)
+
 
 class TestGenerateStructuresForwardsGuidance(unittest.TestCase):
     def setUp(self):
         _RecordingGenerator.calls = []
+        _RecordingGenerator.start_calls = []
         patcher = patch("wyckoff_transformer.trainer.WyckoffGenerator", _RecordingGenerator)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -346,6 +447,19 @@ class TestGenerateStructuresForwardsGuidance(unittest.TestCase):
         # And at 1 it behaves exactly as before: one column, no indicator.
         call = self._call(trainer, cond=torch.zeros(4, 1))
         self.assertEqual(call["cond"].shape, (4, 1))
+
+    def test_predict_start_forwards_guidance_to_sample_start_classes(self):
+        trainer = self._trainer(0.1)
+        trainer.predict_start = True
+        trainer.start_classes_to_tokens = lambda c: c
+        call = self._call(trainer, cond=torch.full((4, 1), 0.1), guidance_scale=2.5)
+        self.assertEqual(len(_RecordingGenerator.start_calls), 1)
+        start_args, start_kwargs = _RecordingGenerator.start_calls[0]
+        self.assertEqual(start_args[0], 4)
+        self.assertEqual(start_kwargs["guidance_scale"], 2.5)
+        self.assertTrue(torch.allclose(
+            start_kwargs["cond"], torch.tensor([[math.log1p(0.1), 0.0]]).repeat(4, 1)))
+        self.assertTrue(torch.equal(start_kwargs["uncond"], torch.tensor([[0.0, 1.0]]).repeat(4, 1)))
 
 
 @pytest.mark.filterwarnings("ignore:No Pauling electronegativity for .*")

@@ -290,7 +290,8 @@ def main():
                         help="Classifier-free guidance scale, for a model trained with "
                              "condition_dropout. 1 samples the conditional model, 0 the "
                              "unconditional one, above 1 pushes further towards the "
-                             "condition. Refused for any other model unless 1.")
+                             "condition. Refused for any other model unless 1. It also "
+                             "applies to the space group of a model with predict_start.")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode.")
     parser.add_argument("--required-elements", "--r", type=str,
                         help="Required elements for constrained generation (e.g., 'Li-S'). "

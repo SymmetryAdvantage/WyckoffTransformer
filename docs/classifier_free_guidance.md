@@ -92,10 +92,12 @@ condition (`WyckoffGenerator.guided_logits`). Details:
 - Combining logits rather than log-probabilities changes nothing after the
   softmax. Nor does the order relative to a shared temperature or calibration
   temperature, which divides both terms alike.
-- **The space group is not guided.** It is the start token, drawn from the
-  run's saved unconditional distribution, exactly as for the temperature. A
-  guided cohort therefore has the training set's space-group marginal whatever
-  it is conditioned on, and so does the baseline's.
+- **The space group is guided when the model predicts it.** For a model built
+  with `predict_start`, guidance applies to `forward_start` through
+  `guided_start_logits` as it does to each cascade step. When the start token is
+  not predicted, it is drawn from the run's saved unconditional distribution,
+  leaving the training set's space-group marginal whatever the condition or
+  guidance scale.
 - A model trained without `condition_dropout` refuses any w other than 1.
 
 CLI: `wyformer-generate --guidance-scale W` and

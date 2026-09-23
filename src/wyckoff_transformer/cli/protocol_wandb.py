@@ -214,7 +214,7 @@ def generate_genes(
 
     *guidance_scale* is the classifier-free guidance scale, for a run trained
     with ``condition_dropout``; 1 is plain conditional sampling. Like the
-    temperature, it leaves the space group alone.
+    temperature, it leaves the space group alone unless the model predicts it.
 
     *manifest_path* receives what only this step knows: the temperature and
     guidance scale the cohort was drawn at, the condition it was drawn under,

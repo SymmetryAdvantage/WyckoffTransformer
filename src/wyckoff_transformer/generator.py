@@ -168,16 +168,59 @@ class WyckoffGenerator():
         return unconditional + guidance_scale * (conditional - unconditional)
 
 
+    def guided_start_logits(
+        self,
+        batch_size: int,
+        cond: Optional[Tensor] = None,
+        uncond: Optional[Tensor] = None,
+        guidance_scale: float = 1.0,
+    ) -> Tensor:
+        """Start-token logits, with classifier-free guidance when a guidance scale is set.
+
+        Returns ``l_u + w (l_c - l_u)`` for the conditional logits ``l_c`` and the
+        unconditional ones ``l_u``, analogous to `guided_logits`.
+
+        Both passes go through the model as one doubled batch.
+        """
+        if uncond is None or guidance_scale == 1.0:
+            return self.model.forward_start(batch_size, cond=cond)
+        doubled = self.model.forward_start(
+            2 * batch_size, cond=torch.cat([cond, uncond], dim=0))
+        conditional, unconditional = doubled[:batch_size], doubled[batch_size:]
+        return unconditional + guidance_scale * (conditional - unconditional)
+
+
     @torch.no_grad()
     def sample_start_classes(
-            self, batch_size: int, cond: Optional[Tensor] = None, temperature: float = 1) -> Tensor:
+        self,
+        batch_size: int,
+        cond: Optional[Tensor] = None,
+        temperature: float = 1,
+        uncond: Optional[Tensor] = None,
+        guidance_scale: float = 1.0,
+    ) -> Tensor:
         """Draw start token classes from a model built with predict_start.
 
         Returns:
             [batch_size] class indices, as `WyckoffTrainer.start_classes_to_tokens` reads them.
         """
+        if guidance_scale != 1.0:
+            if cond is None or uncond is None:
+                raise ValueError(
+                    "A guidance scale other than 1 needs both `cond` and `uncond`: guidance "
+                    "extrapolates from the unconditional prediction to the conditional one.")
+            if uncond.shape != cond.shape:
+                raise ValueError(
+                    f"uncond has shape {tuple(uncond.shape)} against cond's "
+                    f"{tuple(cond.shape)}; it is the null condition for the same rows.")
+            if cond.size(0) != batch_size:
+                raise ValueError(
+                    f"cond has {cond.size(0)} rows against batch_size={batch_size}")
+            if guidance_scale < 0:
+                raise ValueError(f"guidance_scale must be non-negative, got {guidance_scale}")
         self.model.eval()
-        logits = self.model.forward_start(batch_size, cond=cond)
+        logits = self.guided_start_logits(
+            batch_size, cond=cond, uncond=uncond, guidance_scale=guidance_scale)
         if self.start_calibrator is not None:
             logits = self.start_calibrator(logits)
         probabilities = torch.nn.functional.softmax(logits / temperature, dim=1)

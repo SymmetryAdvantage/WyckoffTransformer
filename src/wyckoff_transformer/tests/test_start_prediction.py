@@ -139,6 +139,26 @@ class TestSampling(unittest.TestCase):
         self.assertEqual(drawn.shape, (64,))
         self.assertTrue(bool((drawn == 2).all()))
 
+    def test_samples_follow_guidance(self):
+        torch.manual_seed(0)
+        model = build_model(predict_start=True, condition_dim=2)
+        def mock_forward_start(batch_size, cond=None):
+            out = torch.zeros(batch_size, N_START)
+            is_uncond = cond[:, 1] == 1.0
+            out[~is_uncond, 1] = 50.0
+            out[is_uncond, 3] = 50.0
+            return out
+        model.forward_start = mock_forward_start
+        generator = WyckoffGenerator(model, ("a", "b"), {"a": True, "b": True}, {}, {}, 4)
+        cond = torch.tensor([[1.0, 0.0]]).repeat(32, 1)
+        uncond = torch.tensor([[0.0, 1.0]]).repeat(32, 1)
+        drawn_cond = generator.sample_start_classes(32, cond=cond, uncond=uncond, guidance_scale=1.0)
+        self.assertTrue(bool((drawn_cond == 1).all()))
+        drawn_uncond = generator.sample_start_classes(32, cond=cond, uncond=uncond, guidance_scale=0.0)
+        self.assertTrue(bool((drawn_uncond == 3).all()))
+        drawn_guided = generator.sample_start_classes(32, cond=cond, uncond=uncond, guidance_scale=2.0)
+        self.assertTrue(bool((drawn_guided == 1).all()))
+
 
 if __name__ == "__main__":
     unittest.main()

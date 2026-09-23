@@ -84,9 +84,11 @@ parent chooses by the site NLL alone, so the two can pick different epochs.
 `WyckoffTrainer.generate_structures` settles the conditioning first, whether
 passed or drawn from the training rows. It then draws the space group from
 `forward_start` for that row, and then the sites. `--temperature` applies to the
-space-group draw as well. `--calibrate` fits a temperature to the start head on
-the validation split, as it does for each site field. An explicit start tensor
-(`--space-group`, `--sg-dist`, a system plan) still overrides the model.
+space-group draw as well, as does `--guidance-scale` when the model was trained
+with classifier-free guidance (`condition_dropout`). `--calibrate` fits a
+temperature to the start head on the validation split, as it does for each site field.
+An explicit start tensor (`--space-group`, `--sg-dist`, a system plan) still overrides
+the model.
 
 `gene_likelihood` refuses these models. Its space-group prior is the saved
 empirical distribution, which is not what they sample from.

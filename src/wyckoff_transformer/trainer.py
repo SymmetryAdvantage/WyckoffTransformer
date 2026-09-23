@@ -1062,7 +1062,9 @@ class WyckoffTrainer():
             self,
             dataset: AugmentedCascadeDataset,
             loader: Optional[AugmentedCascadeLoader] = None,
-            no_batch: bool = False) -> Tuple[Tensor, int]:
+            no_batch: bool = False,
+            drop_condition: bool = False,
+            unconditional: bool = False) -> Tuple[Tensor, int]:
         """Summed cross-entropy of the predicted start token, and the examples it covers."""
         if loader is not None and not no_batch:
             # Every example is viable at known_seq_len 0, and drawing through the length
@@ -1071,7 +1073,8 @@ class WyckoffTrainer():
         else:
             batch_selection = slice(None)
         target = dataset.start_classes[batch_selection]
-        cond = self.build_cond(dataset, batch_selection)
+        cond = self.build_cond(
+            dataset, batch_selection, drop_condition=drop_condition, unconditional=unconditional)
         prediction = self.model.forward_start(target.size(0), cond=cond)
         return self.criterion(prediction, target), target.size(0)
 
@@ -1922,7 +1925,7 @@ class WyckoffTrainer():
                     # Rides along every step rather than taking steps of its own; see
                     # start_loss_weight in __init__ for why this weight is the right one.
                     start_loss, start_n_samples = self.get_start_loss(
-                        self.train_dataset, self.train_loader)
+                        self.train_dataset, self.train_loader, drop_condition=True)
                     loss = loss + self.start_loss_weight * start_loss / start_n_samples
             else:
                 loss, n_samples = self.get_loss(
@@ -2158,7 +2161,8 @@ class WyckoffTrainer():
         if getattr(self, "predict_start", False) and self.target == TargetClass.NextToken:
             start_loss = torch.zeros(1, device=self.device)
             for _ in range(self.evaluation_samples):
-                batch_loss, n_samples = self.get_start_loss(dataset, loader, no_batch=loader is None)
+                batch_loss, n_samples = self.get_start_loss(
+                    dataset, loader, no_batch=loader is None, unconditional=unconditional)
                 start_loss += batch_loss * (len(dataset) / n_samples)
             # First, as the start token is the first thing generated; see loss_field_names.
             loss = torch.cat([start_loss, loss])
@@ -2656,9 +2660,11 @@ class WyckoffTrainer():
                 `condition_dropout`: every generated token is drawn from
                 p(t | c)^w p(t)^(1-w), renormalised. 1 is plain conditional sampling and the
                 only value a model without `condition_dropout` accepts; 0 ignores the
-                condition; above 1 pushes the sample further towards it. Like
-                `temperature`, it does not touch the space group, which is drawn from the
-                saved unconditional distribution. See WyckoffGenerator.guided_logits.
+                condition; above 1 pushes the sample further towards it. It applies to the
+                start token when the model predicts it (`predict_start`), and to every
+                generated cascade field; otherwise the start token is drawn from the saved
+                empirical distribution. See WyckoffGenerator.guided_logits and
+                WyckoffGenerator.guided_start_logits.
         """
         if guidance_scale != 1.0 and not self.classifier_free_guidance:
             raise ValueError(
@@ -2738,7 +2744,9 @@ class WyckoffTrainer():
                 # Drawn from the model given this row's conditioning, which is why the
                 # conditioning has to be settled first.
                 start_tensor = self.start_classes_to_tokens(
-                    generator.sample_start_classes(n_structures, cond=cond, temperature=temperature))
+                    generator.sample_start_classes(
+                        n_structures, cond=cond, temperature=temperature,
+                        uncond=uncond, guidance_scale=guidance_scale))
             else:
                 start_tensor = self._sample_start_tokens_from_distribution(n_structures)
 
