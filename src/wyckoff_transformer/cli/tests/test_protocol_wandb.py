@@ -575,11 +575,14 @@ class TestGenerateGenes(unittest.TestCase):
         api_mock = MagicMock()
         api_mock.run.return_value = run_mock
 
+        prior_file = Path(self._tmp.name) / "system_prior.npz"
+        prior_file.write_bytes(b"")
+
         with patch.object(pw, "load_trainer", return_value=trainer), \
              patch.object(pw, "ensure_run_files"), \
+             patch.object(pw, "ensure_system_prior", return_value=prior_file), \
              patch("wandb.Api", return_value=api_mock), \
-             patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load", return_value=prior), \
-             patch("pathlib.Path.is_file", return_value=True):
+             patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load", return_value=prior):
             pw.generate_genes(
                 run_id="r", entity="e", project="p", n_genes=10,
                 oversample=1.15, device="cpu", output_path=self.out,
@@ -607,15 +610,15 @@ class TestGenerateGenes(unittest.TestCase):
         run_mock.config = {"dataset": "lemat_bulk_fmax1_stress"}
         api_mock = MagicMock()
         api_mock.run.return_value = run_mock
-        from_run = Path("/runs/r/system_prior.npz")
+        from_run = Path(self._tmp.name) / "from_run_system_prior.npz"
+        from_run.write_bytes(b"")
 
         with patch.object(pw, "load_trainer", return_value=trainer), \
              patch.object(pw, "ensure_run_files"), \
              patch.object(pw, "ensure_system_prior", return_value=from_run) as ensure, \
              patch("wandb.Api", return_value=api_mock), \
              patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load",
-                   return_value=prior) as load, \
-             patch("pathlib.Path.is_file", return_value=True):
+                   return_value=prior) as load:
             pw.generate_genes(
                 run_id="r", entity="e", project="p", n_genes=10,
                 oversample=1.15, device="cpu", output_path=self.out,
@@ -634,12 +637,12 @@ class TestGenerateGenes(unittest.TestCase):
              patch.object(pw, "ensure_run_files"), \
              patch.object(pw, "ensure_system_prior", return_value=None), \
              patch("wandb.Api", return_value=api_mock), \
-             patch("pathlib.Path.is_file", return_value=False):
-            with self.assertRaises(ValueError) as caught:
-                pw.generate_genes(
-                    run_id="r", entity="e", project="p", n_genes=10,
-                    oversample=1.15, device="cpu", output_path=self.out,
-                )
+             patch("wyckoff_transformer.paths.cache_root", return_value=Path(self._tmp.name) / "cache"), \
+             self.assertRaises(ValueError) as caught:
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+            )
         self.assertIn("wyformer-system-prior build lemat_bulk_fmax1_stress", str(caught.exception))
 
     def test_a_prior_over_another_vocabulary_is_refused(self):
@@ -653,19 +656,20 @@ class TestGenerateGenes(unittest.TestCase):
         run_mock.config = {"dataset": "lemat_bulk_fmax1_stress"}
         api_mock = MagicMock()
         api_mock.run.return_value = run_mock
+        prior_file = Path(self._tmp.name) / "system_prior.npz"
+        prior_file.write_bytes(b"")
 
         with patch.object(pw, "load_trainer", return_value=trainer), \
              patch.object(pw, "ensure_run_files"), \
-             patch.object(pw, "ensure_system_prior", return_value=Path("/p/system_prior.npz")), \
+             patch.object(pw, "ensure_system_prior", return_value=prior_file), \
              patch("wandb.Api", return_value=api_mock), \
              patch("wyckoff_transformer.system_prior.SystemSpaceGroupPrior.load",
                    return_value=prior), \
-             patch("pathlib.Path.is_file", return_value=True):
-            with self.assertRaises(ValueError) as caught:
-                pw.generate_genes(
-                    run_id="r", entity="e", project="p", n_genes=10,
-                    oversample=1.15, device="cpu", output_path=self.out,
-                )
+             self.assertRaises(ValueError) as caught:
+            pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.15, device="cpu", output_path=self.out,
+            )
         self.assertIn("2 element tokens", str(caught.exception))
         trainer.generate_structures.assert_not_called()
 
