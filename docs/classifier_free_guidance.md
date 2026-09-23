@@ -11,11 +11,11 @@
 > [`ehull_adamw_wsd_5x_cfg-20260916-055000`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x_cfg-20260916-055000)
 > against its baseline
 > [`ehull_adamw_wsd_5x-20260912-115321`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ehull_adamw_wsd_5x-20260912-115321).
-> The CFG run was trained at commit `d3f4a5d` and every arm evaluated at
-> `93fdd3e`, both on branch `worktree-lovely-wishing-forest`. Main carries
-> rebased copies of those commits (`c6ba7c7`, `5a71a1a`) on a later base, so
-> their trees differ from what ran; W&B's `git.commit` for both runs now reads
-> `93fdd3e`, the evaluation that last resumed them.
+> The CFG run was trained at commit `c6ba7c7` and every arm evaluated at
+> `5a71a1a`. Both ran as pre-rebase copies on a since-deleted branch, which W&B
+> records as `d3f4a5d` and `93fdd3e`: the same changes on an earlier base, so
+> the rest of the tree differs from main's. W&B's `git.commit` for both runs
+> now reads `93fdd3e`, the evaluation that last resumed them.
 
 Classifier-free guidance (Ho & Salimans, [arXiv:2207.12598](https://arxiv.org/abs/2207.12598))
 trains one network on both p(gene | e_hull) and p(gene), and at sampling time
@@ -27,7 +27,7 @@ learned to. [Why](#why) and [how](#what-was-implemented) follow the results.
 
 Every arm: 1000 genes, ORB-v3 conservative-inf, the `lemat_bulk_fmax1_stress`
 novelty reference, relaxed on **zeus GPU 1** with `0:1,2:2,*:3` trials and a
-300 s timeout, scored 2026-09-22/23 at commit `93fdd3e`. Rates are per sampled
+300 s timeout, scored 2026-09-22/23 at commit `5a71a1a`. Rates are per sampled
 gene, free (post-rattle) track. Intervals are Wilson; differences are Newcombe
 with a Fisher exact p. Arms are W&B artifacts
 `protocol_<run>.guidance[-c0p05]-w<scale>` on their runs, with
@@ -256,9 +256,11 @@ CFG config to differ in exactly the two keys above. What was checked:
 
 - the baseline's W&B config matches `ehull_adamw_wsd_5x.yaml` key for key
   (2026-09-16);
-- on the branch the CFG run was trained from, `trainer.py`, `cascade/` and
-  `schedules.py` are byte-identical from `8197932` up to the CFG commits
-  (`c26b597`, `d3f4a5d`), which are the only changes to them (2026-09-23).
+- on the pre-rebase branch the CFG run was trained from, `trainer.py`,
+  `cascade/` and `schedules.py` were byte-identical from `8197932` up to the
+  two CFG commits (on main `d6a6772` and `c6ba7c7`), which were the only
+  changes to them (2026-09-23). On main the rebase put other changes between
+  them, so this does not hold for main's history.
 
 What was not: the commit the baseline trained at. It was launched on
 2026-09-12, and W&B no longer records its training commit because the
@@ -273,7 +275,7 @@ is one run's choice, not a sweep.
 ## Side note: the presence-flag run
 
 The first attempt at the null indicator had its polarity backwards. Run
-`ehull_adamw_wsd_5x_cfg-20260916-015500` (commit `7cf1895`, same branch;
+`ehull_adamw_wsd_5x_cfg-20260916-015500` (commit `6706418`, recorded in W&B as its pre-rebase copy `7cf1895`;
 stopped at epoch ~640 on 2026-09-16) used a *presence* flag instead: 1 on
 conditioned rows, 0 on dropped ones. On 90% of rows that column is a constant
 1, so its weight is a second copy of the AdaLN bias. By epoch 500 the two
