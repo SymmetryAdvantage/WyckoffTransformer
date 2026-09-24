@@ -1,0 +1,86 @@
+# Gene-minimum formation energy regressor on MP-20: the architecture of
+# yamls/models/lemat/der/min_energy_adamw_wsd.yaml (der_tokenizer_v1, both augmented fields,
+# d_model 96, FFN 320, 3 layers) with the batch, rate, dropout and length set for a dataset
+# 150x smaller.
+#
+# Target: gene_min_formation_energy_per_atom, the minimum formation energy over every MP-20
+# structure (train, val and test) sharing the augmentation-invariant Wyckoff gene; see the
+# cache's build record (observed_gene_minimum_over). MP-20's splits are not gene-disjoint, so
+# a test gene may also occur in training, with the same target.
+#
+# What differs from the LeMat file:
+#   train_batch_size 12500 -> 1000 and lr 3e-3 -> 1e-3: the batch and Adam rate of the ICML
+#     2025 MP-20 energy model (yamls/models/mp_20/formation_energy_per_site/icml_2025.yaml);
+#     at 12500 an MP-20 epoch would be two steps.
+#   dropout 0 -> 0.1, the ICML model's value: 27136 structures, not 4M.
+#   epochs 2859 -> 20000 (27 steps each, 543k steps, against the LeMat run's ~915k), and
+#     validation_period 250 -> 50.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - multiplicity
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    embedding_size:
+      elements: 40
+      site_symmetries: 40
+      sites_enumeration: 16
+      multiplicity: 0
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: gene_min_formation_energy_per_atom
+    scalar_loss: mse
+    evaluation_samples: 1
+    train_batch_size: 1000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 320
+      dropout: 0.1
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.001
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 50
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 20000
+tokeniser:
+  name: der_tokenizer_v1
+evaluation:
+  n_structures_to_generate: 10000
