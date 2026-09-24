@@ -21,6 +21,12 @@ ROOT="${ROOT:-/mnt/hdd/kna/wyformer/roe}"
 POOL="$ROOT/pool/wyckoff_genes.json.gz"
 BUDGET="${BUDGET:-1000}"
 POOL_SIZE="${POOL_SIZE:-10000}"
+# Draws per pool gene; generate keeps only formally valid genes, so a guided
+# backbone (w = 3 is ~0.905 valid) needs more than the unconditional one's 1.1.
+POOL_OVERSAMPLE="${POOL_OVERSAMPLE:-1.1}"
+# Extra sampling flags for the pool, e.g.
+#   POOL_GEN_ARGS="--condition energy_above_hull=0.05 --guidance-scale 3"
+read -r -a POOL_GEN_ARGS <<< "${POOL_GEN_ARGS:-}"
 
 # Two workers on each K20c and one on the 750 Ti; see docs/platforms/iapetus/usage.md.
 PROTOCOL_ARGS=(--pyxtal-cores 6 --devices cuda:0,cuda:0,cuda:1,cuda:1,cuda:2
@@ -32,9 +38,9 @@ if [[ ! -f "$POOL" ]]; then
     echo "=== drawing the shared pool of $POOL_SIZE genes ==="
     "$RUN" python -m wyckoff_transformer.cli.generate "$POOL" \
         --model-path "$BACKBONE" \
-        --initial-n-samples $((POOL_SIZE + POOL_SIZE / 10)) \
+        --initial-n-samples "$(python3 -c "import math; print(math.ceil($POOL_SIZE * $POOL_OVERSAMPLE))")" \
         --firm-n-samples "$POOL_SIZE" \
-        --device cpu
+        --device cpu "${POOL_GEN_ARGS[@]}"
 fi
 
 echo "=== broadside ==="

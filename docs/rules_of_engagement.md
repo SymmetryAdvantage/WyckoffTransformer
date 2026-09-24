@@ -1,12 +1,14 @@
 # Rules of engagement: WyFormer's inference modes
 
-> **STATUS (2026-09-22, commit `9145354`).** The composition layer, the four
-> modes and the per-sampled-gene accounting are in `wyckoff_transformer.roe`.
-> The tensor-space novelty and uniqueness checkers are in
-> `evaluation/gene_hash.py`, are the default, and are measured below.
-> **broadside, fire-discipline and fire-control have been run** against one
-> another at a fixed budget of 1000 reconstructions; **torpedo-run has not**, so
-> what it buys is still a hypothesis.
+> **STATUS (2026-09-24).**
+> - The composition layer, the four modes and the per-sampled-gene accounting
+>   are in `wyckoff_transformer.roe`.
+> - The tensor-space novelty and uniqueness checkers are in
+>   `evaluation/gene_hash.py`. They are the default and are measured below.
+> - **broadside, fire-discipline and fire-control have been compared** at 1000
+>   reconstructions each. The backbone is the CFG model at
+>   `e_hull = 0.05`, w = 3; results are [below](#results).
+> - **torpedo-run has not been run**, so what it buys is still a hypothesis.
 
 Generating a (M)SUN structure is an attack on the convex hull: a candidate that
 lands below it does not merely pass a threshold, it redraws the hull beneath
@@ -99,60 +101,191 @@ to run.
 
 ## The first comparison: broadside, fire-discipline, fire-control
 
-Run on iapetus on 2026-09-21/22 at commit `9145354`, by
-`scripts/platforms/iapetus/run_rules_of_engagement.sh`. Backbone
-`unconditional_5x_ehull01-20260915-151250` (unconditional, so no conditioning
-target to choose); energy predictor `min_energy_adamw_wsd-20260912-115957`
-(scalar, MSE, fitted to `gene_min_formation_energy_per_atom`, trained on
-`lemat_bulk_fmax1_stress`). Both read from disk; nothing was written to W&B.
+> **Result (2026-09-24).** At a fixed 1000 reconstructions each, fire-control
+> made 646 MetaSUN structures, fire-discipline 549 and broadside 410. The
+> ordering holds per trial too (4.2, 5.0 and 6.3 trials per hit). Fire-control
+> also quadrupled SUN (34 against 8 and 10). **But per relaxation worker-hour
+> it is the worst of the three for MetaSUN** (14.1 against 20.8 and 19.8),
+> because the predicted hull favours cells of about 52 atoms against about 30.
+> W&B run
+> [`roe_cfg_c0p05_w3-20260923`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/roe_cfg_c0p05_w3-20260923),
+> artifact `roe_cfg_c0p05_w3`.
 
-**One pool, three selections, one budget.** A pool of 10,000 genes is drawn once
-and all three modes select from it, so the arms differ in what they select and in
-nothing else -- no sampling noise between them. Each reconstructs exactly **1000
-genes**, so the expensive half is held fixed and what separates the modes is the
-selection.
+Run on iapetus on 2026-09-23/24, at commit `e4ef930` plus the driver change
+that lets `scripts/platforms/iapetus/run_rules_of_engagement.sh` pass sampling
+flags to the pool (`POOL_GEN_ARGS`, `POOL_OVERSAMPLE`).
 
-Each mode consumes only as much of the pool as its budget needs, which is what
-makes the generation cost visible:
+- **Backbone:** the [classifier-free guidance](classifier_free_guidance.md)
+  model `ehull_adamw_wsd_5x_cfg-20260916-055000`, artifact `:v33` (epoch
+  39,999). It samples at `energy_above_hull = 0.05` with guidance scale 3, the
+  recommended setting there.
+- **Energy predictor:** `min_energy_5x_adamw_wsd-20260921-125850`, artifact
+  `:v6` (epoch 2858). It is a scalar MSE model of
+  `gene_min_formation_energy_per_atom`, trained on `lemat_bulk_fmax1_stress`.
+- **Where the models came from:** both were fetched from W&B into the runs
+  store and read from disk.
+
+A first attempt used the unconditional backbone
+`unconditional_5x_ehull01-20260915-151250` and the predictor
+`min_energy_adamw_wsd-20260912-115957`. It was stopped on 2026-09-21 when the
+[Wyckoff augmentation defect](wyckoff_augmentation_audit.md) turned up, with
+broadside partly relaxed, and was not resumed. Its files are in
+`/mnt/hdd/kna/wyformer/roe/{pool,broadside}`.
+
+**One pool, three selections, one budget.** A pool of 10,000 formally valid
+genes was drawn once, from 12,500 draws. All three modes select from that
+pool, so they differ only in what they select, not in sampling noise. Each
+mode reconstructs exactly **1000 genes**. The expensive half is therefore held
+fixed, and what separates the modes is the selection.
 
 | mode | selection | pool consumed |
 |---|---|---|
-| broadside | the first 1000 formally valid genes, duplicates included | ~1100 |
-| fire-discipline | the first 1000 unique *and* novel genes | ~1700 |
-| fire-control | of every unique, novel gene in the pool, the 1000 with the lowest predicted `e_hull` | 10,000 |
+| broadside | the first 1000 genes, duplicates included | 1000 |
+| fire-discipline | the first 1000 unique *and* novel genes | 1553 |
+| fire-control | the 1000 lowest predicted `e_hull` among every unique, novel gene in the pool | 10,000 (6515 passed the screen) |
 
-**Fire-control selects a budget, not a threshold, and that is a real choice.** On
-a 300-gene pilot only **10 of 187** novel genes (5.3%) were predicted at or below
-the hull -- the median predicted `e_hull` was 0.074 eV/atom and the 5th percentile
--0.001. Filling a budget of 1000 from a threshold at zero would take roughly
-30,000 draws. Taking the 1000 lowest instead spends the fixed budget on the best
-the pool holds, which is how the same lever was used in
-[the generative novelty screen](generative_novelty_screen.md) ("at B=250"), and
-the manifest records what predicted `e_hull` the cut actually landed at so the
-selection strength is never implicit. `--energy-select threshold` is still
-available and is the right setting when the question is how many genes a
-generator puts below the hull rather than how to spend a budget.
+**Fire-control selects a budget, not a threshold.**
+- On this pool, 258 of the 6515 screened genes (4.0%) were predicted at or
+  below the hull, and the 1000th gene was cut at a predicted `e_hull` of
+  **0.030 eV/atom**.
+- A 300-gene pilot from the unconditional backbone had found 10 of 187 (5.3%)
+  at or below the hull.
+- Filling 1000 from a threshold at zero would take about 40,000 draws.
+- `--energy-select threshold` is still available. It is the right choice when
+  the question is how many genes a generator puts below the hull, rather than
+  how to spend a budget.
 
-Reconstruction is the de novo ranking protocol unchanged: ORB `orb_conserv_inf`,
-the default trial schedule, both the fixed-symmetry and free readouts, scored
-against `lemat_bulk_fmax1_stress`. Devices are the two K20c cards at two workers
-each plus the GTX 750 Ti, as [the host's usage notes](platforms/iapetus/usage.md)
-prescribe. The three arms run strictly in sequence: the protocol's score stage
-holds the reference at ~25 GB and this host has 30 GB.
-
-**MetaSUN is the readout, SUN is reported.** At a budget of 1000 reconstructions
-per arm, SUN (`e_hull <= 0`) is not resolvable: the protocol's own power analysis
-puts ~10,000 genes behind a SUN comparison and ~1,900 behind one at 0.05
-([the ranking protocol](de_novo_ranking_protocol.md#how-many-genes)), and the
-pool here is 1000 per arm. Differences between the modes are therefore read off
-`metasun_per_sampled_gene` (`e_hull <= 0.1`), with SUN counted and reported but
-not argued from.
+**Reconstruction** is the de novo ranking protocol unchanged:
+- ORB `orb_conserv_inf`, the default trial schedule, and both the
+  fixed-symmetry and free readouts, scored against `lemat_bulk_fmax1_stress`
+  (4,823,981 fingerprints, after the augmentation fix).
+- Five workers: two on each K20c and one on the GTX 750 Ti, as
+  [the host's usage notes](platforms/iapetus/usage.md) prescribe.
+- The modes ran one after another, because the score stage holds the reference
+  at about 25 GB and this host has 30 GB.
 
 ### Results
 
-> To be filled in when the run completes. Every number will be per sampled gene
-> *and* per reconstruction trial, because the modes deliberately differ in how
-> much generation they spent to fill the same budget.
+The table below uses the free (post-rattle) track, with Wilson 95% intervals.
+Most rows are per **reconstructed** gene, the fixed budget, and three rows are
+per sampled gene.
+
+| | broadside | fire-discipline | fire-control |
+|---|---|---|---|
+| gene novelty of what was reconstructed | 0.642 | 1.000 | 1.000 |
+| novel structure | 0.653 | 0.878 | 0.846 |
+| metastable | 0.647 | 0.564 | 0.678 |
+| P(metastable \| novel structure) | 0.628 | 0.625 | **0.764** |
+| **MetaSUN** | 0.410 [0.380, 0.441] | 0.549 [0.518, 0.580] | **0.646** [0.616, 0.675] |
+| MetaSUN, fixed-symmetry track | 0.302 | 0.430 | **0.531** |
+| stable | 0.035 | 0.012 | 0.041 |
+| SUN | 0.008 [0.004, 0.016] | 0.010 [0.005, 0.018] | **0.034** [0.024, 0.047] |
+| reconstruction trials charged | 2572 | 2747 | 2718 |
+| **trials per MetaSUN** | 6.27 | 5.00 | **4.21** |
+| trials per SUN | 322 | 275 | **80** |
+| relaxation worker-hours | 20.8 | 26.4 | 45.8 |
+| mean atoms per trial | 30.2 | 32.9 | 51.9 |
+| **MetaSUN per worker-hour** | 19.8 | **20.8** | 14.1 |
+| SUN per worker-hour | 0.39 | 0.38 | **0.74** |
+| MetaSUN per *sampled* gene | **0.410** | 0.354 | 0.065 |
+| wall time on iapetus | 4.8 h | 6.0 h | 12.1 h |
+| worker faults (GTX 750 Ti out of memory, retried) | 3 | 0 | 17 |
+
+Differences in MetaSUN (Fisher exact):
+- fire-discipline − broadside: +0.139 (p = 6e-10)
+- fire-control − fire-discipline: +0.097 (p = 1e-5)
+- fire-control − broadside: +0.236 (p = 4e-26)
+
+Differences in SUN:
+- fire-control − fire-discipline: +0.024 (p = 3e-4)
+- fire-discipline − broadside: +0.002 (n.s.)
+
+The arms share genes from one pool, so they are not independent samples.
+Pairing lowers the variance of a difference, so these p-values are
+conservative.
+
+**The screen does what it was designed to do.**
+- It lifts novel structures from 0.653 to 0.878 per reconstruction, and MetaSUN
+  by the same order (+0.139).
+- Metastability falls (0.647 → 0.564), because the screen removes known
+  genes, and on this backbone known genes relax into metastable structures far
+  more often than novel ones.
+- P(metastable | novel structure) does not move (0.628 → 0.625).
+- In other words, fire-discipline swaps known hits for novel ones and changes
+  nothing else.
+- It costs 1.55 draws per reconstruction instead of 1. Generation is cheap:
+  the whole 12,500-draw pool took 16 minutes on the CPU.
+
+**The energy ranking adds real selection on top of the screen.**
+- Fire-control is the only arm that changes how likely a *novel* structure is
+  to be metastable: 0.764 against 0.625.
+- It is also the only arm that moves SUN, which is 3.4× fire-discipline's rate
+  and significant even at n = 1000.
+- The protocol's power analysis puts a SUN comparison at about 10,000 genes
+  when the rates are similar. A 3–4× gap is resolvable at 1000.
+
+**The price is cell size, and it matters for cost.** The lowest predicted
+`e_hull` genes have larger cells, 52 atoms per trial against 30–33.
+- Relaxation cost per trial is roughly proportional to the number of atoms,
+  so fire-control used 2.2× broadside's worker-hours for about the same
+  number of trials.
+- Counted in trials, fire-control wins (4.2 trials per hit). Counted in GPU
+  time, which is the resource actually spent, fire-discipline wins for
+  MetaSUN (20.8 per worker-hour against 14.1), and fire-control wins only for
+  SUN (0.74 against 0.38).
+- The larger cells also accounted for most of the out-of-memory retries on
+  the 2 GB card.
+- **So `trials_per_hit` is not the whole cost.** Any comparison of modes that
+  select on energy should also report worker-hours.
+
+**Which mode to use:**
+
+| goal | mode |
+|---|---|
+| MetaSUN per unit of compute | fire-discipline |
+| SUN, or MetaSUN per reconstruction slot (e.g. DFT follow-up, where cost per structure matters more than cell size) | fire-control |
+| nothing | broadside: it wins only per *sampled* gene, and generation is cheap |
+
+**Compared with the guidance study.** This broadside's MetaSUN is 0.410,
+against 0.479 for the same recipe on zeus in
+[the CFG study](classifier_free_guidance.md). The difference is significant
+(Fisher p = 0.002), and it lies almost entirely in metastability (0.647
+against 0.711, p = 0.003). The novelty gap is not significant (novel
+structure 0.653 against 0.687, p = 0.12). Checked on 2026-09-24; files are in
+`/mnt/hdd/kna/wyformer/roe/cfg-c0p05-w3/{zeus_w3,zeus_rescore,single_point_*.csv}`.
+
+Ruled out:
+- **The hardware.** ORB single-point energies of zeus's 979 relaxed structures,
+  recomputed on iapetus, match zeus's recorded values to within −0.00008 eV/atom
+  on average (5–95%: [−0.00025, +0.00008]; largest 0.0006). The control,
+  iapetus's own structures, reproduces to ±0.00002. So there is no offset of
+  0.025–0.030 eV/atom between zeus and iapetus on the same structure.
+- **The Wyckoff augmentation fix.** The zeus arm was screened against the
+  pre-fix reference (4,826,004 fingerprints) and this run against the post-fix
+  one. Re-screening and re-scoring zeus's cohort on the post-fix reference
+  changes 2 gene-novelty verdicts, no structure-novelty verdict and no energy.
+  Its MetaSUN stays at 0.479.
+- **Settings.** The trial schedule (`0:1,2:2,*:3`), timeouts, ORB checkpoint
+  and hull revision are identical.
+- **A biased slice of the pool.** Broadside's first 1000 genes match the rest
+  of the pool in space group and cell size.
+
+Not ruled out:
+- **Chance between two independent 1000-gene cohorts.** w = 3 was also the
+  best of the relaxed guidance arms, so its 0.479 carries some
+  winner's-curse bias.
+- **Relaxation trajectories.** They could differ even though the energy
+  function does not. iapetus lost more trials (32 failed against 11) and had
+  OOM retries. The direct test is to relax zeus's own PyXtal draws
+  (`pyxtal.extxyz`) on iapetus.
+
+Open:
+- **Fire-control confounds energy with cell size.** Its selection is
+  partly a selection for larger cells. Ranking at a matched atom count, or
+  charging per atom, would separate the two.
+- **Selection strength is one point.** The 1000 kept of 6515 is a 15% cut;
+  the curve of MetaSUN and SUN against the cut has not been measured.
+- **Torpedo-run has not been run.**
 
 ## The architecture
 
@@ -373,11 +506,10 @@ still a Python loop over rows -- and is not built here.
 - **Torpedo-run has not been run.** What it buys, and whether its
   rank-before-screen ordering beats fire-control's screen-before-rank, is still
   a hypothesis.
-- **One backbone, one pool, one budget.** The comparison below is a single
-  10,000-gene pool from one unconditional checkpoint at one reconstruction
-  budget. It says what these selections do to this generator's output, not what
-  they do in general, and the modes' relative order could differ for a
-  conditioned backbone whose pool is already enriched.
+- **One backbone, one pool, one budget.** The comparison above is a single
+  10,000-gene pool from one guided checkpoint (CFG, `e_hull = 0.05`, w = 3) at
+  one reconstruction budget, on one host. It says what these selections do to
+  this generator's output, not what they do in general.
 - **`broadside`'s yield is a lower bound**, for the reason in the accounting
   section. Its cost is exact.
 - **DiffCSP++ is not wired up.** The repository reads DiffCSP++ *output*
