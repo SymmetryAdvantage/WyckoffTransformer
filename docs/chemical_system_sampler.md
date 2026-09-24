@@ -270,6 +270,36 @@ its artifacts (`cli.protocol_wandb.ensure_system_prior`) -- and only then
 `cache/<dataset>/system_prior.npz`. Wherever it came from, its element vocabulary
 is checked against the checkpoint's before a single structure is drawn.
 
+## Aiming at targets and their subsystems
+
+`sample` draws each row's system independently. That is the wrong shape for
+exploring a hull. A ternary A-B-C is only below the hull if it is below the
+binaries, and a chemical-system-conditioned model is asked for "exactly these
+elements", so A-B, A-C and B-C have to be requested as systems of their own.
+Two methods do that:
+
+- **`SystemSpaceGroupPrior.sample_targets(k, arity=3, ...)`** draws `k` distinct
+  systems of exactly that arity, through `sample`. The mixture of observed and
+  novel systems is the same one described above.
+- **`SystemSpaceGroupPrior.closure_plan(targets, n, min_arity=2, target_share=0.5)`**
+  gives each target an equal share of the `n` rows.
+  - `target_share` of that share goes to the target itself. The rest is split
+    evenly over the target's proper subsystems of arity at least `min_arity`.
+  - A subsystem shared by two targets is asked for by both, so it gets both
+    shares.
+  - Space groups come from each row's own `p(G | S)`.
+  - The targets and the per-system allocation are written into the plan's
+    `query`.
+
+Unaries are left out by default. The elemental references come from DFT, and a
+generated element predicted below one would re-base every formation energy in the
+system.
+
+`wyformer-roe` exposes this as `--closure`, with `--n-targets` or
+`--targets A-B-C,...`, and `--closure-min-arity` and `--target-share`. The
+torpedo-run in [the rules of engagement](rules_of_engagement.md#torpedo-run) is
+drawn this way.
+
 ## What this does not claim
 
 - **It is a prior over inputs, not over structures.** Nothing here estimates

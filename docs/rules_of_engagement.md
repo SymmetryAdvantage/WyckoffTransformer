@@ -8,7 +8,8 @@
 > - **broadside, fire-discipline and fire-control have been compared** at 1000
 >   reconstructions each. The backbone is the CFG model at
 >   `e_hull = 0.05`, w = 3; results are [below](#results).
-> - **torpedo-run has not been run**, so what it buys is still a hypothesis.
+> - **torpedo-run is implemented and submitted, but has not reported yet**
+>   ([below](#torpedo-run)). What it buys is still a hypothesis.
 
 Generating a (M)SUN structure is an attack on the convex hull: a candidate that
 lands below it does not merely pass a threshold, it redraws the hull beneath
@@ -285,7 +286,153 @@ Open:
   charging per atom, would separate the two.
 - **Selection strength is one point.** The 1000 kept of 6515 is a 15% cut;
   the curve of MetaSUN and SUN against the cut has not been measured.
-- **Torpedo-run has not been run.**
+- **Torpedo-run** is [below](#torpedo-run).
+
+## Torpedo-run
+
+> **Status (2026-09-24).** Implemented on branch `roe-torpedo` and submitted to
+> ASPIRE 2A with `scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh`. No results
+> yet. The job, commit and W&B run are recorded [below](#the-run) when they
+> exist.
+
+Three things the other modes did not need had to be added before this mode could
+be fired.
+
+### (a) A target is a chemical system and all of its subsystems
+
+The chemical-system-conditioned model is asked for "exactly these elements"
+([chemical-system mode](chemical_system_mode.md)). Asking it for A-B-C therefore
+generates ternaries, but the A-B-C hull is bounded by A-B, A-C and B-C.
+- A ternary is only a hit if it is below the binaries.
+- The binaries a campaign could find belong on that hull as much as the ones the
+  archive holds.
+
+`SubsystemClosureSampler` (`--closure`) handles this:
+- It draws the targets once from the backbone's own system prior, as distinct
+  ternaries.
+- Every plan gives each target an equal share of the rows. Half goes to the
+  target itself, and the other half is split evenly over its binaries.
+- A binary shared by two targets gets both shares.
+- Unaries are not generated. The elemental references are DFT's, and a generated
+  element predicted below one would re-base every formation energy in the
+  system.
+
+The mechanics are in [the sampler's doc](chemical_system_sampler.md#aiming-at-targets-and-their-subsystems).
+
+### (d) A hull built from the predictions, and what the residuals are for
+
+`fire-control` compares each gene, on its own, with the DFT hull at its
+composition. Candidates never compete with each other, which causes two
+problems:
+- Two hundred polymorphs of one formula predicted below the hull all look like
+  hits.
+- A ternary predicted below the DFT hull still looks like a hit when a binary in
+  the same cohort is predicted lower still.
+
+**The joint hull** (`--energy-hull joint`, `formula_energy/joint_hull.py`) puts
+every distinct non-unary candidate into the phase diagram next to the DFT
+reference. Each candidate is then scored against **the hull of everything else**:
+
+    predicted e_hull(c) = E(c) - H_{-c}(x_c)
+
+- If `c` is not a vertex of the joint hull, this is its ordinary `e_above_hull`,
+  which is >= 0.
+- If `c` is a vertex, the score is negative: how far below the reference and
+  every other candidate it sits.
+- The best polymorph of a formula is therefore scored against the next best, not
+  against the archive. The unit tests pin this, along with a ternary losing its
+  place to a new binary (`tests/test_torpedo_components.py`).
+
+**The residuals.** For a gene LeMat-Bulk already holds, the regressor's error is
+observed, not unknown. `gene_energy_residuals.py` uses that in two ways.
+
+1. **A known gene needs no prediction.** Its DFT gene-minimum energy replaces the
+   predicted one (`known_dft_formation_energy`).
+   - Such genes are later removed by the screen, but they still shape the joint
+     hull before that.
+   - This way a spuriously low prediction for a known gene cannot push real
+     candidates up.
+2. **The error is local.** A per-chemical-system offset shifts every candidate in
+   the system against the DFT hull by the same amount, which is exactly what a
+   hull comparison is sensitive to.
+   - The correction is hierarchical shrinkage: a system's own mean residual,
+     shrunk toward the pooled residuals of its subsystems, and those toward the
+     global mean.
+   - The corrected energy is `prediction - b(system)`.
+
+**Only honest residuals are used.** The target, `gene_min_formation_energy_per_atom`,
+is a minimum over the whole fingerprint class *across splits*. So a val or test
+gene whose fingerprint also appears in `train` had its target shown to the
+model.
+- The table keeps only val and test genes absent from `train`.
+- The correction is fitted on val and scored on test, over κ ∈ {1, 3, 10, 30,
+  100, 300}. The report is in `residual_validation.json` and in the W&B summary
+  under `residuals/`.
+- **A run uses the correction only if it removes at least 1% of the held-out
+  MAE.** κ is picked on the same test set, so a smaller gain cannot be told apart
+  from that choice. Otherwise the run falls back to the raw prediction, with the
+  known-gene substitution still applied.
+- The first measurement was a CPU smoke test on 10k rows per split: MAE 0.0385
+  raw, 0.0385 at the best κ (300), which is no gain. At that size most systems
+  have one or two residuals, so the full table is the real test.
+
+**Predictions average 8 equivalent Wyckoff descriptions** (`--augmentation-samples 8`).
+With one description, each call draws a random one. In the smoke test, the same
+Er3Hg4 gene scored 0.009 and 0.003 eV/atom against the reference hull in the two
+arms. The arms of a paired comparison must not disagree about a gene they share.
+
+### A budget taken after every filter
+
+The mode ranks before it screens. A `top-k` cut in the energy slot would spend
+the budget on duplicates and known genes that the screen then removes.
+- `--energy-select rank` keeps every scored gene and declares a `rank_column`.
+- `Engagement.run` then keeps the best `--target-engaged` survivors **of every
+  filter**, and records the cut as a `budget` stage.
+
+**Does the order matter?** For the reference-hull score it no longer changes the
+selection: each gene's score is its own, and the budget is taken last. For the
+joint score it does, because the energy slot builds the hull before the screen
+removes duplicates and known genes. Known genes enter that hull at their DFT
+energies, which the reference already holds, so the difference should be small.
+Nobody has measured it.
+
+### The run
+
+`scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh` runs on one 4×A100 node:
+
+- **Backbone:** `chemsys_sg_uncond_adanmw_wsd-20260921-220745`. This is
+  provisional: no chemical-system-conditioned model exists yet on the CFG /
+  `der_tokenizer_v1` recipe.
+  - It is conditioned on the chemical system only.
+  - It was trained on `lemat_bulk_fmax1_stress_ehull01` with
+    `lemat_bulk_fmax1_sg_multiplicity`.
+  - Its prior is the `system_prior.npz` in its run directory, not the dataset
+    cache's.
+- **Energy predictor:** `min_energy_adamw_wsd-20260924-102431`, the der critic
+  on `der_tokenizer_v1`.
+  - It re-tokenises PyXtal genes itself, so the two tokenisers need not agree.
+- **Targets:** 50 ternaries drawn with seed 0, closed under their binaries, for a
+  pool of 20,000 draws. The prior follows the corpus: the smoke test's three
+  targets were Ho-Er-Hg, Ac-Er-Tl and Nd-Ag-Hg.
+- **Arms**, one pool and paired, 1000 reconstructions each:
+
+  | arm | hull | energy |
+  |---|---|---|
+  | `joint` | joint | corrected (or raw plus known-gene DFT, if the correction fails validation) |
+  | `reference` | DFT reference | raw: the selection the earlier modes used |
+
+  Both arms write all four `predicted_e_hull_<hull>_<energy>` columns they have
+  inputs for. The 2×2 can then be read off the union of the reconstructed genes
+  without relaxing anything again.
+- **Reconstruction:** the protocol defaults (ORB `orb_conserv_inf`, reference
+  `lemat_bulk_fmax1_stress`), 4 workers per GPU.
+- **Results:** one W&B run, `roe_torpedo_chemsys_sg_uncond_adanmw_wsd-<date>`.
+  Its summary holds each arm's `engagement.json` and the residual validation, and
+  one artifact holds the pool, plan, residual table and every arm's outputs.
+
+**Caveat:** the backbone differs from the CFG one that broadside, fire-discipline
+and fire-control used, so this run's rates are not directly comparable with those
+three. The comparison it supports is between its own two arms.
 
 ## The architecture
 
@@ -335,13 +482,25 @@ wyformer-roe run fire-control --model-path runs/<run> \
     --regressor-path runs/<gene-energy-run> \
     -- --devices cuda:0,cuda:1
 
-# Choose the targets first. Needs a chemical-system-conditioned checkpoint.
+# Choose the targets first. Needs a chemical-system-conditioned checkpoint, whose
+# run directory carries the prior it was trained with.
 wyformer-roe run torpedo-run --model-path runs/<chemsys-run> \
     --output-dir generated/<run>/torpedo-run \
-    --system-prior cache/lemat_bulk_fmax1_stress/system_prior.npz \
-    --required Li --max-arity 3 --regressor-path runs/<gene-energy-run> \
+    --system-prior runs/<chemsys-run>/system_prior.npz \
+    --closure --n-targets 50 --regressor-path runs/<gene-energy-run> \
+    --energy-select rank --energy-hull joint --target-engaged 1000 \
     -- --devices cuda:0,cuda:1
+
+# Or, for paired arms: draw one pool, then select from it once per arm.
+wyformer-roe draw --model-path runs/<chemsys-run> --output-dir pool \
+    --system-prior runs/<chemsys-run>/system_prior.npz --closure --n-targets 50 \
+    --n-genes 20000
+wyformer-roe run torpedo-run --genes pool/wyckoff_genes.json.gz \
+    --system-plan pool/system_plan.json ...
 ```
+
+`--model-path` is used exactly as given. On a host whose runs live outside the
+checkout, pass the absolute path.
 
 Everything after a bare `--` goes to `wyformer-protocol` untouched, so the
 reconstruction keeps every flag it has -- the MLIP, the devices, the trial
@@ -503,9 +662,9 @@ still a Python loop over rows -- and is not built here.
 
 ## Known limitations
 
-- **Torpedo-run has not been run.** What it buys, and whether its
-  rank-before-screen ordering beats fire-control's screen-before-rank, is still
-  a hypothesis.
+- **Torpedo-run has not reported yet.** What it buys is still a hypothesis. With
+  the budget now taken after every filter, its rank-before-screen ordering only
+  matters through the joint hull ([below](#a-budget-taken-after-every-filter)).
 - **One backbone, one pool, one budget.** The comparison above is a single
   10,000-gene pool from one guided checkpoint (CFG, `e_hull = 0.05`, w = 3) at
   one reconstruction budget, on one host. It says what these selections do to

@@ -888,6 +888,134 @@ class SystemSpaceGroupPrior:
             },
         )
 
+    def sample_targets(
+        self,
+        n_targets: int,
+        arity: int = 3,
+        required: Union[None, str, Iterable[str], Iterable[int]] = None,
+        allowed: Union[None, str, Iterable[str], Iterable[int]] = None,
+        *,
+        novel_fraction: Optional[float] = None,
+        system_temperature: float = 1.0,
+        rng: Union[None, int, np.random.Generator] = None,
+    ) -> List[Tuple[int, ...]]:
+        """`n_targets` distinct systems of exactly `arity` elements, in draw order.
+
+        Drawn through `sample` -- the same mixture of observed and novel systems --
+        and deduplicated, so a popular system is a likely target but never a
+        repeated one. What a campaign aims at, before `closure_plan` spreads the
+        structures over each target and its subsystems.
+        """
+        generator = _resolve_rng(rng)
+        targets: List[Tuple[int, ...]] = []
+        seen = set()
+        batch = max(4 * n_targets, 64)
+        for _ in range(50):
+            draws = self.sample(
+                batch, required, allowed, novel_fraction=novel_fraction,
+                system_temperature=system_temperature, min_arity=arity, max_arity=arity,
+                rng=generator)
+            for tokens in draws.element_tokens:
+                if tokens not in seen:
+                    seen.add(tokens)
+                    targets.append(tokens)
+                    if len(targets) == n_targets:
+                        return targets
+        raise ValueError(
+            f"Found only {len(targets)} distinct systems of arity {arity} in this query; "
+            f"asked for {n_targets}.")
+
+    def closure_plan(
+        self,
+        targets: Sequence[Union[str, Iterable[str], Iterable[int]]],
+        n_structures: int,
+        *,
+        min_arity: int = 2,
+        target_share: float = 0.5,
+        sg_kappa: float = DEFAULT_SG_KAPPA,
+        sg_temperature: float = 1.0,
+        rng: Union[None, int, np.random.Generator] = None,
+    ) -> SystemDraws:
+        """Requests for every target *and* its subsystems down to `min_arity`.
+
+        A hull over A-B-C is bounded by A-B, A-C and B-C, and a chemical-system
+        conditioned model is asked for "exactly these elements", so the edges have
+        to be requested separately (``docs/chemical_system_mode.md``). Each target
+        gets an equal share of the rows; `target_share` of that goes to the target
+        itself and the rest is split evenly over its proper subsystems. A subsystem
+        shared by two targets is asked for by both.
+
+        Unaries are left out by default: the elemental references come from DFT,
+        and a generated element predicted below one would re-base every formation
+        energy in the system.
+        """
+        from itertools import combinations  # noqa: PLC0415
+
+        if n_structures <= 0:
+            raise ValueError(f"n_structures must be positive, got {n_structures}")
+        if not 0.0 < target_share <= 1.0:
+            raise ValueError(f"target_share must be in (0, 1], got {target_share}")
+        target_tokens = [self._as_tokens(target) for target in targets]
+        if not target_tokens:
+            raise ValueError("closure_plan needs at least one target")
+        generator = _resolve_rng(rng)
+
+        weights: Dict[Tuple[int, ...], float] = {}
+        for tokens in target_tokens:
+            if len(tokens) < min_arity:
+                raise ValueError(
+                    f"Target {self._describe(tokens)} is smaller than min_arity {min_arity}")
+            subsystems = [tuple(sub) for size in range(min_arity, len(tokens))
+                          for sub in combinations(tokens, size)]
+            share = target_share if subsystems else 1.0
+            weights[tokens] = weights.get(tokens, 0.0) + share / len(target_tokens)
+            for sub in subsystems:
+                weights[sub] = weights.get(sub, 0.0) + (1.0 - share) / (
+                    len(subsystems) * len(target_tokens))
+        # Largest-remainder apportionment, so the rows sum to n_structures exactly.
+        systems = sorted(weights)
+        exact = np.asarray([weights[s] for s in systems]) * n_structures
+        counts = np.floor(exact).astype(np.int64)
+        remainder = n_structures - int(counts.sum())
+        if remainder:
+            counts[np.argsort(-(exact - counts), kind="stable")[:remainder]] += 1
+
+        drawn: List[Tuple[int, ...]] = []
+        for tokens, count in zip(systems, counts):
+            drawn.extend([tokens] * int(count))
+        space_groups = self.sample_space_groups(drawn, sg_kappa, sg_temperature, generator)
+        novel = np.asarray([self.index_of(tokens) is None for tokens in drawn], dtype=bool)
+        order = generator.permutation(len(drawn))
+        return SystemDraws(
+            element_tokens=tuple(drawn[index] for index in order),
+            space_groups=space_groups[order],
+            is_novel=novel[order],
+            element_symbols=self.element_symbols,
+            query={
+                "closure": True,
+                "targets": [self._describe(tokens) for tokens in target_tokens],
+                "closure_systems": {
+                    self._describe(s): int(c) for s, c in zip(systems, counts)},
+                "min_arity": min_arity,
+                "target_share": float(target_share),
+                "n_structures": int(n_structures),
+                "sg_kappa": float(sg_kappa),
+                "sg_temperature": float(sg_temperature),
+                "required": None,
+                "source": self.metadata.get("source"),
+            },
+        )
+
+    def sample_space_groups(
+        self,
+        systems: Sequence[Tuple[int, ...]],
+        kappa: float = DEFAULT_SG_KAPPA,
+        temperature: float = 1.0,
+        rng: Union[None, int, np.random.Generator] = None,
+    ) -> np.ndarray:
+        """A space group per row from that row's `p(G | S)`; see `_sample_space_groups`."""
+        return self._sample_space_groups(systems, kappa, temperature, _resolve_rng(rng))
+
     # ------------------------------------------------------------------ internals
 
     def _resolve_query(self, required, allowed) -> Tuple[Tuple[int, ...], Tuple[int, ...]]:

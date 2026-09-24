@@ -94,6 +94,38 @@ GENES_FILE = "wyckoff_genes.json.gz"
 ARTIFACT_TYPE = "protocol_eval"
 SUMMARY_PREFIX = "protocol/"
 
+#: What of a protocol output directory is worth keeping, besides its gene file.
+PROTOCOL_ARTIFACT_FILES = (
+    protocol_cli.SCREEN_FILE,
+    # The draws themselves, not just their outcome: with these a single
+    # trial's relaxation can be repeated exactly, which the kept CIF
+    # and the per-trial row alone do not allow.
+    protocol_cli.PYXTAL_FILE,
+    protocol_cli.PYXTAL_TRIALS_FILE,
+    protocol_cli.RELAXATIONS_FILE,
+    # Only present in a wide-then-narrow run; add_file is guarded on
+    # is_file(), so a single-stage run simply ships neither.
+    protocol_cli.PRESCREEN_TRIALS_FILE,
+    protocol_cli.PRESCREEN_SELECTION_FILE,
+    protocol_cli.STRUCTURES_FILE,
+    protocol_cli.STRUCTURES_FIXED_FILE,
+    protocol_cli.FUNNEL_FILE,
+    protocol_cli.MANIFEST_FILE,
+)
+PROTOCOL_ARTIFACT_DIRS = (protocol_cli.CIF_DIR, protocol_cli.CIF_FIXED_DIR)
+
+
+def add_protocol_outputs(artifact, directory: Path, prefix: str = "") -> None:
+    """Add a protocol output directory's keepable files to a W&B artifact."""
+    for name in PROTOCOL_ARTIFACT_FILES:
+        path = directory / name
+        if path.is_file():
+            artifact.add_file(str(path), name=f"{prefix}{name}")
+    for name in PROTOCOL_ARTIFACT_DIRS:
+        path = directory / name
+        if path.is_dir():
+            artifact.add_dir(str(path), name=f"{prefix}{name}")
+
 
 def ensure_run_files(run, run_dir: Path) -> None:
     """Make sure every file in :data:`REQUIRED_RUN_FILES` sits in *run_dir*.
@@ -523,33 +555,10 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
             type=ARTIFACT_TYPE,
             metadata=metadata,
         )
-        for name in (
-            GENES_FILE,
-            protocol_cli.SCREEN_FILE,
-            # The draws themselves, not just their outcome: with these a single
-            # trial's relaxation can be repeated exactly, which the kept CIF
-            # and the per-trial row alone do not allow.
-            protocol_cli.PYXTAL_FILE,
-            protocol_cli.PYXTAL_TRIALS_FILE,
-            protocol_cli.RELAXATIONS_FILE,
-            # Only present in a wide-then-narrow run; add_file is guarded on
-            # is_file() below, so a single-stage run simply ships neither.
-            protocol_cli.PRESCREEN_TRIALS_FILE,
-            protocol_cli.PRESCREEN_SELECTION_FILE,
-            protocol_cli.STRUCTURES_FILE,
-            protocol_cli.STRUCTURES_FIXED_FILE,
-            protocol_cli.FUNNEL_FILE,
-            protocol_cli.MANIFEST_FILE,
-        ):
-            path = out / name
-            if path.is_file():
-                artifact.add_file(str(path), name=name)
-        cif_dir = out / protocol_cli.CIF_DIR
-        if cif_dir.is_dir():
-            artifact.add_dir(str(cif_dir), name=protocol_cli.CIF_DIR)
-        cif_fixed_dir = out / protocol_cli.CIF_FIXED_DIR
-        if cif_fixed_dir.is_dir():
-            artifact.add_dir(str(cif_fixed_dir), name=protocol_cli.CIF_FIXED_DIR)
+        path = out / GENES_FILE
+        if path.is_file():
+            artifact.add_file(str(path), name=GENES_FILE)
+        add_protocol_outputs(artifact, out)
         run.log_artifact(artifact)
     finally:
         run.finish()

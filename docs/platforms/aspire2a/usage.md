@@ -190,6 +190,30 @@ which was measured on the A100-SXM4-40GB to hit the saturation knee (~22 struct/
 88 struct/min across the node) while maintaining high scaling efficiency and low CUDA
 scheduling contention. PyXtal structure generation is assigned `--pyxtal-cores 60`.
 
+## A torpedo run on a 4-GPU node
+
+`scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh` runs the torpedo-run comparison
+in [the rules of engagement](../../rules_of_engagement.md#torpedo-run). It uses the
+same node, resources and worker count as above, and runs these steps:
+
+1. the regressor's residual table;
+2. one pool, aimed at prior-sampled ternaries closed under their binaries;
+3. two arms, `joint` and `reference`, drawn from that pool, each reconstructing
+   `--budget` genes;
+4. one W&B run holding everything.
+
+```bash
+bash scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh --dry-run   # print the plan
+bash scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh --pilot     # 3 targets, 10 per arm, aidev
+bash scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh             # 50 targets, 20k pool, 1000 per arm
+```
+
+- Models are resolved as `$WYFORMER_RUNS/<run-id>`, and outputs go to
+  `$WYFORMER_RUNS/roe/torpedo_<backbone>[_pilot]`.
+- Each step is skipped when its output exists, and the protocol resumes, so a job
+  that hits the 24 h ceiling is continued by submitting the same command again.
+- Run it from a committed worktree. The job re-reads the checkout at every step.
+
 ---
 
 ## An interactive GPU session

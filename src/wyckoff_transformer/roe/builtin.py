@@ -14,6 +14,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -102,6 +103,9 @@ class SystemPriorSampler:
             "system_temperature": system_temperature, "sg_temperature": sg_temperature,
             "min_arity": min_arity, "max_arity": max_arity, "seed": seed,
         }
+        # One generator for the sampler's lifetime: re-seeding per call would hand
+        # every top-up round the identical plan.
+        self._rng = np.random.default_rng(seed)
 
     def plan(self, n_structures: int):
         return self.prior.sample(
@@ -113,7 +117,75 @@ class SystemPriorSampler:
             sg_temperature=self.query["sg_temperature"],
             min_arity=self.query["min_arity"],
             max_arity=self.query["max_arity"],
-            rng=self.query["seed"],
+            rng=self._rng,
+        )
+
+    def describe(self) -> dict:
+        return {"component": self.name, "prior": str(self.prior_path), **self.query}
+
+
+class SubsystemClosureSampler:
+    """Aims at a set of target systems and requests every subsystem of each too.
+
+    Exploring the A-B-C hull means generating A-B, A-C and B-C as well: a ternary
+    is only below the hull if it is below the binaries, and the binaries a
+    campaign could find belong to that hull as much as the ones the archive holds.
+    The targets are drawn once, at construction, from the prior (or named);
+    every plan then spreads its rows over the targets' closures with
+    :meth:`~wyckoff_transformer.system_prior.SystemSpaceGroupPrior.closure_plan`.
+    """
+
+    name = "subsystem_closure"
+
+    def __init__(
+        self,
+        prior_path: Path,
+        *,
+        targets: Optional[Sequence[str]] = None,
+        n_targets: Optional[int] = None,
+        target_arity: int = 3,
+        min_arity: int = 2,
+        target_share: float = 0.5,
+        required: Optional[str] = None,
+        allowed: Optional[str] = None,
+        novel_fraction: Optional[float] = None,
+        system_temperature: float = 1.0,
+        sg_temperature: float = 1.0,
+        seed: Optional[int] = None,
+    ) -> None:
+        from wyckoff_transformer.system_prior import SYSTEM_DELIMITER, SystemSpaceGroupPrior
+
+        if (targets is None) == (n_targets is None):
+            raise ValueError("Name the targets or ask for n_targets of them, not both")
+        self.prior_path = Path(prior_path)
+        self.prior = SystemSpaceGroupPrior.load(self.prior_path)
+        self._rng = np.random.default_rng(seed)
+        if targets is None:
+            tokens = self.prior.sample_targets(
+                n_targets, target_arity, required, allowed,
+                novel_fraction=novel_fraction, system_temperature=system_temperature,
+                rng=self._rng)
+        else:
+            tokens = [self.prior.parse_elements(target) for target in targets]
+        self.targets = [
+            SYSTEM_DELIMITER.join(self.prior.element_symbols[t] for t in system)
+            for system in tokens]
+        self.query = {
+            "targets": self.targets, "n_targets": len(self.targets),
+            "target_arity": target_arity, "min_arity": min_arity,
+            "target_share": target_share, "required": required, "allowed": allowed,
+            "novel_fraction": novel_fraction, "system_temperature": system_temperature,
+            "sg_temperature": sg_temperature, "seed": seed,
+        }
+        logger.info("Aiming at %d targets: %s", len(self.targets), ", ".join(self.targets))
+
+    def plan(self, n_structures: int):
+        return self.prior.closure_plan(
+            self.targets, n_structures,
+            min_arity=self.query["min_arity"],
+            target_share=self.query["target_share"],
+            sg_temperature=self.query["sg_temperature"],
+            rng=self._rng,
         )
 
     def describe(self) -> dict:
@@ -126,17 +198,22 @@ class PlanFileSampler:
     A campaign that has to be reproduced exactly, or split across machines, is
     reproduced from its plan rather than from the prior and a seed: the plan is
     the record of what was actually asked for.
+
+    ``vocabulary`` is checked against the one the plan carries; omitted, the
+    plan's own is used, which is what re-filtering a pool drawn from it needs.
     """
 
     name = "plan_file"
 
-    def __init__(self, plan_path: Path, vocabulary: Sequence[str]) -> None:
+    def __init__(self, plan_path: Path, vocabulary: Optional[Sequence[str]] = None) -> None:
         from wyckoff_transformer.system_prior import SystemDraws
 
         self.plan_path = Path(plan_path)
         with open(self.plan_path, "rt", encoding="utf-8") as handle:
             manifest = json.load(handle)
-        self.draws = SystemDraws.from_manifest(manifest, list(vocabulary))
+        self.query = manifest.get("query", {})
+        self.draws = SystemDraws.from_manifest(
+            manifest, list(vocabulary) if vocabulary is not None else None)
 
     def plan(self, n_structures: int):
         if n_structures != len(self.draws):
@@ -146,7 +223,8 @@ class PlanFileSampler:
         return self.draws
 
     def describe(self) -> dict:
-        return {"component": self.name, "plan": str(self.plan_path), "rows": len(self.draws)}
+        return {"component": self.name, "plan": str(self.plan_path), "rows": len(self.draws),
+                "query": self.query}
 
 
 # --------------------------------------------------------------------------- #
@@ -581,6 +659,30 @@ class PredictedHullFilter:
     measured for an energy ranker left to itself.  Under ``top`` an undecided
     gene is ranked last, so it is kept only if the budget is not filled without
     it.
+
+    ``rank``
+        keep everything (under ``margin`` when one is given) and leave the cut to
+        the budget, which :meth:`~wyckoff_transformer.roe.plan.Engagement.run`
+        applies after *every* filter by :attr:`rank_column`.  The one to use when
+        another filter runs after this one: a ``top`` cut taken before a screen
+        spends budget on duplicates and known genes the screen then removes.
+
+    **Which energy and which hull** (``energy`` and ``hull``):
+
+    * ``energy='raw'`` is the regressor's prediction.  ``'corrected'`` replaces
+      it, for a gene the archive holds, with that gene's DFT energy, and for
+      every other gene subtracts the regressor's local residual
+      (:mod:`wyckoff_transformer.gene_energy_residuals`).
+    * ``hull='reference'`` compares each gene with the DFT hull alone.
+      ``'joint'`` puts the candidates on the hull too and scores each against
+      the hull of everything else
+      (:func:`~wyckoff_transformer.formula_energy.joint_hull.joint_hull_scores`),
+      so candidates compete with each other and a ternary is measured against
+      the binaries the same cohort found.
+
+    All four combinations are written as ``predicted_e_hull_<hull>_<energy>`` for
+    analysis whenever their inputs were given; ``predicted_e_hull`` is the one
+    selected on.
     """
 
     name = "predicted_hull"
@@ -588,20 +690,27 @@ class PredictedHullFilter:
     provides = ("predicted_formation_energy", "hull_energy", "predicted_e_hull")
     requires = ()
 
-    SELECTORS = ("threshold", "top")
+    SELECTORS = ("threshold", "top", "rank")
+    HULLS = ("reference", "joint")
+    ENERGIES = ("raw", "corrected")
 
     def __init__(
         self,
         regressor,
         reference: pd.DataFrame,
         *,
-        margin: float = 0.0,
+        margin: Optional[float] = 0.0,
         select: str = "threshold",
         top_k: Optional[int] = None,
         on_missing_hull: str = "keep",
         augmentation_samples: int = 1,
         regressor_id: Optional[str] = None,
         reference_id: Optional[str] = None,
+        hull: str = "reference",
+        energy: str = "raw",
+        correction=None,
+        known_genes=None,
+        residuals_id: Optional[str] = None,
     ) -> None:
         if on_missing_hull not in ("keep", "drop"):
             raise ValueError("on_missing_hull is 'keep' or 'drop'")
@@ -609,6 +718,23 @@ class PredictedHullFilter:
             raise ValueError(f"select is one of {self.SELECTORS}, got {select!r}")
         if select == "top" and not top_k:
             raise ValueError("select='top' needs top_k, the reconstruction budget")
+        if select != "rank" and margin is None:
+            raise ValueError(f"select={select!r} needs a margin")
+        if hull not in self.HULLS:
+            raise ValueError(f"hull is one of {self.HULLS}, got {hull!r}")
+        if energy not in self.ENERGIES:
+            raise ValueError(f"energy is one of {self.ENERGIES}, got {energy!r}")
+        if energy == "corrected" and correction is None and known_genes is None:
+            raise ValueError(
+                "energy='corrected' needs a residual correction or the known-gene "
+                "energies; without either it is the raw prediction under another name")
+        self.hull = hull
+        self.energy = energy
+        self.correction = correction
+        self.known_genes = known_genes
+        self.residuals_id = residuals_id
+        #: The column the budget ranks on, when the cut is left to it.
+        self.rank_column = "predicted_e_hull" if select == "rank" else None
         self.regressor = regressor
         self.reference = reference
         self.margin = margin
@@ -635,17 +761,8 @@ class PredictedHullFilter:
     def _score(self, cohort: Cohort, indices: list) -> pd.DataFrame:
         """Score the genes not already scored, and return rows for all of *indices*."""
         from wyckoff_transformer.cli.gene_screen import score_genes
-        from wyckoff_transformer.evaluation.gene_hash import gene_key
-        from wyckoff_transformer.evaluation.protocol import GeneFingerprinter
 
-        fingerprinter = GeneFingerprinter()
-        keys = {}
-        for index in indices:
-            try:
-                keys[index] = gene_key(fingerprinter.record(cohort.genes[index]))
-            except Exception:  # noqa: BLE001 - an invalid gene is scored as unusable
-                keys[index] = None
-
+        keys = self._gene_keys(cohort, indices)
         fresh = [index for index in indices
                  if keys[index] is None or keys[index] not in self._scored]
         scored = None
@@ -681,18 +798,92 @@ class PredictedHullFilter:
         frame.index = pd.Index(indices, name="index")
         return frame
 
+    @staticmethod
+    def _gene_keys(cohort: Cohort, indices: list) -> dict:
+        """Index -> 128-bit gene key, or ``None`` for a gene that has none."""
+        from wyckoff_transformer.evaluation.gene_hash import gene_key
+        from wyckoff_transformer.evaluation.protocol import GeneFingerprinter
+
+        fingerprinter = GeneFingerprinter()
+        keys = {}
+        for index in indices:
+            try:
+                keys[index] = gene_key(fingerprinter.record(cohort.genes[index]))
+            except Exception:  # noqa: BLE001 - an invalid gene is scored as unusable
+                keys[index] = None
+        return keys
+
+    def _variants(self, cohort: Cohort, indices: list, scored: pd.DataFrame) -> dict:
+        """Every (hull, energy) predicted ``e_hull`` this filter has the inputs for."""
+        from wyckoff_transformer.gene_energy_residuals import chemical_system
+
+        columns = {"predicted_e_hull_reference_raw": scored["score"].astype(float)}
+        energies = {"raw": scored["predicted_formation_energy"].astype(float)}
+        needs_keys = self.known_genes is not None or self.hull == "joint"
+        keys = self._gene_keys(cohort, indices) if needs_keys else {}
+
+        if self.correction is not None or self.known_genes is not None:
+            from pymatgen.core.composition import Composition
+
+            corrected = energies["raw"].copy()
+            if self.correction is not None:
+                systems = {
+                    formula: chemical_system(str(e) for e in Composition(formula).elements)
+                    for formula in scored["formula"].dropna().unique()}
+                has_formula = scored["formula"].notna()
+                bias = pd.Series(np.nan, index=scored.index)
+                bias[has_formula] = self.correction.biases(
+                    scored.loc[has_formula, "formula"].map(systems))
+                columns["residual_correction"] = bias
+                corrected = corrected - bias.fillna(0.0)
+            if self.known_genes is not None:
+                rows = [index for index in indices if keys[index] is not None]
+                dft = pd.Series(np.nan, index=scored.index)
+                if rows:
+                    dft.loc[rows] = self.known_genes.lookup([keys[i] for i in rows])
+                columns["known_dft_formation_energy"] = dft
+                corrected = dft.where(dft.notna(), corrected)
+            corrected = corrected.where(scored["predicted_formation_energy"].notna())
+            energies["corrected"] = corrected
+            columns["corrected_formation_energy"] = corrected
+            columns["predicted_e_hull_reference_corrected"] = (
+                corrected - scored["hull_energy"].astype(float))
+
+        if self.hull == "joint":
+            from wyckoff_transformer.formula_energy.joint_hull import joint_hull_scores
+
+            representative = {}
+            for index in indices:
+                if keys[index] is not None:
+                    representative.setdefault(keys[index], index)
+            reps = list(representative.values())
+            for name, energy in energies.items():
+                candidates = pd.DataFrame(
+                    {"formula": scored.loc[reps, "formula"], "energy": energy.loc[reps]})
+                joint = joint_hull_scores(candidates, self.hull_lookup())
+                by_key = {keys[i]: joint.at[i, "joint_e_hull"] for i in reps}
+                columns[f"predicted_e_hull_joint_{name}"] = pd.Series(
+                    [by_key.get(keys[i], np.nan) if keys[i] is not None else np.nan
+                     for i in indices], index=scored.index, dtype=float)
+        return columns
+
     def apply(self, cohort: Cohort) -> None:
         indices = cohort.kept_indices()
         with timed() as elapsed:
             scored = self._score(cohort, indices)
+            variants = self._variants(cohort, indices, scored)
 
-        decided = scored["predicted_e_hull"].notna() if "predicted_e_hull" in scored \
-            else scored["score"].notna()
-        values = scored["score"]
-        below = decided & (values <= self.margin)
+        values = variants[f"predicted_e_hull_{self.hull}_{self.energy}"]
+        decided = values.notna()
+        below = decided & (values <= (self.margin if self.margin is not None else 0.0))
         undecided = ~decided
 
-        if self.select == "top":
+        if self.select == "rank":
+            keep = decided if self.margin is None else below
+            if self.on_missing_hull == "keep":
+                keep = keep | undecided
+            cut = self.margin
+        elif self.select == "top":
             # Undecided genes rank last: they are kept only if the budget is not
             # filled without them, and dropped outright if it is.
             order = values.fillna(float("inf")).sort_values(kind="stable")
@@ -716,6 +907,7 @@ class PredictedHullFilter:
                 # calls `score` is a predicted e_hull and is named as one here.
                 "predicted_e_hull": values,
                 "hull_undecided": undecided,
+                **variants,
             },
             seconds=elapsed(),
             detail={
@@ -724,11 +916,16 @@ class PredictedHullFilter:
                 "top_k": self.top_k,
                 "selection_cut_e_hull": cut,
                 "on_missing_hull": self.on_missing_hull,
+                "hull": self.hull,
+                "energy": self.energy,
                 "decided": int(decided.sum()),
                 "below_hull": int(below.sum()),
                 "undecided": int(undecided.sum()),
                 "regressor": self.regressor_id,
                 "reference": self.reference_id,
+                "residuals": self.residuals_id,
+                "correction": (self.correction.describe()
+                               if self.correction is not None else None),
             },
         )
 
@@ -741,6 +938,9 @@ class PredictedHullFilter:
             "margin": self.margin,
             "top_k": self.top_k,
             "on_missing_hull": self.on_missing_hull,
+            "hull": self.hull,
+            "energy": self.energy,
+            "residuals": self.residuals_id,
         }
 
 

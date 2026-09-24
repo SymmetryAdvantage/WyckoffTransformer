@@ -835,3 +835,92 @@ def test_an_exact_fit_needs_no_trimming(tmp_path):
     cohort = engagement.run(10, tmp_path, target_engaged=10)
     assert cohort.n_sampled == 10 and cohort.n_kept == 10
     assert [r.component for r in cohort.history][-1] != "budget"
+
+
+# --------------------------------------------------------------------------- #
+# A budget taken by rank, after every filter
+# --------------------------------------------------------------------------- #
+class RankingFilter:
+    """Scores every gene and keeps them all, leaving the cut to the budget."""
+
+    name = "ranker"
+    slot = "energy"
+    provides = ("predicted_e_hull",)
+    requires = ()
+    rank_column = "predicted_e_hull"
+
+    def __init__(self, scores):
+        self.scores = scores
+
+    def apply(self, cohort):
+        kept = cohort.kept_indices()
+        cohort.record("filter", self.name, passed=kept, columns={
+            "predicted_e_hull": pd.Series({i: self.scores[i] for i in kept})})
+
+    def describe(self):
+        return {"component": self.name}
+
+
+def test_a_ranked_budget_keeps_the_best_survivors_of_every_filter(tmp_path):
+    import numpy as np
+
+    genes = [{"group": 225, "species": ["Na"], "numIons": [4], "sites": [["4a"]],
+              "serial": i} for i in range(8)]
+    scores = {0: 0.5, 1: -0.4, 2: -0.3, 3: np.nan, 4: -0.2, 5: 0.1, 6: -0.9, 7: 0.0}
+    engagement = Engagement(
+        roe=TORPEDO_RUN, source=FakeSource(genes), sampler=FakeSampler(),
+        filters={"energy": RankingFilter(scores),
+                 # The screen removes the best-ranked gene, as a known one would be.
+                 "screen": FakeFilter("screen", "screen", keep={0, 1, 2, 3, 4, 5, 7})})
+    cohort = engagement.run(8, tmp_path, target_engaged=3)
+    assert cohort.kept_indices() == [1, 2, 4], (
+        "the three best of what survived the screen, not the three best overall")
+    budget = cohort.history[-1]
+    assert budget.component == "budget"
+    assert budget.detail["selection_cut"] == pytest.approx(-0.2)
+    assert cohort.n_sampled == 8, "every draw was needed to rank, so none is dropped"
+
+
+def test_a_ranked_budget_ranks_undecided_genes_last_and_keeps_a_short_cohort(tmp_path):
+    import numpy as np
+
+    genes = [{"group": 225, "species": ["Na"], "numIons": [4], "sites": [["4a"]],
+              "serial": i} for i in range(3)]
+    engagement = Engagement(
+        roe=TORPEDO_RUN, source=FakeSource(genes), sampler=FakeSampler(),
+        filters={"energy": RankingFilter({0: np.nan, 1: 0.3, 2: 0.2}),
+                 "screen": FakeFilter("screen", "screen", keep={0, 1, 2})})
+    assert engagement.run(3, tmp_path / "a", target_engaged=2).kept_indices() == [1, 2]
+    assert engagement.run(3, tmp_path / "b", target_engaged=5,
+                          max_rounds=1).kept_indices() == [0, 1, 2]
+
+
+def test_rank_selection_leaves_everything_decided_for_the_budget():
+    import numpy as np
+
+    cohort = _cohort_of(4)
+    gene_filter = CannedHullFilter({0: 0.9, 1: -0.2, 2: np.nan, 3: 3.0}, select="rank",
+                                   margin=None)
+    gene_filter.apply(cohort)
+    assert cohort.kept_indices() == [0, 1, 2, 3]
+    assert gene_filter.rank_column == "predicted_e_hull"
+
+    cohort = _cohort_of(4)
+    CannedHullFilter({0: 0.9, 1: -0.2, 2: np.nan, 3: 3.0}, select="rank",
+                     margin=1.0, on_missing_hull="drop").apply(cohort)
+    assert cohort.kept_indices() == [0, 1]
+
+
+def test_a_plan_file_can_steer_a_pool_run_without_a_model(tmp_path):
+    from wyckoff_transformer.roe.cli import build_parser
+
+    args = build_parser().parse_args([
+        "run", "torpedo-run", "--genes", str(tmp_path / "g.json.gz"),
+        "--system-plan", str(tmp_path / "plan.json"), "--output-dir", str(tmp_path),
+        "--energy-select", "rank", "--energy-hull", "joint", "--energy-basis", "corrected",
+        "--residuals", str(tmp_path)])
+    assert args.energy_hull == "joint" and args.hull_margin is None
+    draw = build_parser().parse_args([
+        "draw", "--model-path", "m", "--output-dir", "o", "--n-genes", "10",
+        "--system-prior", "p.npz", "--closure", "--n-targets", "3"])
+    assert draw.genes is None and draw.closure and draw.n_targets == 3

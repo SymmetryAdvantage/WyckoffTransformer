@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional
 
+import pandas as pd
+
 from wyckoff_transformer.roe.cohort import Cohort, timed
 from wyckoff_transformer.roe.components import (
     GeneFilter,
@@ -214,9 +216,18 @@ class Engagement:
                 f"The gene source {self.source.name!r} generates into a planned chemical "
                 "system and was given no sampler to plan one.")
         check_requirements(self.ordered_filters())
+        self.rank_column()
 
     def ordered_filters(self) -> list[GeneFilter]:
         return [self.filters[slot] for slot in self.roe.filters]
+
+    def rank_column(self) -> Optional[str]:
+        """The column the budget ranks on, when a filter left the cut to it."""
+        columns = [column for gene_filter in self.ordered_filters()
+                   if (column := getattr(gene_filter, "rank_column", None))]
+        if len(columns) > 1:
+            raise ValueError(f"More than one filter asks the budget to rank: {columns}")
+        return columns[0] if columns else None
 
     def describe(self) -> dict:
         return {
@@ -350,7 +361,23 @@ class Engagement:
                     len(genes), cohort.n_kept, target_engaged)
                 break
 
-        if target_engaged is not None and cohort.n_kept > target_engaged:
+        rank_column = self.rank_column()
+        if target_engaged is not None and cohort.n_kept > target_engaged and rank_column:
+            # A filter left the cut to the budget: keep the best-ranked survivors of
+            # *every* filter.  Ranking before a screen and cutting there would spend
+            # the budget on duplicates and known genes the screen then removes.
+            # Every draw was needed to rank, so none is dropped from the cohort.
+            kept = cohort.kept_indices()
+            values = pd.to_numeric(cohort.table.loc[kept, rank_column], errors="coerce")
+            order = values.fillna(float("inf")).sort_values(kind="stable")
+            chosen = order.index[:target_engaged]
+            finite = values.loc[chosen].dropna()
+            cohort.record(
+                "filter", "budget", passed=[int(i) for i in chosen],
+                detail={"target_engaged": target_engaged, "rank_column": rank_column,
+                        "dropped": len(kept) - len(chosen),
+                        "selection_cut": float(finite.max()) if len(finite) else None})
+        elif target_engaged is not None and cohort.n_kept > target_engaged:
             # Truncate to the budget so every mode reconstructs the same number.
             # The last-drawn survivors go, not a random subset: the cohort is in
             # sampling order and keeping a prefix keeps it a sample.

@@ -133,7 +133,13 @@ def score_genes(
     if not records:
         return output
     records_frame = pd.DataFrame.from_records(records).set_index("source_index")
-    supported, unsupported = filter_supported_tokens(records_frame, regressor)
+    try:
+        supported, unsupported = filter_supported_tokens(records_frame, regressor)
+    except ValueError as error:
+        # Raised when *every* row is outside the vocabulary: that is a verdict on
+        # this batch's genes, not a reason to abort the screen.
+        logger.warning("No gene in this batch is in the regressor vocabulary: %s", error)
+        supported, unsupported = records_frame.iloc[:0], list(records_frame.index)
     if unsupported:
         output.loc[unsupported, "reason"] = "Gene is outside the regressor vocabulary"
     if supported.empty:
