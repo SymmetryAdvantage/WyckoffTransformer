@@ -232,10 +232,9 @@ class CascadeTransformer(nn.Module):
     def from_config_and_tokenisers(cls, config: OmegaConf,
         tokenisers: dict, device: torch.device, engineers_dir: Optional[Path] = None):
 
-        # TODO hasn't it been relaxed, and field renamed?
-        if len(config.tokeniser.get("augmented_token_fields", [])) > 1:
-            raise ValueError("Only one augmented field is supported")
-
+        # No limit on the number of augmented fields: AugmentedCascadeDataset samples every
+        # augmented field at the same variant index, and der_tokenizer_v1 needs two
+        # (site_symmetries with sites_enumeration, see validate_augmented_token_fields).
         cascade_order = config.model.cascade.order
 
         full_cascade = dict()

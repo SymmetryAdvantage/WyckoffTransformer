@@ -6,6 +6,12 @@ model:
       - site_symmetries
       - sites_enumeration
       - multiplicity
+    # der_tokenizer_v1's corrected augmentation relabels the site-symmetry symbol together
+    # with the enumeration; both must be listed, and are sampled at matching indices.
+    # multiplicity is a normaliser invariant, so it is not augmented.
+    augmented:
+      - site_symmetries
+      - sites_enumeration
     embedding_size:
       elements: 40
       site_symmetries: 40
