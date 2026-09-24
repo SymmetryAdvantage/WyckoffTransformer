@@ -290,10 +290,15 @@ Open:
 
 ## Torpedo-run
 
-> **Status (2026-09-24).** Implemented on branch `roe-torpedo` and submitted to
-> ASPIRE 2A with `scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh`. No results
-> yet. The job, commit and W&B run are recorded [below](#the-run) when they
-> exist.
+> **Status (2026-09-24).** Implemented on branch `roe-torpedo` at commit
+> `6dce0f8`, and submitted to ASPIRE 2A with
+> `scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh`:
+> - PBS `25537541` is the full run. W&B run
+>   `roe_torpedo_chemsys_sg_uncond_adanmw_wsd-20260924`, outputs in
+>   `$WYFORMER_RUNS/roe/torpedo_chemsys_sg_uncond_adanmw_wsd`.
+> - PBS `25537540` is the `--pilot`: 3 targets, 10 genes per arm.
+>
+> No results yet.
 
 Three things the other modes did not need had to be added before this mode could
 be fired.
