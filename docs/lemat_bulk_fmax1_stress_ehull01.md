@@ -57,11 +57,13 @@ The artifacts reside at `cache/lemat_bulk_fmax1_stress_ehull01/`:
 ```
 cache/lemat_bulk_fmax1_stress_ehull01/
 ├── tensors/
-│   └── lemat_bulk_fmax1_sg_multiplicity.safetensors  (1,996 MB)
+│   ├── der_tokenizer_v1.safetensors                  (4,039.5 MB) [current]
+│   └── lemat_bulk_fmax1_sg_multiplicity.safetensors  (1,996 MB) [obsolete]
 ├── tokenisers/
+│   ├── der_tokenizer_v1.json                         (6.1 MB)
 │   └── lemat_bulk_fmax1_sg_multiplicity.json        (3.9 MB)
-├── train.parquet, val.parquet, test.parquet          (128.7 MB pickled when built)
-└── split_ids.json                                    (520 KB)
+├── train.parquet, val.parquet, test.parquet          (160.3 MB total, Parquet per split)
+└── split_ids.json                                    (975 KB)
 ```
 
 ---
@@ -71,15 +73,18 @@ cache/lemat_bulk_fmax1_stress_ehull01/
 The dataset creation is completely automated and verified by unit tests.
 
 ### Running the Creation Script
-From the repository root:
+From the repository root (using the environment interpreter):
 
 ```bash
 python scripts/slice_dataset_by_ehull.py \
     --source-dataset lemat_bulk_fmax1_stress \
     --target-dataset lemat_bulk_fmax1_stress_ehull01 \
-    --tokeniser-name lemat_bulk_fmax1_sg_multiplicity \
+    --tokeniser-name der_tokenizer_v1 \
     --ehull-cutoff 0.1
 ```
+
+> [!NOTE]
+> Following the symmetry augmentation fix (`docs/wyckoff_augmentation_audit.md`), `der_tokenizer_v1` is the current tokenizer carrying paired `site_symmetries` and `sites_enumeration` variants. The older `lemat_bulk_fmax1_sg_multiplicity` is marked obsolete.
 
 The cache is found through `wyckoff_transformer.paths.cache_root()` (see `docs/data_store.md`); to use a different one, set `WYFORMER_CACHE` or pass `--cache-dir`:
 
@@ -87,11 +92,11 @@ The cache is found through `wyckoff_transformer.paths.cache_root()` (see `docs/d
 WYFORMER_CACHE=/path/to/cache python scripts/slice_dataset_by_ehull.py \
     --source-dataset lemat_bulk_fmax1_stress \
     --target-dataset lemat_bulk_fmax1_stress_ehull01 \
-    --tokeniser-name lemat_bulk_fmax1_sg_multiplicity \
+    --tokeniser-name der_tokenizer_v1 \
     --ehull-cutoff 0.1
 ```
 
-Execution takes ~6 minutes on standard cluster storage.
+Execution takes ~1–5 minutes on standard cluster storage.
 
 ### Automated Tests
 The slicing logic is covered by unit tests in [`src/wyckoff_transformer/tests/test_slice_dataset.py`](../src/wyckoff_transformer/tests/test_slice_dataset.py):
