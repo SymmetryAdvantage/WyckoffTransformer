@@ -1,10 +1,16 @@
-# ehull_adamw_wsd_5x_cfg.yaml (lemat_bulk_ehull/) on the corrected Wyckoff augmentation:
-# the config of W&B run ehull_adamw_wsd_5x_cfg-20260916-055000 (lemat_bulk_fmax1_stress) with
-# exactly one key changed, tokeniser.name lemat_bulk_fmax1_sg_multiplicity -> der_tokenizer_v1,
-# for an apples-to-apples comparison of the augmentation fix under classifier-free guidance.
-# der_tokenizer_v1 augments site_symmetries together with sites_enumeration; see its yaml and
-# docs/wyckoff_augmentation_audit.md. The cascade still uses only elements, site_symmetries and
-# sites_enumeration, so the extra fields in that tokeniser are not model inputs.
+# ehull_adamw_wsd_5x_cfg.yaml (lemat_bulk_ehull/) trained on the corrected Wyckoff augmentation.
+# It is the config of W&B run ehull_adamw_wsd_5x_cfg-20260916-055000 (lemat_bulk_fmax1_stress)
+# with two changes and nothing else:
+#
+#   tokeniser.name lemat_bulk_fmax1_sg_multiplicity -> der_tokenizer_v1, which augments
+#     site_symmetries together with sites_enumeration (see its yaml and
+#     docs/wyckoff_augmentation_audit.md).
+#   model.cascade.augmented: [site_symmetries, sites_enumeration]. The reference file has no
+#     such key, and the trainer's default is no augmentation, so the reference run trained on
+#     canonical Wyckoff descriptions only and the old augmentation bug never reached it. A
+#     tokeniser swap alone would therefore have been a reseeded replicate. This run compares
+#     fixed augmentation against none. Both fields must be listed; they are sampled at the
+#     same variant index. multiplicity is not in the cascade.
 #
 # train_batch_size stays 50000: under DDP it is the global batch (docs/distributed_training.md),
 # so training on 4 GPUs takes the same optimiser steps as the 1-GPU reference run.
@@ -73,6 +79,10 @@ model:
   cascade:
     order:
       - elements
+      - site_symmetries
+      - sites_enumeration
+    # See the header: the one training-side change besides the tokeniser.
+    augmented:
       - site_symmetries
       - sites_enumeration
     is_target:
