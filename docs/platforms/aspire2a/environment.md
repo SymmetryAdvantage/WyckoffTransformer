@@ -151,7 +151,9 @@ steps 3-4 alone are enough — inside the container:
 ```
 
 The host *does* have a working git via `module load git/2.39.2`, which is what
-you want for anything touching the repo itself.
+you want for anything touching the repo itself. Git LFS (`git-lfs`) is installed
+as a standalone binary in `~/.local/bin/git-lfs`, which `module load git` detects
+automatically.
 
 ---
 
