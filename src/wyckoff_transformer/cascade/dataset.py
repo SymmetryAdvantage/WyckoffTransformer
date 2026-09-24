@@ -307,11 +307,11 @@ class AugmentedCascadeDataset():
                 these_augmentations = torch.cat([torch.cat(x, dim=0) for x in data[f"{augmented_field}_augmented"]],
                         dim=0)
                 storage_info = torch.iinfo(self.augmented_storage_dtype)
-                if these_augmentations.numel() and (these_augmentations.min() < storage_info.min
-                                                    or these_augmentations.max() > storage_info.max):
+                if these_augmentations.numel() and (these_augmentations.min().item() < storage_info.min
+                                                    or these_augmentations.max().item() > storage_info.max):
                     raise ValueError(
-                        f"{augmented_field} holds token ids in [{these_augmentations.min()}, "
-                        f"{these_augmentations.max()}], outside {self.augmented_storage_dtype}")
+                        f"{augmented_field} holds token ids in [{these_augmentations.min().item()}, "
+                        f"{these_augmentations.max().item()}], outside {self.augmented_storage_dtype}")
                 these_augmentations = these_augmentations.type(
                     self.augmented_storage_dtype).to(self.augmented_storage_device)
                 if self.pin_memory:

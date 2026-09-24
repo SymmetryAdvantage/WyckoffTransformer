@@ -58,3 +58,33 @@ class TestCascadeLoader(unittest.TestCase):
         self.assertEqual(len(batch1), 5)
         batch2 = loader.get_next_batch()
         self.assertEqual(len(batch2), 10)
+
+
+class TestAugmentedStorageBounds(unittest.TestCase):
+    def test_int16_tensor_against_int64_storage_does_not_overflow(self):
+        """Comparing an int16 tensor max to torch.iinfo(int64).max must not overflow."""
+        from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset
+        data = {
+            "elements": torch.tensor([[1, 2], [3, 4]], dtype=torch.int64),
+            "field_a": torch.tensor([[1, 2], [3, 4]], dtype=torch.int64),
+            "start": torch.tensor([1, 1], dtype=torch.int64),
+            "pure_sequence_length": torch.tensor([2, 2], dtype=torch.int64),
+            # Augmented variants stored in int16 with normal values
+            "field_a_augmented": [[torch.tensor([[1, 2], [80, 2]], dtype=torch.int16)],
+                                  [torch.tensor([[1, 2], [80, 2]], dtype=torch.int16)]],
+            "field_a_variants": torch.tensor([1, 1], dtype=torch.int64),
+        }
+        dataset = AugmentedCascadeDataset(
+            data=data,
+            cascade_order=["elements", "field_a"],
+            masks={"elements": 0, "field_a": 0},
+            pads={"elements": 0, "field_a": 0},
+            stops={"elements": 0, "field_a": 0},
+            num_classes={"elements": 100, "field_a": 100},
+            start_field="start",
+            augmented_fields=["field_a"],
+            batch_size=2,
+            augmented_storage_dtype=None,  # defaults to dtype = int64
+        )
+        self.assertEqual(dataset.num_examples, 2)
+
