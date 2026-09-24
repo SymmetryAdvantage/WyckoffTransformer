@@ -9,6 +9,11 @@
 #     the null indicator) -- as in the LeMat CFG run; see docs/classifier_free_guidance.md
 #     for why the indicator is 0 on conditioned rows.
 #
+#   tokeniser der_tokenizer_v1 -> der_tokenizer_v1_e_above_hull, the same config plus the
+#     e_above_hull column, which der_tokenizer_v1 does not store (it asks for LeMat's
+#     energy_above_hull and skips the missing column). Token ids differ between the two
+#     builds; the vocabularies are the same.
+#
 # Width is the base MP-20 generator's, not the LeMat 5x one: 27136 training structures.
 # Sample with `--guidance-scale`.
 model:
@@ -79,6 +84,6 @@ optimisation:
   clip_grad_norm: 10.0
   epochs: 1000000
 tokeniser:
-  name: der_tokenizer_v1
+  name: der_tokenizer_v1_e_above_hull
 evaluation:
   n_structures_to_generate: 10000

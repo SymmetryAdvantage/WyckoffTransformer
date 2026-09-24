@@ -562,7 +562,7 @@ class TestShippedGuidanceConfig(unittest.TestCase):
 
 
 class TestShippedMP20GuidanceConfig(unittest.TestCase):
-    """The MP-20 CFG run is the MP-20 unconditional run plus e_hull guidance, nothing else."""
+    """The MP-20 CFG run is the MP-20 unconditional run plus e_hull guidance and its column."""
 
     ROOT = Path(__file__).resolve().parents[3] / "yamls" / "models" / "mp_20" / "der"
 
@@ -575,9 +575,12 @@ class TestShippedMP20GuidanceConfig(unittest.TestCase):
             "model.WyckoffTrainer_args.condition_feature",
             "model.WyckoffTrainer_args.condition_transform",
             "model.WyckoffTrainer_args.condition_dropout",
-            "model.CascadeTransformer_args.condition_dim"})
-        # MP-20's column name, not LeMat-Bulk's energy_above_hull.
+            "model.CascadeTransformer_args.condition_dim",
+            "tokeniser.name"})
+        # MP-20's column name, not LeMat-Bulk's energy_above_hull, which is all that
+        # der_tokenizer_v1 stores; its sibling adds the column.
         self.assertEqual(cfg["model.WyckoffTrainer_args.condition_feature"], "e_above_hull")
+        self.assertEqual(cfg["tokeniser.name"], "der_tokenizer_v1_e_above_hull")
         self.assertEqual(cfg["model.CascadeTransformer_args.condition_dim"], 2)
 
 
