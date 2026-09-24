@@ -530,6 +530,7 @@ class WyckoffTrainer():
         optimisation_config: dict,
         device: torch.DeviceObjType,
         augmented_storage_device: Optional[torch.DeviceObjType] = None,
+        augmented_storage_dtype: Optional[str] = None,
         batch_size: Optional[int] = None,
         train_batch_size: Optional[int] = None,
         val_batch_size: Optional[int] = None,
@@ -582,6 +583,8 @@ class WyckoffTrainer():
             optimisation_config: Configuration dictionary for optimizer and scheduler.
             device: Torch device to use for training.
             augmented_storage_device: Device to store augmented data on (if different from training device).
+            augmented_storage_dtype: dtype to store augmented data in, e.g. "int16"; batches are
+                cast back to the training dtype when drawn. None keeps the training dtype.
             batch_size: Deprecated. Use train_batch_size instead.
             train_batch_size: Mini-batch size for training.
             val_batch_size: Mini-batch size for validation.
@@ -798,6 +801,7 @@ class WyckoffTrainer():
                 start_dtype=start_dtype,
                 device=self.device,
                 augmented_storage_device=augmented_storage_device,
+                augmented_storage_dtype=augmented_storage_dtype,
                 target_name=target_name,
                 extra_fields=extra_fields)
             self.train_loader = AugmentedCascadeLoader.from_dataset(
@@ -871,6 +875,7 @@ class WyckoffTrainer():
                 start_dtype=start_dtype,
                 device=device,
                 augmented_storage_device=augmented_storage_device,
+                augmented_storage_dtype=augmented_storage_dtype,
                 target_name=target_name,
                 extra_fields=extra_fields,
                 )
@@ -899,6 +904,7 @@ class WyckoffTrainer():
                 start_dtype=start_dtype,
                 device=device,
                 augmented_storage_device=augmented_storage_device,
+                augmented_storage_dtype=augmented_storage_dtype,
                 target_name=target_name,
                 extra_fields=extra_fields,
             )

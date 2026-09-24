@@ -182,6 +182,7 @@ class AugmentedCascadeDataset():
         start_dtype: torch.dtype = torch.int64,
         device: str = "cpu",
         augmented_storage_device: Optional[str] = None,
+        augmented_storage_dtype: Optional[torch.dtype|str] = None,
         target_name = None,
         extra_fields: Optional[List[str]] = None):
         """
@@ -244,6 +245,12 @@ class AugmentedCascadeDataset():
             The device to store augmented data. If None, uses the same `device`
             as the main data. This is useful for storing large augmented datasets
             on CPU RAM while main data and computations are on GPU. Defaults to None.
+            augmented_storage_dtype (Optional[torch.dtype | str], optional):
+            The dtype the augmented variants are stored in, e.g. torch.int16 or "int16".
+            Batches are gathered from the store and cast to `dtype` before they leave
+            `get_augmentation`, so nothing downstream sees it. The store is the bulk of
+            the resident data when augmenting, and int64 is 4x what the token ids need.
+            If None, uses `dtype`. Defaults to None.
             target_name (Optional[str], optional):
             The key in `data` for the target variable, if any. The corresponding
             value `data[target_name]` should be a `torch.Tensor`. Defaults to None.
@@ -259,6 +266,13 @@ class AugmentedCascadeDataset():
         else:
             self.augmented_storage_device = torch.device(augmented_storage_device)
         self.pin_memory = (self.augmented_storage_device.type == "cpu" and self.device.type != "cpu")
+        self.dtype = dtype
+        if augmented_storage_dtype is None:
+            self.augmented_storage_dtype = dtype
+        elif isinstance(augmented_storage_dtype, str):
+            self.augmented_storage_dtype = getattr(torch, augmented_storage_dtype)
+        else:
+            self.augmented_storage_dtype = augmented_storage_dtype
         self.batch_size = batch_size
         self.num_examples = len(data[cascade_order[0]])
         self.fix_batch_size = fix_batch_size
@@ -291,7 +305,15 @@ class AugmentedCascadeDataset():
             # It will be used in torch.gather
             for augmented_field in augmented_fields:
                 these_augmentations = torch.cat([torch.cat(x, dim=0) for x in data[f"{augmented_field}_augmented"]],
-                        dim=0).type(dtype).to(self.augmented_storage_device)
+                        dim=0)
+                storage_info = torch.iinfo(self.augmented_storage_dtype)
+                if these_augmentations.numel() and (these_augmentations.min() < storage_info.min
+                                                    or these_augmentations.max() > storage_info.max):
+                    raise ValueError(
+                        f"{augmented_field} holds token ids in [{these_augmentations.min()}, "
+                        f"{these_augmentations.max()}], outside {self.augmented_storage_dtype}")
+                these_augmentations = these_augmentations.type(
+                    self.augmented_storage_dtype).to(self.augmented_storage_device)
                 if self.pin_memory:
                     these_augmentations = these_augmentations.pin_memory()
                 self.augmentation_data_store[cascade_order.index(augmented_field)] = \
@@ -465,7 +487,7 @@ class AugmentedCascadeDataset():
         selection_indices = selection_start.unsqueeze(1) + torch.arange(
             self.max_sequence_length, device=self.augmented_storage_device, dtype=selection_start.dtype)
 
-        return {cascade_index: gather_var_dim(store, 1, selection_indices).to(self.device) for
+        return {cascade_index: gather_var_dim(store, 1, selection_indices).to(self.device, dtype=self.dtype) for
                 cascade_index, store in self.augmentation_data_store.items()}
 
 
