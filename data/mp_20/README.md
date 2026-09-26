@@ -35,3 +35,18 @@ Please consider citing the following paper:
 
 
 
+
+## Energy corrections (added 2026-09-26, not part of the upstream CDVAE README)
+
+`formation_energy_per_atom` and `e_above_hull` are Materials Project GGA/GGA+U values
+**with the `MaterialsProject2020Compatibility` (MP2020) anion and +U corrections applied**,
+not the legacy scheme and not raw energies. No uncorrected energy is included, so the
+corrections cannot be undone from these files. Recomputing from MP's raw entry energies, MP2020
+reproduces 89.1% of rows within 1 meV/atom, against 41.7% for the legacy scheme.
+
+MP-20 energies are therefore on the same scale as the MP2020-corrected DFT energies of the
+WyFormer DFT samples, but **not** as LeMat-Bulk's raw PBE(+U) energies; see
+`docs/e_hull_definitions.md`. The legacy MP API now serves legacy-scheme values that do not
+match MP-20, so it is no reference for these numbers. Evidence and method are in
+`docs/archive/mp20_energy_corrections.md`, and the check is in
+`scripts/check_mp20_energy_corrections.py`.
