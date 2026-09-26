@@ -108,6 +108,9 @@ class TestTheEAboveHullSibling:
         parent = OmegaConf.to_container(config)
         assert sibling.pop("name") == "der_tokenizer_v1_e_above_hull"
         parent.pop("name")
+        # Obsolete since mp_20's cache names the column energy_above_hull, which the
+        # parent already carries; the flag is the only other difference allowed.
+        assert "energy_above_hull" in sibling.pop("obsolete")
         scalars = sibling["sequence_fields"]["no_processing"]
         assert scalars == parent["sequence_fields"]["no_processing"] + ["e_above_hull"]
         sibling["sequence_fields"]["no_processing"] = parent["sequence_fields"]["no_processing"]

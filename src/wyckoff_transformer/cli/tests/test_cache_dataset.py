@@ -6,8 +6,39 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from wyckoff_transformer import dataset_manifest
 from wyckoff_transformer.cli import cache_dataset as cli
 from wyckoff_transformer.dataset_cache import load_cache
+
+TOY_MANIFEST = """
+name: toy
+status: current
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: none}
+  reference: lemat_bulk_pbe
+fields:
+  energy_above_hull:
+    column: e_above_hull
+    energy: {quantity: energy_above_hull, extent: per_atom}
+  formation_energy_per_atom:
+    column: e_form
+    energy: {quantity: formation_energy, extent: per_atom}
+duplicates:
+  formation_energy_per_atom: e_form
+"""
+
+
+def use_manifests(test: unittest.TestCase, root: Path, **manifests: str) -> None:
+    """Point the manifest registry at a directory holding just these, for one test."""
+    directory = root / "manifests"
+    directory.mkdir()
+    for name, text in manifests.items():
+        (directory / f"{name}.yaml").write_text(text)
+    p = patch.object(dataset_manifest, "MANIFEST_DIR", directory)
+    p.start()
+    test.addCleanup(p.stop)
+    dataset_manifest.load_manifest.cache_clear()
+    test.addCleanup(dataset_manifest.load_manifest.cache_clear)
 
 
 class TestColumnsToCarry(unittest.TestCase):
@@ -157,9 +188,15 @@ class TestCacheDataset(unittest.TestCase):
             pd.DataFrame({
                 "immutable_id": [f"{split}-{i}" for i in range(rows)],
                 "cif": [f"cif-{split}-{i}" for i in range(rows)],
-                "energy_above_hull": [0.1 * i for i in range(rows)],
+                "e_above_hull": [0.1 * i for i in range(rows)],
+                "e_form": [-0.5 * i for i in range(rows)],
+                # A builder's copy of e_form under the canonical name, which the
+                # manifest says to verify and drop.
+                "formation_energy_per_atom": [-0.5 * i for i in range(rows)],
                 "elements": ["['Na']"] * rows,
             }).set_index("immutable_id").to_csv(self.data / f"{split}.csv.gz")
+        use_manifests(self, self.root, toy=TOY_MANIFEST,
+                      old_toy="name: old_toy\nstatus: obsolete\nreason: superseded by toy\n")
 
         frame_record = TestCacheSplit._record
         patcher = patch.object(cli, "Pool")
@@ -184,6 +221,39 @@ class TestCacheDataset(unittest.TestCase):
     def test_labels_are_carried_without_being_named(self):
         frames = cli.cache_dataset("toy")
         self.assertIn("energy_above_hull", frames["train"].columns)
+
+    def test_columns_get_their_canonical_names(self):
+        frames = cli.cache_dataset("toy")
+        columns = set(frames["train"].columns)
+        self.assertTrue({"energy_above_hull", "formation_energy_per_atom"} <= columns)
+        self.assertFalse({"e_above_hull", "e_form"} & columns)
+        self.assertEqual(list(frames["train"]["formation_energy_per_atom"]), [0.0, -0.5, -1.0])
+
+    def test_a_duplicate_that_differs_from_its_original_is_refused(self):
+        path = self.data / "train.csv.gz"
+        frame = pd.read_csv(path, index_col=0)
+        frame["formation_energy_per_atom"] = 1.0
+        frame.to_csv(path)
+        with self.assertRaisesRegex(ValueError, "declared a copy"):
+            cli.cache_dataset("toy")
+
+    def test_the_field_definitions_are_recorded(self):
+        from wyckoff_transformer.dataset_cache import build_info
+
+        cli.cache_dataset("toy")
+        recorded = build_info(self.root / "cache" / "toy", "train")["options"]
+        self.assertEqual(recorded["manifest"], "toy")
+        self.assertEqual(recorded["fields"],
+                         dataset_manifest.load_manifest("toy").fields_record())
+        dataset_manifest.check_cache_matches("toy", recorded["fields"])
+
+    def test_an_obsolete_dataset_is_refused_unless_allowed(self):
+        with self.assertRaises(dataset_manifest.ObsoleteDatasetError):
+            cli.cache_dataset("old_toy")
+        with self.assertLogs(dataset_manifest.logger, "WARNING"):
+            frames = cli.cache_dataset("old_toy", allow_obsolete_dataset=True)
+        # No manifest fields: nothing renamed, nothing recorded.
+        self.assertIn("e_above_hull", frames["train"].columns)
 
     def test_a_split_that_is_absent_is_skipped_not_fatal(self):
         (self.data / "test.csv.gz").unlink()

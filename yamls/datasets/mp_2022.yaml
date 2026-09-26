@@ -1,0 +1,7 @@
+name: mp_2022
+status: obsolete
+reason: >-
+  A paper-era cache of Matbench Discovery's MP-2022 set. Use only to analyse runs already trained on it.
+description: >-
+  Not labelled: nothing here records what its energy columns mean, so a model trained
+  on it has unknown energy provenance and every compatibility check refuses it.

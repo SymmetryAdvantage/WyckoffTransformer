@@ -43,6 +43,9 @@ import numpy as np
 import pandas as pd
 import torch
 
+from wyckoff_transformer.energy_fields import check_compatible
+from wyckoff_transformer.field_provenance import check_against_dataset, target_field
+
 logger = logging.getLogger(__name__)
 
 TARGET = "gene_min_formation_energy_per_atom"
@@ -233,16 +236,32 @@ def validate(
     return report
 
 
-def load_correction(directory: Path, kappa: Optional[float] = None) -> Optional[ResidualCorrection]:
+def load_correction(directory: Path, kappa: Optional[float] = None, regressor=None,
+                    allow_incompatible_energy: bool = False) -> Optional[ResidualCorrection]:
     """The correction fitted on every honest residual, at the validated kappa.
 
     Returns ``None`` when validation found it does not help on held-out genes and
     no kappa was forced: a correction that makes test predictions worse is not
     one a run should select with.
+
+    Args:
+        regressor: The regressor the correction will be applied to.  Its target must
+            mean what the target of the regressor the residuals were measured on
+            meant; a table built before that was recorded is accepted with a warning.
     """
     directory = Path(directory)
     with open(directory / VALIDATION_FILE, "rt", encoding="utf-8") as handle:
         report = json.load(handle)
+    if regressor is not None:
+        built_with = report.get("regressor_field_provenance")
+        if built_with is None:
+            logger.warning("%s does not record which regressor's target its residuals were "
+                           "measured on; trusting it.", directory / VALIDATION_FILE)
+        else:
+            check_compatible(
+                target_field(built_with), target_field(regressor.field_provenance or {}),
+                f"residuals in {directory} vs the regressor they correct",
+                allow=allow_incompatible_energy)
     if kappa is None:
         if not report["correction_helps"]:
             logger.warning(
@@ -309,6 +328,10 @@ def build(
     from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_split  # noqa: PLC0415
 
     out_dir = Path(out_dir)
+    # The residual is prediction minus the dataset's own target: meaningless unless the
+    # two are the same energy.
+    check_against_dataset(regressor.field_provenance or {}, dataset,
+                          "measuring a regressor's residuals")
     out_dir.mkdir(parents=True, exist_ok=True)
     cache = dataset_cache_dir(dataset)
 
@@ -381,6 +404,7 @@ def build(
         "augmentation_samples": augmentation_samples,
         "held_out_rows": int(len(held_out)), "unseen_genes": int(len(unseen)),
         "known_genes": int(len(unique)),
+        "regressor_field_provenance": regressor.field_provenance,
     })
     with open(out_dir / VALIDATION_FILE, "wt", encoding="utf-8") as handle:
         json.dump(report, handle, indent=1)

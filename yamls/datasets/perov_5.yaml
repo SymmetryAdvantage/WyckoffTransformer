@@ -1,0 +1,7 @@
+name: perov_5
+status: obsolete
+reason: >-
+  The Perov-5 benchmark, from the WyFormer paper era; its heat_* columns are not on any energy scale used elsewhere. Use only to analyse runs already trained on it.
+description: >-
+  Not labelled: nothing here records what its energy columns mean, so a model trained
+  on it has unknown energy provenance and every compatibility check refuses it.

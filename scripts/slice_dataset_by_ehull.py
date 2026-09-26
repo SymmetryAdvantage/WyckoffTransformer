@@ -15,6 +15,8 @@ import torch
 
 from wyckoff_transformer.dataset_cache import (
     cache_exists, load_cache, provenance, save_cache)
+from wyckoff_transformer.dataset_manifest import (
+    ManifestNotFound, load_manifest, refuse_if_obsolete_dataset)
 from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.tokenization import load_tensor_cache, save_tensor_cache
 
@@ -89,10 +91,20 @@ def slice_dataframe_cache(
             len(filtered_df),
         )
 
+    # A slice only drops rows, so every column keeps the meaning the source's manifest
+    # gives it; recorded so the slice's own manifest can be checked against it.
+    source_name = Path(source_path).name
+    present = set().union(*(df.columns for df in filtered_pd.values()))
+    try:
+        declared = load_manifest(source_name).fields_record()
+    except ManifestNotFound:
+        declared = None  # only reachable with --allow-obsolete-dataset
+    fields = None if declared is None else {
+        name: record for name, record in declared.items() if name in present}
     logger.info("Saving filtered DataFrame cache to %s ...", target_path)
     save_cache(filtered_pd, target_path, provenance(
-        "slice_dataset_by_ehull", sliced_from=Path(source_path).name,
-        ehull_cutoff=ehull_cutoff))
+        "slice_dataset_by_ehull", sliced_from=source_name,
+        ehull_cutoff=ehull_cutoff, manifest=Path(target_path).name, fields=fields))
     return filtered_pd
 
 
@@ -111,9 +123,20 @@ def main():
                         help="Upper bound for energy_above_hull (inclusive, in eV/atom)")
     parser.add_argument("--cache-dir", type=Path, default=None,
                         help="Cache root directory (default: cache_root())")
+    parser.add_argument("--allow-obsolete-dataset", action="store_true",
+                        help="Slice a source dataset yamls/datasets/ marks obsolete.")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    refuse_if_obsolete_dataset(args.source_dataset, "slicing",
+                               allow=args.allow_obsolete_dataset)
+    try:
+        load_manifest(args.target_dataset)
+    except ManifestNotFound:
+        logger.warning(
+            "%s has no manifest in yamls/datasets/, so nothing will train on the slice "
+            "until one is added -- with 'parent: %s'.", args.target_dataset,
+            args.source_dataset)
 
     root = args.cache_dir if args.cache_dir is not None else cache_root()
     source_dir = root / args.source_dataset

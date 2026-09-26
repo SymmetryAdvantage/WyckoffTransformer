@@ -1,11 +1,19 @@
-# LeMat-Bulk datasets
-`lemat_bulk_fmax1_stress` is the only current variant. Use it for new work, and follow
-`docs/lemat_bulk_pipeline.md` to rebuild any of it.
+# Datasets and what their energies mean
+Whether a dataset may be used, and what each of its fields means, lives in
+`yamls/datasets/<name>.yaml` -- see `docs/energy_fields.md`. The current ones are
+`lemat_bulk_fmax1_stress` (and its `_ehull01` slice), `mp_20`, `mp_2026_gga_gap` and
+`formula_energy`; `lemat-bulk` is a source they are built from. Every other dataset,
+and any without a manifest, is obsolete: use it **only** to analyse runs already
+trained on it. Training, caching and tokenising refuse it unless
+`--allow-obsolete-dataset` is given, and reading one warns. Follow
+`docs/lemat_bulk_pipeline.md` to rebuild the LeMat variant.
 
-Every other LeMat variant in `data/` and `cache/` — `lemat_bulk_fmax1`,
-`lemat_bulk_ehull`, `lemat_bulk_ehull_wp20`, and the `_pilot` subsamples — is superseded.
-Use them **only** to analyse runs already trained on them, never for new training,
-evaluation or caching.
+A column name does not say which energy it holds -- `energy_above_hull` is raw PBE on
+LeMat and MP2020-corrected on MP -- so never compare two energies by name. Name
+columns canonically (`energy_fields.canonical_id`), never after a model or tokeniser,
+label every energy field in its dataset's manifest, and combine energies only through
+`energy_fields.check_compatible`. Trained models record their fields' definitions in
+`field_provenance.json`.
 
 # Where data lives
 Untracked datasets, `cache/`, `runs/` and W&B's directory live outside the checkout,

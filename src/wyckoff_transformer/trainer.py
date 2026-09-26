@@ -26,6 +26,20 @@ from wandb.sdk.data_types._private import MEDIA_TMP
 from wyckoff_transformer.dataset_cache import (
     available_splits, build_info, dataset_cache_dir, load_split)
 from wyckoff_transformer.paths import cache_root, runs_root
+from wyckoff_transformer.dataset_manifest import (
+    check_cache_matches, refuse_if_obsolete_dataset, warn_if_obsolete_dataset)
+from wyckoff_transformer.field_provenance import (
+    CONFIG_KEY as FIELD_PROVENANCE_KEY,
+    PROVENANCE_FILENAME,
+    alias_stored_columns,
+    build_field_provenance,
+    check_against_dataset,
+    load_field_provenance,
+    recorded_field_provenance,
+    require_resolved,
+    requested_fields,
+    write_field_provenance,
+)
 from wyckoff_transformer.distributed import DistributedContext, SINGLE_PROCESS
 from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, AugmentedCascadeLoader, TargetClass
 from wyckoff_transformer.cascade.model import CascadeTransformer
@@ -432,6 +446,10 @@ class WyckoffTrainer():
     # Fixed seed for the schedule_free_lag evaluations, so x and z are compared on identical
     # batches and successive checkpoints are comparable to each other.
     LAG_EVAL_SEED = 20260831
+
+    #: What the model's condition and target fields mean; set by `from_config`, and None
+    #: for a trainer built any other way. See `wyckoff_transformer.field_provenance`.
+    field_provenance: Optional[dict] = None
 
     #: Whether `scheduler` is step-indexed (WSD and friends, stepped after every optimiser
     #: step) rather than metric-driven (ReduceLROnPlateau, stepped on the validation loss).
@@ -1565,10 +1583,23 @@ class WyckoffTrainer():
                     no_test: bool = False,
                     resume: bool = False,
                     reschedule: bool = False,
-                    distributed: DistributedContext = SINGLE_PROCESS):
+                    distributed: DistributedContext = SINGLE_PROCESS,
+                    allow_incompatible_energy: bool = False):
+        """Build a trainer, and its model, from a run config.
+
+        Also settles what the model's fields mean (`field_provenance`, see
+        `wyckoff_transformer.field_provenance`): a run that recorded it keeps its own
+        and, when datasets are loaded, has it checked against the dataset as it is
+        now -- `allow_incompatible_energy` downgrades a mismatch to a warning. A run
+        that predates recording gets it inferred from its dataset's manifest.
+        """
         if run_path is None:
             run_path = runs_root()
         config = OmegaConf.create(config_dict)
+        if config.get("dataset") is not None:
+            warn_if_obsolete_dataset(config.dataset, "loading a model configured for it")
+        recorded_provenance = recorded_field_provenance(config, run_path)
+        field_provenance = recorded_provenance
         if config.model.WyckoffTrainer_args.get("multiclass_next_token_with_order_permutation", False) and \
             not config.model.CascadeTransformer_args.learned_positional_encoding_only_masked:
 
@@ -1579,6 +1610,22 @@ class WyckoffTrainer():
             tensors, tokenisers, token_engineers = load_tensors_and_tokenisers(
                 config.dataset, config.tokeniser.name, use_cached_tensors=use_cached_tensors,
                 tokenizer_path=run_path / "wyckoff_processor.json" if not use_cached_tensors else None)
+            # A tensor cache built before its dataset's columns were renamed holds a field
+            # under its old name; the model finds it under the name it asks for either way.
+            alias_stored_columns(config.dataset, requested_fields(config).values(),
+                                 list(tensors.values()))
+            try:
+                cache_build = build_info(dataset_cache_dir(config.dataset), "train")
+            except (FileNotFoundError, KeyError):
+                cache_build = None
+            check_cache_matches(
+                config.dataset, ((cache_build or {}).get("options") or {}).get("fields"))
+            if recorded_provenance is not None:
+                check_against_dataset(
+                    recorded_provenance, config.dataset,
+                    "loading a trained model with its dataset", allow=allow_incompatible_energy)
+            else:
+                field_provenance = build_field_provenance(config, cache_build, recorded=False)
             processor = WyckoffProcessor(
                 config=config.get("tokeniser", {}),
                 tokenisers=tokenisers,
@@ -1634,6 +1681,8 @@ class WyckoffTrainer():
                     f"Missing {distribution_path}. This file is required for generation without datasets.")
             distribution = cls.load_start_token_distribution_file(distribution_path)
             max_sequence_length = int(distribution["max_sequence_length"])
+            if field_provenance is None:
+                field_provenance = load_field_provenance(config)
         # The conditioning width is derived data, not a design choice: it follows the list of
         # conditioning features and, when the composition is one of them, the element
         # vocabulary of whichever dataset the run uses. Fill it in rather than making every
@@ -1685,7 +1734,7 @@ class WyckoffTrainer():
         if cascade_is_target is None:
             cascade_is_target = {field: False for field in config.model.cascade.order}
 
-        return cls(
+        trainer = cls(
             model, train_data, val_data, tokenisers, token_engineers, config.model.cascade.order,
             cascade_is_target,
             config.model.cascade.get("augmented", None),
@@ -1706,6 +1755,8 @@ class WyckoffTrainer():
             reschedule=reschedule,
             distributed=distributed,
             **config.model.WyckoffTrainer_args)
+        trainer.field_provenance = field_provenance
+        return trainer
 
 
     @classmethod
@@ -2608,7 +2659,10 @@ class WyckoffTrainer():
                         best_model_artifact = wandb.Artifact(
                             name=f"best_model_{wandb.run.id}",
                             type="model",
-                            metadata={"epoch": epoch})
+                            # What the weights' input and output fields mean travels with
+                            # them: an artifact fetched on its own is still interpretable.
+                            metadata={"epoch": epoch,
+                                      "field_provenance": self.field_provenance})
                         best_model_artifact.add_file(best_model_params_path)
                         wandb.log_artifact(best_model_artifact)
                     train_tqdm.set_description(
@@ -3036,6 +3090,11 @@ def check_resume_config(
             f"Cannot verify the config of the run being resumed: {saved_config_path} is missing.")
     saved = flatten_config(OmegaConf.to_container(OmegaConf.load(saved_config_path), resolve=True))
     current = flatten_config(OmegaConf.to_container(OmegaConf.create(config_dict), resolve=True))
+    # What the fields mean is recorded beside the config, not in it; a config that carries
+    # it anyway -- one rebuilt from a W&B run -- is not a different config for that.
+    for flat in (saved, current):
+        for key in [k for k in flat if k.split(".")[0] == FIELD_PROVENANCE_KEY]:
+            del flat[key]
     differences = []
     rescheduled = []
     for key in sorted(set(saved) | set(current)):
@@ -3061,12 +3120,23 @@ def train_from_config(
     no_test: bool = False,
     resume: bool = False,
     reschedule: bool = False,
-    distributed: DistributedContext = SINGLE_PROCESS):
+    distributed: DistributedContext = SINGLE_PROCESS,
+    allow_obsolete_dataset: bool = False):
     """Train the run W&B has open, then generate from and evaluate its best weights.
 
     Under DDP every rank calls this with the W&B run of the same id -- disabled everywhere
     but rank 0 -- and rank 0 alone writes the run directory, logs artifacts and generates.
+
+    Args:
+        allow_obsolete_dataset: Start a new run on a dataset its manifest marks obsolete
+            (or that has none). A resumed run is existing work and only warns.
     """
+    dataset = config_dict.get("dataset")
+    if dataset is not None:
+        if resume:
+            warn_if_obsolete_dataset(dataset, "resuming a run started on it")
+        else:
+            refuse_if_obsolete_dataset(dataset, "training", allow=allow_obsolete_dataset)
 
     if run_path is None:
         run_path = runs_root()
@@ -3115,7 +3185,22 @@ def train_from_config(
             save_package_data(this_run_path)
         # The other ranks build their models from that copy.
         distributed.barrier()
+    # Before any data is loaded: a field the dataset's manifest does not declare has no
+    # meaning to record, so there is nothing to train on.
+    require_resolved(config_dict)
     trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule, distributed=distributed)
+    provenance_path = this_run_path / PROVENANCE_FILENAME
+    if (distributed.is_main and not provenance_path.exists()
+            and isinstance(trainer.field_provenance, dict)):
+        # What the model's fields mean, next to its weights and in the W&B run -- not in
+        # config.yaml, which a resumed run has to reproduce exactly. A run resumed from
+        # before this was recorded keeps "recorded: false": its provenance is inferred.
+        if not resume:
+            trainer.field_provenance["recorded"] = True
+        write_field_provenance(trainer.field_provenance, this_run_path)
+        wandb.config.update({FIELD_PROVENANCE_KEY: trainer.field_provenance},
+                            allow_val_change=True)
+        wandb.save(str(provenance_path), base_path=str(this_run_path), policy="now")
     if not resume and distributed.is_main:
         # A resumed run wrote all of these on its first attempt, and their W&B artifacts with
         # them; the config one is what check_resume_config just held it to.
@@ -3130,6 +3215,8 @@ def train_from_config(
         OmegaConf.save(config_dict, config_save_path)
         run_config_artifact = wandb.Artifact(name=f"run_config_{wandb.run.id}", type="config")
         run_config_artifact.add_file(config_save_path)
+        if provenance_path.exists():
+            run_config_artifact.add_file(provenance_path)
         wandb.log_artifact(run_config_artifact)
     trainer.train()
     if not distributed.is_main:

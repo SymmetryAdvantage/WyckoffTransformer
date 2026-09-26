@@ -76,10 +76,14 @@ def main() -> None:
     parser.add_argument("--displacement-filter", action="store_true",
                         help="also compute L(X); slow, so run it on a shortlist")
     parser.add_argument("--device", type=torch.device, default=None)
+    parser.add_argument("--allow-incompatible-energy", action="store_true",
+                        help="shortlist with an ensemble whose target is not the reference's "
+                             "formation energy; the differences are logged")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO,
                         format="%(asctime)s %(message)s")
+    T.check_ensemble_reference(args.ensemble, args.reference, args.allow_incompatible_energy)
 
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     formulas = read_formulas(args.formulas, args.formula)

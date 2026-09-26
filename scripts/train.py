@@ -9,6 +9,7 @@ import torch._dynamo
 torch._dynamo.config.cache_size_limit = 128  # default is 64, set to 128 to avoid cache misses
 
 from wyckoff_transformer.tokenization import refuse_if_obsolete, warn_if_obsolete
+from wyckoff_transformer.dataset_manifest import refuse_if_obsolete_dataset
 from wyckoff_transformer.paths import runs_root, wandb_dir
 from wyckoff_transformer.distributed import init_distributed, shutdown_distributed
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT  # noqa: E402
@@ -51,6 +52,9 @@ def main():
         help="Train on a tokeniser configuration marked obsolete. Only for "
              "reproducing a previous run; the reason it is obsolete is logged, "
              "and the resulting model inherits whatever it says.")
+    parser.add_argument("--allow-obsolete-dataset", action="store_true",
+        help="Start a run on a dataset yamls/datasets/ marks obsolete, or has no manifest "
+             "for. Only for reproducing a previous run; the reason is logged.")
     parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY,
                         help="W&B entity to log under. Pinned by default so a run's home does not "
                              "depend on the shell's W&B configuration.")
@@ -85,6 +89,10 @@ def main():
         tags = []
     config['name'] = args.config.stem
     config['dataset'] = args.dataset
+    # Before W&B opens a run for it: an obsolete dataset must not leave an empty run behind.
+    # A resumed run is existing work, so it only warns (train_from_config does that).
+    if not args.resume:
+        refuse_if_obsolete_dataset(args.dataset, "training", allow=args.allow_obsolete_dataset)
     if args.compile_model is not None:
         config['model']['WyckoffTrainer_args']['compile_model'] = args.compile_model
 
@@ -156,9 +164,9 @@ def main():
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed, allow_obsolete_dataset=args.allow_obsolete_dataset)
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed, allow_obsolete_dataset=args.allow_obsolete_dataset)
     shutdown_distributed(distributed)
 
 

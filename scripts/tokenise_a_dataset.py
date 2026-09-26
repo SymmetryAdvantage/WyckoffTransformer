@@ -5,6 +5,7 @@ from operator import itemgetter
 import logging
 
 from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_cache
+from wyckoff_transformer.dataset_manifest import refuse_if_obsolete_dataset
 from wyckoff_transformer.tokenization import (
     TENSOR_CACHE_SUFFIX,
     WyckoffProcessor,
@@ -25,6 +26,9 @@ def main():
              "physical cores, which is wrong inside a cgroup-limited batch job: on a 128-core "
              "node holding 16 CPUs it forks 128 workers over a 5.8 GB frame and gets OOM-killed. "
              "Set it to the CPUs the job actually owns.")
+    parser.add_argument("--allow-obsolete-dataset", action="store_true",
+        help="Tokenise a dataset yamls/datasets/ marks obsolete -- e.g. to rebuild the "
+             "tensors an old model needs to be re-scored.")
     tokenizer_source = parser.add_mutually_exclusive_group(required=True)
     tokenizer_source.add_argument("--tokenizer-path", type=Path, help="Load a saved WyckoffProcessor (.json)")
     tokenizer_source.add_argument("--new-tokenizer", action="store_true",
@@ -36,6 +40,7 @@ def main():
     # Re-tokenising an obsolete config is legitimate -- it is how a cache an old
     # model needs is rebuilt -- so this says so rather than refusing.
     warn_if_obsolete(config, "re-tokenising a dataset")
+    refuse_if_obsolete_dataset(args.dataset, "tokenising", allow=args.allow_obsolete_dataset)
     tokenizer_root_path = Path(__file__).parent.parent.resolve() / "yamls" / "tokenisers"
     tokenizer_full_name = args.config_file.resolve().relative_to(tokenizer_root_path).with_suffix('')
     if config.name != str(tokenizer_full_name):

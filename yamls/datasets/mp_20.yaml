@@ -1,0 +1,25 @@
+name: mp_20
+status: current
+description: >-
+  MP-20 as distributed with CDVAE: Materials Project structures with at most 20 sites.
+  Its energies are MP GGA/GGA+U with MP2020 corrections applied, against the MP hull
+  of the day CDVAE pulled them; no raw energy is shipped, so the corrections cannot
+  be undone (data/mp_20/README.md).
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: MaterialsProject2020Compatibility}
+  reference: mp_cdvae_2021
+fields:
+  formation_energy_per_atom:
+    energy: {quantity: formation_energy, extent: per_atom}
+  energy_above_hull:
+    column: e_above_hull
+    energy: {quantity: energy_above_hull, extent: per_atom}
+    description: >-
+      Called e_above_hull in the CDVAE CSVs; renamed at cache build.  The
+      der_tokenizer_v1_e_above_hull tokeniser existed only to carry the old name.
+  gene_min_formation_energy_per_atom:
+    energy: {quantity: formation_energy, extent: per_atom, aggregate: gene_min}
+    description: Minimum formation_energy_per_atom over rows sharing the augmented gene.
+  band_gap:
+    quantity: band_gap
+    description: MP's band gap at the time of the pull, eV.

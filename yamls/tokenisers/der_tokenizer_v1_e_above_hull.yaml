@@ -1,5 +1,10 @@
 # For the code to work, must be the same as the file name
 name: der_tokenizer_v1_e_above_hull
+obsolete: >-
+  It existed only to carry MP-20's old column name, e_above_hull. Since 2026-09-26 the
+  mp_20 cache renames it to the canonical energy_above_hull (yamls/datasets/mp_20.yaml),
+  which der_tokenizer_v1 already carries; use der_tokenizer_v1. Models trained with
+  this one keep loading.
 # der_tokenizer_v1 plus one scalar column, e_above_hull, and nothing else --
 # TestTheEAboveHullSibling in test_der_tokenizer.py holds it there.
 #

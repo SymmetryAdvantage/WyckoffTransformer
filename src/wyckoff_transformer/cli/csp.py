@@ -53,8 +53,13 @@ def load_trainer(
     wandb_entity: str = WANDB_ENTITY,
     wandb_project: str = WANDB_PROJECT,
     load_datasets: bool = False,
+    allow_incompatible_energy: bool = False,
 ) -> WyckoffTrainer:
-    """Load a trained model from any of the three sources the other CLIs accept."""
+    """Load a trained model from any of the three sources the other CLIs accept.
+
+    The trainer carries `field_provenance`: what its condition and target fields mean,
+    as recorded at training or inferred for an older run.
+    """
     import wandb  # noqa: PLC0415
 
     if hf_model:
@@ -72,7 +77,7 @@ def load_trainer(
         raise ValueError("No model source given")
     trainer = WyckoffTrainer.from_config(
         config, device=device, use_cached_tensors=load_datasets, run_path=run_path,
-        load_datasets=load_datasets)
+        load_datasets=load_datasets, allow_incompatible_energy=allow_incompatible_energy)
     # Consumers that compare scalar predictions across energy conventions need
     # the dataset identity even when loading without the dataset tensors.
     trainer.training_dataset_name = str(config.get("dataset", "")) or None

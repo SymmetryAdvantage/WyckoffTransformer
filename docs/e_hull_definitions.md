@@ -10,7 +10,7 @@ rules for keeping them apart.
 
 | # | name in code | what it is | energy source | reference set | sign |
 |---|---|---|---|---|---|
-| 1 | `e_hull`, `e_form` in `lemat_pbe_ehull.csv.gz` | distance above hull, eV/atom | PBE `energy_corrected` (MP2020-corrected) | the whole LeMat-Bulk PBE archive, self-referentially | any |
+| 1 | `e_hull`, `e_form` in `lemat_pbe_ehull.csv.gz` | distance above hull, eV/atom | PBE(+U) `energy_corrected` — despite the name, LeMat's raw `energy`, **no** MP2020 anion/+U correction (see below) | the whole LeMat-Bulk PBE archive, self-referentially | any |
 | 2 | `energy_above_hull` in the training caches | (1) clipped at zero | as (1) | as (1) | ≥0 |
 | 3 | `e_hull_at_composition`, `hull_energy` | the hull's *formation energy* at a composition, eV/atom | as (1) | rows of (1) within 1 meV/atom of the hull | any |
 | 4 | `e_above_hull` in `protocol/structures.csv` | distance above hull, eV/atom | one MLIP's total energy | `LeMat-Bulk-MLIP-Hull`, that MLIP's own split | any, incl. negative |
@@ -62,6 +62,30 @@ holds for the current table too.
 **The energy scales are identical.** LeMat's `true_energy` equals our
 `energy_corrected` for **100%** of those rows (`|Δ| < 1e-6` eV/atom). There is
 no correction, functional or reference offset between them to reconcile.
+
+**`energy_corrected` is uncorrected.** The `compatible_pbe` archive has a single
+`energy` column; `scripts/process_lemat.py` copies it into a column named
+`energy_corrected`, and `hull_table` builds `PDEntry`s from it with no
+`MaterialsProject2020Compatibility` pass. The archive's energy is itself raw:
+of the 27,347 MP rows `scripts/recover_mp_forces.py` identified by energy
+(`cache/mp_forces_recovery/runs/full/identify.parquet`), all match the MP task's
+uncorrected `output.energy` to µeV — including the 8,555 oxides with a +U metal,
+where an MP2020 correction would move the total by eV (checked 2026-09-26,
+commit `b6725db`). So every label derived from (1) — `energy_above_hull`,
+`formation_energy_per_atom`, `delta_e_polymorph` — is on the raw PBE/PBE+U scale.
+
+**(4) and (5) are uncorrected too.** `get_energy_above_hull` in LeMat-GenBench
+(`/home/kna/lemat-genbench` at `6fed9b5a`) builds plain `PDEntry`s from each split's
+`energy`; its `MaterialsProject2020Compatibility` code (`utils/e_above_hull.py`,
+`utils/relaxers/relaxers.py`) is not called from anywhere. The MLIPs themselves learned
+uncorrected energies: on 30,000 MP rows of `LeMat-Bulk-MLIP-Hull-All`, regressing
+`(<mlip>_energy − true_energy)/nsites` on the per-atom MP2020 correction gives a slope
+of −0.002 for `mace_mp` and +0.04–0.05 for `orb_conserv_inf`, `orb_direct_20`, `uma` and
+`mace_omat`, against 1 for a model trained on corrected energies. On +U oxides and
+fluorides, where the correction is −0.71 eV/atom (median), the MLIP–DFT gap is
++0.001 to +0.020 eV/atom. The OMat24-trained models sit about +0.07 eV/atom above
+LeMat's DFT on correction-free rows, which comes from the difference between
+OMat24's and MP's settings, not from a correction scheme (checked 2026-09-26).
 
 **Each hull split's `energy` column is its own model's.** `energy` matches
 `<mlip>_energy` exactly for all five MLIP splits, and for `dft` to 1.4e-6
@@ -154,16 +178,23 @@ therefore cannot be applied to those files either.
 
 ## Rules
 
-1. **Name the kind.** A distance above the hull is `e_above_hull` (protocol) or
-   `e_hull` (archive); the hull's energy at a composition is
-   `e_hull_at_composition` or `hull_energy`. Never introduce a third spelling
-   for either.
+1. **Name the kind, canonically.** A dataset column holding a distance above
+   the hull is `energy_above_hull`, and the hull's formation energy at a
+   composition is `hull_formation_energy_per_atom`
+   ([energy_fields.md](energy_fields.md) §2). The older spellings still on disk
+   -- `e_above_hull` (protocol outputs, MP-20's CSVs), `e_hull` (archive),
+   `e_hull_at_composition`, `hull_energy` -- are mapped by the dataset
+   manifests. Never introduce another.
 2. **Never mix an MLIP energy with the PBE hull, or two MLIPs.** `--mlip` is
    restricted to published hulls for exactly this reason.
-3. **Record provenance.** The protocol writes `manifest.json["hull"]` — repo,
-   split, revision, entry count. Anything new that computes a hull energy should
-   record where its reference came from, because the number cannot be traced
-   afterwards.
+3. **Record provenance.** Every energy field's definition is an `EnergyField`
+   ([energy_fields.md](energy_fields.md)): dataset fields in
+   `yamls/datasets/`, a model's in its `field_provenance.json`, the protocol's
+   in `manifest.json["hull"]` (repo, split, revision, entry count, and
+   `energy_field`). Anything new that computes a hull energy records one, because
+   the number cannot be traced afterwards. The reference ids used there:
+   (1)-(3) are `lemat_bulk_pbe`; (4) and (5) are
+   `lemat_bulk_mlip_hull/<split>@70d505bb`; (6) has none.
 4. **Use (3), not (1), when comparing against a *prediction*.** The screeners
    predict formation energies; the hull level is what they must beat.
 5. **Do not use (6) for new work.** Its reference is not reproducible from this

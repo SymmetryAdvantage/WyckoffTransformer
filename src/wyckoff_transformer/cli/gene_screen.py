@@ -28,6 +28,9 @@ from wyckoff_transformer.gene_energy import (
     GENE_MIN_FORMATION_ENERGY_COLUMN,
     build_clean_relaxation_condition,
 )
+from wyckoff_transformer.dataset_manifest import file_formation_energy_field
+from wyckoff_transformer.energy_fields import check_compatible
+from wyckoff_transformer.field_provenance import target_field
 from wyckoff_transformer.paths import resolve_store_path
 from wyckoff_transformer.prediction import (
     build_tokenised_prediction_tensors,
@@ -67,6 +70,24 @@ def load_reference(path: Path) -> pd.DataFrame:
     )
     reference = reference.dropna(subset=["full_formula", "chemsys", "energy_corrected"])
     return reference.set_index("immutable_id")
+
+
+def check_regressor_reference(regressor, reference_path: Path,
+                              allow_incompatible_energy: bool = False) -> list[str]:
+    """Refuse a regressor whose target is not the formation energy the hull is built on.
+
+    The hull comes from *reference_path*, whose meaning its dataset manifest gives;
+    the regressor's target from its field provenance.  A gene-minimum target is
+    compared with per-row energies on purpose -- the aggregate is not a scale.
+
+    Returns:
+        The differences, when ``allow_incompatible_energy`` let them through.
+    """
+    return check_compatible(
+        file_formation_energy_field(reference_path),
+        target_field(getattr(regressor, "field_provenance", None) or {}),
+        f"hull reference {reference_path} vs the regressor's target",
+        allow=allow_incompatible_energy)
 
 
 def validate_regressor(regressor) -> None:
@@ -194,6 +215,10 @@ def main() -> None:
                         help="Write only genes whose predicted energy is below the hull.")
     parser.add_argument("--augmentation-samples", type=int, default=1)
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"))
+    parser.add_argument("--allow-incompatible-energy", action="store_true",
+                        help="Screen with a regressor whose target is not the reference's "
+                             "formation energy (other DFT settings, correction or reference "
+                             "set). The differences are logged.")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -205,6 +230,7 @@ def main() -> None:
         wandb_entity=args.wandb_entity,
         wandb_project=args.wandb_project,
     )
+    check_regressor_reference(regressor, args.reference, args.allow_incompatible_energy)
     scored = score_genes(
         load_genes(args.genes),
         regressor,

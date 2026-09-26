@@ -424,13 +424,73 @@ def predict(
     }, index=data.formulas)
 
 
-def save_ensemble(models: Sequence[FormulaEnergyModel], path: Path, config: TrainConfig) -> None:
+def ensemble_field_provenance(table: Path, recorded: bool = True) -> Optional[dict]:
+    """What an ensemble trained on *table* predicts, from the table's dataset manifest.
+
+    ``None`` for a table no manifest names: its energies have no known definition.
+    """
+    from wyckoff_transformer.dataset_manifest import (  # noqa: PLC0415
+        formation_energy_field, table_for_file)
+
+    found = table_for_file(table)
+    if found is None:
+        return None
+    manifest, name = found
+    target = formation_energy_field(manifest, name)
+    return {"format": 1, "dataset": manifest.name, "table": name, "recorded": recorded,
+            "fields": {"target": None if target is None else target.to_dict()}}
+
+
+def save_ensemble(models: Sequence[FormulaEnergyModel], path: Path, config: TrainConfig,
+                  table: Optional[Path] = None) -> None:
+    """Save the members, with what their target means when the *table* is known."""
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         "config": config.__dict__,
         "provenance_features": list(PROVENANCE_FEATURES),
         "state_dicts": [model.state_dict() for model in models],
+        "field_provenance": ensemble_field_provenance(table) if table is not None else None,
     }, path)
+
+
+def check_ensemble_reference(ensemble: Path, reference: Path,
+                             allow_incompatible_energy: bool = False) -> List[str]:
+    """Refuse an ensemble whose target is not the formation energy *reference*'s hull uses.
+
+    Returns:
+        The differences, when ``allow_incompatible_energy`` let them through.
+    """
+    from wyckoff_transformer.dataset_manifest import file_formation_energy_field  # noqa: PLC0415
+    from wyckoff_transformer.energy_fields import EnergyField, check_compatible  # noqa: PLC0415
+
+    provenance = load_ensemble_field_provenance(ensemble)
+    target = None
+    if provenance is not None and provenance["fields"].get("target"):
+        target = EnergyField.from_dict(provenance["fields"]["target"])
+    return check_compatible(
+        file_formation_energy_field(reference), target,
+        f"hull reference {reference} vs formula ensemble {ensemble}",
+        allow=allow_incompatible_energy)
+
+
+def load_ensemble_field_provenance(path: Path) -> Optional[dict]:
+    """What a saved ensemble's target means: recorded, or inferred for a legacy one.
+
+    An ensemble saved before the field provenance was recorded, but stamped with
+    the ``lemat_bulk_pbe`` energy scale, was trained on the default formula table;
+    its provenance is inferred from that table's manifest (``"recorded": False``).
+    Anything else is ``None``: unknown.
+    """
+    from wyckoff_transformer.formula_energy.dataset import DEFAULT_TABLE  # noqa: PLC0415
+
+    payload = torch.load(resolve_store_path(path), map_location="cpu", weights_only=False)
+    if payload.get("field_provenance") is not None:
+        return payload["field_provenance"]
+    if payload["config"].get("energy_scale") == LEMAT_BULK_PBE_ENERGY_SCALE:
+        logger.warning("%s records no field provenance; inferring it from %s, the table "
+                       "the lemat_bulk_pbe energy scale names.", path, DEFAULT_TABLE)
+        return ensemble_field_provenance(DEFAULT_TABLE, recorded=False)
+    return None
 
 
 def main() -> None:
@@ -535,7 +595,7 @@ def main() -> None:
 
     models, histories = train_ensemble(train, val, config, device, n_models=n_models,
                                        on_epoch=on_epoch)
-    save_ensemble(models, out_path, config)
+    save_ensemble(models, out_path, config, table=table_path)
     print(f"wrote {out_path} ({n_models} models, pad width {max_elements})")
 
     if run is not None:

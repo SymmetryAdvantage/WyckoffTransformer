@@ -72,6 +72,12 @@ Not tracked -- too large for git, and replicated by `store_sync.sh` instead:
 | `unique_fingerprints.parquet` | BAWL novelty reference, copied from LeMat-GenBench; see `wyckoff_transformer.evaluation.bawl_reference` |
 | every `cache/<dataset>` | `wyformer-cache-dataset`, then `scripts/tokenise_a_dataset.py` |
 
+Whether each dataset is current or obsolete, and what its energy columns mean
+(DFT settings, correction, reference hull), is recorded in
+`yamls/datasets/<name>.yaml`, not here; see `docs/energy_fields.md`. Only
+`lemat_bulk_fmax1_stress` (with its `_ehull01` slice), `mp_20`, `mp_2026_gga_gap`
+and `formula_energy` are current.
+
 Two entries have **no** recorded provenance and no producer in this repository.
 Establish it before relying on either, and do not assume they can be rebuilt:
 

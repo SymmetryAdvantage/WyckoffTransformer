@@ -1,0 +1,52 @@
+name: mp_2026_gga_gap
+status: current
+description: >-
+  Materials Project release 2026.04.13: every material with a GGA/GGA+U band gap and
+  structure, energies from MP's GGA_GGA+U thermo documents
+  (scripts/build_mp_gga_band_gap.py, data/mp_2026_gga_gap/README.md).
+built_by: scripts/build_mp_gga_band_gap.py
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: MaterialsProject2020Compatibility}
+  reference: mp_gga_gga_u_2026.04.13
+fields:
+  energy_per_atom:
+    column: mp_dft_energy_per_atom
+    primary: true
+    energy: {quantity: energy, extent: per_atom}
+    description: MP's corrected energy per atom (the scale its hull is built on).
+  energy_per_atom_uncorrected:
+    column: mp_dft_uncorrected_energy_per_atom
+    qualifier: uncorrected
+    energy:
+      quantity: energy
+      extent: per_atom
+      source: {method: dft, dft_settings: PBE_MP, correction: none}
+    description: The raw VASP energy per atom of the same entry.
+  formation_energy_per_atom:
+    column: mp_dft_formation_energy_per_atom
+    energy: {quantity: formation_energy, extent: per_atom}
+  energy_above_hull:
+    column: mp_dft_energy_above_hull
+    energy: {quantity: energy_above_hull, extent: per_atom}
+  band_gap:
+    quantity: band_gap
+    description: GGA/GGA+U band gap, eV.
+  dft_run_type:
+    quantity: dft_run_type
+    description: >-
+      Run type of the band-gap task.  596 rows take their energies from the other run
+      type (README).
+  max_force:
+    quantity: max_force
+  max_force_missing:
+    quantity: max_force_missing
+  stress:
+    quantity: stress
+  stress_missing:
+    quantity: stress_missing
+# The builder copied the mp_dft_ columns under the bare names too; the copies are
+# verified equal to their originals at cache build and dropped, so the canonical names
+# are free for the renamed originals.
+duplicates:
+  formation_energy_per_atom: mp_dft_formation_energy_per_atom
+  energy_above_hull: mp_dft_energy_above_hull

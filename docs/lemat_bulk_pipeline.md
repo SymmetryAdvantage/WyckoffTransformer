@@ -216,7 +216,8 @@ anything; nothing in a split CSV or a cache records how it was made.
 | `cache/lemat_bulk_ehull_wp20` | 4,207,947 | ≤ 0.02 | holds none of those rows | no |
 | `cache/lemat_bulk_ehull_pilot` | 110,000 | ≤ 0.02 | holds none of those rows | no |
 
-Reading the table:
+Reading the table (the status of each is machine-readable in `yamls/datasets/`, which
+training, caching and tokenising enforce; see [energy_fields.md](energy_fields.md)):
 
 - **`*_stress` is current**, and data and cache hold the same 5,327,342 rows: the 5,258 ids
   over the 61-site cap are excluded before the split (`--exclude-ids`), so `--max-sites 61`

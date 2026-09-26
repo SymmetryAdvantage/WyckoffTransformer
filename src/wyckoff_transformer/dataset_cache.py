@@ -64,6 +64,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pymatgen.core import Element
 
+from wyckoff_transformer.dataset_manifest import warn_if_obsolete_dataset
 from wyckoff_transformer.paths import cache_root, resolve_store_path
 
 logger = logging.getLogger(__name__)
@@ -656,6 +657,7 @@ def load_split(
         KeyError: If it holds no *split*.
     """
     cache = resolve_cache(cache)
+    warn_if_obsolete_dataset(cache, "reading its cache")
     path = split_path(cache, split)
     if path.is_file():
         return _read_parquet_split(path, columns)
@@ -697,6 +699,7 @@ def iter_splits(
         KeyError: If a named split or column is missing.
     """
     cache = resolve_cache(cache)
+    warn_if_obsolete_dataset(cache, "reading its cache")
     if any(cache.glob("*.parquet")) or not legacy_path(cache).is_file():
         for split in splits if splits is not None else available_splits(cache):
             yield split, load_split(cache, split, columns)
