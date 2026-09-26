@@ -1,6 +1,6 @@
 # Rules of engagement: WyFormer's inference modes
 
-> **STATUS (2026-09-24).**
+> **STATUS (2026-09-26).**
 > - The composition layer, the four modes and the per-sampled-gene accounting
 >   are in `wyckoff_transformer.roe`.
 > - The tensor-space novelty and uniqueness checkers are in
@@ -8,8 +8,14 @@
 > - **broadside, fire-discipline and fire-control have been compared** at 1000
 >   reconstructions each. The backbone is the CFG model at
 >   `e_hull = 0.05`, w = 3; results are [below](#results).
-> - **torpedo-run is implemented and submitted, but has not reported yet**
->   ([below](#torpedo-run)). What it buys is still a hypothesis.
+> - **torpedo-run has been run** on the chemical-system backbone, with two paired
+>   arms from one pool ([below](#torpedo-run-results)).
+>   - Scoring each gene against a hull that includes the other candidates beat
+>     the DFT-hull ranking: MetaSUN 0.613 against 0.542 (p = 0.0015), at 20% less
+>     relaxation time.
+>   - SUN did not move (18 against 20).
+>   - A per-system residual correction of the energy predictor failed held-out
+>     validation, and was not used.
 
 Generating a (M)SUN structure is an attack on the convex hull: a candidate that
 lands below it does not merely pass a threshold, it redraws the hull beneath
@@ -290,15 +296,16 @@ Open:
 
 ## Torpedo-run
 
-> **Status (2026-09-24).** Implemented on branch `roe-torpedo` at commit
-> `6dce0f8`, and submitted to ASPIRE 2A with
-> `scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh`:
-> - PBS `25537541` is the full run. W&B run
->   `roe_torpedo_chemsys_sg_uncond_adanmw_wsd-20260924`, outputs in
+> **Status (2026-09-26).** Run on ASPIRE 2A on 2026-09-25, at commit `6dce0f8`
+> (branch `roe-torpedo`), with `scripts/platforms/aspire2a/roe_torpedo_in_pbs.sh`:
+> - PBS `25537541` is the full run: 2 h 41 min on one 4×A100 node. W&B run
+>   [`roe_torpedo_chemsys_sg_uncond_adanmw_wsd-20260924`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/aweaetcy),
+>   artifact of the same name. Outputs are in
 >   `$WYFORMER_RUNS/roe/torpedo_chemsys_sg_uncond_adanmw_wsd`.
-> - PBS `25537540` is the `--pilot`: 3 targets, 10 genes per arm.
+> - PBS `25537540` is the `--pilot` (3 targets, 10 genes per arm). W&B run
+>   [`gx5w6u4p`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/gx5w6u4p).
 >
-> No results yet.
+> Results are [below](#torpedo-run-results).
 
 Three things the other modes did not need had to be added before this mode could
 be fired.
@@ -330,7 +337,8 @@ The mechanics are in [the sampler's doc](chemical_system_sampler.md#aiming-at-ta
 composition. Candidates never compete with each other, which causes two
 problems:
 - Two hundred polymorphs of one formula predicted below the hull all look like
-  hits.
+  hits. This did not happen in the run below: both arms picked almost only
+  distinct formulas.
 - A ternary predicted below the DFT hull still looks like a hit when a binary in
   the same cohort is predicted lower still.
 
@@ -377,9 +385,25 @@ model.
   MAE.** κ is picked on the same test set, so a smaller gain cannot be told apart
   from that choice. Otherwise the run falls back to the raw prediction, with the
   known-gene substitution still applied.
-- The first measurement was a CPU smoke test on 10k rows per split: MAE 0.0385
-  raw, 0.0385 at the best κ (300), which is no gain. At that size most systems
-  have one or two residuals, so the full table is the real test.
+- **On the full table the correction failed.** Validation used 169,205 honest
+  residuals: 84,584 to fit (val) and 84,621 to test.
+
+  | | test MAE, eV/atom | AUC for DFT `e_hull <= 0.05` |
+  |---|---|---|
+  | raw prediction | **0.03918** | **0.9652** |
+  | global offset only | 0.03924 | 0.9652 |
+  | κ = 300 (best) | 0.03927 | 0.9652 |
+  | κ = 30 | 0.04022 | 0.9636 |
+  | κ = 10 | 0.04253 | 0.9593 |
+
+  Every κ is worse than no correction, and the smaller κ is (the more a system's
+  own residuals are trusted), the worse it gets. A system's mean residual on some
+  genes does not predict the residual on its other genes: at 50 meV MAE the
+  errors are gene-level, not system-level. The run therefore used the raw
+  prediction plus the known-gene substitution.
+- A CPU smoke test on 10k rows per split had pointed the same way (0.0385 raw
+  against 0.0385 at best), and so had the pilot's 50k rows (0.03787 against
+  0.03789).
 
 **Predictions average 8 equivalent Wyckoff descriptions** (`--augmentation-samples 8`).
 With one description, each call draws a random one. In the smoke test, the same
@@ -426,9 +450,10 @@ Nobody has measured it.
   | `joint` | joint | corrected (or raw plus known-gene DFT, if the correction fails validation) |
   | `reference` | DFT reference | raw: the selection the earlier modes used |
 
-  Both arms write all four `predicted_e_hull_<hull>_<energy>` columns they have
-  inputs for. The 2×2 can then be read off the union of the reconstructed genes
-  without relaxing anything again.
+  The `joint` arm's `cohort.csv` holds all four `predicted_e_hull_<hull>_<energy>`
+  columns for every gene in the pool. The reference arm only holds the
+  reference-hull ones, because the joint hull is computed only when it is
+  selected on.
 - **Reconstruction:** the protocol defaults (ORB `orb_conserv_inf`, reference
   `lemat_bulk_fmax1_stress`), 4 workers per GPU.
 - **Results:** one W&B run, `roe_torpedo_chemsys_sg_uncond_adanmw_wsd-<date>`.
@@ -438,6 +463,117 @@ Nobody has measured it.
 **Caveat:** the backbone differs from the CFG one that broadside, fire-discipline
 and fire-control used, so this run's rates are not directly comparable with those
 three. The comparison it supports is between its own two arms.
+
+### Torpedo-run results
+
+> **Result (2026-09-25, commit `6dce0f8`, W&B `aweaetcy`).** At 1000
+> reconstructions each from one 20,000-gene pool:
+> - **MetaSUN (free track):** the joint-hull arm made 613, the DFT-hull arm 542.
+>   That is +0.071, Fisher p = 0.0015.
+> - **SUN:** the same in both arms, 18 against 20.
+> - **Cost:** the joint arm was 24% more efficient per relaxation worker-hour for
+>   MetaSUN (59.6 against 47.9).
+>
+> What moved is metastability, not novelty. The genes only the DFT-hull ranking
+> picked are ones other candidates in the cohort undercut, and after relaxation
+> they land well above the hull.
+
+**The pool.**
+- 20,000 draws in 27 s on one A100, all formally valid.
+- They spread over 50 ternary targets and their binaries.
+- After the screen, 14,101 were unique and not in LeMat-Bulk. The other 29.5%
+  were duplicates or known genes, in line with the 34% seen in the smoke test.
+  So even inside a named system, the screen is not idle.
+- On their own against the DFT hull, 707 genes were predicted at or below it.
+  Against the joint hull, 400 were.
+
+| | `joint` | `reference` |
+|---|---|---|
+| selection | joint hull, raw + known-gene DFT | DFT hull, raw |
+| budget cut, predicted `e_hull` | 0.030 | 0.024 |
+| genes: binary / ternary | 585 / 415 | 513 / 487 |
+| distinct formulas | 963 | 948 |
+| valid structure | 0.953 | 0.930 |
+| novel structure | 0.850 | 0.842 |
+| metastable | **0.716** | 0.629 |
+| **MetaSUN** (free) | **0.613** [0.582, 0.643] | 0.542 [0.511, 0.573] |
+| MetaSUN, fixed-symmetry track | 0.382 | 0.343 (p = 0.077) |
+| SUN (free) | 0.018 [0.011, 0.028] | 0.020 [0.013, 0.031] |
+| SUN, fixed-symmetry track | 0.012 | 0.015 |
+| reconstruction trials | 2702 | 2734 |
+| **trials per MetaSUN** | **4.41** | 5.04 |
+| trials per SUN | 150 | 137 |
+| relaxation worker-hours (A100, 16 workers) | 10.3 | 11.3 |
+| mean atoms per trial | 29.2 | 30.7 |
+| **MetaSUN per worker-hour** | **59.6** | 47.9 |
+| SUN per worker-hour | 1.75 | 1.77 |
+| wall time | 79 min | 72 min |
+
+The table gives Wilson 95% intervals. Two caveats on the statistics:
+- The arms share 791 of their 1000 genes, so they are not independent. Pairing
+  lowers the variance of a difference, so the p-values are conservative.
+- The shared genes were relaxed once per arm. Their MetaSUN verdicts agree 84.8%
+  of the time (0.593 against 0.580 MetaSUN). That is the noise floor of a single
+  1000-gene reconstruction.
+
+**Where the gain comes from: the 209 genes each arm picked alone.**
+
+| | joint-only (209) | reference-only (209) |
+|---|---|---|
+| MetaSUN | **0.689** | 0.397 |
+| metastable | 0.861 | 0.550 |
+| valid structure | 0.990 | 0.880 |
+| median MLIP `e_above_hull` after relaxation | 0.026 | 0.092 |
+| median predicted `e_hull`, DFT hull | 0.027 | 0.010 |
+| SUN | 1 | 6 |
+| mean atoms | 19.2 | 26.5 |
+
+- **It is not polymorph crowding.** Both arms picked almost only distinct
+  formulas, with at most 3 genes per formula. The motivating failure (two hundred
+  polymorphs of one formula) did not occur on this backbone.
+- **It is compositional competition.** The reference-only genes look best
+  against the DFT hull alone. The joint hull scores them a median 0.042 eV/atom
+  higher, because other candidates in the cohort, often binaries, sit below them.
+  The relaxation agrees: they end up a median 0.092 eV/atom above the MLIP hull.
+- **A hypothesis for why that works:** the joint hull cancels the regressor's
+  shared local bias, by comparing a prediction with *other predictions* in the
+  same chemistry. That is what the residual correction tried and failed to do
+  from database residuals. This has not been tested directly.
+- **The reference-only picks are also where most of the SUN hits came from**
+  (6 against 1), and SUN is flat overall. The joint hull's competition therefore
+  costs some of the deepest-below-hull bets. At 18–20 hits per arm this is not
+  resolved.
+
+**Scores against outcomes, on the union of 1209 reconstructed genes.**
+- Within this already-selected set, the DFT-hull score is *anti*-correlated with
+  outcome: Spearman −0.26 against MLIP `e_above_hull`, and AUC 0.39 for MetaSUN.
+  In other words, lower predicted `e_hull` against the DFT hull meant *less*
+  likely metastable.
+- The joint score is flat on the same genes: Spearman −0.02, AUC 0.51.
+- These are selection-truncated: every gene here is in the best 5% of the pool.
+  They say the DFT-hull ordering is wrong at the top of the list, not that either
+  score is useless on the pool.
+
+**What the residuals bought.**
+- The per-system correction bought nothing and was not applied (see
+  [above](#d-a-hull-built-from-the-predictions-and-what-the-residuals-are-for)).
+- The known-gene substitution put the DFT energy in place of the prediction for
+  every known gene in the pool. That substitution only shapes the joint hull,
+  since the screen removes those genes afterwards.
+- Whether it contributed to the joint arm's gain separately from the joint hull
+  itself was not measured. The 2×2 would need a joint-raw arm without the
+  substitution.
+
+**Against the CFG backbone's modes** (not paired, and a different backbone):
+
+| | MetaSUN | SUN |
+|---|---|---|
+| this `joint` arm | 0.613 | 0.018 |
+| CFG fire-control on iapetus | 0.646 | 0.034 |
+
+The chemical-system backbone reaches nearly the same MetaSUN while choosing what
+it aims at. Its SUN is half, and it is not a CFG / `der_tokenizer_v1` model. A
+chemical-system model on that recipe is the obvious next backbone.
 
 ## The architecture
 
@@ -667,9 +803,11 @@ still a Python loop over rows -- and is not built here.
 
 ## Known limitations
 
-- **Torpedo-run has not reported yet.** What it buys is still a hypothesis. With
-  the budget now taken after every filter, its rank-before-screen ordering only
-  matters through the joint hull ([below](#a-budget-taken-after-every-filter)).
+- **Torpedo-run is one pool on a provisional backbone.** The joint hull's gain is
+  measured on one chemical-system checkpoint and one set of 50 targets.
+  - The rank-before-screen ordering only matters through the joint hull, and was
+    not varied.
+  - Nor were the target share (0.5) and the number of targets.
 - **One backbone, one pool, one budget.** The comparison above is a single
   10,000-gene pool from one guided checkpoint (CFG, `e_hull = 0.05`, w = 3) at
   one reconstruction budget, on one host. It says what these selections do to
