@@ -561,5 +561,28 @@ class TestShippedGuidanceConfig(unittest.TestCase):
         self.assertEqual(cfg["model.CascadeTransformer_args.condition_dim"], 2)
 
 
+class TestShippedMP20GuidanceConfig(unittest.TestCase):
+    """The MP-20 CFG run is the MP-20 unconditional run plus e_hull guidance and its column."""
+
+    ROOT = Path(__file__).resolve().parents[3] / "yamls" / "models" / "mp_20" / "der"
+
+    def test_only_the_conditioning_keys_differ(self):
+        from wyckoff_transformer.trainer import flatten_config
+        base = flatten_config(OmegaConf.to_container(OmegaConf.load(self.ROOT / "uncond_adamw_wsd.yaml")))
+        cfg = flatten_config(OmegaConf.to_container(OmegaConf.load(self.ROOT / "ehull_adamw_wsd_cfg.yaml")))
+        differing = {key for key in set(base) | set(cfg) if base.get(key) != cfg.get(key)}
+        self.assertEqual(differing, {
+            "model.WyckoffTrainer_args.condition_feature",
+            "model.WyckoffTrainer_args.condition_transform",
+            "model.WyckoffTrainer_args.condition_dropout",
+            "model.CascadeTransformer_args.condition_dim",
+            "tokeniser.name"})
+        # MP-20's column name, not LeMat-Bulk's energy_above_hull, which is all that
+        # der_tokenizer_v1 stores; its sibling adds the column.
+        self.assertEqual(cfg["model.WyckoffTrainer_args.condition_feature"], "e_above_hull")
+        self.assertEqual(cfg["tokeniser.name"], "der_tokenizer_v1_e_above_hull")
+        self.assertEqual(cfg["model.CascadeTransformer_args.condition_dim"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -96,3 +96,19 @@ def test_the_ops_actually_differ_between_variants_in_an_exposed_space_group():
     }
     assert len(by_variant) > 1, (
         "the variants of this gene must not all share one set of operations")
+
+
+class TestTheEAboveHullSibling:
+    """``der_tokenizer_v1_e_above_hull`` is ``der_tokenizer_v1`` plus MP-20's hull column."""
+
+    SIBLING = CONFIG.parent / "der_tokenizer_v1_e_above_hull.yaml"
+
+    def test_it_differs_only_in_the_name_and_the_extra_scalar(self, config):
+        sibling = OmegaConf.to_container(OmegaConf.load(self.SIBLING))
+        parent = OmegaConf.to_container(config)
+        assert sibling.pop("name") == "der_tokenizer_v1_e_above_hull"
+        parent.pop("name")
+        scalars = sibling["sequence_fields"]["no_processing"]
+        assert scalars == parent["sequence_fields"]["no_processing"] + ["e_above_hull"]
+        sibling["sequence_fields"]["no_processing"] = parent["sequence_fields"]["no_processing"]
+        assert sibling == parent
