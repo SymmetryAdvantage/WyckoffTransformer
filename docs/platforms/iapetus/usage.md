@@ -145,6 +145,21 @@ run wyformer-protocol-wandb <run-id> \
     --devices cuda:0,cuda:0,cuda:1,cuda:1,cuda:2 --workers-per-device 1
 ```
 
+For running single or multiple runs sequentially, use
+[`scripts/platforms/iapetus/protocol.sh`](../../../scripts/platforms/iapetus/protocol.sh):
+
+```bash
+# Single run:
+scripts/platforms/iapetus/protocol.sh <run-id>
+
+# Multiple runs from CLI arguments:
+scripts/platforms/iapetus/protocol.sh <run-id-1> <run-id-2> ...
+
+# Multiple runs read from a file (one per line, # comments ignored):
+scripts/platforms/iapetus/protocol.sh -f runs.txt
+```
+
+
 - **`--pyxtal-cores 6`, the physical core count.** Measured over the same 200
   genes at 6, 10 and 12 cores, twice each: 73, 73 and 68 s of pool time, with a
   28% spread *within* one setting -- no resolvable difference. What does move
