@@ -1,0 +1,16 @@
+name: lemat_bulk_ehull_pilot
+status: obsolete
+reason: >-
+  A 110,000-row subsample of lemat_bulk_ehull for pilots; superseded with it by lemat_bulk_fmax1_stress.
+  Use only to analyse runs already trained on it.
+description: >-
+  Its energy_above_hull is LeMat-Bulk raw PBE against the whole archive's hull -- the
+  same reference as lemat_bulk_fmax1_stress -- and is labelled so that models
+  conditioned on it keep their provenance.  Its other columns are not labelled.
+fields:
+  energy_above_hull:
+    energy:
+      quantity: energy_above_hull
+      extent: per_atom
+      source: {method: dft, dft_settings: PBE_MP, correction: none}
+      reference: lemat_bulk_pbe

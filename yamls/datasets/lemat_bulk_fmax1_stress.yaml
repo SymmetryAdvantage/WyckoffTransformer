@@ -1,0 +1,50 @@
+name: lemat_bulk_fmax1_stress
+status: current
+description: >-
+  LeMat-Bulk 'compatible_pbe', max_force <= 1 eV/A with the Materials Project forces
+  recovered from task documents, stress labels, at most 61 sites.  The current LeMat
+  variant.  Built by scripts/build_lemat_bulk_fmax.py and wyformer-cache-dataset;
+  docs/lemat_bulk_pipeline.md has the recipe.
+built_by: docs/lemat_bulk_pipeline.md
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: none}
+  reference: lemat_bulk_pbe
+fields:
+  formation_energy_per_atom:
+    energy: {quantity: formation_energy, extent: per_atom}
+    description: e_form of data/lemat-bulk/lemat_pbe_ehull.csv.gz.
+  energy_above_hull:
+    energy: {quantity: energy_above_hull, extent: per_atom}
+    description: >-
+      e_hull of lemat_pbe_ehull.csv.gz, clipped at zero only against float noise (one
+      row at -2.7e-15): the reference set contains every row, so it is non-negative by
+      construction.
+  delta_e_polymorph:
+    energy:
+      quantity: delta_e_polymorph
+      extent: per_atom
+      reference: "dataset:lemat_bulk_fmax1_stress"
+    description: >-
+      Energy per atom above the lowest-energy row of the same reduced formula among
+      this dataset's rows (all splits, after filtering).
+  gene_min_formation_energy_per_atom:
+    energy: {quantity: formation_energy, extent: per_atom, aggregate: gene_min}
+    description: >-
+      Minimum formation_energy_per_atom over all rows sharing the augmented Wyckoff
+      gene, over train, val and test (wyformer-cache-dataset
+      --observed-gene-minimum-target).
+  max_force:
+    quantity: max_force
+    description: >-
+      Maximum per-atom force, eV/A.  A provenance proxy, not a convergence label; see
+      docs/lemat_bulk_pipeline.md.
+  max_force_missing:
+    quantity: max_force_missing
+  stress_hydrostatic:
+    quantity: stress_hydrostatic
+    description: kBar, VASP sign (positive means compressed).
+  stress_von_mises:
+    quantity: stress_von_mises
+    description: kBar.
+  stress_missing:
+    quantity: stress_missing

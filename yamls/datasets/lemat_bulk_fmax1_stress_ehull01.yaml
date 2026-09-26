@@ -1,0 +1,9 @@
+name: lemat_bulk_fmax1_stress_ehull01
+status: current
+parent: lemat_bulk_fmax1_stress
+description: >-
+  The rows of lemat_bulk_fmax1_stress with energy_above_hull <= 0.1 eV/atom
+  (scripts/slice_dataset_by_ehull.py, docs/lemat_bulk_fmax1_stress_ehull01.md).  A
+  slice only drops rows, so every field keeps its parent's meaning -- including
+  delta_e_polymorph, which stays measured against the parent's polymorphs.
+built_by: scripts/slice_dataset_by_ehull.py

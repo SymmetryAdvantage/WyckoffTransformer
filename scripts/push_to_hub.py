@@ -5,6 +5,7 @@ Usage:
     push_to_hub.py <repo_id> --model-path <path>
 """
 import argparse
+import json
 import shutil
 import tempfile
 from pathlib import Path
@@ -19,6 +20,9 @@ REQUIRED_FILES = [
     "spacegroup_distribution.json",
     "wyckoffs_enumerated_by_ss.json",
 ]
+# What the model's condition and target fields mean (wyckoff_transformer.field_provenance).
+# A run trained before it was recorded has none; from_huggingface then infers it.
+PROVENANCE_FILE = "field_provenance.json"
 # The engineers and frozen tables the model was trained with. Runs that predate models
 # carrying them have none, and load against the package's.
 ENGINEERS_DIRNAME = "engineers"
@@ -64,6 +68,10 @@ def download_wandb_artifacts(run_path: str, target_dir: Path) -> None:
         if artifact_type == "processors" and engineers.is_dir():
             shutil.copytree(engineers, target_dir / ENGINEERS_DIRNAME, dirs_exist_ok=True)
             print(f"  Downloaded {ENGINEERS_DIRNAME}/ from {artifact_name}")
+    provenance = api.run(run_path).config.get("field_provenance")
+    if provenance is not None:
+        (target_dir / PROVENANCE_FILE).write_text(json.dumps(provenance, indent=2, sort_keys=True))
+        print(f"  Wrote {PROVENANCE_FILE} from the run's config")
 
 
 def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
@@ -74,6 +82,9 @@ def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
             raise FileNotFoundError(
                 f"Required file '{filename}' not found in '{model_dir}'."
             )
+    if not (model_dir / PROVENANCE_FILE).exists():
+        print(f"Warning: '{model_dir}' has no {PROVENANCE_FILE}; whoever loads the model "
+              "gets its field provenance inferred from the dataset's current manifest.")
     if not (model_dir / ENGINEERS_DIRNAME).is_dir():
         print(f"Warning: '{model_dir}' has no {ENGINEERS_DIRNAME}/; the published model "
               "will load against whichever engineers the installed package holds.")
@@ -84,7 +95,7 @@ def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
         folder_path=str(model_dir),
         repo_id=repo_id,
         repo_type="model",
-        allow_patterns=REQUIRED_FILES + [f"{ENGINEERS_DIRNAME}/*.json"],
+        allow_patterns=REQUIRED_FILES + [PROVENANCE_FILE, f"{ENGINEERS_DIRNAME}/*.json"],
     )
     print(f"Model pushed to https://huggingface.co/{repo_id}")
 

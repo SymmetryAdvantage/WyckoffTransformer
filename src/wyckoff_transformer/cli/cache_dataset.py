@@ -23,6 +23,12 @@ and a column named there and missing is an error.  See :func:`columns_to_carry`.
 a split into a pymatgen ``Structure`` and held them all, which for LeMat-Bulk is
 tens of gigabytes discarded a moment later.
 
+**Columns get their canonical names.**  ``yamls/datasets/<dataset>.yaml`` says
+what each field is called in the source CSVs and what it is called here; the
+cache carries the canonical name, and the manifest's field definitions are
+recorded in the build record (:func:`apply_manifest`).  An obsolete dataset is
+refused unless ``--allow-obsolete-dataset`` is given.
+
 **There is no reuse.**  Copying symmetry records from a cache built at the same
 tolerances was worth about six hours on LeMat-Bulk, and cost a subtlety per
 option -- a truncation that could only apply to the freshly computed rows, a
@@ -55,6 +61,8 @@ from wyckoff_transformer.data import (
 )
 from wyckoff_transformer.dataset_cache import (
     SPLITS, dataset_cache_dir, provenance, save_cache)
+from wyckoff_transformer.dataset_manifest import (
+    SPLITS_TABLE, DatasetManifest, ManifestNotFound, load_manifest, refuse_if_obsolete_dataset)
 from wyckoff_transformer.paths import data_path
 from wyckoff_transformer.preprocess_wychoffs import get_augmentation_dict
 from wyckoff_transformer.tokenization import load_wyckoff_mappings
@@ -214,6 +222,44 @@ def cache_split(
     return result
 
 
+def apply_manifest(frame: pd.DataFrame, manifest: DatasetManifest,
+                   where: str = "") -> pd.DataFrame:
+    """Give a split's columns their canonical names, as the dataset's manifest says.
+
+    Duplicates the manifest lists -- a builder's copy of a column under a second
+    name -- are checked equal to their original and dropped, so the canonical
+    name is free for the original to take.
+
+    Raises:
+        ValueError: A duplicate differs from its original, or a rename would
+            overwrite a column that is still there.
+    """
+    for copy, original in manifest.duplicates.get(SPLITS_TABLE, {}).items():
+        if copy in frame and original in frame:
+            if not frame[copy].equals(frame[original]):
+                raise ValueError(
+                    f"{where}: {copy!r} is declared a copy of {original!r} but differs "
+                    f"from it; the manifest is wrong about this dataset.")
+            frame = frame.drop(columns=copy)
+    frame = frame.drop(columns=[c for c in manifest.drop.get(SPLITS_TABLE, ()) if c in frame])
+    fields = manifest.fields(SPLITS_TABLE)
+    rename = {f.column: f.name for f in fields.values()
+              if f.column != f.name and f.column in frame}
+    clashing = [new for new in rename.values() if new in frame]
+    if clashing:
+        raise ValueError(f"{where}: renaming would overwrite {clashing}")
+    if rename:
+        logger.info("%s: renaming %s", where, rename)
+    return frame.rename(columns=rename)
+
+
+def fields_recorded(manifest: DatasetManifest, frames: dict[str, pd.DataFrame]) -> dict:
+    """The manifest's definitions of the fields the cache actually holds."""
+    present = set().union(*(frame.columns for frame in frames.values()))
+    return {name: record for name, record in manifest.fields_record(SPLITS_TABLE).items()
+            if name in present}
+
+
 def cache_dataset(
     dataset: str,
     max_sites: Optional[int] = None,
@@ -224,8 +270,15 @@ def cache_dataset(
     symmetry_a_tol: float = 5.0,
     sort_by_letter: bool = True,
     observed_gene_minimum_target: bool = False,
+    allow_obsolete_dataset: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Symmetrise every split of *dataset* and write the cache.  Returns the frames."""
+    refuse_if_obsolete_dataset(dataset, "caching", allow=allow_obsolete_dataset)
+    try:
+        manifest = load_manifest(dataset)
+    except ManifestNotFound:
+        # Only reachable with allow_obsolete_dataset: nothing to rename by, or record.
+        manifest = None
     dataset_dir = data_path(dataset)
     frames = {}
     for split in SPLITS:
@@ -241,6 +294,8 @@ def cache_dataset(
         frames[split] = cache_split(
             csv_path, carried, n_jobs, chunk_size, symmetry_precision,
             symmetry_a_tol, sort_by_letter, max_sites)
+        if manifest is not None:
+            frames[split] = apply_manifest(frames[split], manifest, where=str(csv_path))
     if not frames:
         raise FileNotFoundError(
             f"{dataset_dir} holds no {'/'.join(SPLITS)} CSV to cache.")
@@ -261,6 +316,10 @@ def cache_dataset(
         # present at cache time, so a cache built while a split was missing
         # carries a different target under the same column name.
         observed_gene_minimum_over=sorted(frames) if observed_gene_minimum_target else None,
+        # What each column means, as the manifest said when this was built; a later
+        # change to the manifest is then caught rather than silently relabelling it.
+        manifest=manifest.name if manifest is not None else None,
+        fields=fields_recorded(manifest, frames) if manifest is not None else None,
     )
     save_cache(frames, dataset_cache_dir(dataset), build)
     return frames
@@ -304,6 +363,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "cache now on disk did and therefore what makes a new one "
                              "comparable with them.")
     parser.set_defaults(sort_by_letter=True)
+    parser.add_argument("--allow-obsolete-dataset", action="store_true",
+                        help="Cache a dataset yamls/datasets/ marks obsolete, or has no "
+                             "manifest for. Only to reproduce an earlier cache.")
     parser.add_argument("--debug", action="store_true")
     return parser
 
@@ -332,6 +394,7 @@ def main() -> None:
         symmetry_a_tol=args.symmetry_a_tol,
         sort_by_letter=args.sort_by_letter,
         observed_gene_minimum_target=args.observed_gene_minimum_target,
+        allow_obsolete_dataset=args.allow_obsolete_dataset,
     )
     print(f"Cached {dataset_cache_dir(args.dataset)}: "
           f"{ {split: len(frame) for split, frame in frames.items()} }")

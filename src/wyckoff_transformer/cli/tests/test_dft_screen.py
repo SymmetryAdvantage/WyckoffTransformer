@@ -1,11 +1,16 @@
 """Tests for the DFT-only composition-plus-gene fixed-hull screen."""
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
+from wyckoff_transformer import dataset_manifest as dm
 from wyckoff_transformer.cli import dft_screen
+from wyckoff_transformer.energy_fields import IncompatibleEnergyFieldError
+from wyckoff_transformer.field_provenance import build_field_provenance
 
 
 def _gene_scores() -> pd.DataFrame:
@@ -36,7 +41,6 @@ class TestFormulaValidation(unittest.TestCase):
                 SimpleNamespace(
                     loss="mse",
                     location_features=(),
-                    energy_scale=dft_screen.formula_train.LEMAT_BULK_PBE_ENERGY_SCALE,
                 ),
                 (),
             )
@@ -47,7 +51,6 @@ class TestFormulaValidation(unittest.TestCase):
                 SimpleNamespace(
                     loss="censored",
                     location_features=("log1p_n_rows",),
-                    energy_scale=dft_screen.formula_train.LEMAT_BULK_PBE_ENERGY_SCALE,
                 ),
                 ("log1p_n_rows",),
             )
@@ -57,28 +60,61 @@ class TestFormulaValidation(unittest.TestCase):
             SimpleNamespace(
                 loss="censored",
                 location_features=("log1p_sys_entries_per_binary",),
-                energy_scale=dft_screen.formula_train.LEMAT_BULK_PBE_ENERGY_SCALE,
             ),
             ("log1p_sys_entries_per_binary",),
         )
 
-    def test_legacy_energy_scale_fails_closed_without_an_override(self):
-        legacy = SimpleNamespace(loss="censored", location_features=(), energy_scale=None)
-        with self.assertRaisesRegex(ValueError, "does not verify"):
-            dft_screen.validate_formula_ensemble(legacy, ())
-        dft_screen.validate_formula_ensemble(
-            legacy,
-            (),
-            allow_unverified_energy_scale=True,
-        )
 
-    def test_gene_critic_must_record_the_dft_training_dataset(self):
-        verified = SimpleNamespace(training_dataset_name="lemat_bulk_fmax1")
-        dft_screen.validate_gene_energy_scale(verified)
-        with self.assertRaisesRegex(ValueError, "does not verify"):
-            dft_screen.validate_gene_energy_scale(
-                SimpleNamespace(training_dataset_name="mlip_relaxations")
-            )
+
+def _gene_regressor(dataset: str, target: str = "gene_min_formation_energy_per_atom"):
+    """A stand-in regressor whose provenance is inferred from its dataset's manifest."""
+    config = {"dataset": dataset, "model": {"WyckoffTrainer_args": {
+        "target": "Scalar", "target_name": target, "condition_feature": "max_force"}}}
+    return SimpleNamespace(field_provenance=build_field_provenance(config, recorded=False))
+
+
+class TestEnergyFields(unittest.TestCase):
+    """All four energy inputs of the screen must mean the same thing."""
+
+    TABLE = Path("formula_table.parquet")
+    REFERENCE = Path("lemat_pbe_ehull.csv.gz")
+
+    def setUp(self):
+        labelled = {
+            self.TABLE: dm.formation_energy_field(
+                dm.load_manifest("formula_energy"), "formula_table"),
+            self.REFERENCE: dm.formation_energy_field(
+                dm.load_manifest("lemat-bulk"), "lemat_pbe_ehull"),
+        }
+        patcher = patch.object(dft_screen, "file_formation_energy_field",
+                               lambda path: labelled.get(Path(path)))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.formula = {"fields": {"target": labelled[self.TABLE].to_dict()}}
+
+    def test_todays_inputs_agree(self):
+        # The regressor dft-screen is run with today, trained on the superseded variant:
+        # same reference entry set, so its formation energies are the same quantity.
+        self.assertEqual(dft_screen.check_energy_fields(
+            _gene_regressor("lemat_bulk_fmax1"), self.formula, self.TABLE,
+            self.REFERENCE), [])
+
+    def test_an_mp2020_regressor_is_refused_unless_allowed(self):
+        mp_20 = _gene_regressor("mp_20")
+        with self.assertRaisesRegex(IncompatibleEnergyFieldError, "source.correction"):
+            dft_screen.check_energy_fields(mp_20, self.formula, self.TABLE, self.REFERENCE)
+        lines = dft_screen.check_energy_fields(
+            mp_20, self.formula, self.TABLE, self.REFERENCE, allow_incompatible_energy=True)
+        self.assertTrue(any("correction" in line for line in lines))
+
+    def test_an_unlabelled_input_is_refused(self):
+        with self.assertRaisesRegex(IncompatibleEnergyFieldError, "unknown"):
+            dft_screen.check_energy_fields(
+                _gene_regressor("lemat_bulk_fmax1"), self.formula, Path("elsewhere.parquet"),
+                self.REFERENCE)
+        with self.assertRaisesRegex(IncompatibleEnergyFieldError, "unknown"):
+            dft_screen.check_energy_fields(
+                _gene_regressor("alex_mp_20"), self.formula, self.TABLE, self.REFERENCE)
 
 
 class TestScoreCombination(unittest.TestCase):
@@ -186,7 +222,11 @@ class TestParser(unittest.TestCase):
             for option in action.option_strings
         }
         self.assertNotIn("--mlip", option_strings)
-        self.assertIn("--allow-unverified-energy-scale", option_strings)
+        self.assertIn("--allow-incompatible-energy", option_strings)
+        # The old name still works, for the commands already written down.
+        self.assertTrue(parser.parse_args(
+            ["genes.json", "--regressor-path", "r", "--allow-unverified-energy-scale"]
+        ).allow_incompatible_energy)
         self.assertEqual(
             parser.get_default("reference"),
             dft_screen.DEFAULT_REFERENCE,

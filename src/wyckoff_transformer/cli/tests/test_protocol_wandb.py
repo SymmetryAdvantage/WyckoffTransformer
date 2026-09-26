@@ -693,6 +693,8 @@ class TestGenerateGenes(unittest.TestCase):
         """The kept cohort is truncated, so the rejected fraction lives here or nowhere."""
         trainer = MagicMock()
         trainer.condition_features = ()
+        trainer.training_dataset_name = "mp_20"
+        trainer.field_provenance = {"format": 1, "dataset": "mp_20", "fields": {}}
         trainer.generate_structures.return_value = [{"i": i} for i in range(11)]
         manifest = self.out.parent / "manifest.json"
         with patch.object(pw, "load_trainer", return_value=trainer), \
@@ -707,6 +709,9 @@ class TestGenerateGenes(unittest.TestCase):
         self.assertEqual(recorded["sampling_temperature"], 0.7)
         self.assertEqual(recorded["generation_attempted"], 14)
         self.assertEqual(recorded["generation_formally_valid"], 11)
+        # What the generator was trained on, and what its fields meant, go with it.
+        self.assertEqual(recorded["generator_dataset"], "mp_20")
+        self.assertEqual(recorded["generator_field_provenance"]["dataset"], "mp_20")
         self.assertAlmostEqual(recorded["formal_gene_validity"], 11 / 14, places=4)
 
 

@@ -299,8 +299,12 @@ def main() -> None:
     parser.add_argument("--reference-tolerance", type=float, default=REFERENCE_TOLERANCE,
                         help="keep reference entries within this of the hull; see the constant")
     parser.add_argument("--device", type=torch.device, default=None)
+    parser.add_argument("--allow-incompatible-energy", action="store_true",
+                        help="score with an ensemble whose target is not the reference's "
+                             "formation energy; the differences are logged")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    T.check_ensemble_reference(args.ensemble, args.reference, args.allow_incompatible_energy)
     # reduce_formula announces every reduction. Generated cell formulas are
     # reducible more often than not, so at INFO this buries the tables.
     logging.getLogger("wyckoff_transformer.csp").setLevel(logging.WARNING)

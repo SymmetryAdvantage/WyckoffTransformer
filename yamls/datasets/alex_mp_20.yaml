@@ -1,0 +1,7 @@
+name: alex_mp_20
+status: obsolete
+reason: >-
+  The MatterGen Alex-MP-20 benchmark set, from the WyFormer paper era. Its energy_above_hull comes from an external pipeline whose settings, corrections and hull are not recorded here. Use only to analyse runs already trained on it.
+description: >-
+  Not labelled: nothing here records what its energy columns mean, so a model trained
+  on it has unknown energy provenance and every compatibility check refuses it.

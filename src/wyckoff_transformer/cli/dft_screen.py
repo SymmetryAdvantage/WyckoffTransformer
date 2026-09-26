@@ -7,7 +7,10 @@ This composes two existing, deliberately distinct estimators:
 * the gene regressor estimates the lowest PBE formation energy observed for a
   Wyckoff gene, used as that gene's attainable energy.
 
-Both predictions are compared independently with the same immutable PBE hull.
+Both predictions are compared independently with the same immutable PBE hull,
+and all four energy inputs -- the two models' targets, the formula table and the
+hull reference -- must carry the same energy definition
+(:func:`check_energy_fields`; ``docs/energy_fields.md``).
 The conservative joint score is their maximum, so a joint pass requires both
 estimators to put the candidate below the hull.  No MLIP energies, relaxation,
 or active-learning updates are used here.
@@ -30,7 +33,10 @@ import torch
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT
 from wyckoff_transformer.cli import gene_screen
 from wyckoff_transformer.cli.csp import load_trainer
+from wyckoff_transformer.dataset_manifest import file_formation_energy_field
+from wyckoff_transformer.energy_fields import EnergyField, check_compatible
 from wyckoff_transformer.evaluation.protocol import load_genes
+from wyckoff_transformer.field_provenance import target_field
 from wyckoff_transformer.formula_energy import train as formula_train
 from wyckoff_transformer.formula_energy.dataset import DEFAULT_TABLE
 from wyckoff_transformer.formula_energy.features import SYSTEM_FEATURES, SystemDensity
@@ -42,7 +48,6 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_FORMULA_ENSEMBLE = Path("runs/formula_energy/ensemble.pt")
 DEFAULT_REFERENCE = gene_screen.DEFAULT_REFERENCE
-DFT_GENE_DATASETS = frozenset({"lemat_bulk_fmax1"})
 RANKING_COLUMNS = (
     "composition_score_naive",
     "composition_score_adjusted",
@@ -55,25 +60,17 @@ RANKING_COLUMNS = (
 def validate_formula_ensemble(
     config,
     feature_names: Sequence[str],
-    allow_unverified_energy_scale: bool = False,
 ) -> None:
-    """Require a DFT floor estimator usable on never-computed formulas."""
+    """Require a DFT floor estimator usable on never-computed formulas.
+
+    Its energy definition is checked separately, by :func:`check_energy_fields`.
+    """
     if config.loss != "censored":
         raise ValueError(
             "The DFT attack screen requires a censored formula ensemble estimating "
             "the latent composition floor; an MSE ensemble estimates the observed "
             "archive bound instead."
         )
-    energy_scale = getattr(config, "energy_scale", None)
-    if energy_scale != formula_train.LEMAT_BULK_PBE_ENERGY_SCALE:
-        message = (
-            "The formula checkpoint does not verify the LeMat-Bulk PBE energy scale "
-            f"(recorded {energy_scale!r}). Retrain it with the current formula-energy "
-            "trainer or explicitly allow an unverified legacy checkpoint."
-        )
-        if not allow_unverified_energy_scale:
-            raise ValueError(message)
-        logger.warning(message)
     missing = set(config.location_features) - set(feature_names)
     if missing:
         raise ValueError(
@@ -89,20 +86,38 @@ def validate_formula_ensemble(
         )
 
 
-def validate_gene_energy_scale(
-    regressor,
-    allow_unverified_energy_scale: bool = False,
-) -> None:
-    """Require the observed-minimum critic trained on LeMat-Bulk DFT labels."""
-    dataset = getattr(regressor, "training_dataset_name", None)
-    if dataset not in DFT_GENE_DATASETS:
-        message = (
-            "The gene checkpoint does not verify a supported LeMat-Bulk DFT dataset "
-            f"(recorded {dataset!r}; expected one of {sorted(DFT_GENE_DATASETS)})."
-        )
-        if not allow_unverified_energy_scale:
-            raise ValueError(message)
-        logger.warning(message)
+def check_energy_fields(
+    gene_regressor,
+    formula_provenance,
+    formula_table_path: Path,
+    reference_path: Path,
+    allow_incompatible_energy: bool = False,
+) -> list[str]:
+    """Refuse to combine energies that do not share one definition.
+
+    The hull reference fixes the definition; the gene regressor's target, the
+    formula ensemble's target and the formula table must each be a formation
+    energy on the same DFT settings, correction and reference entry set.  A file
+    no dataset manifest names, or a model with no recorded or inferable
+    provenance, has an unknown definition and is refused too.
+
+    Returns:
+        The differences, when ``allow_incompatible_energy`` let them through.
+    """
+    reference = file_formation_energy_field(reference_path)
+    formula_target = None
+    if formula_provenance is not None and formula_provenance["fields"].get("target"):
+        formula_target = EnergyField.from_dict(formula_provenance["fields"]["target"])
+    lines = []
+    for what, field in (
+            ("gene regressor target", target_field(gene_regressor.field_provenance or {})),
+            ("formula ensemble target", formula_target),
+            (f"formula table {formula_table_path}",
+             file_formation_energy_field(formula_table_path))):
+        lines += check_compatible(
+            reference, field, f"DFT hull reference {reference_path} vs {what}",
+            allow=allow_incompatible_energy)
+    return lines
 
 
 def _verdict(score: pd.Series) -> pd.Series:
@@ -138,10 +153,9 @@ def predict_composition_floors(
     feature_names: Sequence[str],
     formula_table: pd.DataFrame,
     device: torch.device,
-    allow_unverified_energy_scale: bool = False,
 ) -> pd.DataFrame:
     """Predict the composition floor once for each formula in ``gene_scores``."""
-    validate_formula_ensemble(config, feature_names, allow_unverified_energy_scale)
+    validate_formula_ensemble(config, feature_names)
     frame = gene_scores.copy()
     frame["reduced_formula"] = reduced_keys(frame["formula"].tolist())
     hulls = _formula_hulls(frame)
@@ -257,10 +271,11 @@ def score_dft_genes(
     device: torch.device,
     augmentation_samples: int = 1,
     rank_by: str = "joint_score_adjusted",
-    allow_unverified_energy_scale: bool = False,
 ) -> pd.DataFrame:
-    """Score genes with the two DFT-trained estimators against one fixed PBE hull."""
-    validate_gene_energy_scale(gene_regressor, allow_unverified_energy_scale)
+    """Score genes with the two DFT-trained estimators against one fixed PBE hull.
+
+    The caller checks first that their energies agree (:func:`check_energy_fields`).
+    """
     gene_scores = gene_screen.score_genes(
         genes,
         gene_regressor,
@@ -274,7 +289,6 @@ def score_dft_genes(
         formula_feature_names,
         formula_table,
         device,
-        allow_unverified_energy_scale=allow_unverified_energy_scale,
     )
     return combine_scores(gene_scores, composition_predictions, formula_table, rank_by)
 
@@ -308,9 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--augmentation-samples", type=int, default=1)
     parser.add_argument("--device", type=torch.device, default=None)
     parser.add_argument(
-        "--allow-unverified-energy-scale",
+        "--allow-incompatible-energy", "--allow-unverified-energy-scale",
+        dest="allow_incompatible_energy",
         action="store_true",
-        help="accept legacy/custom inputs whose LeMat-Bulk PBE identity cannot be verified",
+        help="combine energy inputs whose definitions differ or are unknown; the "
+             "differences are logged. --allow-unverified-energy-scale is the old name.",
     )
     parser.add_argument("--debug", action="store_true")
     return parser
@@ -323,26 +339,6 @@ def main() -> None:
         format="%(asctime)s %(message)s",
     )
     device = args.device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if not args.allow_unverified_energy_scale:
-        expected_paths = {
-            "formula table": DEFAULT_TABLE,
-            "DFT reference": DEFAULT_REFERENCE,
-        }
-        supplied_paths = {
-            "formula table": args.formula_table,
-            "DFT reference": args.reference,
-        }
-        changed = [
-            name for name, expected in expected_paths.items()
-            if supplied_paths[name].resolve() != expected.resolve()
-        ]
-        if changed:
-            raise ValueError(
-                "Custom energy inputs cannot be identified as LeMat-Bulk PBE from "
-                f"their contents alone ({', '.join(changed)}). Pass "
-                "--allow-unverified-energy-scale only after verifying their provenance."
-            )
-
     gene_regressor = load_trainer(
         device=device,
         model_path=args.regressor_path,
@@ -353,6 +349,13 @@ def main() -> None:
     formula_models, formula_config, feature_names = formula_train.load_ensemble(
         args.formula_ensemble,
         device,
+    )
+    check_energy_fields(
+        gene_regressor,
+        formula_train.load_ensemble_field_provenance(args.formula_ensemble),
+        args.formula_table,
+        args.reference,
+        allow_incompatible_energy=args.allow_incompatible_energy,
     )
     formula_table = pd.read_parquet(
         resolve_store_path(args.formula_table),
@@ -369,7 +372,6 @@ def main() -> None:
         device,
         augmentation_samples=args.augmentation_samples,
         rank_by=args.rank_by,
-        allow_unverified_energy_scale=args.allow_unverified_energy_scale,
     )
     if args.joint_below_hull_only:
         joint_verdict = cast(pd.Series, scored["joint_score_adjusted_below_hull"])

@@ -156,6 +156,11 @@ different times each say so, which matters because `slice_dataset_by_ehull.py`
 and `migrate_cache_to_parquet.py` write them one at a time; and anything that
 opens the Parquet can read it.
 
+A cache built from a dataset with a manifest (`yamls/datasets/`) also records,
+as `options.manifest` and `options.fields`, what the manifest said each of its
+columns meant; loading it for a model refuses a cache whose manifest has since
+changed those definitions. See [energy_fields.md](energy_fields.md).
+
 `build_info` returns `None` where there is no record — a split written before
 this existed, one still in the superseded format, or one converted from it,
 whose original build options are in the pickle nowhere and are genuinely not

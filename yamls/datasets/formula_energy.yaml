@@ -1,0 +1,74 @@
+name: formula_energy
+status: current
+description: >-
+  Per-formula tables for composition-floor modelling (wyckoff_transformer.formula_energy).
+  Columns keep their historical names on disk; each field below says which one it is.
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: none}
+tables:
+  formula_table:
+    path: formula_table.parquet
+    description: >-
+      One row per reduced formula of LeMat-Bulk, from lemat_pbe_ehull.csv.gz
+      (formula_energy/dataset.py build_formula_table).
+    defaults: {reference: lemat_bulk_pbe}
+    fields: &formula_fields
+      min_formation_energy_per_atom:
+        column: e_form_min
+        energy: {quantity: formation_energy, extent: per_atom, aggregate: formula_min}
+        description: Lowest formation energy per atom among the formula's rows.
+      min_formation_energy_per_atom_icsd:
+        column: e_form_min_icsd
+        qualifier: icsd
+        energy: {quantity: formation_energy, extent: per_atom, aggregate: formula_min}
+        description: The same minimum over the formula's ICSD-derived MP rows only.
+      hull_formation_energy_per_atom:
+        column: e_hull_at_composition
+        energy: {quantity: hull_formation_energy, extent: per_atom}
+        description: >-
+          The hull's formation energy at the composition (e_form - e_hull, constant
+          within a formula).
+  shallow_table:
+    path: shallow_table.parquet
+    description: >-
+      formula_table's shape over the shallow subset -- MP and OQMD, no Alexandria --
+      with every energy recomputed against that subset (formula_energy/answer_key.py).
+    defaults: {reference: lemat_bulk_pbe_mp_oqmd}
+    fields: *formula_fields
+  shallow_pbe_ehull:
+    path: shallow_pbe_ehull.csv.gz
+    description: The shallow subset's rows, relabelled against themselves by hull_table.
+    defaults: {reference: lemat_bulk_pbe_mp_oqmd}
+    fields:
+      energy:
+        column: energy_corrected
+        energy: {quantity: energy, extent: total}
+        description: LeMat's raw total energy; 'energy_corrected' is a misnomer.
+      formation_energy_per_atom:
+        column: e_form
+        energy: {quantity: formation_energy, extent: per_atom}
+      energy_above_hull:
+        column: e_hull
+        energy: {quantity: energy_above_hull, extent: per_atom}
+  answer_key:
+    path: answer_key.parquet
+    description: >-
+      Per formula: the shallow floor, and the deep (full-archive) floor shifted into the
+      shallow frame by reference_shift, so both are relative to the shallow elemental
+      references (formula_energy/answer_key.py).
+    defaults: {reference: lemat_bulk_pbe_mp_oqmd}
+    fields:
+      min_formation_energy_per_atom:
+        column: shallow_e_form_min
+        energy: {quantity: formation_energy, extent: per_atom, aggregate: formula_min}
+      hull_formation_energy_per_atom:
+        column: shallow_e_hull
+        energy: {quantity: hull_formation_energy, extent: per_atom}
+        description: The shallow hull's formation energy at the composition (a level, not a distance).
+      min_formation_energy_per_atom_deep:
+        column: deep_e_form_min
+        qualifier: deep
+        energy: {quantity: formation_energy, extent: per_atom, aggregate: formula_min}
+        description: >-
+          Lowest formation energy over all LeMat-Bulk rows of the formula, including
+          Alexandria's, re-expressed against the shallow elemental references.

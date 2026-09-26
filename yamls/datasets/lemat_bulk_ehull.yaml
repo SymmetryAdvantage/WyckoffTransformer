@@ -1,0 +1,16 @@
+name: lemat_bulk_ehull
+status: obsolete
+reason: >-
+  Cut at e_hull <= 0.02 by the retired 2026-05 pipeline, which also dropped every row with NaN max_force (all 30,679 recovered-force MP rows) and the 589,250 rows compute_e_hull.py left unlabelled.  Superseded by lemat_bulk_fmax1_stress (docs/lemat_bulk_pipeline.md).
+  Use only to analyse runs already trained on it.
+description: >-
+  Its energy_above_hull is LeMat-Bulk raw PBE against the whole archive's hull -- the
+  same reference as lemat_bulk_fmax1_stress -- and is labelled so that models
+  conditioned on it keep their provenance.  Its other columns are not labelled.
+fields:
+  energy_above_hull:
+    energy:
+      quantity: energy_above_hull
+      extent: per_atom
+      source: {method: dft, dft_settings: PBE_MP, correction: none}
+      reference: lemat_bulk_pbe

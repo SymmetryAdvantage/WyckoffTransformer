@@ -1,0 +1,7 @@
+name: mp_20_biternary
+status: obsolete
+parent: mp_20
+reason: >-
+  A paper-era subset of mp_20 (binary and ternary compounds).  Not among the current
+  datasets; use only to analyse runs already trained on it.
+description: Inherits mp_20's field labels, as a row subset of it.

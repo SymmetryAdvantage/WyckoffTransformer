@@ -1,0 +1,36 @@
+name: lemat-bulk
+status: source
+description: >-
+  The LeMat-Bulk 'compatible_pbe' archive and the per-row tables derived from it
+  (docs/lemat_bulk_pipeline.md).  A source: training datasets such as
+  lemat_bulk_fmax1_stress are built from it, and screening compares against it.
+built_by: docs/lemat_bulk_pipeline.md
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: none}
+  reference: lemat_bulk_pbe
+tables:
+  lemat_pbe:
+    path: lemat_pbe.csv.gz
+    description: scripts/process_lemat.py output, one row per archive entry.
+    fields:
+      energy:
+        column: energy_corrected
+        energy: {quantity: energy, extent: total}
+        description: >-
+          LeMat's raw total energy.  The name 'energy_corrected' was given by
+          scripts/process_lemat.py (e943883); the archive has no corrected energy.
+  lemat_pbe_ehull:
+    path: lemat_pbe_ehull.csv.gz
+    description: formula_energy/hull_table.py output, relabelled 2026-09-07.
+    fields:
+      energy:
+        column: energy_corrected
+        energy: {quantity: energy, extent: total}
+        description: As in lemat_pbe.
+      formation_energy_per_atom:
+        column: e_form
+        energy: {quantity: formation_energy, extent: per_atom}
+      energy_above_hull:
+        column: e_hull
+        energy: {quantity: energy_above_hull, extent: per_atom}
+        description: Unclipped; one row at -2.7e-15 from float noise.

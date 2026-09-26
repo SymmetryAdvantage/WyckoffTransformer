@@ -1,0 +1,29 @@
+name: lemat_bulk_fmax1
+status: obsolete
+reason: >-
+  Superseded by lemat_bulk_fmax1_stress, which recovers the 30,679 Materials Project
+  rows whose forces LeMat-Bulk ships empty and adds stress labels
+  (docs/lemat_bulk_pipeline.md).  Use only to analyse runs already trained on it.
+description: >-
+  LeMat-Bulk 'compatible_pbe' with max_force <= 1 eV/A, before the forces were
+  recovered.  Its energy labels mean the same as lemat_bulk_fmax1_stress's; it covers
+  fewer rows.  Labelled so that models trained on it keep their provenance.
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: none}
+  reference: lemat_bulk_pbe
+fields:
+  formation_energy_per_atom:
+    energy: {quantity: formation_energy, extent: per_atom}
+  energy_above_hull:
+    energy: {quantity: energy_above_hull, extent: per_atom}
+  delta_e_polymorph:
+    energy:
+      quantity: delta_e_polymorph
+      extent: per_atom
+      reference: "dataset:lemat_bulk_fmax1"
+  gene_min_formation_energy_per_atom:
+    energy: {quantity: formation_energy, extent: per_atom, aggregate: gene_min}
+  max_force:
+    quantity: max_force
+  max_force_missing:
+    quantity: max_force_missing

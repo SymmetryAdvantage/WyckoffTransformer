@@ -17,6 +17,7 @@ from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
 
 from wyckoff_transformer.dataset_cache import load_cache
+from wyckoff_transformer.dataset_manifest import warn_if_obsolete_dataset
 from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.wyckoff_processor import (
     ENGINEERS_DIR,
@@ -555,6 +556,7 @@ def load_tensors_and_tokenisers(
     if cache_path is None:
         cache_path = cache_root()
     this_cache_path = cache_path / dataset
+    warn_if_obsolete_dataset(dataset, "loading its tensors")
     if use_cached_tensors:
         processor = WyckoffProcessor.from_pretrained(this_cache_path / "tokenisers" / f"{config_name}.json")
         tokenisers = processor.tokenisers

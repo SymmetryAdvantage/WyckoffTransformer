@@ -158,6 +158,9 @@ def _build_energy(args):
         wandb_entity=args.wandb_entity,
         wandb_project=args.wandb_project,
     )
+    from wyckoff_transformer.cli.gene_screen import check_regressor_reference
+
+    check_regressor_reference(regressor, args.hull_reference, args.allow_incompatible_energy)
     correction = known = None
     if args.residuals is not None:
         from wyckoff_transformer.gene_energy_residuals import (
@@ -167,7 +170,9 @@ def _build_energy(args):
         )
 
         known = KnownGeneEnergies.load(args.residuals / KNOWN_GENES_FILE)
-        correction = load_correction(args.residuals, kappa=args.residual_kappa)
+        correction = load_correction(
+            args.residuals, kappa=args.residual_kappa, regressor=regressor,
+            allow_incompatible_energy=args.allow_incompatible_energy)
     elif args.energy_basis == "corrected":
         raise SystemExit("--energy-basis corrected needs --residuals")
     # No margin means "rank everything" under `rank` and "on or below the hull"
@@ -507,6 +512,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Directory written by wyckoff_transformer.gene_energy_residuals. "
                              "Given, the corrected variants are written as columns even "
                              "when the selection uses the raw energy.")
+    energy.add_argument("--allow-incompatible-energy", action="store_true",
+                        help="Range with a regressor whose target is not the hull "
+                             "reference's formation energy, or residuals measured on another "
+                             "regressor's target. The differences are logged.")
     energy.add_argument("--residual-kappa", type=float, default=None,
                         help="Force the shrinkage; default is the validated one, or no "
                              "correction if validation found it does not help.")

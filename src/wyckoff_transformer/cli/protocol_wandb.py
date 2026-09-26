@@ -55,6 +55,7 @@ from wyckoff_transformer.system_prior import SYSTEM_PRIOR_FILE_NAME
 from wyckoff_transformer.tokenization import WYCKOFF_MAPPINGS_FILENAME
 from wyckoff_transformer.wyckoff_processor import MODEL_ENGINEERS_DIRNAME
 from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
+from wyckoff_transformer.dataset_manifest import warn_if_obsolete_dataset
 from wyckoff_transformer.cli import (
     DEFAULT_CONDITION_TARGETS,
     DEFAULT_SWEEP_FEATURE,
@@ -397,6 +398,11 @@ def generate_genes(
             "generation_attempted": attempted,
             "generation_formally_valid": len(generated),
             "formal_gene_validity": round(len(generated) / attempted, 4),
+            # What the generator was trained on, and what its condition meant: the
+            # cohort's e_above_hull is scored against an MLIP hull, which is a different
+            # energy from the one it was conditioned on, and the manifest should say so.
+            "generator_dataset": trainer.training_dataset_name,
+            "generator_field_provenance": trainer.field_provenance,
         })
     generated = generated[:n_genes]
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -821,6 +827,26 @@ def refuse_to_resample_under_resume(args, gene_file: Path) -> None:
     )
 
 
+def warn_if_generator_dataset_obsolete(args) -> None:
+    """Say so when the cohort's generator was trained on an obsolete dataset.
+
+    Generation loads the model, which warns by itself; a resumed or downloaded
+    cohort never does, so this asks the run.  Best effort: an evaluation must not
+    fail because W&B could not be reached to say whether to warn.
+    """
+    import wandb  # noqa: PLC0415
+
+    try:
+        dataset = wandb.Api().run(
+            wandb_run_path(args.wandb_run, args.wandb_entity, args.wandb_project)
+        ).config.get("dataset")
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not read the generator's dataset from W&B", exc_info=True)
+        return
+    if dataset:
+        warn_if_obsolete_dataset(dataset, "the generator of this cohort was trained on it")
+
+
 def main() -> None:
     args = build_parser().parse_args()
     logging.basicConfig(
@@ -847,6 +873,7 @@ def main() -> None:
         )
 
     if args.skip_generate or args.from_artifact is not None:
+        warn_if_generator_dataset_obsolete(args)
         if not gene_file.is_file():
             raise FileNotFoundError(
                 f"no gene file at {gene_file} (--skip-generate/--from-artifact)"

@@ -22,6 +22,7 @@ import numpy as np
 import torch
 import pandas as pd
 from .novelty import record_to_augmented_fingerprint
+from wyckoff_transformer.dataset_manifest import warn_if_obsolete_dataset
 from wyckoff_transformer.paths import cache_root
 from wyckoff_transformer.data import (
     compute_symmetry_sites,
@@ -580,6 +581,7 @@ class GeneratedDataset():
             cache_location: Path):
 
         self.dataset_name = dataset_name
+        warn_if_obsolete_dataset(dataset_name, "evaluating structures generated for it")
         self.cache_location = cache_location
         self.cdvae_dataset = DATASET_TO_CDVAE[dataset_name]
         self.data = pd.DataFrame()

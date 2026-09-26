@@ -46,6 +46,8 @@ from wyckoff_transformer.evaluation.hull_mlips import (
     resolve_hull_mlip,
 )
 
+from wyckoff_transformer.energy_fields import mlip_hull_energy_field
+
 logger = logging.getLogger(__name__)
 
 #: Highest atomic number the one-hot composition encoding covers.
@@ -155,6 +157,9 @@ class HullEnergyCalculator:
             "entries": len(self.entries),
             "expected_entries": expected,
             "threshold_ev_per_atom": HULL_THRESHOLD_EV_PER_ATOM,
+            # What the e_above_hull it scores means, in the vocabulary every other
+            # energy field in the repository uses (docs/energy_fields.md).
+            "energy_field": mlip_hull_energy_field(self.spec.hull_type).to_dict(),
         }
         if expected is not None and len(self.entries) != expected:
             logger.warning(
