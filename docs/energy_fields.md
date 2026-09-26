@@ -241,10 +241,12 @@ deleted.
 
 ## 7. Caches rebuilt for the rename (2026-09-26)
 
-The caches were built on branch `energy-fields` from base `c92fa82`, with the
-changes not yet committed, so their build records say `dirty: true`. Both were
+The caches were first built from the uncommitted `energy-fields` branch and
 verified against the caches they replaced; the replaced files are kept in the
-store under `staging/energy-fields/previous/`.
+store under `staging/energy-fields/previous/`. They were then rebuilt from the
+clean merge `98fd436`, which their build records now name. That build is
+identical, value for value, to the verified one, and so are the re-tokenised
+`der_tokenizer_v1` tensors.
 
 - **`cache/mp_20`** (all splits):
   - `e_above_hull` is renamed `energy_above_hull`. Every row and every other
