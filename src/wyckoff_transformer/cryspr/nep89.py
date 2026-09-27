@@ -59,6 +59,7 @@ from typing import Optional, Union
 import numpy as np
 from ase import Atoms
 from ase.calculators.calculator import Calculator, all_changes
+from ase.constraints import FixSymmetry
 from ase.data import atomic_numbers, covalent_radii
 from ase.stress import full_3x3_to_voigt_6_stress
 
@@ -640,8 +641,34 @@ class Nep89WithFallback(Calculator):
             logger.info("Loaded NEP89 from %s", self.model_path)
         return self._nep
 
+    @staticmethod
+    def _calculator_geometry(atoms: Atoms) -> Atoms:
+        """Give ASE a geometry to copy without copying ``FixSymmetry``.
+
+        ``Calculator.calculate`` copies its input, as do both inner backends.
+        Copying a ``FixSymmetry`` constraint at each boundary is expensive, but
+        only the optimizer's atoms need it to project forces and displacements.
+        The arrays are shared here only until ``super().calculate`` makes its
+        own copy; every array and the cell then have normal ASE snapshot
+        semantics, including custom per-atom arrays used by a fallback.  Other
+        constraints keep their usual ASE copying semantics.
+        """
+        geometry = atoms.__class__(
+            cell=atoms.cell, pbc=atoms.pbc, info=atoms.info,
+            celldisp=atoms.get_celldisp(),
+        )
+        geometry.arrays = atoms.arrays
+        geometry.constraints = [
+            constraint for constraint in atoms.constraints
+            if not isinstance(constraint, FixSymmetry)
+        ]
+        return geometry
+
     def calculate(self, atoms=None, properties=None, system_changes=all_changes):
-        super().calculate(atoms, properties, system_changes)
+        super().calculate(
+            self._calculator_geometry(atoms) if atoms is not None else None,
+            properties, system_changes,
+        )
         atoms = self.atoms
         missing = self.unsupported_species(atoms)
         if missing:
