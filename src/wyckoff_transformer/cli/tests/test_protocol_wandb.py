@@ -714,6 +714,64 @@ class TestGenerateGenes(unittest.TestCase):
         self.assertEqual(recorded["generator_field_provenance"]["dataset"], "mp_20")
         self.assertAlmostEqual(recorded["formal_gene_validity"], 11 / 14, places=4)
 
+    def test_sample_tuples_from_dataset(self):
+        import pandas as pd
+        import torch
+
+        trainer = MagicMock()
+        trainer.start_name = "spacegroup_number"
+        del trainer.model._orig_mod
+        trainer.model.start_type = "one_hot"
+        trainer.condition_features = ("gene_min_formation_energy_per_atom",)
+        trainer.training_dataset_name = "lemat_bulk_fmax1_stress"
+        trainer.field_provenance = {"dataset": "lemat_bulk_fmax1_stress"}
+        tokeniser = MagicMock()
+        tokeniser.encode_spacegroups.return_value = torch.ones((12, 99))
+        trainer.tokenisers = {"spacegroup_number": tokeniser}
+        trainer.generate_structures.return_value = [{"i": i} for i in range(15)]
+
+        fake_df = pd.DataFrame({
+            "spacegroup_number": [194, 156, 12, 225, 166, 62] * 2,
+            "gene_min_formation_energy_per_atom": [-1.2, -0.8, -0.5, -2.1, -0.1, -1.5] * 2,
+        })
+
+        manifest = Path(self.out.parent / "manifest.json")
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wyckoff_transformer.dataset_cache.load_split", return_value=fake_df), \
+             patch("wandb.Api"):
+            n = pw.generate_genes(
+                run_id="r", entity="e", project="p", n_genes=10,
+                oversample=1.2, device="cpu", output_path=self.out,
+                sample_tuples_from="lemat_bulk_fmax1_stress_ehull01",
+                sample_tuples_split="train",
+                sample_tuples_seed=42,
+                manifest_path=manifest,
+            )
+        self.assertEqual(n, 10)
+        self.assertTrue(trainer.generate_structures.called)
+        cond = trainer.generate_structures.call_args.kwargs["cond"]
+        start_tensor = trainer.generate_structures.call_args.kwargs["start_tensor"]
+        self.assertEqual(cond.shape, (12, 1))
+        self.assertEqual(start_tensor.shape, (12, 99))
+        manifest_data = json.loads(manifest.read_text())
+        self.assertEqual(manifest_data["sampled_tuples_from"], "lemat_bulk_fmax1_stress_ehull01")
+        self.assertEqual(manifest_data["sampled_tuples_split"], "train")
+        self.assertEqual(manifest_data["sampled_tuples_seed"], 42)
+
+    def test_sample_tuples_conflicts_with_condition(self):
+        trainer = MagicMock()
+        with patch.object(pw, "load_trainer", return_value=trainer), \
+             patch.object(pw, "ensure_run_files"), \
+             patch("wandb.Api"):
+            with self.assertRaises(ValueError):
+                pw.generate_genes(
+                    run_id="r", entity="e", project="p", n_genes=10,
+                    oversample=1.2, device="cpu", output_path=self.out,
+                    condition=["energy_above_hull=0"],
+                    sample_tuples_from="lemat_bulk_fmax1_stress_ehull01",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

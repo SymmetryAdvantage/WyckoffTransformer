@@ -139,6 +139,15 @@ run_job_payload() {
     if [ "$SKIP_GENERATE" -eq 1 ]; then
         CMD+=(--skip-generate)
     fi
+    if [ -n "${SAMPLE_TUPLES_FROM:-}" ]; then
+        CMD+=(--sample-tuples-from "$SAMPLE_TUPLES_FROM")
+    fi
+    if [ -n "${SAMPLE_TUPLES_SPLIT:-}" ]; then
+        CMD+=(--sample-tuples-split "$SAMPLE_TUPLES_SPLIT")
+    fi
+    if [ -n "${SAMPLE_TUPLES_SEED:-}" ]; then
+        CMD+=(--sample-tuples-seed "$SAMPLE_TUPLES_SEED")
+    fi
 
     if [ ${#CONDITIONS[@]} -gt 0 ]; then
         for cond in "${CONDITIONS[@]}"; do
@@ -210,6 +219,9 @@ PRERELAX_MLIP=""
 SYSTEM_PRIOR=""
 LEMAT_CIF_CSV=""
 FROM_ARTIFACT=""
+SAMPLE_TUPLES_FROM=""
+SAMPLE_TUPLES_SPLIT=""
+SAMPLE_TUPLES_SEED=""
 SKIP_GENERATE=0
 UPLOAD=1
 PILOT=0
@@ -233,6 +245,9 @@ Options:
     --n-genes N                Number of genes to generate and evaluate (default: 1000)
     --condition NAME=VALUE     Condition target, e.g. energy_above_hull=0 (repeatable)
     --condition-value VAL      Shorthand for condition value
+    --sample-tuples-from DATASET Sample (start, condition) tuples from DATASET
+    --sample-tuples-split SPLIT  Split to sample tuples from (default: train)
+    --sample-tuples-seed SEED    RNG seed for tuple sampling
     --temperature T            Sampling temperature (default: 1.0)
     --system-prior PATH        Path to system_prior.npz
     --lemat-cif-csv PATH       Path to LeMat CIF export or dataset splits directory
@@ -264,6 +279,9 @@ while [ $# -gt 0 ]; do
         --n-genes)          N_GENES=${2:?--n-genes needs an integer}; shift 2 ;;
         --condition)        CONDITIONS+=("${2:?--condition needs NAME=VALUE}"); shift 2 ;;
         --condition-value)  CONDITION_VALUE=${2:?--condition-value needs a value}; shift 2 ;;
+        --sample-tuples-from) SAMPLE_TUPLES_FROM=${2:?--sample-tuples-from needs a dataset}; shift 2 ;;
+        --sample-tuples-split) SAMPLE_TUPLES_SPLIT=${2:?--sample-tuples-split needs a split}; shift 2 ;;
+        --sample-tuples-seed) SAMPLE_TUPLES_SEED=${2:?--sample-tuples-seed needs an int}; shift 2 ;;
         --temperature)      TEMPERATURE=${2:?--temperature needs a float}; shift 2 ;;
         --system-prior)     SYSTEM_PRIOR=${2:?--system-prior needs a path}; shift 2 ;;
         --lemat-cif-csv)    LEMAT_CIF_CSV=${2:?--lemat-cif-csv needs a path}; shift 2 ;;
@@ -358,6 +376,9 @@ SPEC="$RUNS_DIR/.jobspec/protocol-${RUN_ID}-$(date +%Y%m%d-%H%M%S).sh"
     printf 'UPLOAD=%q\n'              "$UPLOAD"
     printf 'SKIP_GENERATE=%q\n'       "$SKIP_GENERATE"
     printf 'CONDITION_VALUE=%q\n'     "${CONDITION_VALUE:-}"
+    printf 'SAMPLE_TUPLES_FROM=%q\n'  "${SAMPLE_TUPLES_FROM:-}"
+    printf 'SAMPLE_TUPLES_SPLIT=%q\n' "${SAMPLE_TUPLES_SPLIT:-}"
+    printf 'SAMPLE_TUPLES_SEED=%q\n'  "${SAMPLE_TUPLES_SEED:-}"
 
     if [ ${#CONDITIONS[@]} -gt 0 ]; then
         printf 'CONDITIONS=('; printf ' %q' "${CONDITIONS[@]}"; printf ' )\n'

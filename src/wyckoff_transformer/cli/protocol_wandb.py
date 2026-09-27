@@ -234,6 +234,9 @@ def generate_genes(
     manifest_path: Optional[Path] = None,
     allow_fewer: bool = False,
     guidance_scale: float = 1.0,
+    sample_tuples_from: Optional[str] = None,
+    sample_tuples_split: str = "train",
+    sample_tuples_seed: Optional[int] = None,
 ) -> int:
     """Generate a gene cohort from the run's checkpoint and write it to disk.
 
@@ -282,44 +285,103 @@ def generate_genes(
 
     attempted = max(n_genes + 1, int(round(n_genes * oversample)))
 
-    if condition_value is not None and condition is None:
-        if (
-            trainer.condition_features
-            and len(trainer.condition_features) > 1
-            and DEFAULT_SWEEP_FEATURE in trainer.condition_features
-        ):
-            condition = [f"{DEFAULT_SWEEP_FEATURE}={condition_value}"]
-            condition_value = None
-
-    condition_values = resolve_condition_values(trainer, condition, condition_value)
-    if trainer.condition_features:
-        if condition_values is None:
-            condition_values = {}
-        for feature in trainer.condition_features:
-            if feature not in condition_values and feature in DEFAULT_CONDITION_TARGETS:
-                condition_values[feature] = DEFAULT_CONDITION_TARGETS[feature]
-
-        missing = [f for f in trainer.condition_features if f not in condition_values]
-        if missing:
-            raise ValueError(
-                f"Run {run_id} conditions on {list(trainer.condition_features)}; pass "
-                f"--condition NAME=VALUE for {missing} (e.g. --condition {missing[0]}=0). "
-                "Datasets are not loaded here, so the conditioning cannot be sampled from training data."
-            )
-        ordered = {f: condition_values[f] for f in trainer.condition_features if f in condition_values}
-        ordered.update({k: v for k, v in condition_values.items() if k not in ordered})
-        condition_values = ordered
-
-    cond = None
-    if condition_values:
-        cond = trainer.build_condition_from_values(
-            condition_values, attempted, device=device
-        )
-        logger.info("Conditioning generation on %s", describe_condition(condition_values))
-
     start_tensor = None
     composition_cond = None
     element_mask = None
+    cond = None
+    condition_values = None
+
+    if sample_tuples_from is not None:
+        if condition is not None or condition_value is not None:
+            raise ValueError(
+                "--sample-tuples-from cannot be combined with explicit --condition or --condition-value."
+            )
+        from wyckoff_transformer.dataset_cache import load_split
+        warn_if_obsolete_dataset(sample_tuples_from, "sampling generation tuples")
+
+        start_field = trainer.start_name
+        cond_fields = list(trainer.condition_features or ())
+        cols = [start_field]
+        for f in cond_fields:
+            if f not in cols:
+                cols.append(f)
+
+        cache_target = f"cache/{sample_tuples_from}"
+        logger.info(
+            "Sampling (start, condition) tuples from %s split %r (columns: %s)",
+            sample_tuples_from, sample_tuples_split, cols,
+        )
+        df = load_split(cache_target, split=sample_tuples_split, columns=cols)
+        df = df.dropna(subset=cols)
+        if len(df) == 0:
+            raise ValueError(
+                f"No non-null rows in {sample_tuples_from}:{sample_tuples_split} for {cols}"
+            )
+
+        import numpy as np  # noqa: PLC0415
+        sampled_df = df.sample(n=attempted, replace=True, random_state=sample_tuples_seed)
+
+        sampled_sgs = sampled_df[start_field].tolist()
+        target_tokeniser = trainer.tokenisers[start_field]
+        if trainer.model.start_type == "categorial":
+            start_tensor = torch.tensor(
+                [target_tokeniser[sg] for sg in sampled_sgs],
+                dtype=torch.int64,
+                device=device,
+            )
+        elif trainer.model.start_type == "one_hot":
+            start_tensor = target_tokeniser.encode_spacegroups(
+                sampled_sgs,
+                dtype=torch.float32,
+                device=device,
+            )
+        else:
+            raise ValueError(f"Unsupported start type '{trainer.model.start_type}'.")
+
+        if cond_fields:
+            cond_array = sampled_df[cond_fields].to_numpy(dtype=np.float32)
+            cond = torch.tensor(cond_array, dtype=torch.float32, device=device)
+            if cond.ndim == 1:
+                cond = cond.unsqueeze(-1)
+            logger.info("Sampled %d condition tuples across %s", attempted, cond_fields)
+        condition_values = {
+            "sampled_from": sample_tuples_from,
+            "split": sample_tuples_split,
+        }
+    else:
+        if condition_value is not None and condition is None:
+            if (
+                trainer.condition_features
+                and len(trainer.condition_features) > 1
+                and DEFAULT_SWEEP_FEATURE in trainer.condition_features
+            ):
+                condition = [f"{DEFAULT_SWEEP_FEATURE}={condition_value}"]
+                condition_value = None
+
+        condition_values = resolve_condition_values(trainer, condition, condition_value)
+        if trainer.condition_features:
+            if condition_values is None:
+                condition_values = {}
+            for feature in trainer.condition_features:
+                if feature not in condition_values and feature in DEFAULT_CONDITION_TARGETS:
+                    condition_values[feature] = DEFAULT_CONDITION_TARGETS[feature]
+
+            missing = [f for f in trainer.condition_features if f not in condition_values]
+            if missing:
+                raise ValueError(
+                    f"Run {run_id} conditions on {list(trainer.condition_features)}; pass "
+                    f"--condition NAME=VALUE for {missing} (e.g. --condition {missing[0]}=0). "
+                    "Datasets are not loaded here, so the conditioning cannot be sampled from training data."
+                )
+            ordered = {f: condition_values[f] for f in trainer.condition_features if f in condition_values}
+            ordered.update({k: v for k, v in condition_values.items() if k not in ordered})
+            condition_values = ordered
+
+        if condition_values:
+            cond = trainer.build_condition_from_values(
+                condition_values, attempted, device=device
+            )
+            logger.info("Conditioning generation on %s", describe_condition(condition_values))
     if getattr(trainer, "chemical_system_conditioning", None) is True:
         from wyckoff_transformer.paths import cache_root
         from wyckoff_transformer.system_prior import SystemSpaceGroupPrior
@@ -390,11 +452,9 @@ def generate_genes(
     if manifest_path is not None:
         from wyckoff_transformer.cli.protocol import update_manifest  # noqa: PLC0415
 
-        update_manifest(manifest_path, {
+        manifest_update = {
             "sampling_temperature": temperature,
             "guidance_scale": guidance_scale,
-            # In physical units, as passed; None for an unconditional run.
-            "generation_condition": dict(condition_values) if condition_values else None,
             "generation_attempted": attempted,
             "generation_formally_valid": len(generated),
             "formal_gene_validity": round(len(generated) / attempted, 4),
@@ -403,7 +463,21 @@ def generate_genes(
             # energy from the one it was conditioned on, and the manifest should say so.
             "generator_dataset": trainer.training_dataset_name,
             "generator_field_provenance": trainer.field_provenance,
-        })
+        }
+        if sample_tuples_from is not None:
+            manifest_update["sampled_tuples_from"] = sample_tuples_from
+            manifest_update["sampled_tuples_split"] = sample_tuples_split
+            if sample_tuples_seed is not None:
+                manifest_update["sampled_tuples_seed"] = sample_tuples_seed
+            manifest_update["generation_condition"] = {
+                "sampled_from": sample_tuples_from,
+                "split": sample_tuples_split,
+            }
+        else:
+            # In physical units, as passed; None for an unconditional run.
+            manifest_update["generation_condition"] = dict(condition_values) if condition_values else None
+
+        update_manifest(manifest_path, manifest_update)
     generated = generated[:n_genes]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with gzip.open(output_path, "wt", encoding="utf-8") as handle:
@@ -665,6 +739,20 @@ def build_parser() -> argparse.ArgumentParser:
                           "Recorded in manifest.json as guidance_scale.")
     gen.add_argument("--allow-fewer", action="store_true",
                      help="Keep whatever valid genes were generated if fewer than --n-genes (e.g. for checkpoints early in training).")
+    gen.add_argument(
+        "--sample-tuples-from", type=str, default=None, metavar="DATASET",
+        help="Sample joint (start_token, condition) tuples from DATASET's cache "
+             "(e.g. lemat_bulk_fmax1_stress_ehull01) instead of independent sampling "
+             "and fixed condition values.",
+    )
+    gen.add_argument(
+        "--sample-tuples-split", type=str, default="train",
+        help="Split to sample tuples from when --sample-tuples-from is set (default: train).",
+    )
+    gen.add_argument(
+        "--sample-tuples-seed", type=int, default=None,
+        help="RNG seed for tuple sampling from dataset cache.",
+    )
 
     pyxtal = parser.add_argument_group("PyXtal generation")
     pyxtal.add_argument("--pyxtal-cores", type=int, default=None,
@@ -896,6 +984,9 @@ def main() -> None:
             manifest_path=args.output_dir / protocol_cli.MANIFEST_FILE,
             allow_fewer=args.allow_fewer,
             guidance_scale=args.guidance_scale,
+            sample_tuples_from=args.sample_tuples_from,
+            sample_tuples_split=args.sample_tuples_split,
+            sample_tuples_seed=args.sample_tuples_seed,
         )
 
     stage_args = build_stage_args(args, gene_file)
