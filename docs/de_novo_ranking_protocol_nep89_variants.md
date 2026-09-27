@@ -632,6 +632,20 @@ at most `2.1e-11 eV/atom`, and maximum Cartesian position differences at most
 variable-cell stage, so that timing measures a capped workload rather than
 convergence.
 
+The next calculator-boundary change removes `FixSymmetry` from the geometry
+snapshots copied by ASE and calorine. The optimiser's atoms keep the constraint,
+so ASE still projects forces, stress and proposed steps. Other constraints stay
+in the calculator snapshots. Measured 2026-09-27 on zeus from commit `d644904`
+with this patch in the worktree, one CPU thread, on the same 300-atom Cu-Ge-Te
+cell: median force evaluation fell from 82.96 ms to 16.34 ms over ten paired
+calls (5.08×); paired force arrays were identical. [W&B run ifsimcae](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ifsimcae)
+holds the individual timings and script. This is a calculator-call measurement,
+not an end-to-end relaxation timing. Real NEP89 relaxation tests compare the
+combined change against the original copy path and ASE BFGS on diamond Si, a
+32-atom Si supercell and rutile TiO₂; the final energies agree within
+`1e-5 eV/atom`, positions and cells within `1e-3 Å`, and all retain their
+starting space groups with symmetry fixing requested.
+
 ## Installing NEP89
 
 `calorine` builds a pybind11 extension from an sdist, so it needs a C++
