@@ -1,0 +1,49 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Generate a large pool of Wyckoff genes, in resumable chunks, for gene-level
+# screening (docs/coordination_motif_screen.md, measurements M3/M4).
+#
+# Submit from pbs101 (e.g. a gdev job or a login node), naming the checkout:
+#     qsub -v REPO=$PWD scripts/platforms/aspire2a/generate_gene_pool.pbs
+#
+# Variables (all optional):
+#   MODEL     run directory with best_model_params.pt
+#   OUT       output root; one subdirectory per arm
+#   ARMS      space-separated "name:guidance_scale" pairs
+#   CONDITION the --condition value passed to every arm
+#   CHUNKS    chunks per arm, CHUNK genes each
+# A chunk whose output exists is skipped, so a re-qsub resumes.
+# ---------------------------------------------------------------------------
+#PBS -N wyf_genpool
+#PBS -q normal
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
+#PBS -l walltime=08:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
+
+set -u
+REPO=${REPO:-/home/project/11001786/WyFormer/WyckoffTransformer}
+MODEL=${MODEL:-/scratch/users/nus/kna/WyFormer/runs/ehull_adamw_wsd_5x_cfg-20260924-223159}
+OUT=${OUT:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/genes}
+ARMS=${ARMS:-"cfg_w3_ehull005:3 cfg_w1_ehull005:1"}
+CONDITION=${CONDITION:-energy_above_hull=0.05}
+CHUNKS=${CHUNKS:-10}
+CHUNK=${CHUNK:-100000}
+
+cd "$REPO"
+echo "commit $(git rev-parse HEAD) model $MODEL condition $CONDITION"
+for arm in $ARMS; do
+    name=${arm%%:*}; w=${arm##*:}
+    mkdir -p "$OUT/$name"
+    for i in $(seq -w 0 $((CHUNKS - 1))); do
+        f="$OUT/$name/chunk_$i.json.gz"
+        [ -s "$f" ] && continue
+        echo "$(date) $name chunk $i"
+        bash scripts/platforms/aspire2a/run_in_singularity.sh wyformer-generate "$f.tmp.json.gz" \
+            --model-path "$MODEL" --initial-n-samples $((CHUNK * 3 / 2)) --firm-n-samples "$CHUNK" \
+            --device cuda --condition "$CONDITION" --guidance-scale "$w" \
+            && mv "$f.tmp.json.gz" "$f"
+    done
+done
+echo "$(date) done"
