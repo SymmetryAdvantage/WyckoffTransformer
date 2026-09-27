@@ -79,7 +79,7 @@ HARD_CATIONS = (
 )
 SOFT_CATIONS = {("Cu", 1), ("Ag", 1), ("Au", 1), ("Au", 3), ("Tl", 1), ("Hg", 1),
                 ("Hg", 2), ("Pd", 2), ("Pt", 2), ("Pt", 4), ("Cd", 2)}
-HARD_ANIONS = {"O", "F", "Cl", "N"}
+HARD_ANIONS = {"O", "F"}      # N and Cl are borderline in many tables
 SOFT_ANIONS = {"S", "Se", "Te", "I"}
 PEROVSKITE_ANIONS = {"O", "F", "Cl", "Br", "I"}
 

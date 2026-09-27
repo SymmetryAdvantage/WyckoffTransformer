@@ -23,6 +23,11 @@ import os
 import sys
 import time
 from multiprocessing import Pool
+
+# One BLAS thread per worker: 16 forked workers each spinning up a full OpenBLAS pool
+# stalled the first full run at 100% CPU on a single shard.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
 from pathlib import Path
 
 import numpy as np
@@ -72,15 +77,33 @@ def shard(args):
 # --- run --------------------------------------------------------------------------------
 
 
+PER_STRUCTURE_TIMEOUT = 20  # seconds; a few compositions blow up the oxidation-state search
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise _Timeout()
+
+
 def _analyse_one(item):
+    import signal
     import warnings
     warnings.filterwarnings("ignore")
     from wyckoff_transformer.evaluation.coordination_motifs import analyse
     mid, cif = item
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(PER_STRUCTURE_TIMEOUT)
     try:
         return analyse(mid, cif)
+    except _Timeout:
+        return {"material_id": mid, "status": "timeout"}, [], []
     except Exception as exc:  # one bad structure must not lose a shard
         return {"material_id": mid, "status": f"error: {type(exc).__name__}: {exc}"[:200]}, [], []
+    finally:
+        signal.alarm(0)
 
 
 def run(args):
@@ -241,57 +264,94 @@ def report(args):
 
     # Section 2A
     lines += ["## 2A. LFSE site inversion", ""]
+    lines.append("*Gene level* = the site point group rules out the classical geometry "
+                 "(octahedron for d3, square plane for d8, tetrahedron for square-planar d0), so "
+                 "the gene alone forces the unusual case. *O/F only* excludes chalcogenides and "
+                 "halides, where anion-anion bonds often make the formal oxidation state (and so "
+                 "the d count) wrong.")
+    lines.append("")
     d3 = sites["species"].isin(["Cr+3", "Mn+4"])
     d8 = sites["species"].isin(["Pd+2", "Pt+2", "Au+3"])
     d0_site = sites["d_count"].eq(0) & (sites["ox"] >= 3)
-    for name, mask, targets in (
-            ("d3 (Cr3+, Mn4+)", d3, ["tetrahedron", "trigonal_prism"]),
-            ("low-spin d8 (Pd2+, Pt2+, Au3+)", d8, ["tetrahedron", "trigonal_prism"]),
-            ("d0, z >= +3", d0_site, ["square_planar"])):
+    for name, mask, targets, gene in (
+            ("d3 (Cr3+, Mn4+)", d3, ["tetrahedron", "trigonal_prism"],
+             ~sites["pg_allows_octahedron"]),
+            ("low-spin d8 (Pd2+, Pt2+, Au3+)", d8, ["tetrahedron", "trigonal_prism"],
+             ~sites["pg_allows_square_planar"]),
+            ("d0, z >= +3", d0_site, ["square_planar"],
+             sites["pg_allows_square_planar"] & ~sites["pg_allows_tetrahedron"])):
         sub = sites[mask]
-        lines.append(f"**{name}**: {len(sub):,} sites in {sub['material_id'].nunique():,} structures. "
+        lines.append(f"**{name}**: {len(sub):,} sites in {sub['material_id'].nunique():,} structures "
+                     f"({int((mask & sites['ligands_of']).sum()):,} sites with O/F only). "
                      "Geometry distribution (clean sites): " + ", ".join(
                          f"{k} {v:,}" for k, v in sub[sub['clean']]['geometry'].value_counts().head(6).items()))
         for t in targets:
             hit = mask & (sites["geometry"] == t) & sites["clean"]
-            gene = mask & sites[f"pg_allows_{t}"] & ~sites["pg_allows_octahedron"]
+            hit_of = hit & sites["ligands_of"]
             lines.append(f"- clean {t}: {_frac(int(hit.sum()), len(sub))} sites, "
-                         f"{structures_with(hit):,} structures. Examples: {examples(hit)}")
-            lines.append(f"  - gene level, site symmetry admits {t} but not an octahedron: "
-                         f"{_frac(int(gene.sum()), len(sub))} sites")
+                         f"{structures_with(hit):,} structures; O/F only: {int(hit_of.sum()):,} sites, "
+                         f"{structures_with(hit_of):,} structures. Examples (O/F only): {examples(hit_of)}")
+        g = mask & gene
+        lines.append(f"- gene level, classical geometry excluded by site symmetry: "
+                     f"{_frac(int(g.sum()), len(sub))} sites, {structures_with(g):,} structures; clean "
+                     "geometries there: " + ", ".join(
+                         f"{k} {v:,}" for k, v in sites[g & sites['clean']]['geometry'].value_counts().head(5).items()))
         lines.append("")
 
     # Section 2B
     lines += ["## 2B. SOJT suppression", ""]
-    lines.append("Cation sites with only O/F ligands. *Pinned* = non-polar site point group "
-                 "(gene level: off-centring forbidden by symmetry). *Centred* = off-centre "
-                 "displacement < 0.02 A in the stored structure.")
-    lines += ["", "| cation | class | sites | pinned | pinned and centred | structures pinned |",
+    lines.append("Cation sites with only O/F ligands; d0 cations only when octahedral. *Pinned* = "
+                 "non-polar site point group, so off-centring is forbidden by symmetry (gene "
+                 "level). Pinned sites are centred to within the 0.1 A symmetry tolerance by "
+                 "construction; *pinned, off > 0.05 A* counts those whose stored geometry is in "
+                 "fact displaced, i.e. symmetric only within tolerance.")
+    lines += ["", "| cation | class | sites | pinned | pinned, off > 0.05 A | structures pinned |",
               "|---|---|---|---|---|---|"]
     sojt = {"Mo+6": "strong d0", "V+5": "strong d0", "W+6": "intermediate d0",
             "Ti+4": "intermediate d0", "Nb+5": "intermediate d0", "Ta+5": "weak d0",
             "Zr+4": "weak d0", "Hf+4": "weak d0", "Sn+2": "ns2", "Sb+3": "ns2", "Te+4": "ns2",
             "Se+4": "ns2", "I+5": "ns2", "Bi+3": "ns2", "Pb+2": "ns2"}
+    sojt_site = sites["ligands_of"] & (
+        (sites["species"].isin([k for k, v in sojt.items() if v.endswith("d0")])
+         & (sites["geometry"] == "octahedron"))
+        | sites["species"].isin([k for k, v in sojt.items() if v == "ns2"]))
     for sp, cls in sojt.items():
-        sub = sites[(sites["species"] == sp) & sites["ligands_of"]]
+        sub = sites[sojt_site & (sites["species"] == sp)]
         pinned = sub[~sub["polar_site"]]
-        centred = pinned[pinned["offcentre"] < 0.02]
+        off = pinned[pinned["offcentre"] > 0.05]
         lines.append(f"| {sp} | {cls} | {len(sub):,} | {_frac(len(pinned), len(sub))} | "
-                     f"{len(centred):,} | {pinned['material_id'].nunique():,} |")
-    strong = sites["species"].isin(["Mo+6", "V+5"]) & sites["ligands_of"] & ~sites["polar_site"]
-    lines.append(f"\nPinned strong-SOJT examples: {examples(strong)}")
-    lp = sites["species"].isin(["Sn+2", "Sb+3", "Te+4", "Se+4", "I+5"]) & sites["ligands_of"] & ~sites["polar_site"]
+                     f"{len(off):,} | {pinned['material_id'].nunique():,} |")
+    strong = sojt_site & sites["species"].isin(["Mo+6", "V+5"]) & ~sites["polar_site"]
+    lines.append(f"\nPinned strong-SOJT (Mo6+, V5+ octahedra) examples: {examples(strong)}")
+    lp = sojt_site & sites["species"].isin(["Sn+2", "Sb+3", "Te+4", "Se+4", "I+5"]) & ~sites["polar_site"]
     lines.append(f"\nPinned light lone-pair (Sn2+, Sb3+, Te4+, Se4+, I5+) examples: {examples(lp)}")
     lines.append("")
 
-    # Section 3
+    # Section 3. Recomputed here with hard anions = O, F only (N and Cl are borderline in
+    # many tables), from the stored ligand lists.
+    import re
+    hard_an, soft_an = {"O", "F"}, {"S", "Se", "Te", "I"}
+    from wyckoff_transformer.evaluation.coordination_motifs import hsab_cation
+    lig_sets = sites["ligands"].map(lambda s: frozenset(re.findall(r"[A-Z][a-z]?", s)))
+    cls = [hsab_cation(e, z) for e, z in zip(sites["element"], sites["ox"])]
+    sites["hsab2"] = cls
+    hard_in_soft = sites.loc[(sites["hsab2"] == "hard") & lig_sets.map(lambda s: bool(s) and s <= soft_an), "material_id"]
+    soft_in_hard = sites.loc[(sites["hsab2"] == "soft") & lig_sets.map(lambda s: bool(s) and s <= hard_an), "material_id"]
+    # "Mixed-anion" = both a hard and a soft element actually act as ligands somewhere.
+    ligands_of_structure = pd.Series(lig_sets.values, index=sites["material_id"].values) \
+        .groupby(level=0).agg(lambda sets: frozenset().union(*sets))
+    mixed_lig = set(ligands_of_structure.index[ligands_of_structure.map(
+        lambda e: bool(e & hard_an) and bool(e & soft_an))])
+    mixed = ok[ok["material_id"].isin(mixed_lig)]
+    mixed_ids = set(mixed["material_id"])
+    his, sih = set(hard_in_soft) & mixed_ids, set(soft_in_hard) & mixed_ids
+    hsab_inv = his & sih
     lines += ["## 3. HSAB inversion", ""]
-    mixed = ok[ok["mixed_hard_soft_anions"].astype(bool)]
-    lines.append(f"- Structures with both hard (O, F, Cl, N) and soft (S, Se, Te, I) anions: {_frac(len(mixed), n_ok)}")
-    for col, name in (("hsab_hard_cation_soft_cage", "a hard cation coordinated only by soft anions"),
-                      ("hsab_soft_cation_hard_cage", "a soft cation coordinated only by hard anions"),
-                      ("hsab_inversion", "both at once (the doc's inversion)")):
-        sel = mixed[mixed[col].astype(bool)].sort_values("energy_above_hull")
+    lines.append(f"- Structures where both hard (O, F) and soft (S, Se, Te, I) anions are ligands: {_frac(len(mixed), n_ok)}")
+    for ids, name in ((his, "a hard cation coordinated only by soft anions"),
+                      (sih, "a soft cation coordinated only by hard anions"),
+                      (hsab_inv, "both at once (the doc's inversion)")):
+        sel = mixed[mixed["material_id"].isin(ids)].sort_values("energy_above_hull")
         lines.append(f"- {name}: {_frac(len(sel), len(mixed))}. Examples: " + ", ".join(
             f"{r.material_id} {r.reduced_formula} ({r.energy_above_hull:.3f})" for r in sel.head(8).itertuples()))
     lines.append("")
@@ -329,7 +389,7 @@ def report(args):
         "tetrahedral/prismatic d3": set(sites.loc[d3 & sites["geometry"].isin(["tetrahedron", "trigonal_prism"]) & sites["clean"], "material_id"]),
         "tetrahedral/prismatic ls-d8": set(sites.loc[d8 & sites["geometry"].isin(["tetrahedron", "trigonal_prism"]) & sites["clean"], "material_id"]),
         "square-planar d0": set(sites.loc[d0_site & (sites["geometry"] == "square_planar") & sites["clean"], "material_id"]),
-        "HSAB inversion": set(ok.loc[ok["hsab_inversion"].astype(bool), "material_id"]),
+        "HSAB inversion": hsab_inv,
         "perovskite t out of range": set(out_of["material_id"]),
     }
     srcs = ok["source"].value_counts()
