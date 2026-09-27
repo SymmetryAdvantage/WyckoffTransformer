@@ -16,9 +16,10 @@ What is measured, and whether it needs the full structure or only the Wyckoff ge
 * coordination number, polyhedron shape, off-centring, bond-valence sums, polyhedral
   sharing modes and the dimensionality of face-sharing networks -- structure level.
 
-Neighbours are anions within ``(1 + DISTANCE_TOLERANCE) * d_min`` of a cation, so a
-site's ``gap`` (next-anion distance over last-bonded distance) says how well defined
-its coordination number is. Shapes are assigned by comparing the sorted list of
+Neighbours are anions whose distance scaled by the pair's bond-valence R0 is within
+``(1 + DISTANCE_TOLERANCE)`` of the shortest, so bonds to different anions are judged
+on the same footing, and a site's ``gap`` (next anion over last bonded, in the same
+scaled units) says how well defined its coordination number is. Shapes are assigned by comparing the sorted list of
 ligand-cation-ligand angles with that of each ideal polyhedron of the same CN; this is
 permutation invariant, cheap, and good enough to tell a tetrahedron from a square or
 an octahedron from a trigonal prism, which is all the rules ask.
@@ -440,15 +441,22 @@ def analyse(material_id: str, cif: str):
     bonds = {}
     site_info = {}
     for ci, c in enumerate(cation_idx):
-        nb = sorted(by_cation.get(ci, []))
+        nb = by_cation.get(ci, [])
         if not nb:
             bonds[c] = []
             continue
-        d_min = nb[0][0]
-        bonded = [x for x in nb if x[0] <= (1 + DISTANCE_TOLERANCE) * d_min]
-        next_d = nb[len(bonded)][0] if len(nb) > len(bonded) else np.inf
-        bonds[c] = [(a, img, d) for d, a, img in bonded]
-        site_info[c] = {"gap": next_d / bonded[-1][0]}
+        # Compare d / R0 rather than d, so that a Cl or Br bond, longer than an O bond
+        # of the same strength, is not cut off in a mixed-anion polyhedron. Raw
+        # distances if any R0 is missing.
+        r0 = [bond_valence_r0(species[c], species[a]) for _, a, _ in nb]
+        if any(r is None for r in r0):
+            r0 = [1.0] * len(nb)
+        nb = sorted((d / r, d, a, img) for (d, a, img), r in zip(nb, r0))
+        q_min = nb[0][0]
+        bonded = [x for x in nb if x[0] <= (1 + DISTANCE_TOLERANCE) * q_min]
+        next_q = nb[len(bonded)][0] if len(nb) > len(bonded) else np.inf
+        bonds[c] = [(a, img, d) for _, d, a, img in bonded]
+        site_info[c] = {"gap": next_q / bonded[-1][0]}
     if not any(bonds.values()):
         row["status"] = "no_bonds"
         return row, [], []
