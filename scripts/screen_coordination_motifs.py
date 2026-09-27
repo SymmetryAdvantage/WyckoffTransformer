@@ -256,6 +256,12 @@ def report(args):
     dim = ok["face_sharing_d0_oct_dim"]
     lines.append("- Face-sharing d0 octahedral networks by dimensionality: " + ", ".join(
         f"{'finite' if d == 0 else f'{d}D'}: {int((dim == d).sum()):,}" for d in (0, 1, 2, 3)))
+    fs = (oo[oo["mode"] == "face"].merge(ok[["material_id", "reduced_formula", "energy_above_hull"]],
+                                         on="material_id").sort_values("energy_above_hull")
+          .drop_duplicates("material_id").head(12))
+    lines.append("  - face-sharing d0 octahedra, examples: " + ", ".join(
+        f"{r.material_id} {r.reduced_formula} {r.el1}-{r.el2} d={r.min_d_mm:.2f} ({r.energy_above_hull:.3f})"
+        for r in fs.itertuples()))
     ext = ok[dim >= 1].sort_values("energy_above_hull").head(10)
     lines.append("  - extended examples: " + ", ".join(
         f"{r.material_id} {r.reduced_formula} {int(r.face_sharing_d0_oct_dim)}D ({r.energy_above_hull:.3f})"
@@ -298,6 +304,13 @@ def report(args):
                          f"{k} {v:,}" for k, v in sites[g & sites['clean']]['geometry'].value_counts().head(5).items()))
         lines.append("")
 
+    for sp in ("Cr+3", "Mn+4"):
+        m = (sites["species"] == sp) & sites["ligands_of"] & sites["clean"]
+        by_geom = sites.loc[m, "geometry"].value_counts()
+        lines.append(f"- {sp}, O/F ligands only, clean sites: {int(m.sum()):,}; " + ", ".join(
+            f"{k} {v:,}" for k, v in by_geom.head(5).items()))
+    lines.append("")
+
     # Section 2B
     lines += ["## 2B. SOJT suppression", ""]
     lines.append("Cation sites with only O/F ligands; d0 cations only when octahedral. *Pinned* = "
@@ -321,6 +334,11 @@ def report(args):
         off = pinned[pinned["offcentre"] > 0.05]
         lines.append(f"| {sp} | {cls} | {len(sub):,} | {_frac(len(pinned), len(sub))} | "
                      f"{len(off):,} | {pinned['material_id'].nunique():,} |")
+    src = sites["material_id"].map(ok.set_index("material_id")["source"])
+    tab = pd.crosstab(src[sojt_site], np.where(sites.loc[sojt_site, "polar_site"], "polar", "pinned"))
+    lines.append("\nBy source database (all cations in the table): " + "; ".join(
+        f"{k}: {int(r.get('pinned', 0)):,} pinned of {int(r.sum()):,} "
+        f"({100 * r.get('pinned', 0) / max(r.sum(), 1):.0f}%)" for k, r in tab.iterrows()))
     strong = sojt_site & sites["species"].isin(["Mo+6", "V+5"]) & ~sites["polar_site"]
     lines.append(f"\nPinned strong-SOJT (Mo6+, V5+ octahedra) examples: {examples(strong)}")
     lp = sojt_site & sites["species"].isin(["Sn+2", "Sb+3", "Te+4", "Se+4", "I+5"]) & ~sites["polar_site"]
