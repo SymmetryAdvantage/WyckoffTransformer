@@ -280,6 +280,18 @@ def prerelax(
     wdir = Path(wdir)
     from wyckoff_transformer.cryspr.relaxer import _get_spacegroup_info
 
+    # The positive-definite solve is the same BFGS step, with ASE's eigensolve
+    # retained for an indefinite Hessian.  Apply it only to covered NEP89
+    # structures; callers choosing another optimizer or the fallback keep their
+    # existing path.
+    if optimizer is BFGS:
+        from wyckoff_transformer.cryspr.nep89 import Nep89WithFallback
+
+        if isinstance(calculator, Nep89WithFallback) and calculator.supports(atoms_in):
+            from wyckoff_transformer.cryspr.fast_bfgs import PositiveDefiniteBFGS
+
+            optimizer = PositiveDefiniteBFGS
+
     volume_before = float(atoms_in.get_volume()) if atoms_in.cell.rank == 3 else None
     try:
         relaxed = stepwise_relax(

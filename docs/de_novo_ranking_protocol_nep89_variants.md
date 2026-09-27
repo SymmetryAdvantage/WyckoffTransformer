@@ -607,21 +607,37 @@ for a WyFormer gene against 0.21 s for a LeMat-Bulk one, because generated genes
 include some PyXtal rejection-samples to the 300 s timeout — but nothing about
 the widening is superlinear.
 
+## NEP89 relaxation speed
+
+The NEP89 pre-relaxation keeps BFGS's Hessian updates, step limits and stopping
+criteria. For a positive-definite Hessian it now solves the BFGS step by
+Cholesky factorisation; an indefinite Hessian still takes ASE's eigensolve.
+Only covered NEP89 structures take this path.
+
+Measured 2026-09-27 on zeus, starting from commit `b8191f7` with the performance
+patch in the worktree, one CPU thread and the same input CIF for each pair.
+The fixed-cell and fixed-symmetry variable-cell stages used `fmax = 0.1 eV/Å`.
+[W&B run q1vz5ox4](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/q1vz5ox4)
+holds the raw measurements and benchmark script.
+
+| Cell | Atoms | ASE BFGS | Cholesky BFGS | Speedup |
+| --- | ---: | ---: | ---: | ---: |
+| Si | 16 | 0.304 s | 0.295 s | 1.03× |
+| Cu-Ge-Te | 172 | 10.319 s | 6.524 s | 1.58× |
+| Cu-Ge-Te | 300 | 192.046 s | 131.760 s | 1.46× |
+
+The paired runs ended in the same space groups. Final energy differences were
+at most `2.1e-11 eV/atom`, and maximum Cartesian position differences at most
+`3.8e-9 Å`. The 300-atom ASE baseline reached the 500-step cap in its
+variable-cell stage, so that timing measures a capped workload rather than
+convergence.
+
 ## Installing NEP89
 
-`calorine` builds a pybind11 extension from an sdist — there are no wheels — so
-it needs a C++ compiler, and it declares `numpy<=2.3` while this project runs on
-2.5. That pin is spurious: `_nepy` touches no numpy C API, and CPUNEP is
-verified working here at numpy 2.5.3 (energies, forces and stress all check
-out). But `uv sync --extra nep` would honour it and **downgrade numpy**, so on a
-host where that matters install it additively instead:
-
-```bash
-uv pip install --no-deps calorine
-```
-
-Every runtime dependency it then needs — ase, numpy, pandas, scikit-learn,
-matplotlib — is already in the project. See
+`calorine` builds a pybind11 extension from an sdist, so it needs a C++
+compiler. The `nep` extra installs it. On zeus, the 2026-09-27 lock resolves
+calorine 4.0, which works with NumPy 2.5.3 and no longer declares the upper
+NumPy pin present in earlier releases. See
 [the zeus notes](platforms/zeus/environment.md#calorine-and-nep89).
 
 ## Where to go next
