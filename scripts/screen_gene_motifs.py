@@ -38,15 +38,35 @@ RECORD_COLUMNS = ["immutable_id", "spacegroup_number", "elements", "multiplicity
                   "energy_above_hull"]
 
 
+#: seconds per gene for the flags; a few generated compositions make the
+#: combinatorial oxidation-state search run for many minutes.
+FLAG_TIMEOUT = 10
+
+
+class _Timeout(Exception):
+    pass
+
+
+def _on_alarm(signum, frame):
+    raise _Timeout()
+
+
 def _row_result(record: dict) -> dict:
+    import signal
     from wyckoff_transformer.evaluation.gene_motifs import gene_flags, gene_key, prototype_key
     out = {"gene_key": gene_key(record), "prototype_key": prototype_key(record),
            "n_sites": len(record["elements"]),
            "n_elements": len({str(e) for e in record["elements"]})}
+    signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(FLAG_TIMEOUT)
     try:
         out.update(gene_flags(record))
+    except _Timeout:
+        out["flag_error"] = "timeout"
     except Exception as exc:  # a flag failure must not lose the keys
         out["flag_error"] = f"{type(exc).__name__}: {exc}"[:120]
+    finally:
+        signal.alarm(0)
     return out
 
 
@@ -155,15 +175,20 @@ def report(args):
               "| arm | valid genes | unique | novel genes (of unique) | novel prototypes (of unique) | distinct novel prototypes |",
               "|---|---|---|---|---|---|"]
     uniq = {}
+    lines_err = []
     for name, df in pools.items():
         v = df[~df["invalid"].astype(bool)]
         u = v.drop_duplicates("gene_key").copy()
         u["novel_gene"] = ~u["gene_key"].isin(arc_genes)
         u["novel_proto"] = ~u["prototype_key"].isin(arc_protos)
         uniq[name] = u
+        if "flag_error" in u:
+            lines_err.append(f"- {name}: flags skipped for {int(u['flag_error'].notna().sum()):,} unique genes "
+                             f"({int((u['flag_error'] == 'timeout').sum()):,} timeouts after {FLAG_TIMEOUT} s)")
         lines.append(f"| {name} | {len(v):,} | {len(u):,} | {_pct(int(u.novel_gene.sum()), len(u))} | "
                      f"{_pct(int(u.novel_proto.sum()), len(u))} | {u.loc[u.novel_proto, 'prototype_key'].nunique():,} |")
     lines.append("")
+    lines += lines_err + ([""] if lines_err else [])
     for name, u in uniq.items():
         lines.append(f"Novel-prototype rate by number of Wyckoff sites, {name}:")
         bins = [0, 2, 4, 6, 10, 20, 100]
