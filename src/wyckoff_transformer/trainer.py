@@ -2702,6 +2702,8 @@ class WyckoffTrainer():
             composition_cond: Optional[torch.Tensor] = None,
             allowed_element_mask: Optional[torch.Tensor] = None,
             guidance_scale: float = 1.0,
+            forced_tokens: Optional[torch.Tensor] = None,
+            conditional_masks: Optional[list] = None,
             ) -> List[dict] | Tuple[List[dict], List, List]:
         """
         Generates structures by autoregressively sampling from the model.
@@ -2752,6 +2754,8 @@ class WyckoffTrainer():
                 generated cascade field; otherwise the start token is drawn from the saved
                 empirical distribution. See WyckoffGenerator.guided_logits and
                 WyckoffGenerator.guided_start_logits.
+            forced_tokens, conditional_masks: see WyckoffGenerator.generate_tensors. A
+                forced prefix, and site-level masks conditioned on an earlier field.
         """
         if guidance_scale != 1.0 and not self.classifier_free_guidance:
             raise ValueError(
@@ -2854,15 +2858,19 @@ class WyckoffTrainer():
                 allowed_element_mask=allowed_element_mask,
                 uncond=uncond,
                 guidance_scale=guidance_scale,
+                forced_tokens=forced_tokens,
+                conditional_masks=conditional_masks,
             )
         elif compute_validity_per_known_sequence_length:
             generated_tensors, ss_validitity, enum_validity = generator.generate_tensors(
                 start_tensor, temperature=temperature, compute_validity=True, cond=cond,
-                uncond=uncond, guidance_scale=guidance_scale)
+                uncond=uncond, guidance_scale=guidance_scale, forced_tokens=forced_tokens,
+                conditional_masks=conditional_masks)
         else:
             generated_tensors = generator.generate_tensors(
                 start_tensor, temperature=temperature, compute_validity=False, cond=cond,
-                uncond=uncond, guidance_scale=guidance_scale)
+                uncond=uncond, guidance_scale=guidance_scale, forced_tokens=forced_tokens,
+                conditional_masks=conditional_masks)
 
         # Non-target fields are filled in by their engineers (site_symmetry_ops_id, ...). They are inputs to the model, not part of the generated
         # structure, and a vector-valued one cannot be stacked with the [batch, length] token
