@@ -122,3 +122,42 @@ bash $R python scripts/screen_coordination_motifs.py report --out $OUT
 ```
 
 `run` is resumable per shard and splits across processes with `--shard-mod I N`.
+
+## Strategy measurements (2026-09-28)
+
+The goal is a handful of structures striking enough for a materials-science journal.
+Genes are cheap and structures are not, so the plan is to target motifs a **gene
+guarantees** by symmetry and to spend structures only on stability. Three
+measurements decide whether that works: M1, M3 and M4. M2, the energy predictor on
+rare motifs, was dropped because the predictor is at best a 2× speed-up.
+
+### M1: motifs in generated pools that have already been relaxed
+
+`scripts/screen_generated_pools.py`, run on 14 protocol pools
+(`runs/chemsys_study/artifacts/protocol_*`, the torpedo joint and reference pools,
+`generated/gene_min_formation_energy…`). It leaves out the contaminated
+`protocol_ehull5x-20260904-213346`, the `generated/` copy of the ehull_5x pool and the
+10-gene pilots. Output is in `runs/coordination_motifs/pools/`. Energies and novelty
+come from each pool's own ORB hull and `novel_structure`.
+
+13,969 relaxed structures; **1,825 (13%) are in scope** (the rest are 9,375
+intermetallics, 2,394 without a single-valence assignment, and 375 non-ionic). 1,574
+are novel, and 553 are novel with e_hull ≤ 0.1.
+
+| motif | structures (all novel) | e_hull ≤ 0.1 |
+|---|---|---|
+| edge-sharing tetrahedra, z ≥ +4, O/F | 6 (0.33% of in-scope vs 0.005% in the database) | 2: Hf3K12Ge12O36 (0.018), Rb4P4O12 (0.071) |
+| face-sharing tetrahedra; Rule 4 hetero-sharing | 0; 1 (K2U2C8H22O48Se12, 0.52) | 0 |
+| face-sharing d⁰ octahedra (any dimensionality) | 0 | 0 |
+| tetrahedral Cr³⁺; tetrahedral/prismatic ls-d⁸; square-planar d⁰ (O/F) | 0 | 0 |
+| HSAB inversion | 1 (PtAsIO2, 0.77) | 0 |
+| out-of-range corner-sharing perovskite | 0 | 0 |
+| strong-SOJT octahedron on a non-polar site | 2 | 1: CeDy2MoZn2O10 (0.096) |
+
+**Reading.** Unconstrained generation rarely reaches the motifs, as expected. The one it
+over-produces, edge-sharing high-valent tetrahedra (70× the database rate), is the one
+Pauling's rules predict to be costly. The two near-hull cases need DFT before they
+mean anything: an ORB e_hull of 0.02–0.07 eV for edge-sharing PO4 would be remarkable
+if it held. Only 13% of generated structures are even ionic enough to judge, so a
+motif campaign has to steer the composition (chemical-system conditioning or an
+element palette), not just filter.
