@@ -19,7 +19,8 @@ from the same single-valence ICSD-prior guess as the structure screen.
   guaranteed if the relaxation keeps the prototype.
 * ``cr3_no_octahedron``: Cr3+ on a site whose point group admits no octahedron.
 * ``d8_no_square``: Pd2+, Pt2+ or Au3+ on a site whose point group admits no square
-  plane.
+  plane. Loose: octahedral Pd2+ is known (PdF2). ``d8_no_square_no_octahedron`` also
+  excludes the octahedron.
 * ``sojt_pinned_strong`` / ``sojt_pinned_d0`` / ``lone_pair_pinned``: an SOJT d0 cation
   (strong = Mo6+ and V5+), or an ns2 cation, on a non-polar site, where symmetry
   forbids off-centring. The gene cannot tell whether the d0 site is octahedral.
@@ -145,7 +146,7 @@ def reference_prototype_keys() -> dict[bytes, str]:
 # --- flags ------------------------------------------------------------------------------
 
 FLAGS = ("fs_d0_chain_2h", "perovskite_t_out", "cr3_no_octahedron", "d8_no_square",
-         "sojt_pinned_strong", "sojt_pinned_d0", "lone_pair_pinned")
+         "d8_no_square_no_octahedron", "sojt_pinned_strong", "sojt_pinned_d0", "lone_pair_pinned")
 
 
 def _composition(record) -> dict[str, int]:
@@ -193,6 +194,10 @@ def gene_flags(record) -> dict:
             out["cr3_no_octahedron"] = True
         if (el, z) in {("Pd", 2), ("Pt", 2), ("Au", 3)} and pg not in ALLOWED_BY["square_planar"]:
             out["d8_no_square"] = True
+            # Octahedral Pd2+ is known (PdF2); only a site that also excludes the
+            # octahedron forces the unprecedented geometry.
+            if pg not in ALLOWED_BY["octahedron"]:
+                out["d8_no_square_no_octahedron"] = True
         if pg not in POLAR_POINT_GROUPS:
             cls = SOJT_D0.get((el, z))
             if cls == "strong":
