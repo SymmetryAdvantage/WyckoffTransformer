@@ -18,7 +18,7 @@
 #PBS -q normal
 #PBS -P 11001786
 #PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
-#PBS -l walltime=08:00:00
+#PBS -l walltime=12:00:00
 #PBS -j oe
 #PBS -o /scratch/users/nus/kna/WyFormer/logs/
 
@@ -28,22 +28,33 @@ MODEL=${MODEL:-/scratch/users/nus/kna/WyFormer/runs/ehull_adamw_wsd_5x_cfg-20260
 OUT=${OUT:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/genes}
 ARMS=${ARMS:-"cfg_w3_ehull005:3 cfg_w1_ehull005:1"}
 CONDITION=${CONDITION:-energy_above_hull=0.05}
-CHUNKS=${CHUNKS:-10}
-CHUNK=${CHUNK:-100000}
+CHUNKS=${CHUNKS:-40}
+CHUNK=${CHUNK:-25000}      # the whole batch (doubled by CFG) sits on the GPU at once
+DEVICE=${DEVICE:-cuda}
 
 cd "$REPO"
-echo "commit $(git rev-parse HEAD) model $MODEL condition $CONDITION"
+if ! command -v git >/dev/null 2>&1; then     # batch shells have no git on PATH
+    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+    module load git/2.39.2 2>/dev/null || true
+fi
+echo "commit $(git rev-parse HEAD 2>/dev/null) model $MODEL condition $CONDITION"
 for arm in $ARMS; do
     name=${arm%%:*}; w=${arm##*:}
-    mkdir -p "$OUT/$name"
+    # wyformer-generate insists on a name ending in exactly .json.gz, so the
+    # partial file goes to a tmp/ directory and is moved into place when complete.
+    mkdir -p "$OUT/$name/tmp"
     for i in $(seq -w 0 $((CHUNKS - 1))); do
         f="$OUT/$name/chunk_$i.json.gz"
+        tmp="$OUT/$name/tmp/chunk_$i.json.gz"
         [ -s "$f" ] && continue
         echo "$(date) $name chunk $i"
-        bash scripts/platforms/aspire2a/run_in_singularity.sh wyformer-generate "$f.tmp.json.gz" \
+        bash scripts/platforms/aspire2a/run_in_singularity.sh wyformer-generate "$tmp" \
             --model-path "$MODEL" --initial-n-samples $((CHUNK * 3 / 2)) --firm-n-samples "$CHUNK" \
-            --device cuda --condition "$CONDITION" --guidance-scale "$w" \
-            && mv "$f.tmp.json.gz" "$f"
+            --device "$DEVICE" --condition "$CONDITION" --guidance-scale "$w" \
+            && mv "$tmp" "$f" || echo "$(date) $name chunk $i FAILED"
     done
 done
-echo "$(date) done"
+n_missing=$(for arm in $ARMS; do for i in $(seq -w 0 $((CHUNKS - 1))); do
+    [ -s "$OUT/${arm%%:*}/chunk_$i.json.gz" ] || echo x; done; done | wc -l)
+echo "$(date) done; $n_missing chunks missing"
+[ "$n_missing" -eq 0 ]
