@@ -29,8 +29,9 @@ OUT=${OUT:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/genes}
 ARMS=${ARMS:-"cfg_w3_ehull005:3 cfg_w1_ehull005:1"}
 CONDITION=${CONDITION:-energy_above_hull=0.05}
 CHUNKS=${CHUNKS:-40}
-CHUNK=${CHUNK:-25000}      # the whole batch (doubled by CFG) sits on the GPU at once
+CHUNK=${CHUNK:-25000}
 DEVICE=${DEVICE:-cuda}
+BATCH=${BATCH:-5000}       # per forward pass; 37.5k samples at once ran out of the 40 GB of an A100
 
 cd "$REPO"
 if ! command -v git >/dev/null 2>&1; then     # batch shells have no git on PATH
@@ -50,7 +51,7 @@ for arm in $ARMS; do
         echo "$(date) $name chunk $i"
         bash scripts/platforms/aspire2a/run_in_singularity.sh wyformer-generate "$tmp" \
             --model-path "$MODEL" --initial-n-samples $((CHUNK * 3 / 2)) --firm-n-samples "$CHUNK" \
-            --device "$DEVICE" --condition "$CONDITION" --guidance-scale "$w" \
+            --device "$DEVICE" --batch-size "$BATCH" --condition "$CONDITION" --guidance-scale "$w" \
             && mv "$tmp" "$f" || echo "$(date) $name chunk $i FAILED"
     done
 done

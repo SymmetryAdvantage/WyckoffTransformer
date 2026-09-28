@@ -286,6 +286,11 @@ def main():
                              "Below 1 sharpens, above 1 flattens. It also applies to the "
                              "space group of a model with predict_start; otherwise the "
                              "space group is drawn from the saved distribution either way.")
+    parser.add_argument("--batch-size", type=int, default=None,
+                        help="Sample at most this many sequences per forward pass, and "
+                             "concatenate. The whole batch (doubled under guidance) sits on "
+                             "the device at once, so a large --initial-n-samples needs this "
+                             "to fit; default is one pass.")
     parser.add_argument("--guidance-scale", type=float, default=1.0,
                         help="Classifier-free guidance scale, for a model trained with "
                              "condition_dropout. 1 samples the conditional model, 0 the "
@@ -508,18 +513,30 @@ def main():
         print("--- Running in constrained element generation mode ---")
     else:
         print("--- Running in default generation mode ---")
-    generated_wp = trainer.generate_structures(
-        n_structures=n_structures,
-        calibrate=args.calibrate,
-        temperature=args.temperature,
-        start_tensor=start_tensor_override,
-        cond=cond,
-        composition_cond=system_cond,
-        required_element_set=args.required_elements if use_element_constraints else None,
-        allowed_element_set=allowed_elements if allowed_elements is not None else "all",
-        allowed_element_mask=element_mask,
-        guidance_scale=args.guidance_scale,
-    )
+    def rows(x, lo, hi):
+        """The [lo, hi) rows of a per-row tensor; anything else unchanged."""
+        if isinstance(x, torch.Tensor) and x.dim() > 0 and x.size(0) == n_structures:
+            return x[lo:hi]
+        return x
+
+    batch = args.batch_size or n_structures
+    generated_wp = []
+    for lo in range(0, n_structures, batch):
+        hi = min(lo + batch, n_structures)
+        generated_wp.extend(trainer.generate_structures(
+            n_structures=hi - lo,
+            calibrate=args.calibrate,
+            temperature=args.temperature,
+            start_tensor=rows(start_tensor_override, lo, hi),
+            cond=rows(cond, lo, hi),
+            composition_cond=rows(system_cond, lo, hi),
+            required_element_set=args.required_elements if use_element_constraints else None,
+            allowed_element_set=allowed_elements if allowed_elements is not None else "all",
+            allowed_element_mask=rows(element_mask, lo, hi),
+            guidance_scale=args.guidance_scale,
+        ))
+        if hi < n_structures:
+            print(f"--- {hi} / {n_structures} sampled ---")
 
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")
