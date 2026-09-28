@@ -1,4 +1,5 @@
 """Gene-level motif flags on genes whose answer is known."""
+import numpy as np
 import pytest
 
 from wyckoff_transformer.evaluation.gene_motifs import (
@@ -54,3 +55,17 @@ def test_intermetallic_has_no_flags(fp):
     f = gene_flags(fp.record({"group": 221, "sites": [["1a"], ["1b"]],
                               "species": ["Cu", "Zn"], "numIons": [1, 1]}))
     assert not f["oxidation_ok"]
+
+
+def test_keys_ignore_numpy_types(fp):
+    """A record read back from parquet (numpy arrays and scalars) keys like the original."""
+    from wyckoff_transformer.evaluation.gene_motifs import gene_key
+    rec = fp.record({"group": 221, "sites": [["1a"], ["1b"], ["3c"]],
+                     "species": ["Sr", "Ti", "O"], "numIons": [1, 1, 3]})
+    as_parquet = dict(rec)
+    as_parquet["elements"] = np.array([str(e) for e in rec["elements"]])
+    for field in ("site_symmetries_augmented", "sites_enumeration_augmented"):
+        as_parquet[field] = [np.array(v) for v in rec[field]]
+    assert prototype_key(as_parquet) == prototype_key(rec)
+    assert gene_key(as_parquet) == gene_key(rec)
+    assert gene_flags(as_parquet)["reference_prototype"] == "cubic_perovskite"

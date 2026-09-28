@@ -36,6 +36,7 @@ from collections import defaultdict
 from functools import lru_cache
 
 import numpy as np
+from pymatgen.core import Element
 
 from wyckoff_transformer.evaluation.coordination_motifs import (
     ALLOWED_BY,
@@ -91,11 +92,21 @@ def site_point_group(space_group: int, letter: str) -> str:
 
 
 def _canonical(x):
-    """Nested frozensets/tuples -> a deterministic nested tuple (for hashing)."""
+    """Nested frozensets/tuples -> a deterministic nested tuple of plain Python values.
+
+    Records read from parquet carry numpy scalars, whose repr under numpy 2 is
+    ``np.str_('m-3m')`` rather than ``'m-3m'``, and records built from pyxtal genes
+    carry pymatgen ``Element`` objects where parquet has symbols. Without the
+    conversion an archive record and the same gene from pyxtal hash differently.
+    """
     if isinstance(x, frozenset):
         return ("S",) + tuple(sorted((_canonical(e) for e in x), key=repr))
     if isinstance(x, tuple):
         return ("T",) + tuple(_canonical(e) for e in x)
+    if isinstance(x, np.generic):
+        return x.item()
+    if isinstance(x, Element):         # pyxtal-derived records; parquet has symbols
+        return x.symbol
     return x
 
 
