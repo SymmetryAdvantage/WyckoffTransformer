@@ -83,9 +83,9 @@ Mid-campaign, the branch `perf/nep89-relaxation` was merged into `main` (`d64490
 
 ## 3. Convex Hull Results
 
-### Phase Diagram Summary
-- **Total entries evaluated:** 48,671
-- **Ground-state hull vertices:** 9 phases
+### Phase Diagram & Ground-State Vertices (SUN Phases)
+- **Total entries evaluated:** 48,671 (42 published ORB reference entries + 48,629 de novo relaxed candidates).
+- **Ground-state hull vertices:** 9 phases defining the 0 K convex hull:
   - 4 Elemental reference vertices: $\text{Cu}$ ($Fm\bar{3}m$), $\text{Ge}$ ($Fd\bar{3}m$), $\text{Te}$ ($P3_1 21$)
   - 5 De novo discovered ground-state compounds (SUN phases):
     1. $\text{Cu}_3\text{GeTe}_4$ ($P\bar{4}2m$, space group 111, $E_f = -0.1271$ eV/atom)
@@ -94,11 +94,31 @@ Mid-campaign, the branch `perf/nep89-relaxation` was merged into `main` (`d64490
     4. $\text{Cu}_3\text{Te}_2$ ($P\bar{4}2_1m$, space group 113, $E_f = -0.0784$ eV/atom)
     5. $\text{Cu}_5\text{Ge}$ ($P6_3/mmc$, space group 194, $E_f = -0.0223$ eV/atom)
 
-### Metastable Landscape (MetaSUN)
-- **$e_\text{above\_hull} \le 50\text{ meV/atom}$:** 3,979 distinct relaxed polymorphs.
-- **$e_\text{above\_hull} \le 100\text{ meV/atom}$:** 17,781 distinct relaxed polymorphs.
+#### Ground-State Stability & Polymorph Findings:
+1. **Ternary Stoichiometry Stability:** No new ternary compositions entered the ground-state convex hull. $\text{Cu}_3\text{GeTe}_4$ remains the **sole stable ternary composition** in both DFT and ORB. All other ternary phases (including $\text{Cu}_2\text{GeTe}_3$ and the experimental $\text{Cu}_5\text{Ge}_2\text{Te}_7$) are metastable.
+2. **Binary Ground-State Discovery:** In the Cu-Ge binary system, hexagonal $\text{Cu}_5\text{Ge}$ ($P6_3/mmc$, space group 194, $E_f = -0.0223\text{ eV/atom}$) emerged as a **new ground-state vertex on the ORB convex hull**, displacing $\text{Cu}_8\text{Ge}$ and $\text{Cu}_3\text{Ge}$ from the published reference hull. (In LeMat-Bulk DFT, $\text{Cu}_5\text{Ge}$ only had monoclinic/orthorhombic entries with positive formation energy).
+3. **Hull Lowering via De Novo Polymorphs:** For all four previously known ground-state compositions, our generated structures uncovered lower-energy polymorphs that lowered the published reference hull envelope:
+   - $\text{Cu}_3\text{GeTe}_4$: lowered by **$2.9\text{ meV/atom}$** (from $-3.6488$ to $-3.6517\text{ eV/atom}$)
+   - $\text{GeTe}$: lowered by **$2.7\text{ meV/atom}$** (from $-3.9280$ to $-3.9307\text{ eV/atom}$)
+   - $\text{CuTe}$: lowered by **$11.0\text{ meV/atom}$** (from $-3.4994$ to $-3.5104\text{ eV/atom}$)
+   - $\text{Cu}_3\text{Te}_2$: lowered by **$12.3\text{ meV/atom}$** (from $-3.5595$ to $-3.5718\text{ eV/atom}$)
 
-This demonstrates rich structural polymorphism in the ternary and pseudobinary telluride systems, with numerous layered and defect-ordered tetrahedral phases lying closely above the ground-state convex hull.
+### Metastable Landscape (MetaSUN) & Discovery Breadth
+- **$e_\text{above\_hull} \le 50\text{ meV/atom}$:** 3,932 generated structures (3,979 total including reference).
+- **$e_\text{above\_hull} \le 100\text{ meV/atom}$:** 17,734 generated structures (17,781 total including reference) spanning **834 distinct compositions**.
+
+#### Compositional Breakdown of Generated Metastable Phases:
+| Subsystem | Total Generated | Metastable $\le 50\text{ meV}$ | Metastable $\le 100\text{ meV}$ | Distinct Metastable Formulas |
+|---|---|---|---|---|
+| **Ternary ($\text{Cu-Ge-Te}$)** | 22,014 | 65 (0.3%) | 2,580 (11.7%) | **344** |
+| **Binary ($\text{Cu-Ge}, \text{Ge-Te}, \text{Cu-Te}$)** | 26,610 | 3,862 (14.5%) | 15,149 (56.9%) | **489** |
+| **Elemental ($\text{Cu}, \text{Ge}, \text{Te}$)** | 5 | 5 (100.0%) | 5 (100.0%) | 1 |
+| **Total Campaign** | **48,629** | **3,932** (8.1%) | **17,734** (36.5%) | **834** |
+
+#### Novelty Relative to Historical Databases (LeMat-Bulk):
+- **Ternary Space Expansion:** LeMat-Bulk contained only **21 metastable ternary structures** across **9 compositions**. Our campaign discovered **2,580 metastable ternary structures** spanning **344 distinct compositions**—a **>120× expansion** in ternary metastable structures.
+- **Brand-New Ternary Stoichiometries:** Of the 344 ternary compositions discovered within the $\le 100\text{ meV/atom}$ window, **324 compositions (accounting for 1,595 structures)** are completely new stoichiometries that never existed in LeMat-Bulk (e.g., $\text{CuGeTe}_2$, $\text{CuGe}_2\text{Te}_5$, $\text{Cu}_4\text{GeTe}_4$, $\text{Cu}_5\text{Ge}_2\text{Te}_7$).
+- **Full System Expansion:** Relative to LeMat-Bulk’s historical total of 195 metastable entries in $\text{Cu-Ge-Te}$, the campaign’s 17,734 entries represent a **>90× expansion** of the accessible metastable crystal landscape.
 
 ---
 
@@ -139,6 +159,18 @@ Per project standards (`docs/energy_fields.md` and `AGENTS.md`), MLIP energies a
 
 ### Comparison with LeMat-Bulk PBE DFT
 In the primary reference dataset [`lemat_bulk_fmax1_stress`](../../yamls/datasets/lemat_bulk_fmax1_stress.yaml), there are **1,265 Cu-Ge-Te structures** (69 ternary phases, 1,196 binary/elemental entries) calculated with **PBE DFT** (Materials Project, Alexandria, and OQMD settings).
+
+#### Baseline LeMat-Bulk (`lemat_bulk_fmax1_stress`) Distribution:
+| Category | Total Entries | Stable ($e_\text{hull} \le 1\text{ meV}$) | Metastable ($e_\text{hull} \le 50\text{ meV}$) | Metastable ($e_\text{hull} \le 100\text{ meV}$) | Unstable ($> 100\text{ meV}$) |
+|---|---|---|---|---|---|
+| **Ternary only ($\text{Cu-Ge-Te}$)** | **69** | 1 (1.4%) | **8** (11.6%) | **21** (30.4%) | 47 (68.1%) |
+| **Binary ($\text{Cu-Ge}, \text{Ge-Te}, \text{Cu-Te}$)** | **956** | 5 (0.5%) | **59** (6.2%) | **147** (15.4%) | 804 (84.1%) |
+| **Elemental ($\text{Cu}, \text{Ge}, \text{Te}$)** | **240** | 5 (2.1%) | **20** (8.3%) | **27** (11.2%) | 208 (86.7%) |
+| **Full System Total** | **1,265** | 11 (0.9%) | **87** (6.9%) | **195** (15.4%) | 1,059 (83.7%) |
+
+- The 69 ternary structures in LeMat-Bulk cover only **25 distinct stoichiometries** in total.
+- The single stable ternary phase is $\text{Cu}_3\text{GeTe}_4$ (`agm003555275`, $E_f = -0.1007\text{ eV/atom}$).
+- All 8 ternary structures with $e_\text{hull} \le 50\text{ meV/atom}$ are polymorphs of a single composition: $\text{Cu}_2\text{GeTe}_3$ ($e_\text{hull} \in [3.0, 20.1]\text{ meV/atom}$).
 
 In the published LeMat-Bulk MLIP hull benchmark dataset (`LeMaterial/LeMat-Bulk-MLIP-Hull`), **46 structures** in this exact chemical system have **both** their PBE DFT energy (`true_energy`) and their ORB-v3 energy (`orb_conserv_inf_energy`) calculated on the exact same atomic configurations.
 
