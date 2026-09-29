@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#PBS -N wyf_censored_icsd_pipeline
+#PBS -q ai
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
+#PBS -l walltime=23:59:59
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
+# ---------------------------------------------------------------------------
+# Build lemat_bulk_fmax1_stress_icsd and its der_tokenizer_v1_icsd tensors, smoke-test the
+# ICSD-aware censored predictor, then submit its 4-GPU training chain.
+#
+#   cd /scratch/users/nus/kna/WyFormer/worktrees/censored-icsd
+#   qsub scripts/platforms/aspire2a/censored_icsd_pipeline.pbs
+#
+# Every step runs under self_debug.sh: an abnormal exit starts Claude Code (permission mode
+# auto) in this checkout to fix and commit, then the step is retried. Transcripts are in
+# /scratch/users/nus/kna/WyFormer/logs/self_debug/<job id>/. Steps already done are skipped,
+# so resubmitting after a stop continues where it left off.
+#
+#   1. derive   scripts/add_icsd_provenance.py: the parent's Wyckoff records + icsd_backed.
+#               No pyxtal, no symmetry.
+#   2. tokenise scripts/tokenise_a_dataset.py with yamls/tokenisers/der_tokenizer_v1_icsd.yaml.
+#   3. lock     the new cache and the store, read-only again.
+#   4. pilot    train.py --pilot (3 epochs, 1 GPU) on the real config: catches a broken loss or
+#               data path here rather than in the chain.
+#   5. submit   train_in_pbs.sh, 4 GPUs.
+# ---------------------------------------------------------------------------
+set -uo pipefail
+
+REPO_DIR=${PBS_O_WORKDIR:-$(pwd)}
+cd "$REPO_DIR"
+# shellcheck source=/dev/null
+source "$HOME/.config/wyformer/paths.env"
+export WYFORMER_DATA WYFORMER_CACHE WYFORMER_RUNS WANDB_DIR
+PARENT=lemat_bulk_fmax1_stress
+DATASET=lemat_bulk_fmax1_stress_icsd
+TOKENISER=der_tokenizer_v1_icsd
+CONFIG=yamls/models/lemat/der/min_energy_censored_icsd.yaml
+CACHE_DIR="$WYFORMER_CACHE/$DATASET"
+SD="bash scripts/platforms/aspire2a/self_debug.sh"
+RUN="bash scripts/platforms/aspire2a/run_in_singularity.sh"
+NCPUS=${NCPUS:-16}
+echo "pipeline $PBS_JOBID on $(hostname) at $(git rev-parse --short HEAD) ($(git branch --show-current))"
+
+if [ ! -f "$CACHE_DIR/train.parquet" ]; then
+    bash scripts/platforms/aspire2a/store_lock.sh open "$WYFORMER_CACHE" || exit 1
+    $SD derive $RUN python scripts/add_icsd_provenance.py "$PARENT" "$DATASET" || exit 1
+else
+    echo "derive: $CACHE_DIR already built, skipping"
+fi
+
+if [ ! -f "$CACHE_DIR/tensors/$TOKENISER.safetensors" ]; then
+    $SD tokenise $RUN python scripts/tokenise_a_dataset.py "$DATASET" \
+        "yamls/tokenisers/$TOKENISER.yaml" --new-tokenizer --n-jobs "$NCPUS" || exit 1
+else
+    echo "tokenise: $TOKENISER tensors exist, skipping"
+fi
+
+bash scripts/platforms/aspire2a/store_lock.sh lock "$WYFORMER_CACHE"
+
+$SD pilot $RUN python scripts/train.py "$CONFIG" "$DATASET" cuda --pilot || exit 1
+
+# Submitted from the committed checkout: a fix Claude made above is in it.
+$SD submit bash scripts/platforms/aspire2a/train_in_pbs.sh \
+    --ngpus 4 --ncpus 64 --mem 440gb --max-attempts 10 "$CONFIG" "$DATASET" || exit 1
+echo "pipeline done"

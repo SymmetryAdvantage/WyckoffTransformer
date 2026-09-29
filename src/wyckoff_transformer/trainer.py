@@ -476,6 +476,10 @@ class WyckoffTrainer():
     #: Set to a CensoredMinDiagnostics when scalar_loss is "censored", and None otherwise.
     censored_diagnostics = None
 
+    #: CensoredMinLoss.tight_field of a censored Scalar fit, or None: a per-row flag the loss
+    #: reads to fit that row as the optimum itself. Class-level so a bare trainer has it.
+    censored_tight_field = None
+
     #: Whether the target composition is part of the conditioning vector, and the width
     #: of the element vocabulary it is expressed over. Class attributes for the same
     #: reason as `scheduler_steps_per_batch`: every conditioning path reads them.
@@ -726,6 +730,12 @@ class WyckoffTrainer():
         self.condition_scale = condition_scale
         self.condition_transform = condition_transform
         extra_fields = list(self.condition_features) or None
+        # A censored fit may read a per-row "tight" flag (CensoredMinLoss.tight_field). It is
+        # loaded like a conditioning feature but reaches only the loss, never the model.
+        self.censored_tight_field = (
+            (censored_loss_args or {}).get("tight_field") if scalar_loss == "censored" else None)
+        if self.censored_tight_field is not None:
+            extra_fields = (extra_fields or []) + [self.censored_tight_field]
         self.scalar_loss = scalar_loss
         self.censored_diagnostics = None
         self.composition_conditioning = composition_conditioning
@@ -957,6 +967,19 @@ class WyckoffTrainer():
                 # Stored in physical units; the transform is applied on the way into the model.
                 # Validate once here rather than per step, which would force a device sync.
                 self._validate_condition_column(name, transform, cond_tensor)
+        if self.censored_tight_field is not None:
+            for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
+                if ds is None:
+                    continue
+                tight = ds.data[self.censored_tight_field]
+                if not torch.is_tensor(tight):
+                    tight = torch.as_tensor(tight)
+                if bool(torch.isnan(tight.float()).any()):
+                    raise ValueError(f"Tight-observation field {self.censored_tight_field!r} has NaNs")
+                ds.data[self.censored_tight_field] = tight.reshape(-1).to(self.device) > 0.5
+                logger.info("Censored fit: %d of %d rows are tight (%s)",
+                            int(ds.data[self.censored_tight_field].sum()), tight.numel(),
+                            self.censored_tight_field)
         formula_field = self.formula_conditioning_field
         if formula_field is not None:
             for ds in (self.train_dataset, self.val_dataset, self.test_dataset):
@@ -1913,7 +1936,10 @@ class WyckoffTrainer():
             # two device reductions and the synchronisation they imply, whatever the log level.
             logger.debug("Target min: %s, max: %s", target.min(), target.max())
             logger.debug("Prediction shape: %s", prediction.shape)
-        if testing:
+        if self.target == TargetClass.Scalar and self.censored_tight_field is not None:
+            tight = dataset.data[self.censored_tight_field][batch_selection]
+            loss = self.criterion(prediction, target, tight=tight)
+        elif testing:
             loss = self.testing_criterion(prediction, target)
         else:
             loss = self.criterion(prediction, target)

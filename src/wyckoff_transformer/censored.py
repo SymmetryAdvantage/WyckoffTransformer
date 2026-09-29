@@ -177,6 +177,7 @@ class CensoredMinLoss(nn.Module):
         min_scale: float = DEFAULT_MIN_SCALE,
         predict_scale: bool = True,
         init_scale: float = 0.1,
+        tight_field: Optional[str] = None,
     ):
         super().__init__()
         if reduction not in ("mean", "sum", "none"):
@@ -187,6 +188,11 @@ class CensoredMinLoss(nn.Module):
         self.noise = noise
         self.min_scale = min_scale
         self.predict_scale = predict_scale
+        #: Name of a per-row 0/1 dataset field marking observations that sit *at* their gene's
+        #: optimum rather than above it (e.g. icsd_backed: an experimentally realised structure
+        #: read as its gene's floor). The trainer gathers it per batch and passes it to
+        #: `forward` as `tight`; tight rows are fitted as N(m, sigma), with no excess.
+        self.tight_field = tight_field
         if predict_scale:
             self.register_parameter("global_log_scale", None)
         else:
@@ -208,10 +214,17 @@ class CensoredMinLoss(nn.Module):
         location = prediction.squeeze(-1) if prediction.dim() > 1 else prediction
         return location, self.global_log_scale.expand_as(location)
 
-    def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
+    def forward(self, prediction: Tensor, target: Tensor,
+                tight: Optional[Tensor] = None) -> Tensor:
         location, log_scale = self.split(prediction)
         nll = censored_min_nll(
             target, location, log_scale, noise=self.noise, min_scale=self.min_scale)
+        if tight is not None:
+            # A tight observation is the optimum itself, seen through label noise only:
+            # Gaussian NLL around the location, up to a constant. The scale head gets no
+            # gradient from these rows, which is right -- they say nothing about the excess.
+            t = (target - location) / self.noise
+            nll = torch.where(tight.reshape(nll.shape).bool(), 0.5 * t * t, nll)
         if self.reduction == "mean":
             return nll.mean()
         if self.reduction == "sum":
