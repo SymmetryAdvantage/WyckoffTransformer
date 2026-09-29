@@ -79,3 +79,5 @@ generated/protocol_smoke/
 # back both times because nothing was ignoring it. Do not drop this line.
 uv.lock
 docs/2511.05178v1.pdf
+*.pdf
+artifacts/
