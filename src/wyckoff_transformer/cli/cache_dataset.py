@@ -271,6 +271,7 @@ def cache_dataset(
     sort_by_letter: bool = True,
     observed_gene_minimum_target: bool = False,
     gene_minimum_of: Optional[Sequence[str]] = None,
+    gene_minimum_per_split: bool = False,
     allow_obsolete_dataset: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Symmetrise every split of *dataset* and write the cache.  Returns the frames."""
@@ -311,7 +312,7 @@ def cache_dataset(
             split for split, frame in frames.items() if FORMATION_ENERGY_COLUMN in frame.columns
         ]
         if len(splits_with_energy) == len(frames):
-            add_observed_gene_minimum(frames)
+            add_observed_gene_minimum(frames, per_split=gene_minimum_per_split)
             observed_gene_minimum_over = sorted(frames)
         elif len(splits_with_energy) == 0:
             logger.warning(
@@ -341,7 +342,8 @@ def cache_dataset(
 
         for column in gene_minimum_of:
             add_observed_gene_minimum(
-                frames, energy_column=column, target_column=gene_minimum_column(column))
+                frames, energy_column=column, target_column=gene_minimum_column(column),
+                per_split=gene_minimum_per_split)
         observed_gene_minimum_over = sorted(frames)
 
     build = provenance(
@@ -356,6 +358,9 @@ def cache_dataset(
         # carries a different target under the same column name.
         observed_gene_minimum_over=observed_gene_minimum_over,
         gene_minimum_of=gene_minimum_of or None,
+        # Each split's minimum over its own rows only, rather than over all of them.
+        gene_minimum_per_split=(gene_minimum_per_split
+                                if observed_gene_minimum_over is not None else None),
         # What each column means, as the manifest said when this was built; a later
         # change to the manifest is then caught rather than silently relabelling it.
         manifest=manifest.name if manifest is not None else None,
@@ -395,6 +400,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "dataset without formation energies: a gene fixes the "
                              "composition, so its lowest energy_above_hull and its lowest "
                              "formation energy pick the same structure.")
+    parser.add_argument("--gene-minimum-per-split", action="store_true",
+                        help="Take every gene minimum over each split's own rows, not over "
+                             "all splits. The default lets a validation label set a training "
+                             "row's target when the two share a gene; for a benchmark with "
+                             "held-out splits, pass this.")
     parser.add_argument("--n-jobs", type=int, default=None,
                         help="Worker processes for symmetry determination. One per core "
                              "by default.")
@@ -442,6 +452,7 @@ def main() -> None:
         sort_by_letter=args.sort_by_letter,
         observed_gene_minimum_target=args.observed_gene_minimum_target,
         gene_minimum_of=args.gene_minimum_of,
+        gene_minimum_per_split=args.gene_minimum_per_split,
         allow_obsolete_dataset=args.allow_obsolete_dataset,
     )
     print(f"Cached {dataset_cache_dir(args.dataset)}: "

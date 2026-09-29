@@ -1,0 +1,35 @@
+name: alex_mp_20_labelled_per_split
+status: current
+parent: alex_mp_20_labelled
+description: >-
+  alex_mp_20_labelled with its gene-energy target taken within each split: the gene
+  minimum of a train row is over train rows only, and of a val row over val rows only.
+  alex_mp_20_labelled takes it over both, so 497 of its 607,683 training targets come from
+  a val structure, and 897 val rows share a gene, and so a target, with training. For a
+  benchmark that holds val out, this is the dataset to fit the gene-energy regressor on;
+  every other field is the parent's, and the generators may use either.
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: MaterialsProject2020Compatibility}
+  reference: alex_mp_icsd_mp2020
+fields:
+  energy_above_hull:
+    energy: {quantity: energy_above_hull, extent: per_atom}
+    description: In [0, 0.1) eV/atom by construction of the dataset.
+  gene_min_energy_above_hull:
+    energy: {quantity: energy_above_hull, extent: per_atom, aggregate: gene_min}
+    description: >-
+      Minimum energy_above_hull over the rows sharing the augmented gene within the
+      row's own split (wyformer-cache-dataset --gene-minimum-of energy_above_hull
+      --gene-minimum-per-split).
+  band_gap:
+    column: dft_band_gap
+    quantity: band_gap
+    description: DFT band gap from MatterGen's release, eV.
+  bulk_modulus:
+    column: dft_bulk_modulus
+    quantity: bulk_modulus
+    description: DFT bulk modulus from MatterGen's release, GPa.
+  magnetic_density:
+    column: dft_mag_density
+    quantity: magnetic_density
+    description: DFT magnetic density from MatterGen's release, per Angstrom^3.

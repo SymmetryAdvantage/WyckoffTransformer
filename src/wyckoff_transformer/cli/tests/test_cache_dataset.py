@@ -332,6 +332,26 @@ class TestCacheDataset(unittest.TestCase):
         self.assertEqual(record["options"]["gene_minimum_of"], ["energy_above_hull"])
         self.assertEqual(record["options"]["observed_gene_minimum_over"],
                          ["test", "train", "val"])
+        self.assertFalse(record["options"]["gene_minimum_per_split"])
+
+    def test_a_per_split_gene_minimum_is_recorded_and_stays_in_its_split(self):
+        from wyckoff_transformer.dataset_cache import build_info
+
+        # One gene for every row: the global minimum would be 0.0 everywhere, but each
+        # split's first row has e_above_hull 0.0 too, so shift val and test up.
+        for split in ("val", "test"):
+            path = self.data / f"{split}.csv.gz"
+            frame = pd.read_csv(path, index_col=0)
+            frame["e_above_hull"] += 1.0
+            frame.to_csv(path)
+        with patch("wyckoff_transformer.gene_energy._fingerprints",
+                   lambda frame: iter(["one gene"] * len(frame))):
+            frames = cli.cache_dataset("toy", gene_minimum_of=["energy_above_hull"],
+                                       gene_minimum_per_split=True)
+        self.assertEqual(set(frames["train"]["gene_min_energy_above_hull"]), {0.0})
+        self.assertEqual(set(frames["val"]["gene_min_energy_above_hull"]), {1.0})
+        record = build_info(self.root / "cache" / "toy", "val")
+        self.assertTrue(record["options"]["gene_minimum_per_split"])
 
     def test_a_gene_minimum_of_a_missing_column_is_an_error(self):
         with self.assertRaisesRegex(KeyError, "no 'band_gap'"):

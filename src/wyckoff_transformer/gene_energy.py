@@ -64,16 +64,27 @@ def add_observed_gene_minimum(
     frames: Mapping[str, pd.DataFrame],
     energy_column: str = FORMATION_ENERGY_COLUMN,
     target_column: str = GENE_MIN_FORMATION_ENERGY_COLUMN,
+    per_split: bool = False,
 ) -> Mapping[str, pd.DataFrame]:
     """Attach the observed formation-energy minimum for each Wyckoff gene.
 
     Equal genes are recognised through all equivalent Wyckoff enumerations, not
     just the arbitrary enumeration assigned while tokenising a particular row.
-    Every split is included when finding a minimum so the target has one
-    definition throughout the cache.
+    By default every split is included when finding a minimum so the target has
+    one definition throughout the cache.
+
+    Args:
+        per_split: Take each split's minimum over its own rows only. A gene then
+            may mean different things in training and validation, but no split's
+            labels reach another's targets -- what a benchmark with held-out
+            splits needs.
     """
     if not frames:
         raise ValueError("No dataset splits were supplied")
+    if per_split:
+        for split, frame in frames.items():
+            add_observed_gene_minimum({split: frame}, energy_column, target_column)
+        return frames
 
     minima: dict[Any, float] = {}
     n_rows = 0

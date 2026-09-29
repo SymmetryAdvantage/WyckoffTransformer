@@ -1,0 +1,4 @@
+The CSVs of ../alex_mp_20 (MatterGen's Alex-MP-20, git-LFS), linked rather than copied.
+Its own dataset only so that its manifest, yamls/datasets/alex_mp_20_labelled_per_split.yaml,
+can say that gene_min_energy_above_hull is taken within each split, which is what its
+cache is built with (wyformer-cache-dataset --gene-minimum-per-split).

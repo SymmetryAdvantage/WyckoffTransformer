@@ -21,7 +21,8 @@ fields:
     energy: {quantity: energy_above_hull, extent: per_atom, aggregate: gene_min}
     description: >-
       Minimum energy_above_hull over the rows of train and val sharing the augmented
-      gene (wyformer-cache-dataset --gene-minimum-of energy_above_hull).
+      gene (wyformer-cache-dataset --gene-minimum-of energy_above_hull), so a val label
+      can set a training target; alex_mp_20_labelled_per_split takes it within each split.
   band_gap:
     column: dft_band_gap
     quantity: band_gap

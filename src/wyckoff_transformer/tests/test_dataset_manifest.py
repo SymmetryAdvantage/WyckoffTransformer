@@ -10,7 +10,8 @@ from wyckoff_transformer import dataset_manifest as dm
 from wyckoff_transformer.energy_fields import check_compatible
 
 CURRENT = {"lemat_bulk_fmax1_stress", "lemat_bulk_fmax1_stress_ehull01", "mp_20",
-           "mp_2026_gga_gap", "formula_energy", "alex_mp_20_labelled"}
+           "mp_2026_gga_gap", "formula_energy", "alex_mp_20_labelled",
+           "alex_mp_20_labelled_per_split"}
 
 
 def test_every_manifest_validates_and_only_the_agreed_datasets_are_current():
@@ -44,6 +45,12 @@ def test_mp_20s_hull_resolves_by_its_old_name_and_is_not_lemats(caplog):
     lemat = dm.load_manifest("lemat_bulk_fmax1_stress").resolve("energy_above_hull")
     with pytest.raises(ValueError):
         check_compatible(lemat.energy, field.energy, "test")
+
+
+def test_the_per_split_alex_mp_20_means_the_same_energies_as_its_parent():
+    parent = dm.load_manifest("alex_mp_20_labelled")
+    child = dm.load_manifest("alex_mp_20_labelled_per_split")
+    assert child.fields_record() == parent.fields_record()
 
 
 def test_a_bare_quantity_resolves_to_the_rows_own_value():

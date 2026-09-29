@@ -48,6 +48,21 @@ class TestObservedGeneMinimum(unittest.TestCase):
         self.assertEqual(train[GENE_MIN_FORMATION_ENERGY_COLUMN].tolist(), [-1.4, -0.2])
         self.assertEqual(val[GENE_MIN_FORMATION_ENERGY_COLUMN].tolist(), [-1.4])
 
+    def test_per_split_keeps_each_splits_labels_to_itself(self):
+        # The same gene in train and val: no split's energy sets the other's target.
+        train = pd.DataFrame([
+            _row(["Na", "Cl"], ["m", "-1"], [[0, 1], [1, 0]], -1.0),
+            _row(["Na", "Cl"], ["m", "-1"], [[0, 1], [1, 0]], -1.1),
+        ])
+        val = pd.DataFrame([
+            _row(["Cl", "Na"], ["-1", "m"], [[1, 0], [0, 1]], -1.4),
+        ])
+
+        add_observed_gene_minimum({"train": train, "val": val}, per_split=True)
+
+        self.assertEqual(train[GENE_MIN_FORMATION_ENERGY_COLUMN].tolist(), [-1.1, -1.1])
+        self.assertEqual(val[GENE_MIN_FORMATION_ENERGY_COLUMN].tolist(), [-1.4])
+
     def test_rejects_a_non_finite_source_energy(self):
         frame = pd.DataFrame([
             _row(["Na"], ["1"], [[0]], float("nan")),

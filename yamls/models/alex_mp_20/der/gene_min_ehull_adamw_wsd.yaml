@@ -1,4 +1,4 @@
-# Gene-energy regressor on alex-mp-20 (alex_mp_20_labelled): predicts, from the Wyckoff
+# Gene-energy regressor on alex-mp-20 (alex_mp_20_labelled_per_split): predicts, from the Wyckoff
 # gene alone, the lowest energy_above_hull observed for that gene. The architecture of the
 # LeMat and MP-20 gene-minimum formation-energy regressors,
 # yamls/models/lemat/der/min_energy_adamw_wsd.yaml and yamls/models/mp_20/der/
@@ -11,9 +11,11 @@
 # reconstructed from it alone. A gene fixes the composition and every structure of one
 # composition shares one hull point, so within a gene the lowest e_hull and the lowest
 # formation energy pick the same structure; the two targets differ by the hull energy at
-# the composition. The minimum is taken over train and val (the cache's build record,
-# observed_gene_minimum_over), and the splits are not gene-disjoint, so a val gene may
-# also be in training with the same target -- the same caveat as MP-20's regressor.
+# the composition. Train on alex_mp_20_labelled_per_split, where the minimum is taken
+# within each split (build record: gene_minimum_per_split), so no val label reaches a
+# training target. On alex_mp_20_labelled it is taken over train and val together, and
+# 497 training targets come from val structures. The splits are still not gene-disjoint:
+# 897 val rows have a gene that is also in training, with its own, val-only target.
 # Values lie in [0, 0.1) eV/atom; the trainer does not standardise scalar targets, and
 # the output bias absorbs the offset.
 #
