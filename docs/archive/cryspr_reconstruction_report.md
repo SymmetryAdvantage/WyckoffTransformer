@@ -1,11 +1,19 @@
 # CrySPR Reconstruction Fidelity Study: Final Technical Report
 
 **Date:** 2026-09-05  
-**Protocol Specification:** [`docs/cryspr_reconstruction_study.md`](file:///home/kna/WyckoffTransformer/docs/cryspr_reconstruction_study.md)  
+**Protocol Specification:** [CrySPR reconstruction study](cryspr_reconstruction_study.md)<br>
 **Evaluated Cohort:** 999 unique Wyckoff genes (from 1,000 sampled LeMat-Bulk hull targets)  
 **Relaxation Backend:** ORB-v3 conservative infinite cutoff (`orb_conserv_inf-omat-20250404`)  
 **Trial Budget:** 10 independent PyXtal trials per gene × 4 relaxation stages (~40,000 relaxations)  
 **Execution Hardware:** Multi-GPU cluster (`cuda:0,cuda:0` Tesla K20c, `cuda:1,cuda:1` Tesla K20c, `cuda:2` GTX 750 Ti)
+
+---
+
+## Data and code provenance
+
+The original 2026-09-05 study outputs are preserved in the [W&B artifact `cryspr_reconstruction_fidelity_20260905:v0`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/artifacts/study_dataset/cryspr_reconstruction_fidelity_20260905/v0), uploaded by [run `hoai92n9`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/hoai92n9) on 2026-09-29. It contains the sampled and ORB-relaxed targets, unique genes, reconstruction results, per-gene scores and breakdown tables, all 1,000 target CIFs (`targets.tar.gz`), and all 9,990 trial directories (`cryspr.tar.gz`). The W&B artifact digest is `a80c2350a7a60c91346249bd41da115a`.
+
+The [study driver](https://github.com/SymmetryAdvantage/WyckoffTransformer/blob/dc241d5d84886d280014db832dfdd7ff18eccf6b/scripts/run_cryspr_reconstruction_study.py) was added in code commit [`dc241d5`](https://github.com/SymmetryAdvantage/WyckoffTransformer/commit/dc241d5d84886d280014db832dfdd7ff18eccf6b); the [W&B archival uploader](https://github.com/SymmetryAdvantage/WyckoffTransformer/blob/b98abd5/scripts/upload_cryspr_reconstruction_study.py) is in code commit [`b98abd5`](https://github.com/SymmetryAdvantage/WyckoffTransformer/commit/b98abd5). The study finished on 2026-09-05, before the driver was committed on 2026-09-07. Its exact execution commit was not recorded, so `dc241d5` identifies the preserved implementation rather than a verified run commit. The driver's SHA-256 matches the copy kept beside the original outputs.
 
 ---
 
