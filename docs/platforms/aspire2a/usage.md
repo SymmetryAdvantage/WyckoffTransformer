@@ -42,13 +42,6 @@ So a normal WyFormer training job — `-q ai`, `select=1:ngpus=1`,
 
 (`aiq5` and `aindustry` also exist on `pbs102` but are not router destinations.)
 
-`g1` on `pbs101` is an equivalent <= 24 h single-GPU fallback
-(`qsub -q g1@pbs101`), but **only from a login node**: a job running in the AI
-partition cannot submit across servers, and cannot `ssh` to a login node to try.
-Submitting to `-q ai` from inside an AI-partition job does work -- it is how every
-chain re-queues itself, and `train_in_pbs.sh` submitted `22160934.pbs102` from an
-interactive `aidev` session on `asp2a-gpu001` on 2026-09-16.
-
 Charging: `-P 11001786`. Check the balance with `myprojects` and your own burn
 with `myusage`, both in `/app/apps/local/bin`.
 

@@ -301,9 +301,32 @@ def cache_dataset(
             f"{dataset_dir} holds no {'/'.join(SPLITS)} CSV to cache.")
 
     if observed_gene_minimum_target:
-        from wyckoff_transformer.gene_energy import add_observed_gene_minimum  # noqa: PLC0415
+        from wyckoff_transformer.gene_energy import (  # noqa: PLC0415
+            FORMATION_ENERGY_COLUMN,
+            add_observed_gene_minimum,
+        )
 
-        add_observed_gene_minimum(frames)
+        splits_with_energy = [
+            split for split, frame in frames.items() if FORMATION_ENERGY_COLUMN in frame.columns
+        ]
+        if len(splits_with_energy) == len(frames):
+            add_observed_gene_minimum(frames)
+            observed_gene_minimum_over = sorted(frames)
+        elif len(splits_with_energy) == 0:
+            logger.warning(
+                "Dataset %r has no %r in any split; skipping --observed-gene-minimum-target",
+                dataset,
+                FORMATION_ENERGY_COLUMN,
+            )
+            observed_gene_minimum_over = None
+        else:
+            missing = sorted(set(frames) - set(splits_with_energy))
+            raise KeyError(
+                f"Splits {missing} are missing {FORMATION_ENERGY_COLUMN!r}, but {splits_with_energy} have it; "
+                "carry it from the source CSV before deriving the observed gene minimum."
+            )
+    else:
+        observed_gene_minimum_over = None
 
     build = provenance(
         "wyformer-cache-dataset",
@@ -315,7 +338,7 @@ def cache_dataset(
         # Which splits, not just whether: the minimum is taken over every split
         # present at cache time, so a cache built while a split was missing
         # carries a different target under the same column name.
-        observed_gene_minimum_over=sorted(frames) if observed_gene_minimum_target else None,
+        observed_gene_minimum_over=observed_gene_minimum_over,
         # What each column means, as the manifest said when this was built; a later
         # change to the manifest is then caught rather than silently relabelling it.
         manifest=manifest.name if manifest is not None else None,

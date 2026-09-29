@@ -92,6 +92,17 @@ class TestRoundTrip(unittest.TestCase):
         dc.save_split(frame, self.cache, "train")
         self.assertIsNone(dc.load_split(self.cache, "train").loc["mp-2", "composition"])
 
+    def test_missing_string_values_round_trip(self):
+        # A string column with NaN or None must not fail with ArrowTypeError
+        # (Expected bytes, got a 'float' object).
+        frame = a_frame()
+        frame.loc["mp-1", "run_type"] = "GGA"
+        frame.loc["mp-2", "run_type"] = float("nan")
+        dc.save_split(frame, self.cache, "train")
+        loaded = dc.load_split(self.cache, "train")
+        self.assertEqual(loaded.loc["mp-1", "run_type"], "GGA")
+        self.assertIsNone(loaded.loc["mp-2", "run_type"])
+
     def test_the_whole_cache_round_trips(self):
         frames = {"train": a_frame(), "val": a_frame().iloc[:1]}
         dc.save_cache(frames, self.cache)

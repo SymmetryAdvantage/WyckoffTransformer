@@ -241,9 +241,12 @@ def _scalar_spec(value) -> Optional[str]:
 
 def _scalar_arrow_type(values: pd.Series) -> pa.DataType:
     """The Arrow type of a column Arrow can infer, without encoding it twice."""
-    if values.dtype != object:
-        return pa.from_numpy_dtype(values.dtype)
-    return pa.array(values.to_numpy()).type
+    if isinstance(values.dtype, np.dtype) and values.dtype != object:
+        try:
+            return pa.from_numpy_dtype(values.dtype)
+        except (TypeError, ValueError, pa.ArrowNotImplementedError):
+            pass
+    return pa.array(values).type
 
 
 def _arrow_type(spec: dict | str) -> pa.DataType:
@@ -259,7 +262,7 @@ def _arrow_type(spec: dict | str) -> pa.DataType:
 # ---------------------------------------------------------------------------
 
 def _encode_value(value, spec: dict | str):
-    if value is None:
+    if value is None or (isinstance(value, float) and value != value):
         return None
     if isinstance(spec, str):
         if spec == "element":
@@ -293,7 +296,7 @@ def _ordered(values):
 
 def _encode_column(values: pd.Series, spec: Optional[dict | str]) -> pa.Array:
     if spec is None:
-        return pa.array(values.to_numpy())
+        return pa.array(values)
     return pa.array([_encode_value(value, spec) for value in values.to_numpy()],
                     type=_arrow_type(spec))
 
@@ -444,7 +447,7 @@ def _frame_metadata(frame: pd.DataFrame, specs: Mapping[str, Optional[dict | str
 
 
 def _encode_chunk(frame: pd.DataFrame, specs, index_field: str, schema: pa.Schema) -> pa.Table:
-    arrays = [pa.array(frame.index.to_numpy())]
+    arrays = [pa.array(frame.index)]
     names = [index_field]
     for name in frame.columns:
         arrays.append(_encode_column(frame[name], specs[name]))

@@ -247,6 +247,16 @@ class TestCacheDataset(unittest.TestCase):
                          dataset_manifest.load_manifest("toy").fields_record())
         dataset_manifest.check_cache_matches("toy", recorded["fields"])
 
+    def test_carried_string_column_with_missing_values_is_cached(self):
+        path = self.data / "train.csv.gz"
+        frame = pd.read_csv(path, index_col=0)
+        frame["formula"] = ["NaCl", float("nan"), "Fe2O3"]
+        frame.to_csv(path)
+        cli.cache_dataset("toy")
+        loaded = load_cache(self.root / "cache" / "toy")
+        self.assertIn("formula", loaded["train"].columns)
+        self.assertEqual(loaded["train"]["formula"].tolist(), ["NaCl", None, "Fe2O3"])
+
     def test_an_obsolete_dataset_is_refused_unless_allowed(self):
         with self.assertRaises(dataset_manifest.ObsoleteDatasetError):
             cli.cache_dataset("old_toy")
@@ -289,6 +299,21 @@ class TestCacheDataset(unittest.TestCase):
         from wyckoff_transformer.dataset_cache import build_info
 
         cli.cache_dataset("toy")
+        record = build_info(self.root / "cache" / "toy", "train")
+        self.assertIsNone(record["options"]["observed_gene_minimum_over"])
+
+    def test_observed_gene_minimum_skipped_when_formation_energy_absent(self):
+        from wyckoff_transformer.dataset_cache import build_info
+
+        for split in ("train", "val", "test"):
+            path = self.data / f"{split}.csv.gz"
+            frame = pd.read_csv(path, index_col=0)
+            frame = frame.drop(columns=["formation_energy_per_atom", "e_form"], errors="ignore")
+            frame.to_csv(path)
+
+        with self.assertLogs(cli.logger, "WARNING") as logs:
+            cli.cache_dataset("toy", observed_gene_minimum_target=True)
+        self.assertTrue(any("skipping --observed-gene-minimum-target" in msg for msg in logs.output))
         record = build_info(self.root / "cache" / "toy", "train")
         self.assertIsNone(record["options"]["observed_gene_minimum_over"])
 

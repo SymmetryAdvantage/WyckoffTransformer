@@ -59,9 +59,6 @@ Five things to know before your first run:
 1. **You cannot `qsub -q aiq1`.** Every AI queue is `from_route_only`. You
    submit to `-q ai` and the router picks the queue from `(ngpus, walltime)`.
    See [usage.md](usage.md#queues).
-2. **Cross-server submission needs a login node.** A job cannot `qsub` to the other
-   PBS server (`g1@pbs101`), and it cannot `ssh` to a login node either. Submitting
-   to `-q ai` from an interactive AI-partition job works.
 3. **Do not `uv sync` / `uv run` from the host shell.** It deletes `.venv`, and
    that `.venv` is shared with every running job.
 4. **The launcher only takes committed code**, and refuses Claude Code's own
