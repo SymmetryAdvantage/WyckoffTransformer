@@ -1584,8 +1584,12 @@ class WyckoffTrainer():
                     resume: bool = False,
                     reschedule: bool = False,
                     distributed: DistributedContext = SINGLE_PROCESS,
-                    allow_incompatible_energy: bool = False):
+                    allow_incompatible_energy: bool = False,
+                    weights_path: Optional[Path] = None):
         """Build a trainer, and its model, from a run config.
+
+        `weights_path` warm-starts the model from another run's weights; see
+        `WyckoffTrainer.__init__`.
 
         Also settles what the model's fields mean (`field_provenance`, see
         `wyckoff_transformer.field_provenance`): a run that recorded it keeps its own
@@ -1754,6 +1758,7 @@ class WyckoffTrainer():
             resume=resume,
             reschedule=reschedule,
             distributed=distributed,
+            weights_path=weights_path,
             **config.model.WyckoffTrainer_args)
         trainer.field_provenance = field_provenance
         return trainer
@@ -3121,7 +3126,8 @@ def train_from_config(
     resume: bool = False,
     reschedule: bool = False,
     distributed: DistributedContext = SINGLE_PROCESS,
-    allow_obsolete_dataset: bool = False):
+    allow_obsolete_dataset: bool = False,
+    init_weights: Path | None = None):
     """Train the run W&B has open, then generate from and evaluate its best weights.
 
     Under DDP every rank calls this with the W&B run of the same id -- disabled everywhere
@@ -3130,7 +3136,21 @@ def train_from_config(
     Args:
         allow_obsolete_dataset: Start a new run on a dataset its manifest marks obsolete
             (or that has none). A resumed run is existing work and only warns.
+        init_weights: Warm-start a *new* run from these model weights (a
+            `best_model_params.pt`) instead of a random initialisation. The optimiser and
+            the schedule start fresh, so the run re-warms onto its own horizon. Ignored on
+            resume: a chained run passes the same arguments to every link, and every link
+            after the first continues from its own checkpoint, which already holds the
+            warm-started weights and the optimiser state that goes with them.
     """
+    if init_weights is not None:
+        init_weights = Path(init_weights)
+        if resume:
+            logger.info("Resuming; ignoring --init-weights %s, which only seeds a new run.",
+                        init_weights)
+            init_weights = None
+        elif not init_weights.is_file():
+            raise FileNotFoundError(f"--init-weights {init_weights} does not exist")
     dataset = config_dict.get("dataset")
     if dataset is not None:
         if resume:
@@ -3188,7 +3208,12 @@ def train_from_config(
     # Before any data is loaded: a field the dataset's manifest does not declare has no
     # meaning to record, so there is nothing to train on.
     require_resolved(config_dict)
-    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule, distributed=distributed)
+    trainer = WyckoffTrainer.from_config(config_dict, device, run_path=this_run_path, production_training=production_training, no_test=no_test, resume=resume, reschedule=reschedule, distributed=distributed, weights_path=init_weights)
+    if init_weights is not None and distributed.is_main:
+        # Recorded in the W&B config rather than config.yaml: a later link's resume is held
+        # to config.yaml, and it does not repeat the warm start.
+        wandb.config.update({"init_weights": str(init_weights.resolve())}, allow_val_change=True)
+        logger.info("Warm-started from %s", init_weights)
     provenance_path = this_run_path / PROVENANCE_FILENAME
     if (distributed.is_main and not provenance_path.exists()
             and isinstance(trainer.field_provenance, dict)):
