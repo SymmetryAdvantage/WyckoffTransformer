@@ -1,0 +1,90 @@
+# Classifier-free-guidance e_hull WyFormer on alex-mp-20 (alex_mp_20_labelled):
+# ehull_adamw_wsd_5x.yaml (same directory) plus the two keys of
+# yamls/models/lemat/der/ehull_adamw_wsd_5x_cfg.yaml that make guidance possible, and
+# nothing else:
+#
+#   condition_dropout: 0.1 -- each training example's condition is replaced by the null
+#     condition with probability 0.1, so one set of weights learns p(gene | e_hull) and
+#     p(gene).
+#   condition_dim: 2 -- log1p(e_hull) and the null indicator, 0 on conditioned rows; see
+#     docs/classifier_free_guidance.md.
+#
+# Sample with `--condition energy_above_hull=<value> --guidance-scale <w>`. No test split:
+# train with `--train-arg --no-test`.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    embedding_size:
+      elements: 48
+      site_symmetries: 48
+      sites_enumeration: 24
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature: energy_above_hull
+    condition_transform: log1p
+    condition_dropout: 0.1
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 2
+    TransformerEncoderLayer_args:
+      nhead: 8
+      dim_feedforward: 320
+      dropout: 0.1
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 2000
+  early_stopping_patience_epochs: 100000000
+  clip_grad_norm: 10.0
+  # 150000 x 13 = 1.95M optimiser steps: twice MP-20's 1M (full batch, 27k structures),
+  # 60% of LeMat 5x's 3.2M (4.0M structures) -- alex-mp-20 sees each structure ~4x as
+  # often as LeMat did at that count, so the step count is not scaled up to match it.
+  epochs: 150000
+tokeniser:
+  name: der_tokenizer_v1_gene_min_ehull
+evaluation:
+  n_structures_to_generate: 10000

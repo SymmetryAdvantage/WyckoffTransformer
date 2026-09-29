@@ -1,0 +1,107 @@
+# Unconditional WyFormer on alex-mp-20 (alex_mp_20_labelled), for the alex-mp-20 benchmark
+# tables. The current recipe -- der_tokenizer_v1's corrected Wyckoff augmentation, AdamW +
+# warmup-stable-decay -- at the width of the LeMat 5x generators,
+# yamls/models/lemat/der/ehull_adamw_wsd_5x_cfg.yaml, whose notes explain every number
+# not discussed here. Siblings: ehull_adamw_wsd_5x.yaml (e_hull-conditioned) and
+# ehull_adamw_wsd_5x_cfg.yaml (classifier-free guidance on e_hull), which differ from this
+# file in the conditioning keys only.
+#
+# Why these numbers, from W&B:
+#
+#   Width 5x (embeddings 48/48/24, d_model 120, 8 heads, FFN 320; 723k parameters) rather
+#     than the 144k base_sg width. Every earlier alex-mp-20 generator was the base width
+#     with dropout 0.2 (20rsww6p, 5azgyig0, 4lolpokk, g6mng6ie: SGD schedule-free, full
+#     batch, 1-1.5M steps), and every one ended with train and val loss within 0.03 of each
+#     other and still falling: capacity-bound, not data-bound. On LeMat-Bulk the 5x model
+#     reached val 16.25 in fewer steps than the base model's 17.0 (ehull5x-20260904-213346
+#     against e9ywwsie, same data and tokeniser).
+#
+#   dropout 0.2 -> 0.1. The number of training structures per parameter decides it:
+#     MP-20 at 0.19 overfits even with dropout 0.2 (uncond_adamw_wsd-20260925-035205: train
+#     15.77, val 17.32); LeMat-Bulk 5x at 5.5 shows no gap with dropout 0. alex-mp-20 at 5x
+#     width is 607683 / 723k = 0.84, between the two, so dropout is halved, not removed.
+#     Watch loss.epoch.train against loss.epoch.val.
+#
+#   train_batch_size 50000, lr 3e-3, 20% 1-sqrt decay: the LeMat 5x values, the only
+#     measured recipe at this width. 607683 / 50000 = 13 steps per epoch.
+#
+# No test split: MatterGen's benchmark set has train and val only, so this trains with
+# `--train-arg --no-test` and val is the held-out split. Nothing selects on it -- no early
+# stopping under WSD -- so it stays an honest estimate.
+#
+# Tokeniser der_tokenizer_v1_gene_min_ehull, not der_tokenizer_v1: the same fields plus the
+# gene-min hull distance the regressor in this directory needs, so that the four alex-mp-20
+# models share one tensor cache. The extra column is unused here.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    embedding_size:
+      elements: 48
+      site_symmetries: 48
+      sites_enumeration: 24
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 8
+      dim_feedforward: 320
+      dropout: 0.1
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 2000
+  early_stopping_patience_epochs: 100000000
+  clip_grad_norm: 10.0
+  # 150000 x 13 = 1.95M optimiser steps: twice MP-20's 1M (full batch, 27k structures),
+  # 60% of LeMat 5x's 3.2M (4.0M structures) -- alex-mp-20 sees each structure ~4x as
+  # often as LeMat did at that count, so the step count is not scaled up to match it.
+  epochs: 150000
+tokeniser:
+  name: der_tokenizer_v1_gene_min_ehull
+evaluation:
+  n_structures_to_generate: 10000

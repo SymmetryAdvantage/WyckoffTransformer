@@ -1,0 +1,102 @@
+# Gene-energy regressor on alex-mp-20 (alex_mp_20_labelled): predicts, from the Wyckoff
+# gene alone, the lowest energy_above_hull observed for that gene. The architecture of the
+# LeMat and MP-20 gene-minimum formation-energy regressors,
+# yamls/models/lemat/der/min_energy_adamw_wsd.yaml and yamls/models/mp_20/der/
+# min_energy_adamw_wsd.yaml (der tokenisation, both augmented fields, d_model 96, FFN 320,
+# 3 layers, weighted-mean aggregation).
+#
+# Target: gene_min_energy_above_hull, not gene_min_formation_energy_per_atom. alex-mp-20
+# holds no formation energy -- only the hull distance, against MatterGen's Alex-MP-ICSD
+# hull, which is not part of the benchmark data -- so a formation energy cannot be
+# reconstructed from it alone. A gene fixes the composition and every structure of one
+# composition shares one hull point, so within a gene the lowest e_hull and the lowest
+# formation energy pick the same structure; the two targets differ by the hull energy at
+# the composition. The minimum is taken over train and val (the cache's build record,
+# observed_gene_minimum_over), and the splits are not gene-disjoint, so a val gene may
+# also be in training with the same target -- the same caveat as MP-20's regressor.
+# Values lie in [0, 0.1) eV/atom; the trainer does not standardise scalar targets, and
+# the output bias absorbs the offset.
+#
+# What differs from the two reference files, and the W&B runs that set it:
+#
+#   train_batch_size 5000, lr 2e-3. LeMat (4.0M structures) trained at 12500 and 3e-3
+#     (min_energy_adamw_wsd-20260924-102431), MP-20 (27k) at 1000 and 1e-3
+#     (min_energy_adamw_wsd-20260925-035642). alex-mp-20 is 607683 structures: 5000 gives
+#     122 steps an epoch, and 2e-3 is LeMat's rate scaled by sqrt(5000 / 12500).
+#   dropout 0.1. MP-20's regressor overfits badly even with it (train MAE 0.009, val
+#     0.036); LeMat's at 0 barely does (0.033 against 0.038). alex-mp-20 is 22x MP-20 and
+#     a seventh of LeMat, so it keeps MP-20's dropout.
+#   epochs 7500 = 915k steps, LeMat's step count (2859 x 320).
+#
+# No test split (see uncond_adamw_wsd_5x.yaml); train with `--train-arg --no-test`.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - multiplicity
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    embedding_size:
+      elements: 40
+      site_symmetries: 40
+      sites_enumeration: 16
+      multiplicity: 0
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: gene_min_energy_above_hull
+    scalar_loss: mse
+    evaluation_samples: 1
+    train_batch_size: 5000
+    val_batch_size: 12500
+    test_batch_size: 12500
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 320
+      dropout: 0.1
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.002
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 100
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 7500
+tokeniser:
+  name: der_tokenizer_v1_gene_min_ehull
+evaluation:
+  n_structures_to_generate: 10000
