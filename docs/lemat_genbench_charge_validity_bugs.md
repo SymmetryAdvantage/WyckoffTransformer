@@ -4,14 +4,16 @@
 **Affected Modules:** `utils/oxidation_state.py`, `metrics/validity_metrics.py`  
 **Severity:** 
 - **Critical / Process Hang:** Combinatorial explosion in `compositional_oxi_state_guesses` stalls evaluation for hours on unit cells with $\ge 30$ atoms of a single species.
-- **Moderate / False Negatives:** Division by zero in `electronegativity_correlation` emits `RuntimeWarning: invalid value encountered in divide` and turns valid charge-balanced structures into `NaN`, causing spurious validity rejections.
+- **Moderate / False Negatives (fixed):** Division by zero in `electronegativity_correlation` emitted `RuntimeWarning: invalid value encountered in divide` and turned valid charge-balanced solutions into `NaN`, causing spurious validity rejections.
 - **Design / Domain Limitation:** SMACT metallicity cutoff ($0.70$) misclassifies metalloid-rich intermetallics, subvalent phases, and electride-hydrides as ionic insulators, rejecting near-hull phases ($E_\text{hull} < 0.05$ eV/atom).
 
 ---
 
 ## 1. Bug 1: Division-by-Zero & Spurious Rejection when $\Delta\chi = 0$
 
-### Location
+**Status:** Fixed in [`lemat-genbench` commit `1ccfa11b`](https://github.com/kazeevn/lemat-genbench/commit/1ccfa11b) (2026-09-30).
+
+### Location (pre-fix code)
 `lemat_genbench/utils/oxidation_state.py`, function `electronegativity_correlation`:
 
 ```python
@@ -33,7 +35,7 @@ def electronegativity_correlation(
 ```
 
 ### Mechanism & Failure Mode
-When candidate oxidation state solutions are ranked for materials containing elements with identical Pauling electronegativities—most notably **Copper ($\chi = 1.9$)** and **Silicon ($\chi = 1.9$)**, or **Nickel ($\chi = 2.19$)** and **Phosphorus ($\chi = 2.19$)**—the vector `en_vals` has zero variance:
+When candidate oxidation state solutions are ranked for materials containing elements with identical Pauling electronegativities—such as **Copper ($\chi = 1.90$)** and **Silicon ($\chi = 1.90$)**—the vector `en_vals` has zero variance. The earlier Ni/P example was incorrect: pymatgen reports $\chi(\mathrm{Ni}) = 1.91$ and $\chi(\mathrm{P}) = 2.19$.
 
 $$\text{std}(\mathbf{en\_vals}) = 0.0$$
 
@@ -53,10 +55,10 @@ RuntimeWarning: invalid value encountered in divide
 ```
 and returns `corr = np.nan`.
 
-Downstream in `charge_deviation`:
+Downstream in the pre-fix fallback of `ChargeNeutralityMetric.compute_structure`:
 ```python
 try:
-    correlation = -compositional_oxi_state_guesses(
+    score = -compositional_oxi_state_guesses(
         composition,
         all_oxi_states=True,
         max_sites=-1,
@@ -64,30 +66,30 @@ try:
         oxi_states_override=None,
     )[2][0]
 except IndexError:
-    return LARGE_CHARGE_DEVIATION
-return 0.0 if correlation > 0.0 else LARGE_CHARGE_DEVIATION
+    return 10.0
+return 0.0 if score > 0.0 else 10.0
 ```
-Because `correlation` is `NaN`, `-np.nan > 0.0` evaluates to `False`. The structure is penalized with `LARGE_CHARGE_DEVIATION = 10.0` and marked **invalid**, even though valid charge-balanced combinations (e.g. $4\text{Cu}^{4+} + 3\text{Cu}^{3+} + 25\text{Si}^- = 0$ for $\text{Cu}_7\text{Si}_{25}$) were successfully found!
+Because `score` is `NaN`, `score > 0.0` evaluates to `False`. If earlier validity checks did not accept the structure, this fallback assigned a charge deviation of `10.0` even though charge-balanced oxidation-state solutions were found (e.g. $4\text{Cu}^{4+} + 3\text{Cu}^{3+} + 25\text{Si}^- = 0$ for $\text{Cu}_7\text{Si}_{25}$).
 
 ### Minimal Reproduction
 ```python
-import numpy as np
 from pymatgen.core import Composition
 from lemat_genbench.utils.oxidation_state import compositional_oxi_state_guesses
 
 # Both Cu and Si have Pauling electronegativity 1.9
-comp = Composition("Cu7Si25")
+comp = Composition("CuSi")
 guesses = compositional_oxi_state_guesses(
     comp, all_oxi_states=True, max_sites=-1, target_charge=0, oxi_states_override=None
 )
 print("Scores:", guesses[2])
-# Output:
-# RuntimeWarning: invalid value encountered in divide
-# Scores: (nan, nan, nan, nan)
+# Before the fix: RuntimeWarning; scores are NaN
+# After the fix: no warning; all returned scores are 0.0
 ```
 
-### Proposed Patch
-When all constituent elements have identical electronegativities ($\text{std}(\mathbf{en\_vals}) < 10^{-6}$), there is no electrostatic driving force favoring one element over another. The correlation is neutral ($0.0$), and the candidate solution should be accepted:
+`CuSi` reproduces Bug 1 without the large-site search cost described in Bug 2.
+
+### Implemented Fix
+When either correlation vector has zero variance ($\text{std} < 10^{-6}$), Pearson correlation is undefined. The function returns a neutral score (`0.0`) without calling `np.corrcoef`. Missing electronegativity data and mismatched inputs still return `NaN`:
 
 ```python
 def electronegativity_correlation(
@@ -99,22 +101,21 @@ def electronegativity_correlation(
         logger.error("Mismatch in array lengths for correlation calculation")
         return np.nan
 
-    # Guard against zero-variance vectors
-    if len(elements) <= 1:
+    if len(en_vals) <= 1:
         return 0.0
-    if float(np.std(en_vals)) < 1e-6 or float(np.std(oxidation_states)) < 1e-6:
+    if np.std(en_vals) < 1e-6 or np.std(oxidation_states) < 1e-6:
         return 0.0
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        corr = np.corrcoef(oxidation_states, en_vals)[0, 1]
-    return 0.0 if np.isnan(corr) else float(corr)
+    return float(np.corrcoef(oxidation_states, en_vals)[0, 1])
 ```
 
 In `validity_metrics.py`:
 ```python
-# Accept neutral (0.0) correlation when no electronegativity difference exists
-return 0.0 if (correlation >= 0.0 or math.isclose(correlation, 0.0)) else LARGE_CHARGE_DEVIATION
+score = -output[2][0]
+return 0.0 if score >= 0.0 else 10.0
 ```
+
+Regression tests cover constant electronegativity, constant oxidation states, and acceptance of a neutral Cu/Si fallback score.
 
 ---
 
