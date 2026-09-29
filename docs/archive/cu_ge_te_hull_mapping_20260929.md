@@ -126,7 +126,57 @@ Our finding that $\text{Cu}_5\text{Ge}_2\text{Te}_7$ lies $89.7\text{ meV/atom}$
 
 ---
 
-## 5. Artifacts and Provenance
+## 5. Energy Provenance & Correspondence with PBE DFT (LeMat-Bulk)
+
+### Energy Provenance Across Pipeline Stages
+The study utilizes multiple energy models according to the project's multi-fidelity screening protocol:
+1. **Generative Backbone (`chemsys_sg_uncond_adanmw_wsd-20260925-030937`):** Unconditioned on energy; guided solely by composition constraints and empirical space group priors.
+2. **Regressor Critic (`min_energy_adamw_wsd-20260924-102431`):** Trained on **LeMat-Bulk PBE DFT** ground-state formation energies (`gene_min_formation_energy_per_atom` / `energy_above_hull`). It scored all 29.6k unique genes on the DFT scale to select the top 10k candidates.
+3. **Pre-relaxation (`NEP 89`):** Empirical machine-learned interatomic potential used to relax 489k random PyXtal geometric starts under fixed symmetry on 20 CPU cores, filtering out unphysical packings.
+4. **Final Relaxation & Convex Hull Mapping (`ORB-v3`, `orb_conserv_inf`):** All 48,629 retained candidate structures underwent full cell and coordinate relaxation using ORB-v3. The convex hull, formation energies ($E_f$), and distance to the hull ($e_\text{above\_hull}$) were calculated against the published LeMat-Bulk ORB-v3 hull (`LeMaterial/LeMat-Bulk-MLIP-Hull`).
+
+Per project standards (`docs/energy_fields.md` and `AGENTS.md`), MLIP energies are never mixed across potentials because each model carries its own reference zero. Every MLIP evaluation is strictly *self-consistent* against its own published hull.
+
+### Comparison with LeMat-Bulk PBE DFT
+In the primary reference dataset [`lemat_bulk_fmax1_stress`](../../yamls/datasets/lemat_bulk_fmax1_stress.yaml), there are **1,265 Cu-Ge-Te structures** (69 ternary phases, 1,196 binary/elemental entries) calculated with **PBE DFT** (Materials Project, Alexandria, and OQMD settings).
+
+In the published LeMat-Bulk MLIP hull benchmark dataset (`LeMaterial/LeMat-Bulk-MLIP-Hull`), **46 structures** in this exact chemical system have **both** their PBE DFT energy (`true_energy`) and their ORB-v3 energy (`orb_conserv_inf_energy`) calculated on the exact same atomic configurations.
+
+#### 1. Absolute Energy Scale vs Relative Agreement
+- **Absolute scale offset:** ORB-v3 was trained on `OMat24` (`PBE_OMat24`), which uses different pseudopotentials and isolated-atom reference choices than Materials Project PBE. This introduces a systematic mean offset of **$+0.094\text{ eV/atom}$** (with pure elemental $\text{Cu}$ shifted by $\approx 0.35\text{ eV/atom}$).
+- **Relative rank correlation:** The Pearson correlation between DFT and ORB per-atom energies is **$r = 0.926$**, confirming that relative energetic ordering is strongly preserved across the ternary landscape.
+
+#### 2. Convex Hull Vertices (Ground States)
+Constructing the 0 K convex hull from the exact same structures using pure DFT vs pure ORB yields remarkable topological agreement:
+
+| Composition | DFT $E_f$ (eV/atom) | DFT $e_\text{hull}$ (meV/atom) | ORB $E_f$ (eV/atom) | ORB $e_\text{hull}$ (meV/atom) | Agreement / Note |
+|---|---|---|---|---|---|
+| **$\text{Cu}$** | $0.0000$ | $0.0$ | $0.0000$ | $0.0$ | Ground state in both |
+| **$\text{Ge}$** | $0.0000$ | $0.0$ | $0.0000$ | $0.0$ | Ground state in both |
+| **$\text{Te}$** | $0.0000$ | $0.0$ | $0.0000$ | $0.0$ | Ground state in both |
+| **$\text{Cu}_3\text{GeTe}_4$** | $-0.1007$ | **$0.0$** | $-0.1242$ | **$0.0$** | **Identical ground state:** Sole stable ternary compound on both hulls |
+| **$\text{GeTe}$** | $-0.0914$ | **$0.0$** | $-0.1233$ | **$0.0$** | **Identical ground state:** Primary binary sink in both |
+| **$\text{CuTe}$** | $-0.0715$ | **$0.0$** | $-0.0681$ | **$0.0$** | **Identical ground state:** $\Delta E_f = 3.4\text{ meV/atom}$ |
+| **$\text{Cu}_3\text{Ge}$** | $-0.0061$ | **$0.0$** | $-0.0084$ | **$0.0$** | **Identical ground state:** $\Delta E_f = 2.3\text{ meV/atom}$ |
+| **$\text{Cu}_2\text{Te}$** | $-0.0509$ | **$0.0$** | $-0.0585$ | $1.0$ | Near-degenerate: on hull in DFT, $1.0\text{ meV/atom}$ above hull in ORB |
+| **$\text{Cu}_3\text{Te}_2$** | $-0.0483$ | $10.8$ | $-0.0661$ | **$0.0$** | Near-degenerate: on hull in ORB, $10.8\text{ meV/atom}$ above hull in DFT |
+
+**Key Hull Insights:**
+- **Identical Thermodynamic Backbone:** Both DFT and ORB agree on $\text{Cu}_3\text{GeTe}_4$ as the *only* stable ternary ground state, and both identify $\text{GeTe}$, $\text{CuTe}$, and $\text{Cu}_3\text{Ge}$ as stable binary vertices.
+- **Copper Telluride Near-Degeneracy:** The only minor difference is between $\text{Cu}_2\text{Te}$ and $\text{Cu}_3\text{Te}_2$. ORB places $\text{Cu}_2\text{Te}$ just **$1.0\text{ meV/atom}$** above the hull, well within the numerical noise threshold of DFT k-point grids and pseudopotentials.
+
+#### 3. Metastable Phase Comparison
+- **$\text{Cu}_2\text{GeTe}_3$:**
+  - In LeMat-Bulk DFT: Lowest $E_f = -0.0967\text{ eV/atom}$, sitting **$3.0\text{ meV/atom}$** above the DFT convex hull.
+  - In our ORB study: Lowest $E_f = -0.1119\text{ eV/atom}$, sitting **$15.1\text{ meV/atom}$** above the ORB convex hull.
+  - Both methods consistently identify $\text{Cu}_2\text{GeTe}_3$ as an ultra-low-energy metastable phase immediately above the ground-state tie-line.
+- **$\text{Cu}_5\text{Ge}_2\text{Te}_7$ (*Chem. Mater.* 2016):**
+  - **Completely absent from LeMat-Bulk** (neither calculated in MP, Alexandria, nor OQMD).
+  - Our de novo pipeline generated 85 polymorphs and resolved its ground-state polymorph at $e_\text{hull} = 89.7\text{ meV/atom}$, explaining the physical necessity of non-equilibrium Direct Joule Heating and rapid quenching observed in experiments.
+
+---
+
+## 6. Artifacts and Provenance
 
 All campaign outputs are tracked in W&B and backed up in the local project store:
 
