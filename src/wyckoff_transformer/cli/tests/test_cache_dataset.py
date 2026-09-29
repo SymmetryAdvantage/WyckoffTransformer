@@ -317,6 +317,26 @@ class TestCacheDataset(unittest.TestCase):
         record = build_info(self.root / "cache" / "toy", "train")
         self.assertIsNone(record["options"]["observed_gene_minimum_over"])
 
+    def test_the_gene_minimum_of_a_named_column(self):
+        from wyckoff_transformer.dataset_cache import build_info
+
+        # One gene for every row, so the minimum over all three splits is the lowest
+        # e_above_hull anywhere, 0.0.
+        with patch("wyckoff_transformer.gene_energy._fingerprints",
+                   lambda frame: iter(["one gene"] * len(frame))):
+            frames = cli.cache_dataset("toy", gene_minimum_of=["energy_above_hull"])
+        for frame in frames.values():
+            self.assertEqual(set(frame["gene_min_energy_above_hull"]), {0.0})
+        self.assertNotIn("gene_min_formation_energy_per_atom", frames["train"].columns)
+        record = build_info(self.root / "cache" / "toy", "train")
+        self.assertEqual(record["options"]["gene_minimum_of"], ["energy_above_hull"])
+        self.assertEqual(record["options"]["observed_gene_minimum_over"],
+                         ["test", "train", "val"])
+
+    def test_a_gene_minimum_of_a_missing_column_is_an_error(self):
+        with self.assertRaisesRegex(KeyError, "no 'band_gap'"):
+            cli.cache_dataset("toy", gene_minimum_of=["band_gap"])
+
     def test_a_dataset_with_no_splits_at_all_is_an_error(self):
         for split in ("train", "val", "test"):
             (self.data / f"{split}.csv.gz").unlink()

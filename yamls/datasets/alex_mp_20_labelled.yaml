@@ -1,0 +1,36 @@
+name: alex_mp_20_labelled
+status: current
+description: >-
+  MatterGen's Alex-MP-20 training set (github.com/microsoft/mattergen,
+  data-release/alex-mp), the same train and val CSVs as alex_mp_20, with the
+  provenance of its energy recorded: 607,683 train and 67,521 val structures from MP-20 and
+  Alexandria with at most 20 atoms and energy_above_hull < 0.1 eV/atom. There is no test
+  split; MatterGen's benchmark uses train and val only. It holds no formation or total
+  energy, only the hull distance, so a formation energy cannot be recovered from it
+  without the reference hull, which is another dataset. The gene-energy target on it is
+  therefore gene_min_energy_above_hull: a Wyckoff gene fixes the composition, so its
+  lowest hull distance and its lowest formation energy pick the same structure.
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: MaterialsProject2020Compatibility}
+  reference: alex_mp_icsd_mp2020
+fields:
+  energy_above_hull:
+    energy: {quantity: energy_above_hull, extent: per_atom}
+    description: In [0, 0.1) eV/atom by construction of the dataset.
+  gene_min_energy_above_hull:
+    energy: {quantity: energy_above_hull, extent: per_atom, aggregate: gene_min}
+    description: >-
+      Minimum energy_above_hull over the rows of train and val sharing the augmented
+      gene (wyformer-cache-dataset --gene-minimum-of energy_above_hull).
+  band_gap:
+    column: dft_band_gap
+    quantity: band_gap
+    description: DFT band gap from MatterGen's release, eV.
+  bulk_modulus:
+    column: dft_bulk_modulus
+    quantity: bulk_modulus
+    description: DFT bulk modulus from MatterGen's release, GPa.
+  magnetic_density:
+    column: dft_mag_density
+    quantity: magnetic_density
+    description: DFT magnetic density from MatterGen's release, per Angstrom^3.

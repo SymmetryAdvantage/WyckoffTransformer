@@ -27,6 +27,16 @@ logger = logging.getLogger(__name__)
 FORMATION_ENERGY_COLUMN = "formation_energy_per_atom"
 GENE_MIN_FORMATION_ENERGY_COLUMN = "gene_min_formation_energy_per_atom"
 
+
+def gene_minimum_column(column: str) -> str:
+    """The name of the gene-minimum target taken over *column*.
+
+    ``gene_min_`` plus the column, which is what
+    :func:`wyckoff_transformer.energy_fields.canonical_id` names a ``gene_min``
+    aggregate of that quantity.
+    """
+    return f"gene_min_{column}"
+
 #: ``site_symmetries_augmented`` rather than ``site_symmetries``: a relabelling
 #: can change the oriented symbol, so the symbol travels with the index.
 #: See ``docs/wyckoff_augmentation_audit.md``.

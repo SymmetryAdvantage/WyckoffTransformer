@@ -1,0 +1,61 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Build a new dataset's cache and one tokeniser's tensors for it, on CPU:
+#   1. python -m wyckoff_transformer.cli.cache_dataset $DATASET $CACHE_ARGS
+#   2. python scripts/tokenise_a_dataset.py $DATASET $TOKENISER --new-tokenizer
+# then lock $WYFORMER_CACHE/$DATASET read-only (docs/platforms/aspire2a/usage.md,
+# "Adding a dataset or tokeniser to the cache").
+#
+# Submit from pbs101 (a login node), naming the checkout whose code and manifests
+# should build it:
+#     qsub -v REPO=$PWD,DATASET=alex_mp_20_labelled,TOKENISER=yamls/tokenisers/der_tokenizer_v1_gene_min_ehull.yaml,CACHE_ARGS="--gene-minimum-of energy_above_hull" \
+#          scripts/platforms/aspire2a/cache_dataset.pbs
+#
+# It refuses a dataset whose cache directory already exists: a rebuild over a name
+# other runs read is what the read-only store is there to prevent. A new tokeniser
+# for an existing cache is tokenise_a_dataset.py alone.
+#
+# Variables: REPO, DATASET, TOKENISER (required); CACHE_ARGS (optional, extra
+# arguments to the cacher); NCPUS (defaults to the job's allocation).
+# ---------------------------------------------------------------------------
+#PBS -N wyf_cache
+#PBS -q normal
+#PBS -P 11001786
+#PBS -l select=1:ncpus=64:mem=220gb
+#PBS -l walltime=06:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
+
+set -euo pipefail
+
+: "${REPO:?name the checkout: qsub -v REPO=\$PWD,...}"
+: "${DATASET:?}"
+: "${TOKENISER:?}"
+CACHE_ARGS=${CACHE_ARGS:-}
+N_JOBS=${NCPUS:-64}
+
+cd "$REPO"
+# shellcheck source=scripts/wyformer_paths.sh
+. "$REPO/scripts/wyformer_paths.sh"
+CACHE_DIR=$(wyformer_path WYFORMER_CACHE "$REPO/cache")
+if [ -e "$CACHE_DIR/$DATASET" ]; then
+    echo "error: $CACHE_DIR/$DATASET exists; refusing to rebuild over it" >&2
+    exit 1
+fi
+
+type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
+command -v singularity >/dev/null 2>&1 || module load singularity
+export SINGULARITYENV_OMP_NUM_THREADS=1
+
+echo "job ${PBS_JOBID:-<manual>} on $(hostname), $(date -Is)"
+echo "commit $(git rev-parse HEAD) ($(git rev-parse --abbrev-ref HEAD)), $N_JOBS workers"
+echo "dataset $DATASET, cache args '$CACHE_ARGS', tokeniser $TOKENISER"
+
+RUN="bash $REPO/scripts/platforms/aspire2a/run_in_singularity.sh"
+# shellcheck disable=SC2086  # CACHE_ARGS is a list of arguments
+$RUN python -m wyckoff_transformer.cli.cache_dataset "$DATASET" --n-jobs "$N_JOBS" $CACHE_ARGS
+$RUN python scripts/tokenise_a_dataset.py "$DATASET" "$TOKENISER" --new-tokenizer --n-jobs "$N_JOBS"
+
+bash "$REPO/scripts/platforms/aspire2a/store_lock.sh" lock "$CACHE_DIR/$DATASET"
+ls -la "$CACHE_DIR/$DATASET" "$CACHE_DIR/$DATASET/tensors" "$CACHE_DIR/$DATASET/tokenisers"
+echo "done $(date -Is)"

@@ -166,6 +166,13 @@ REFERENCES = {
     "mp_cdvae_2021": (
         "The Materials Project hull at the time CDVAE pulled MP-20 (snapshot date "
         "unknown, about 2021), MP2020-corrected.  Not reproducible from anything here."),
+    "alex_mp_icsd_mp2020": (
+        "MatterGen's Alex-MP-ICSD reference set (Zeni et al., Nature 2025): 845,997 "
+        "Materials Project, Alexandria and ICSD structures, Alexandria's re-relaxed with MP-"
+        "compatible PBE, MP2020-corrected.  The hull alex-mp-20's energy_above_hull is "
+        "measured against, as MatterGen documents it; not re-derived here.  The public "
+        "release (data-release/alex-mp/reference_MP2020correction.gz) omits the ICSD "
+        "entries for licence reasons, so this hull cannot be rebuilt exactly from it."),
     **{
         mlip_hull_reference(hull_type): (
             f"HF LeMaterial/LeMat-Bulk-MLIP-Hull, split {hull_type!r} at revision "

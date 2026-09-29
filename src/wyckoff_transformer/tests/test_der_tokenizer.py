@@ -115,3 +115,20 @@ class TestTheEAboveHullSibling:
         assert scalars == parent["sequence_fields"]["no_processing"] + ["e_above_hull"]
         sibling["sequence_fields"]["no_processing"] = parent["sequence_fields"]["no_processing"]
         assert sibling == parent
+
+
+class TestTheGeneMinEhullSibling:
+    """``der_tokenizer_v1_gene_min_ehull`` is ``der_tokenizer_v1`` plus the gene-min hull distance."""
+
+    SIBLING = CONFIG.parent / "der_tokenizer_v1_gene_min_ehull.yaml"
+
+    def test_it_differs_only_in_the_name_and_the_extra_scalar(self, config):
+        sibling = OmegaConf.to_container(OmegaConf.load(self.SIBLING))
+        parent = OmegaConf.to_container(config)
+        assert sibling.pop("name") == "der_tokenizer_v1_gene_min_ehull"
+        parent.pop("name")
+        scalars = sibling["sequence_fields"]["no_processing"]
+        assert scalars == (parent["sequence_fields"]["no_processing"]
+                           + ["gene_min_energy_above_hull"])
+        sibling["sequence_fields"]["no_processing"] = parent["sequence_fields"]["no_processing"]
+        assert sibling == parent

@@ -1,0 +1,4 @@
+The CSVs of ../alex_mp_20 (MatterGen's Alex-MP-20, git-LFS), linked rather than copied.
+A separate dataset only so that its manifest, yamls/datasets/alex_mp_20_labelled.yaml,
+can record what energy_above_hull means (MP2020-corrected PBE against MatterGen's
+Alex-MP-ICSD hull), which alex_mp_20's manifest does not.

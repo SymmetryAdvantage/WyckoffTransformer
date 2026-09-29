@@ -270,6 +270,7 @@ def cache_dataset(
     symmetry_a_tol: float = 5.0,
     sort_by_letter: bool = True,
     observed_gene_minimum_target: bool = False,
+    gene_minimum_of: Optional[Sequence[str]] = None,
     allow_obsolete_dataset: bool = False,
 ) -> dict[str, pd.DataFrame]:
     """Symmetrise every split of *dataset* and write the cache.  Returns the frames."""
@@ -328,6 +329,21 @@ def cache_dataset(
     else:
         observed_gene_minimum_over = None
 
+    # Any other per-row column's gene minimum, e.g. energy_above_hull on a dataset
+    # that has no formation energy. Unlike the formation-energy flag, a column named
+    # here and missing from a split is an error.
+    gene_minimum_of = list(gene_minimum_of or ())
+    if gene_minimum_of:
+        from wyckoff_transformer.gene_energy import (  # noqa: PLC0415
+            add_observed_gene_minimum,
+            gene_minimum_column,
+        )
+
+        for column in gene_minimum_of:
+            add_observed_gene_minimum(
+                frames, energy_column=column, target_column=gene_minimum_column(column))
+        observed_gene_minimum_over = sorted(frames)
+
     build = provenance(
         "wyformer-cache-dataset",
         max_sites=max_sites,
@@ -339,6 +355,7 @@ def cache_dataset(
         # present at cache time, so a cache built while a split was missing
         # carries a different target under the same column name.
         observed_gene_minimum_over=observed_gene_minimum_over,
+        gene_minimum_of=gene_minimum_of or None,
         # What each column means, as the manifest said when this was built; a later
         # change to the manifest is then caught rather than silently relabelling it.
         manifest=manifest.name if manifest is not None else None,
@@ -371,6 +388,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Add gene_min_formation_energy_per_atom from the lowest "
                              "formation_energy_per_atom observed for each augmented "
                              "Wyckoff gene across all splits.")
+    parser.add_argument("--gene-minimum-of", nargs="+", default=None, metavar="COLUMN",
+                        help="Add gene_min_<COLUMN>, the lowest COLUMN observed for each "
+                             "augmented Wyckoff gene across all splits, for each column "
+                             "named (canonical names, after the manifest's renames). For a "
+                             "dataset without formation energies: a gene fixes the "
+                             "composition, so its lowest energy_above_hull and its lowest "
+                             "formation energy pick the same structure.")
     parser.add_argument("--n-jobs", type=int, default=None,
                         help="Worker processes for symmetry determination. One per core "
                              "by default.")
@@ -417,6 +441,7 @@ def main() -> None:
         symmetry_a_tol=args.symmetry_a_tol,
         sort_by_letter=args.sort_by_letter,
         observed_gene_minimum_target=args.observed_gene_minimum_target,
+        gene_minimum_of=args.gene_minimum_of,
         allow_obsolete_dataset=args.allow_obsolete_dataset,
     )
     print(f"Cached {dataset_cache_dir(args.dataset)}: "

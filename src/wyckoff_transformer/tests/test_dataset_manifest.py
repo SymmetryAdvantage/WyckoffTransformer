@@ -10,7 +10,7 @@ from wyckoff_transformer import dataset_manifest as dm
 from wyckoff_transformer.energy_fields import check_compatible
 
 CURRENT = {"lemat_bulk_fmax1_stress", "lemat_bulk_fmax1_stress_ehull01", "mp_20",
-           "mp_2026_gga_gap", "formula_energy"}
+           "mp_2026_gga_gap", "formula_energy", "alex_mp_20_labelled"}
 
 
 def test_every_manifest_validates_and_only_the_agreed_datasets_are_current():

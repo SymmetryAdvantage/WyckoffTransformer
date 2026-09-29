@@ -66,6 +66,9 @@ entry carries its meaning and evidence:
   - **`mp_gga_gga_u_2026.04.13`**: Materials Project's GGA/GGA+U hull at that
     release.
   - **`mp_cdvae_2021`**: MP-20's hull, as CDVAE pulled it.
+  - **`alex_mp_icsd_mp2020`**: MatterGen's Alex-MP-ICSD hull, MP2020-corrected,
+    which alex-mp-20's `energy_above_hull` is measured against. Its public release
+    lacks the ICSD entries, so it cannot be rebuilt exactly.
   - **`lemat_bulk_mlip_hull/<split>@70d505bb`**: one split of the published
     LeMat-Bulk MLIP hulls.
   - **`dataset:<name>`**: a dataset's own rows. `delta_e_polymorph` is measured
