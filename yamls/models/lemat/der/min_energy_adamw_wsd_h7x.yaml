@@ -1,0 +1,96 @@
+# min_energy_adamw_wsd.yaml (this directory) trained to convergence: W&B run
+# min_energy_adamw_wsd-20260924-102431 at 7x the horizon, and nothing else changed except
+# the decay fraction.
+#
+# Why. That run's horizon, 2859 epochs, was a proof-of-concept cut of a planned 20000
+# (lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml has the arithmetic). It was still
+# improving when it stopped: val MAE sat at 0.053-0.061 eV/atom through the stable phase
+# and fell to 0.0383 during the decay, with train at 0.0331. This file runs the planned
+# 20000 epochs.
+#
+#   epochs 2859 -> 20000: 4007729 // 12500 = 320 steps per epoch, so 6.4M optimiser steps
+#     against 0.92M. At the reference run's 14.2 s/epoch on 4 A100s (11.3 h for 2859), about
+#     79 h, i.e. four chained links.
+#   decay_fraction 0.2130 -> 0.2: 0.2130 only lined the decay up with a link boundary of the
+#     cut-short run. 0.2 is what every other der config uses.
+#
+# Watch loss.epoch.train.mae against loss.epoch.val.mae. The reference run ended with a
+# 5 meV/atom gap and no dropout, so a 7x horizon may start to overfit; if the gap grows
+# through the stable phase, that is the reading to report, not a reason to stop early (WSD
+# only pays out in the decay).
+#
+# The reference config follows, with only the lines above changed.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - multiplicity
+    # der_tokenizer_v1's corrected augmentation relabels the site-symmetry symbol together
+    # with the enumeration; both must be listed, and are sampled at matching indices.
+    # multiplicity is a normaliser invariant, so it is not augmented.
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    embedding_size:
+      elements: 40
+      site_symmetries: 40
+      sites_enumeration: 16
+      multiplicity: 0
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: gene_min_formation_energy_per_atom
+    scalar_loss: mse
+    evaluation_samples: 1
+    train_batch_size: 12500
+    val_batch_size: 12500
+    test_batch_size: 12500
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 320
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 250
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 20000
+tokeniser:
+  name: der_tokenizer_v1
+evaluation:
+  n_structures_to_generate: 10000
