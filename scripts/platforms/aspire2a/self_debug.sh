@@ -8,7 +8,8 @@
 # `claude -p` is started in this checkout in permission mode `auto`, told what failed and
 # where the log is, and asked to find the cause, fix it here, test the fix and commit it
 # (train_in_pbs.sh runs committed code only). Its transcript goes to
-# $SELF_DEBUG_DIR/<step>.claude<N>.log. The step is then re-run. After SELF_DEBUG_MAX_FIXES
+# $SELF_DEBUG_DIR/<step>.claude<N>.log. The step is then re-run. SELF_DEBUG_TIMEOUT (a
+# timeout(1) duration, default 0 = none) turns a hang into a failure the same way. After SELF_DEBUG_MAX_FIXES
 # (default 2) repairs the step's last exit code is returned, so a pipeline stops instead of
 # looping. A nested call never spawns Claude: SELF_DEBUG_DEPTH guards that.
 set -uo pipefail
@@ -26,7 +27,9 @@ while :; do
     attempt=$((attempt + 1))
     log="$SELF_DEBUG_DIR/$step.attempt$attempt.log"
     echo "[self_debug] $(date -Is) step '$step' attempt $attempt: $*" | tee "$log"
-    "$@" 2>&1 | tee -a "$log"
+    # A hang is an abnormal end too: without a limit it would sit until the PBS wall kills the
+    # whole job, wrapper included, and nothing would ever be debugged. timeout exits 124.
+    timeout --kill-after=2m "${SELF_DEBUG_TIMEOUT:-0}" "$@" 2>&1 | tee -a "$log"
     rc=${PIPESTATUS[0]}
     if [ "$rc" -eq 0 ]; then
         echo "[self_debug] step '$step' succeeded on attempt $attempt"
