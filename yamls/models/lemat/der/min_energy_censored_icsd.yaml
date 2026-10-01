@@ -13,8 +13,12 @@
 #     (docs/composition_screening_results.md). The stronger hypothesis -- ICSD unaries and
 #     binaries on the hull -- does not hold (within 1 meV/atom: 15% of unaries, 35% of binaries
 #     on the LeMat DFT hull, 2026-09-30), so the hull is not used.
-#   noise 0.10 eV/atom: the formula-level censored study measured 0.10 far better than the
-#     0.01 default on this three-database corpus.
+#   noise 0.025 eV/atom. The first run (W&B min_energy_censored_icsd-20261001-221804) used 0.10, taken
+#     from the formula-level study, and degenerated: by epoch 500 the fitted excess scale was
+#     ~0.021, far inside the 0.10 noise, so the floor was unidentifiable and the location slid to
+#     the conditional mean (val.violation 0.06 -> 0.46; it should stay near 0). At gene level the
+#     label noise is of the order of the MSE model's 0.038 MAE or less, and sigma must sit at or
+#     below the excess it is meant to separate from.
 #   tokeniser der_tokenizer_v1 -> der_tokenizer_v1_icsd, which carries both new columns.
 #   epochs 2859 -> 20000, decay_fraction 0.2130 -> 0.2: paired with min_energy_adamw_wsd_cont
 #     (the MSE run continued to 20000 epochs in total).
@@ -46,7 +50,7 @@ model:
     target_name: formation_energy_per_atom
     scalar_loss: censored
     censored_loss_args:
-      noise: 0.1
+      noise: 0.025
       predict_scale: true
       tight_field: icsd_backed
     evaluation_samples: 1
