@@ -16,10 +16,13 @@
 #
 # WHY THE MOUNTS
 #
-# The image builds its own /home/kna rather than inheriting the host's, so
-# without them the container has neither the host's caches -- and re-downloads
-# the 102 MB ORB checkpoint and the LeMat-Bulk hull parquet on every invocation
-# -- nor its W&B credentials, which fail as `No API key configured`.
+# The image's entrypoint creates the container user, with its own empty home,
+# /home/$HOST_USER (`developer` unless HOST_USER is passed), rather than
+# inheriting the host's. Without the mounts the container has neither the host's
+# caches -- and re-downloads the 102 MB ORB checkpoint and the LeMat-Bulk hull
+# parquet on every invocation -- nor its W&B credentials, which fail as
+# `No API key configured`. HOST_USER is set to the host user name so that home is
+# /home/<user>, where the mounts land.
 #
 # The data store, cache, runs and W&B directories are outside the checkout (see
 # docs/data_store.md). The container cannot read the host's
@@ -32,7 +35,7 @@
 # commit capture) fails inside the container.
 set -euo pipefail
 
-WYFORMER_IMAGE="${WYFORMER_IMAGE:-pytorch:2.14.0-cuda11.8-py312-universal}"
+WYFORMER_IMAGE="${WYFORMER_IMAGE:-iapetus/pytorch:2.14.0-cuda11.8-py312}"
 WYFORMER_REPO="${WYFORMER_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 WYFORMER_VENV="${WYFORMER_VENV:-$WYFORMER_REPO/.venv}"
 
@@ -87,6 +90,8 @@ docker_args=(
     # here on purpose: the entrypoint would override it (see the argv rewrite
     # below).
     --env "VIRTUAL_ENV=/workspace/.venv"
+    # The entrypoint names the container user, and so its $HOME, after this.
+    --env "HOST_USER=$(id -un)"
 )
 
 # The host's caches and credentials, at the same paths the container's own

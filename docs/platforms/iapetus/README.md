@@ -32,15 +32,15 @@ host CUDA toolkit. See [environment.md](environment.md).
 | Item | Value |
 | --- | --- |
 | Project checkout | `/home/kna/WyckoffTransformer` |
-| Container image | `pytorch:2.14.0-cuda11.8-py312-universal` |
+| Container image | `iapetus/pytorch:2.14.0-cuda11.8-py312` |
 | Container Python | 3.12.14 |
 | Container torch | 2.14.0.post2, CUDA 11.8, custom `sm_35` + `sm_50` build |
 | Host Python / uv | 3.14.4 / 0.12.9; not used for WyFormer |
-| Container uv | 0.12.10 |
-| Docker | 29.8.0 |
-| Root filesystem | 233 GiB total, about 161 GiB free |
-| Data store, cache, runs | `/mnt/hdd/kna/wyformer/`, on a 916 GiB HDD with about 769 GiB free |
+| Container uv | 0.12.21 |
+| Docker | 29.8.2 |
+| Root filesystem | 233 GiB total, about 112 GiB free |
+| Data store, cache, runs | `/mnt/hdd/kna/wyformer/`, on a 916 GiB HDD with about 748 GiB free |
 
-These figures were recorded on 2026-09-08 and updated on 2026-09-15. This is a shared interactive host:
+These figures were recorded on 2026-09-08 and updated on 2026-10-01. This is a shared interactive host:
 check GPU and disk capacity before large runs and keep bulky results outside the
 repository.

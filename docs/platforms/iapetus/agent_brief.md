@@ -3,7 +3,7 @@
 Linked as `CLAUDE.local.md` by `scripts/platforms/iapetus/build_venv.sh`. A
 brief; the full pages are in `docs/platforms/iapetus/`.
 
-- **Environment:** the Docker image `pytorch:2.14.0-cuda11.8-py312-universal`
+- **Environment:** the Docker image `iapetus/pytorch:2.14.0-cuda11.8-py312`
   (custom torch for `sm_35`/`sm_50`) with the project `.venv` layered over it.
   The venv is valid **only inside the image**; never create or activate it on
   the host, whose Python is 3.14.
@@ -27,5 +27,5 @@ brief; the full pages are in `docs/platforms/iapetus/`.
 - **CPU:** 6 physical cores, 30 GiB RAM, no scheduler; the ranking protocol
   runs with `--pyxtal-cores 6`.
 - **Disk:** the root filesystem, holding the checkouts, is 233 GiB with about
-  161 GiB free; the store's HDD has about 769 GiB free (2026-09-15). A venv is
+  112 GiB free; the store's HDD has about 748 GiB free (2026-10-01). A venv is
   1.1 GiB per checkout. Keep bulky results outside the repository.

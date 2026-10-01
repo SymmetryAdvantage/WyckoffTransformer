@@ -1,7 +1,7 @@
 # The iapetus environment
 
 WyFormer runs inside
-`pytorch:2.14.0-cuda11.8-py312-universal`, the custom image from
+`iapetus/pytorch:2.14.0-cuda11.8-py312`, the custom image from
 `/mnt/hdd/kna/pytorch-research/`. It contains Python 3.12, custom PyTorch
 2.14.0.post2, CUDA 11.8, and kernels for both the K20c (`sm_35`) and GTX 750 Ti
 (`sm_50`). It is matched to the host's NVIDIA 470.256.02 driver.
@@ -100,7 +100,10 @@ requires a CUDA 12 driver, whereas iapetus is limited to driver 470 / CUDA
 11.4.
 
 The container entrypoint detects the owner of `/workspace` and drops to that
-UID/GID, so files written to the mounted checkout remain host-owned.
+UID/GID, so files written to the mounted checkout remain host-owned. It names
+that user, and its home, after `HOST_USER` (default `developer`); `run.sh`
+passes the host user name, so `$HOME` inside is `/home/kna` and the mounted
+`~/.cache` and `~/.netrc` are found.
 
 ## Data store, cache and runs
 

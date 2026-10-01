@@ -26,7 +26,7 @@ Run this through the container after creating the venv:
 ```bash
 docker run --rm --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all --ipc=host \
     -v "$PWD:/workspace" -w /workspace \
-    pytorch:2.14.0-cuda11.8-py312-universal \
+    iapetus/pytorch:2.14.0-cuda11.8-py312 \
     .venv/bin/python -c "
 import torch, wyckoff_transformer
 print(torch.__version__, torch.version.cuda)
@@ -48,7 +48,7 @@ uses the patched calculator already used by the CRySPR reconstruction study.
 docker run --rm --entrypoint /bin/bash --runtime=nvidia \
     -e NVIDIA_VISIBLE_DEVICES=0 --ipc=host \
     -v "$PWD:/workspace" -w /workspace \
-    pytorch:2.14.0-cuda11.8-py312-universal -lc '
+    iapetus/pytorch:2.14.0-cuda11.8-py312 -lc '
 .venv/bin/python -c "
 from ase.build import bulk
 from scripts.run_cryspr_reconstruction_study import build_patched_orb_calculator
