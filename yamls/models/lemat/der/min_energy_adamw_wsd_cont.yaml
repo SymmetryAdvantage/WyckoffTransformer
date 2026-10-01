@@ -1,3 +1,10 @@
+# RESCHEDULED 2026-10-02, at the user's direction: the runs' weakness was never too little time at
+# peak lr but too little at low lr, where the reference runs' short decays (609 epochs for the
+# energy predictor) stopped them before they converged. The run was stopped at epoch 6500 (optimiser
+# step 2665000, still at peak lr) and resumed with --reschedule, keeping `epochs` and moving
+# decay_fraction to 0.6207922524940201 = (7027810 - 2665000) / 7027810, so the 1-sqrt decay starts exactly at
+# step 2665000 and spends the whole remaining budget, 10641 epochs, annealing.
+#
 # Continued training of W&B run min_energy_adamw_wsd-20260924-102431 (min_energy_adamw_wsd.yaml,
 # this directory) as its own run. Launch with
 #   --train-arg --init-weights --train-arg $WYFORMER_RUNS/min_energy_adamw_wsd-20260924-102431/best_model_params.pt
@@ -78,7 +85,7 @@ optimisation:
     name: warmup_stable_decay
     config:
       warmup_fraction: 0.002
-      decay_fraction: 0.2
+      decay_fraction: 0.6207922524940201
       final_lr_fraction: 0.0
       decay_shape: 1-sqrt
   validation_period: 250

@@ -1,3 +1,10 @@
+# RESCHEDULED 2026-10-02, at the user's direction: the runs' weakness was never too little time at
+# peak lr but too little at low lr, where the reference runs' short decays (609 epochs for the
+# energy predictor) stopped them before they converged. The run was stopped at epoch 22000 (optimiser
+# step 2244000, still at peak lr) and resumed with --reschedule, keeping `epochs` and moving
+# decay_fraction to 0.725 = (8160000 - 2244000) / 8160000, so the 1-sqrt decay starts exactly at
+# step 2244000 and spends the whole remaining budget, 58000 epochs, annealing.
+#
 # Continued training of W&B run ehull_adamw_wsd_5x_cfg-20260924-223159 (ehull_adamw_wsd_5x_cfg.yaml,
 # this directory) as its own run. Launch with
 #   --train-arg --init-weights --train-arg $WYFORMER_RUNS/ehull_adamw_wsd_5x_cfg-20260924-223159/best_model_params.pt
@@ -193,7 +200,7 @@ optimisation:
       # longer anneal at the cost of a shorter stable phase (79.8% of the run rather than
       # 89.8%). Do not kill the run before the decay completes -- with this setting the loss
       # will look flat for four fifths of the wall clock and only then fall.
-      decay_fraction: 0.2
+      decay_fraction: 0.725
       final_lr_fraction: 0.0
       # Hägele et al. 2024 (arXiv:2405.18392) found 1-sqrt to beat linear and cosine at equal
       # budget. It lies below linear for the whole decay: steepest right at the start, then
