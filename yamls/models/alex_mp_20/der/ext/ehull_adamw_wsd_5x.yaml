@@ -1,0 +1,106 @@
+# ../ehull_adamw_wsd_5x.yaml with a longer low-learning-rate tail, for resuming W&B run
+# ehull_adamw_wsd_5x-20260929-143848 from its final checkpoint with `--run-id ehull_adamw_wsd_5x-20260929-143848 --reschedule`. Only
+# optimisation.epochs and scheduler.config.decay_fraction differ from that file -- the two keys
+# --reschedule may change -- so the resumed run keeps its weights, AdamW moments and step count.
+#
+# Why: the run ended still improving -- val fell 0.1-0.3 over its last 6000 epochs, between lr
+# 3e-4 and 0 -- because the 1-sqrt decay spends little time at low rates (68,760 of 1.8M steps
+# at or below 3e-4). The decay is re-laid over a longer horizon so that at the checkpoint's step,
+# 1,800,000, it stands at 3.0e-4 = 0.1 x the peak, and reaches 0 at epoch 185000 (step
+# 2,220,000): 420,000 steps at or below 3e-4, 6.1x the original. A 1-sqrt decay that is at
+# fraction r of the peak at step S and ends X steps later spans D = X / (1 - (1 - r)^2) steps:
+# r = 0.1 and X = 35000 x 12 give D = 2,210,526 and decay_fraction = D / 2,220,000. The step
+# where it starts is long past, which is what puts the run partway down it. The peak lr can
+# not be changed under --reschedule, which is why there is no constant low-lr plateau.
+#
+# Same file name as the original on purpose: train.py records the stem as `name`, which a
+# resumed run must match.
+#
+# The original file's notes follow.
+# e_hull-conditioned WyFormer on alex-mp-20 (alex_mp_20_labelled): uncond_adamw_wsd_5x.yaml
+# (same directory; its notes set every number) plus AdaLN conditioning on the row's own
+# energy_above_hull, and nothing else:
+#
+#   condition_feature: energy_above_hull, in eV/atom against MatterGen's Alex-MP-ICSD hull,
+#     in [0, 0.1) on this dataset.
+#   condition_transform: log1p, condition_dim: 1 -- as the LeMat e_hull generators. log1p is
+#     linear to within 5% over [0, 0.1), so it only keeps the models comparable.
+#
+# Every example is conditioned; for guidance, see ehull_adamw_wsd_5x_cfg.yaml. Sample with
+# `--condition energy_above_hull=<value>`. No test split: train with `--train-arg --no-test`.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    embedding_size:
+      elements: 48
+      site_symmetries: 48
+      sites_enumeration: 24
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    condition_feature: energy_above_hull
+    condition_transform: log1p
+    train_batch_size: 50000
+    val_batch_size: 50000
+    test_batch_size: 50000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    condition_dim: 1
+    TransformerEncoderLayer_args:
+      nhead: 8
+      dim_feedforward: 320
+      dropout: 0.1
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.9957325746799434
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 2000
+  early_stopping_patience_epochs: 100000000
+  clip_grad_norm: 10.0
+  # 150000 x 13 = 1.95M optimiser steps: twice MP-20's 1M (full batch, 27k structures),
+  # 60% of LeMat 5x's 3.2M (4.0M structures) -- alex-mp-20 sees each structure ~4x as
+  # often as LeMat did at that count, so the step count is not scaled up to match it.
+  epochs: 185000
+tokeniser:
+  name: der_tokenizer_v1_gene_min_ehull
+evaluation:
+  n_structures_to_generate: 10000
