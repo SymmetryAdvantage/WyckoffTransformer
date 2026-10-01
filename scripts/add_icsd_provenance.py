@@ -61,7 +61,7 @@ def main() -> None:
                     int(frame[COLUMN].sum()), 100 * frame[COLUMN].mean())
 
     fields = load_manifest(args.parent).fields_record()
-    fields[COLUMN] = {"quantity": COLUMN}
+    fields[COLUMN] = load_manifest(args.target).fields_record()[COLUMN]
     target.mkdir(parents=True, exist_ok=True)
     save_cache(frames, target, provenance(
         "scripts/add_icsd_provenance.py", parent=args.parent,

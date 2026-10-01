@@ -10,7 +10,7 @@ from wyckoff_transformer import dataset_manifest as dm
 from wyckoff_transformer.energy_fields import check_compatible
 
 CURRENT = {"lemat_bulk_fmax1_stress", "lemat_bulk_fmax1_stress_ehull01", "mp_20",
-           "mp_2026_gga_gap", "formula_energy"}
+           "mp_2026_gga_gap", "formula_energy", "lemat_bulk_fmax1_stress_icsd"}
 
 
 def test_every_manifest_validates_and_only_the_agreed_datasets_are_current():
@@ -122,3 +122,13 @@ def test_cache_records_are_checked_against_the_manifest():
         "lemat_bulk_fmax1_stress").fields_record()["energy_above_hull"]
     with pytest.raises(dm.CacheManifestMismatch, match="energy_above_hull"):
         dm.check_cache_matches("mp_20", changed)
+
+
+def test_a_cache_record_without_energy_means_not_an_energy():
+    record = dm.load_manifest("lemat_bulk_fmax1_stress_icsd").fields_record()
+    assert record["icsd_backed"] == {"quantity": "icsd_backed", "energy": None}
+    dm.check_cache_matches("lemat_bulk_fmax1_stress_icsd",
+                           {**record, "icsd_backed": {"quantity": "icsd_backed"}})
+    with pytest.raises(dm.CacheManifestMismatch, match="formation_energy_per_atom"):
+        dm.check_cache_matches("lemat_bulk_fmax1_stress_icsd", {
+            **record, "formation_energy_per_atom": {"quantity": "formation_energy"}})
