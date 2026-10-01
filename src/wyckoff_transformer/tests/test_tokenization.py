@@ -439,6 +439,20 @@ class TestTokeniseDataset(unittest.TestCase):
         self.assertIn("spacegroup_number", tokenisers)
         self.assertEqual(token_engineers, {})
 
+        # packed writes the same cache. Fresh tokenisers number tokens afresh, so both
+        # passes reuse these ones.
+        processor = tok.WyckoffProcessor(config=config, tokenisers=tokenisers, token_engineers={})
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tokeniser_path = Path(tmpdir) / "processor.json"
+            processor.save_pretrained(tokeniser_path)
+            as_lists, _, _ = processor.tokenise_dataset(
+                datasets_pd, tokenizer_path=tokeniser_path, n_jobs=1)
+            packed, _, _ = processor.tokenise_dataset(
+                datasets_pd, tokenizer_path=tokeniser_path, n_jobs=1, packed=True)
+        self.assertIsInstance(packed["train"]["elements_augmented"], tok.PackedNestedList)
+        self.assertIsInstance(packed["train"]["elem_counter_tokens"], tok.PackedTensorList)
+        TestLoadTensorsAndHelpers.assertSameCacheContent(self, dict(as_lists), dict(packed))
+
     @patch.object(tok.pandarallel, "initialize")
     def test_tokenise_dataset_token_sort_and_augmented_not_supported(self, _mock_init):
         datasets_pd = self._load_fixture()
@@ -630,6 +644,35 @@ class TestLoadTensorsAndHelpers(unittest.TestCase):
             self.assertTrue(torch.equal(loaded["val"]["nested"][0][0], payload["val"]["nested"][0][0]))
             self.assertTrue(torch.equal(loaded["val"]["nested"][0][1], payload["val"]["nested"][0][1]))
             self.assertTrue(torch.equal(loaded["val"]["nested"][1][0], payload["val"]["nested"][1][0]))
+
+    def assertSameCacheContent(self, first, second):
+        flat_first, flat_second = {}, {}
+        self.assertEqual(tok._serialise_tensor_tree(first, flat_first),
+                         tok._serialise_tensor_tree(second, flat_second))
+        self.assertEqual(flat_first.keys(), flat_second.keys())
+        for key, tensor in flat_first.items():
+            self.assertEqual(tensor.dtype, flat_second[key].dtype)
+            self.assertTrue(torch.equal(tensor, flat_second[key]), key)
+
+    def test_packed_lists_serialise_as_the_lists_they_stand_for(self):
+        ragged = [torch.tensor([1, 2], dtype=torch.int16), torch.tensor([3], dtype=torch.int16)]
+        equal = [torch.tensor([1, 2]), torch.tensor([3, 4])]
+        rows = torch.arange(12, dtype=torch.int16).reshape(4, 3)
+        cases = {
+            "concat": (ragged, tok.PackedTensorList(torch.cat(ragged), torch.tensor([2, 1]))),
+            "stack": (equal, tok.PackedTensorList(torch.cat(equal), torch.tensor([2, 2]))),
+            "rows": (list(rows), tok.PackedTensorList(rows)),
+            "empty": ([], tok.PackedTensorList(torch.empty(0), torch.tensor([], dtype=torch.int64))),
+            "nested": ([[rows[0], rows[1]], [], [rows[2], rows[3]]],
+                       tok.PackedNestedList(torch.tensor([2, 0, 2]), tok.PackedTensorList(rows))),
+            "nested_all_empty": ([[], []], tok.PackedNestedList(
+                torch.tensor([0, 0]), tok.PackedTensorList(torch.empty(0)))),
+        }
+        for name, (as_list, packed) in cases.items():
+            with self.subTest(name):
+                self.assertSameCacheContent({"train": {name: as_list}}, {"train": {name: packed}})
+                unpacked = packed.to_list()
+                self.assertSameCacheContent({"train": {name: as_list}}, {"train": {name: unpacked}})
 
     def test_load_tensors_and_tokenisers_from_cache_safetensors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
