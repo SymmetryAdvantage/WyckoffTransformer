@@ -97,5 +97,12 @@ optimisation:
   epochs: 20000
 tokeniser:
   name: der_tokenizer_v1_icsd
+# scripts/train.py --pilot only. train_batch_size is global, sharded over the chain's 4 GPUs
+# (3125 rows per card, as in 102431); the 1-GPU pilot of censored_icsd_pipeline.pbs ran out
+# of the A100's 40 GB at the full 12500. Validation and test are not sharded, so stay.
+pilot:
+  model:
+    WyckoffTrainer_args:
+      train_batch_size: 3125
 evaluation:
   n_structures_to_generate: 10000

@@ -80,8 +80,15 @@ def main():
         torch.set_float32_matmul_precision('high')
         
     config = OmegaConf.load(args.config)
+    # A top-level `pilot:` mapping is merged into the config for --pilot only, and dropped
+    # otherwise. It is for what a one-GPU smoke test must change to fit: a global
+    # train_batch_size sized for a multi-GPU chain is that many rows on one card.
+    pilot_overrides = config.pop('pilot', None)
     if args.pilot:
         print("Pilot run; overwriting epochs to 3")
+        if pilot_overrides is not None:
+            print(f"Pilot overrides from the config: {OmegaConf.to_container(pilot_overrides)}")
+            config = OmegaConf.merge(config, pilot_overrides)
         config['optimisation']['epochs'] = 3
         config['optimisation']['validation_period'] = 1
         tags = ["pilot"]
