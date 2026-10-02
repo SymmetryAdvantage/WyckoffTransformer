@@ -15,6 +15,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from wyckoff_transformer import WANDB_PROJECT
@@ -46,7 +47,9 @@ def run_command(command: list[str], log_path: Path, env: dict[str, str]) -> None
 
 
 def run_arm(run_id: str, root: Path, target: str, scale: int, cpu_threads: int,
-            devices: str, gen_device: str, env: dict[str, str]) -> Path:
+            devices: str, workers_per_device: int, gen_device: str,
+            env: dict[str, str], *, initial_oversample: float | None = None,
+            max_oversample: float = 24.0) -> Path:
     name = arm_name(target, scale)
     directory = root / name
     directory.mkdir(parents=True, exist_ok=True)
@@ -61,11 +64,11 @@ def run_arm(run_id: str, root: Path, target: str, scale: int, cpu_threads: int,
         "--gen-device", gen_device,
         "--pyxtal-cores", str(max(1, cpu_threads - 2)),
         "--devices", devices,
-        "--workers-per-device", "1",
+        "--workers-per-device", str(workers_per_device),
     ]
     if not (directory / "screen.json").is_file():
         already_generated = (directory / "wyckoff_genes.json.gz").is_file()
-        factor = oversample(scale)
+        factor = initial_oversample if initial_oversample is not None else oversample(scale)
         while True:
             args = [*common, "--stages", "screen", "--no-upload"]
             if already_generated:
@@ -76,9 +79,9 @@ def run_arm(run_id: str, root: Path, target: str, scale: int, cpu_threads: int,
                 run_command(args, log, env)
                 break
             except RuntimeError as error:
-                if already_generated or "Raise --oversample" not in str(error) or factor >= 24:
+                if already_generated or "Raise --oversample" not in str(error) or factor >= max_oversample:
                     raise
-                factor = min(24.0, factor * 2)
+                factor = min(max_oversample, factor * 2)
                 LOGGER.warning("%s needed more valid genes; retrying with oversample %.1f", name, factor)
 
     uploaded = directory / "grid-uploaded.json"
@@ -152,20 +155,45 @@ def upload_tables(run_id: str, tables: Path) -> None:
         run.finish()
 
 
+def wait_for_existing_grid(pid: int, run_id: str) -> None:
+    """Let a service take over after the current interactive grid process exits."""
+    cmdline = Path(f"/proc/{pid}/cmdline")
+    logged = False
+    while True:
+        try:
+            command = cmdline.read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except FileNotFoundError:
+            return
+        if "run_cfg_ehull_grid.py" not in command or run_id not in command:
+            return
+        if not logged:
+            LOGGER.info("Waiting for existing grid process %d to exit", pid)
+            logged = True
+        time.sleep(30)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_id")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cpu-threads", type=int, default=10)
     parser.add_argument("--devices", default="cuda:0,cuda:1")
+    parser.add_argument("--workers-per-device", type=int, default=2)
     parser.add_argument("--gen-device", default="cuda:0")
+    parser.add_argument("--wait-for-pid", type=int,
+                        help="Wait for an existing grid runner before resuming automatically")
     args = parser.parse_args()
     if not 1 <= args.cpu_threads <= 10:
         parser.error("--cpu-threads must be between 1 and 10")
+    if not 1 <= args.workers_per_device <= 2:
+        parser.error("--workers-per-device must be between 1 and 2")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    if args.wait_for_pid is not None:
+        wait_for_existing_grid(args.wait_for_pid, args.run_id)
     allowed = sorted(os.sched_getaffinity(0))
     os.sched_setaffinity(0, allowed[:args.cpu_threads])
-    LOGGER.info("CPU affinity %s; one relaxation worker per %s", allowed[:args.cpu_threads], args.devices)
+    LOGGER.info("CPU affinity %s; %d relaxation workers per %s",
+                allowed[:args.cpu_threads], args.workers_per_device, args.devices)
     env = os.environ.copy()
     env.update({key: "1" for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS",
                                      "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS")})
@@ -174,7 +202,7 @@ def main() -> None:
     for target in TARGETS:
         for scale in SCALES:
             run_arm(args.run_id, args.output_dir, target, scale, args.cpu_threads,
-                    args.devices, args.gen_device, env)
+                    args.devices, args.workers_per_device, args.gen_device, env)
     tables = write_tables(args.run_id, args.output_dir, env)
     upload_tables(args.run_id, tables)
     LOGGER.info("Grid complete: %s", tables)
