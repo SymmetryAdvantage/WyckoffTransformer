@@ -39,6 +39,15 @@ from wyckoff_transformer.prediction import (
 
 logger = logging.getLogger(__name__)
 
+#: A regressor of this target predicts the hull distance itself, so no hull is built.
+GENE_MIN_E_HULL_COLUMN = "gene_min_energy_above_hull"
+SCREEN_TARGETS = (GENE_MIN_FORMATION_ENERGY_COLUMN, GENE_MIN_E_HULL_COLUMN)
+
+
+def predicts_e_hull(regressor) -> bool:
+    """Whether *regressor* predicts ``e_hull`` directly rather than a formation energy."""
+    return getattr(regressor, "target_name", None) == GENE_MIN_E_HULL_COLUMN
+
 DEFAULT_REFERENCE = Path("data/lemat-bulk/lemat_pbe_ehull.csv.gz")
 REFERENCE_COLUMNS = ("immutable_id", "full_formula", "chemsys", "energy_corrected")
 
@@ -98,10 +107,9 @@ def validate_regressor(regressor) -> None:
         raise ValueError(
             "The initial gene-energy screener requires scalar_loss='mse', fitted to "
             f"{GENE_MIN_FORMATION_ENERGY_COLUMN!r}.")
-    if getattr(regressor, "target_name", None) != GENE_MIN_FORMATION_ENERGY_COLUMN:
+    if getattr(regressor, "target_name", None) not in SCREEN_TARGETS:
         raise ValueError(
-            "The regressor target must be "
-            f"{GENE_MIN_FORMATION_ENERGY_COLUMN!r}, not "
+            f"The regressor target must be one of {SCREEN_TARGETS}, not "
             f"{getattr(regressor, 'target_name', None)!r}.")
     # This validates the exact condition-feature layout and keeps the force-at-zero
     # policy in one place shared with CSP reranking.
@@ -111,11 +119,15 @@ def validate_regressor(regressor) -> None:
 def score_genes(
     genes: Sequence[dict],
     regressor,
-    reference: pd.DataFrame,
+    reference: "pd.DataFrame | None",
     augmentation_samples: int = 1,
     hull_lookup: "HullLookup | None" = None,
 ) -> pd.DataFrame:
     """Predict clean formation energies and compare every usable gene to its hull.
+
+    A regressor of :data:`GENE_MIN_E_HULL_COLUMN` predicts the distance to the hull
+    itself: its prediction is the score, *reference* is not used and may be ``None``,
+    and ``predicted_formation_energy`` and ``hull_energy`` stay empty.
 
     Args:
         hull_lookup: A :class:`~wyckoff_transformer.formula_energy.screen.HullLookup`
@@ -174,9 +186,12 @@ def score_genes(
         augmentation_samples=augmentation_samples,
         cond=cond,
     )
-    output.loc[supported.index, "predicted_formation_energy"] = (
-        prediction.detach().cpu().numpy()
-    )
+    prediction = prediction.detach().cpu().numpy()
+    if predicts_e_hull(regressor):
+        output.loc[supported.index, "score"] = prediction
+        output.loc[supported.index, "predicted_below_hull"] = prediction < 0
+        return output.sort_values("score", kind="stable", na_position="last")
+    output.loc[supported.index, "predicted_formation_energy"] = prediction
 
     lookup = hull_lookup if hull_lookup is not None else HullLookup(reference)
     hulls = {}

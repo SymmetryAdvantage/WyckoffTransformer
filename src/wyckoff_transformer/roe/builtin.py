@@ -680,6 +680,10 @@ class PredictedHullFilter:
       so candidates compete with each other and a ternary is measured against
       the binaries the same cohort found.
 
+    * ``hull='direct'`` is for a regressor that predicts ``e_hull`` itself
+      (``gene_min_energy_above_hull``): no hull is built, *reference* is ``None``,
+      and only ``energy='raw'`` is meaningful.
+
     All four combinations are written as ``predicted_e_hull_<hull>_<energy>`` for
     analysis whenever their inputs were given; ``predicted_e_hull`` is the one
     selected on.
@@ -691,7 +695,7 @@ class PredictedHullFilter:
     requires = ()
 
     SELECTORS = ("threshold", "top", "rank")
-    HULLS = ("reference", "joint")
+    HULLS = ("reference", "joint", "direct")
     ENERGIES = ("raw", "corrected")
 
     def __init__(
@@ -724,6 +728,11 @@ class PredictedHullFilter:
             raise ValueError(f"hull is one of {self.HULLS}, got {hull!r}")
         if energy not in self.ENERGIES:
             raise ValueError(f"energy is one of {self.ENERGIES}, got {energy!r}")
+        if hull == "direct" and (energy != "raw" or correction is not None
+                                 or known_genes is not None):
+            raise ValueError(
+                "hull='direct' takes the regressor's e_hull as it is; a corrected "
+                "energy needs a formation energy and a hull to subtract")
         if energy == "corrected" and correction is None and known_genes is None:
             raise ValueError(
                 "energy='corrected' needs a residual correction or the known-gene "
@@ -772,7 +781,7 @@ class PredictedHullFilter:
                 self.regressor,
                 self.reference,
                 augmentation_samples=self.augmentation_samples,
-                hull_lookup=self.hull_lookup(),
+                hull_lookup=None if self.hull == "direct" else self.hull_lookup(),
             ).sort_index()
             scored.index = pd.Index(fresh, name="index")
             for index in fresh:
@@ -817,6 +826,8 @@ class PredictedHullFilter:
         """Every (hull, energy) predicted ``e_hull`` this filter has the inputs for."""
         from wyckoff_transformer.gene_energy_residuals import chemical_system
 
+        if self.hull == "direct":
+            return {"predicted_e_hull_direct_raw": scored["score"].astype(float)}
         columns = {"predicted_e_hull_reference_raw": scored["score"].astype(float)}
         energies = {"raw": scored["predicted_formation_energy"].astype(float)}
         needs_keys = self.known_genes is not None or self.hull == "joint"

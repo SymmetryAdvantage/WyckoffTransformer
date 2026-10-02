@@ -158,8 +158,32 @@ def _build_energy(args):
         wandb_entity=args.wandb_entity,
         wandb_project=args.wandb_project,
     )
-    from wyckoff_transformer.cli.gene_screen import check_regressor_reference
+    from wyckoff_transformer.cli.gene_screen import check_regressor_reference, predicts_e_hull
 
+    # A regressor of e_hull itself needs no hull, and a hull would mean nothing to it:
+    # the two must be chosen together.
+    if predicts_e_hull(regressor) != (args.energy_hull == "direct"):
+        raise SystemExit(
+            f"--energy-hull direct goes with a regressor of gene_min_energy_above_hull, "
+            f"and only with one; this regressor predicts {regressor.target_name!r} and "
+            f"--energy-hull is {args.energy_hull!r}.")
+    if args.energy_hull == "direct":
+        if args.residuals is not None or args.energy_basis != "raw":
+            raise SystemExit("--energy-hull direct takes no --residuals or --energy-basis")
+        margin = args.hull_margin
+        if margin is None and args.energy_select != "rank":
+            margin = 0.0
+        return builtin.PredictedHullFilter(
+            regressor, None,
+            margin=margin,
+            select=args.energy_select,
+            top_k=args.energy_top,
+            on_missing_hull=args.on_missing_hull,
+            augmentation_samples=args.augmentation_samples,
+            regressor_id=str(args.regressor_path or args.regressor_wandb_run),
+            reference_id=None,
+            hull="direct",
+        )
     check_regressor_reference(regressor, args.hull_reference, args.allow_incompatible_energy)
     correction = known = None
     if args.residuals is not None:

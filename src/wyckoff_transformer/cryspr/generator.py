@@ -449,6 +449,8 @@ def relax_trial(
         prerelax_release_symmetry: bool = False,
         prerelax_rattle: bool = False,
         prerelax_max_expansion: Optional[float] = None,
+        warmup: bool = True,
+        steps_limit: int = 500,
 ) -> tuple[
     Optional[Atoms], Optional[float], tuple[Optional[Atoms], Optional[float]]
 ]:
@@ -498,6 +500,9 @@ def relax_trial(
         prerelax_max_expansion: Fall back to the raw draw if the cheap potential
             grew the cell by more than this factor.  ``None`` keeps whatever it
             produced; see :func:`prerelax`.
+        warmup: Run the fix-cell warm-up; see
+            :func:`~wyckoff_transformer.cryspr.relaxer.stepwise_relax_stages`.
+        steps_limit: Optimiser steps allowed per stage.
 
     Returns:
         ``(atoms, energy, fixed_symmetry)``, where *fixed_symmetry* is an
@@ -545,6 +550,8 @@ def relax_trial(
         wdir=trial_dir,
         logfile_prefix=formula,
         logfile_postfix="relax",
+        warmup=warmup,
+        steps_limit=steps_limit,
     )
     atoms_relaxed = stages.kept
     energy = atoms_relaxed.get_potential_energy()

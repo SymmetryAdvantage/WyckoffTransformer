@@ -309,6 +309,7 @@ def stepwise_relax_stages(
         wdir: Path = Path("."),
         logfile_prefix: str = "",
         logfile_postfix: str = "",
+        warmup: bool = True,
 ) -> Atoms:
     """Relax under symmetry constraints, then release them, then rattle.
 
@@ -364,6 +365,11 @@ def stepwise_relax_stages(
         wdir: Directory for output CIF and log files.
         logfile_prefix: Prefix for log file names.
         logfile_postfix: Postfix for log file names.
+        warmup: Run the fix-cell warm-up.  Off only for a start that is not a
+            random PyXtal cell -- one that is already a plausible structure, which
+            the warm-up would merely pre-relax.  With *fix_symmetry* also off the
+            schedule is a single unconstrained relaxation, and the
+            fixed-symmetry readout is the input structure, unrelaxed.
 
     Returns:
         A :class:`RelaxStages` carrying both the kept structure and the
@@ -407,14 +413,15 @@ def stepwise_relax_stages(
     )
 
     # Step 1: symmetry-constrained, cell fixed first and then released.
-    atoms = run_ase_relaxer(
-        atoms_in=atoms,
-        fix_symmetry=fix_symmetry,
-        cell_filter=None,
-        label=WARMUP_CIF_LABEL,
-        logfile=logfile_for("fix-cell"),
-        **shared,
-    )
+    if warmup:
+        atoms = run_ase_relaxer(
+            atoms_in=atoms,
+            fix_symmetry=fix_symmetry,
+            cell_filter=None,
+            label=WARMUP_CIF_LABEL,
+            logfile=logfile_for("fix-cell"),
+            **shared,
+        )
     if fix_symmetry:
         atoms = run_ase_relaxer(
             atoms_in=atoms,
