@@ -2933,6 +2933,9 @@ def stage_score(args) -> None:
         except Exception as exc:
             logger.warning("Gene %d: no fingerprint (%s)", index, exc)
 
+    validity_timeout = getattr(args, "validity_timeout", None)
+    validity_timeouts = []
+
     def read_variant(target: pd.DataFrame, directory: Path) -> dict:
         """Structures, validity, relaxed fingerprints and hull energies for one readout."""
         out = {"validity": {}, "structures": {}, "relaxed": {}, "hull": {}}
@@ -2947,7 +2950,18 @@ def stage_score(args) -> None:
             except Exception as exc:
                 logger.warning("Gene %d: unreadable CIF at %s (%s)", index, cif_path, exc)
                 continue
-            out["validity"][index] = is_valid(structure)
+            # Bounded: the charge-balance fallbacks enumerate oxidation states
+            # combinatorially and have stalled a whole score stage for hours on
+            # one large many-element cell. A structure that cannot be judged in
+            # time is counted invalid, which can only lower the rates.
+            try:
+                with time_limit(validity_timeout):
+                    out["validity"][index] = is_valid(structure)
+            except Timeout:
+                out["validity"][index] = False
+                validity_timeouts.append(int(index))
+                logger.warning("Gene %d: validity check exceeded %s s; counted invalid",
+                               index, validity_timeout)
             out["structures"][index] = structure
             # The relaxed structure's own fingerprint, which relaxation -- the
             # rattle stage especially -- can move away from the sampled gene's.
@@ -3047,6 +3061,8 @@ def stage_score(args) -> None:
         "reference_splits": ",".join(splits),
         "lemat_cif_csv": str(args.lemat_cif_csv),
         "reference_id_column": getattr(args, "reference_id_column", None),
+        "validity_timeout": validity_timeout,
+        "validity_timeouts": sorted(set(validity_timeouts)),
         "novelty_reference": {
             **reference_identity(args.reference_cache, splits),
             "colliding_fingerprints": reference["fingerprint"].nunique()
@@ -3533,6 +3549,13 @@ def build_parser() -> argparse.ArgumentParser:
             "holds, so it must have been built from --reference-cache and "
             "--reference-splits. Defaults to gene_fingerprints.pkl.gz beside "
             "--reference-cache (with the splits in the name when not all of them)."
+        ),
+    )
+    reference.add_argument(
+        "--validity-timeout", type=float, default=60.0,
+        help=(
+            "Seconds the validity check of one structure may take; one that "
+            "takes longer is counted invalid. 0 disables the limit."
         ),
     )
     reference.add_argument(
