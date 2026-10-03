@@ -141,7 +141,17 @@ POOL_SIZE=35400 BUDGET=10400 N=10000
   `structures.extxyz` and `manifest.csv` (gene, predicted e_hull, formula), plus
   `manifest.json` with the expected ORB score of exactly the submitted subset.
 
-*Results: pending.*
+**Result (2026-10-04 03:00):**
+- DiffCSP++ produced a structure for 10,383 of 10,400 genes. The assembler took the first
+  10,000 that passed: 17 genes had no structure and 6 had atoms closer than 0.5 Å.
+- **Expected ORB score of exactly the submitted 10,000: MSUN 0.7315 [0.723, 0.740],
+  SUN 0.0389 [0.035, 0.043]**, with 9644 valid and 9054 valid novel. All 10,400 scored
+  0.732, matching the 0.7465 confirmation arm within its interval.
+- Re-checked in a fresh process: 10,000 distinct genes and IDs, and every rattled
+  structure passes `check_start`.
+- Cells are DiffCSP++'s conventional cells: mean 19.6 atoms, max 87. Check whether the
+  benchmark caps cell size (alex-mp-20 itself is ≤ 20 atoms).
+- Files: `$STORE/alex_bench/submission_cfg_e0p025_w6_cut50/{cifs/,structures.extxyz,manifest.csv,manifest.json}`.
 
 ## Caveats
 
