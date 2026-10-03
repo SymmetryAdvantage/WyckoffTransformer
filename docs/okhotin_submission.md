@@ -88,8 +88,8 @@ The fire-discipline cell is the Phase 1 arm at the same setting, from a differen
 | e_hull cond, 0.025 | 0.415 (0.0115) | 0.506 (0.011) | 0.6085 (0.081) |
 | CFG, 0.025, w 6 | 0.4425 (0.0145) | **0.652** (0.0215) | 0.6485 (**0.1135**) |
 
-- **Broadside is dominated everywhere.** About 33–41% of its structures are already in
-  alex-mp-20, and they relax into known structures.
+- **Broadside is dominated everywhere.** It keeps the genes alex-mp-20 already holds,
+  and 33–41% of its relaxed structures are known ones.
 - **Fire-control at a 10% cut** adds +0.10–0.13 MSUN for the weaker generators, but
   nothing for CFG.
 - For CFG, the cut raises metastability (1458 against 1391) but loses structure novelty
