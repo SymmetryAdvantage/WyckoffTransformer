@@ -10,9 +10,8 @@
 
 ## Introduction: how a structure is made
 
-The submissions are produced in two steps: first decide *what* the crystal is, then decide
-*where* its atoms sit. Everything that selects which crystals to submit acts on the first,
-cheap step.
+The submissions are produced in two steps: first decide the *Wyckoff gene*, then decide
+*where* its atoms sit. The core insight of the framework is that the first step is practically free in terms of computational resources. Most models invest equally into every generated structure --- we don't. We oversample genes, and then use filtering to select the stable/novel/diverse ones.
 
 **1. The Wyckoff gene.**
 - A crystal's symmetry is given by its space group, one of 230.
@@ -44,7 +43,7 @@ cheap step.
 - Sampling a gene takes about a millisecond on a GPU.
 
 **3. Choosing genes before any structure exists (the "rules of engagement").**
-- **Broadside** submits genes as sampled.
+- **Broadside** doesn't apply any selection - all the genes are reconstructed
 - **Fire-discipline** first drops duplicate genes and genes already present in the
   reference dataset (alex-mp-20). This is an exact lookup of a gene fingerprint that is
   invariant to equivalent choices of Wyckoff setting.
