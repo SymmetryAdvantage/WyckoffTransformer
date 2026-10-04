@@ -93,6 +93,21 @@ The submissions are produced in two steps: first decide the *Wyckoff gene*, then
 - Intended use at the original decision: CFG for maximum reported MSUN, CON for track 2
   (discovery with diversity), UC for track 1 (similarity to the dataset).
 
+**Sampling a submission with the published container** (one NVIDIA GPU; no network or
+data needed after the pull; about 4–5 h for 10,000 structures):
+
+```bash
+singularity pull oras://ghcr.io/symmetryadvantage/wyckofftransformer:wyformer-geocsp-v2.3
+singularity run --nv wyckofftransformer_wyformer-geocsp-v2.3.sif CFG out_cfg 10000   # WyFormer-GeoCSP-CFG-v2.3
+singularity run --nv wyckofftransformer_wyformer-geocsp-v2.3.sif CON out_con 10000   # WyFormer-GeoCSP-CON-v2.3
+singularity run --nv wyckofftransformer_wyformer-geocsp-v2.3.sif UC  out_uc  10000   # WyFormer-GeoCSP-UC-v2.3
+```
+
+Each run writes `<out>/submission/` (`cifs/`, `structures.extxyz`, `manifest.csv`,
+`manifest.json`). It follows the same recipe as the published submissions but does not
+reproduce them bit for bit; see
+[Reproducing the submissions](#reproducing-the-submissions-the-container).
+
 ## Provenance
 
 ### Models and training code
