@@ -1,6 +1,6 @@
 # Okhotin benchmark submission: which generator, which rule of engagement
 
-> **Decision (2026-10-03).** The CFG e_hull generator
+> **Decision (2026-10-03): WyFormer-GeoCSP-CFG-v2.3.** The CFG e_hull generator
 > `ehull_adamw_wsd_5x_cfg-20260929-150414` sampled at `energy_above_hull = 0.025`,
 > guidance scale 6, under **fire-control keeping the top ~50%** of unique novel genes by
 > predicted e_hull (`gene_min_ehull_adamw_wsd-20260929-154926`). On a fresh 2000-gene
@@ -8,25 +8,42 @@
 > our ORB proxy, against 0.652 for the same generator under fire-discipline and 0.458 for
 > the unconditional generator. The production run is in [Production](#production).
 
+## Names
+
+| label | generator | sampling | rule of engagement | submission directory |
+|---|---|---|---|---|
+| **WyFormer-GeoCSP-CFG-v2.3** | `ehull_adamw_wsd_5x_cfg-20260929-150414` | `energy_above_hull=0.025`, guidance 6 | fire-control, top ~50% | `submission_cfg_e0p025_w6_cut50` |
+| **WyFormer-GeoCSP-CON-v2.3** | `ehull_adamw_wsd_5x-20260929-143848` | `energy_above_hull=0.025`, no guidance | fire-control, top ~50% | `submission_cond_e0p025_cut50` |
+| **WyFormer-GeoCSP-UC-v2.3** | `uncond_adamw_wsd_5x-20260929-143845` | T = 1 | fire-control, top ~50% | `submission_uncond_t1_cut50` |
+
+- All three share the gene e_hull predictor `gene_min_ehull_adamw_wsd-20260929-154926`
+  and the structure model **GeoCSP** (W&B `symmetry-advantage/diffcsp/ua1g6od4:best`).
+- GeoCSP is our own model, a heavily customised descendant of DiffCSP++. Its code lives in
+  `/home/kna/DiffCSPNew`, and code identifiers there and here (`diffcsp_bridge`,
+  `bench/run_diffusion.py --regime geov2`) keep the historical name.
+- Intended use: CFG for maximum MSUN, CON for track 2 (discovery with diversity), UC for
+  track 1 (similarity to the dataset).
+
 ## The benchmark and what we could measure
 
 - **Rules.** Train on alex-mp-20 `train.csv` only; submit 10,000 structures; the
   organisers relax them with an MLIP, judge novelty against alex-mp-20 and stability
   against a hull they have not disclosed.
-- **Decision metric:** MSUN per *submitted* structure. A duplicate, a failed DiffCSP++
+- **Decision metric:** MSUN per *submitted* structure. A duplicate, a failed GeoCSP
   start or an invalid relaxed structure counts as a miss.
 - **Everything used to make the submission is trained on alex-mp-20 train only.**
   - Generators and the gene e_hull predictor: `production_training: false`, with val
     used only for checkpoint selection.
   - The predictor's gene minima are taken per split (`alex_mp_20_labelled_per_split`).
-  - DiffCSP++ GeoV2 (`symmetry-advantage/diffcsp/ua1g6od4`, artifact `:best` = v28,
+  - GeoCSP, our own crystal-structure model (a heavily customised descendant of DiffCSP++,
+    GeoV2 architecture; `symmetry-advantage/diffcsp/ua1g6od4`, artifact `:best` = v28,
     epoch 140) was trained on alex-mp-20 train, and GeoV2 does not use ORB features.
 - **ORB is evaluation only.** It imitates the organisers' relaxation and hull so that a
   model can be chosen. It never pre-relaxes, ranks or filters the submission.
 
 ### Evaluation, identical for every arm
 
-genes → DiffCSP++ GeoV2 (one structure per gene) → CrySPR rattle (0.05 Å, strain 0.01,
+genes → GeoCSP (one structure per gene) → CrySPR rattle (0.05 Å, strain 0.01,
 seeded per gene) → **one unconstrained ORB-v3 conservative-inf relaxation**
 (`--relax-schedule single`, BFGS + FrechetCellFilter, fmax 0.05, ≤1000 steps) → e_hull
 on the LeMat-Bulk-MLIP-Hull ORB hull → StructureMatcher uniqueness within the arm and
@@ -36,7 +53,7 @@ novelty against alex-mp-20 train+val (`--reference-id-column material_id`).
   is a conservative stand-in for the undisclosed one.
 - **The relaxation is a proxy too.** The organisers' MLIP and its settings are unknown.
   Absolute rates will move; the *ordering* of arms is what this study is for.
-- **The structures evaluated are the structures submitted:** the same DiffCSP++ output
+- **The structures evaluated are the structures submitted:** the same GeoCSP output
   and the same seeded rattle (`scripts/alex_bench/assemble_submission.py` checks this).
 - Pinned checkpoints: uncond `best_model:v42`, e_hull `v50`, CFG `v55`, predictor `v37`
   (`scripts/alex_bench/fetch_wandb_runs.py`).
@@ -113,7 +130,7 @@ fraction f by predicted e_hull emulates fire-control at cut f on an unselected c
 - MSUN peaks at f ≈ 0.5–0.75 and falls at tighter cuts; SUN keeps rising.
 - The cut was read off the same data, so it was confirmed on a **fresh pool**: CFG 0.025
   w 6, top 2000 of 4207 unique novel genes (47.5%). The arm scored **MSUN 0.7465
-  [0.727, 0.765]**, SUN 0.0465. Its 0 DiffCSP++ failures and 1932 valid structures match
+  [0.727, 0.765]**, SUN 0.0465. Its 0 GeoCSP failures and 1932 valid structures match
   the other CFG arms.
 
 **The gene e_hull predictor works, moderately.**
@@ -134,7 +151,7 @@ POOL_SIZE=35400 BUDGET=10400 N=10000
 
 - **Pool and cut.** A 35,400-gene pool gives 20,635 unique novel genes, of which
   fire-control keeps 10,400 (50.4%, inside the measured optimum).
-- **Pipeline.** DiffCSP++ runs on all 10,400 genes. `assemble_submission.py` walks them in
+- **Pipeline.** GeoCSP runs on all 10,400 genes. `assemble_submission.py` walks them in
   predicted-e_hull order, skips any failed or rejected start, rattles each structure with
   its evaluation seed, and stops at 10,000.
 - **Output** goes to `$STORE/alex_bench/submission_cfg_e0p025_w6_cut50/`: `cifs/`,
@@ -142,14 +159,14 @@ POOL_SIZE=35400 BUDGET=10400 N=10000
   `manifest.json` with the expected ORB score of exactly the submitted subset.
 
 **Result (2026-10-04 03:00):**
-- DiffCSP++ produced a structure for 10,383 of 10,400 genes. The assembler took the first
+- GeoCSP produced a structure for 10,383 of 10,400 genes. The assembler took the first
   10,000 that passed: 17 genes had no structure and 6 had atoms closer than 0.5 Å.
 - **Expected ORB score of exactly the submitted 10,000: MSUN 0.7315 [0.723, 0.740],
   SUN 0.0389 [0.035, 0.043]**, with 9644 valid and 9054 valid novel. All 10,400 scored
   0.732, matching the 0.7465 confirmation arm within its interval.
 - Re-checked in a fresh process: 10,000 distinct genes and IDs, and every rattled
   structure passes `check_start`.
-- **Cell size.** Cells are DiffCSP++'s conventional cells: mean 19.6 atoms, max 87.
+- **Cell size.** Cells are GeoCSP’s conventional cells: mean 19.6 atoms, max 87.
   - Counted from the genes, primitive cells average 11.0 atoms, and only 1.1% exceed
     alex-mp-20's 20-atom limit (pool: 0.7%). alex-mp-20 train averages 9.6.
   - spglib on the rattled cells cannot tell this: the 1% strain hides the centring.
@@ -167,7 +184,7 @@ The CFG run above maximises MSUN. Guidance narrows the sampler, though: 9% of CF
 repeat within a 31k pool, against about 1% unguided. So two more submissions were made
 with the same pipeline and the same ~50% fire-control cut.
 
-| | CFG, target 0.025, w 6 | **Track 2:** e_hull-conditioned, target 0.025 | **Track 1:** unconditional |
+| | **WyFormer-GeoCSP-CFG-v2.3** (CFG, target 0.025, w 6) | **WyFormer-GeoCSP-CON-v2.3** (track 2: conditioned, target 0.025) | **WyFormer-GeoCSP-UC-v2.3** (track 1: unconditional) |
 |---|---|---|---|
 | run | `cfg_e0p025_w6_cut50` | `cond_e0p025_cut50` | `uncond_t1_cut50` |
 | pool → unique novel → kept | 35,400 → 20,635 → 10,400 (50.4%) | 31,200 → 20,822 → 10,400 (49.9%) | 29,900 → 20,812 → 10,400 (50.0%) |
@@ -194,7 +211,7 @@ with the same pipeline and the same ~50% fire-control cut.
 
 Both track runs (2026-10-04, `scripts/platforms/zeus/make_alex_bench_submission.sh` with
 `POOL_SIZE=31200` and `29900`) ran side by side on GPU 1.
-- **Wall times:** about 8.7 h of DiffCSP++ sampling each while sharing the card (about
+- **Wall times:** about 8.7 h of GeoCSP sampling each while sharing the card (about
   4.3 h alone), 1.7–1.9 h of relaxation while sharing CPU and card, and 1.1 h of scoring.
 - **Gene-level work:** sampling, screening and ranking took 28–40 s, 2.5–2.7 s and
   22–23 s, as in the cost table below.
@@ -209,7 +226,7 @@ Both track runs (2026-10-04, `scripts/platforms/zeus/make_alex_bench_submission.
 Every selection in this submission happens at the gene level, before any 3D structure
 exists. That is affordable because a Wyckoff gene costs about a millisecond to sample and
 a few milliseconds to screen and rank, while turning one gene into a structure with
-DiffCSP++ costs about 1.5 GPU-seconds. Discarding genes costs little; placing atoms is
+GeoCSP costs about 1.5 GPU-seconds. Discarding genes costs little; placing atoms is
 expensive.
 
 Measured on zeus (one NVIDIA RTX 6000 Ada, Intel Xeon w7-3455), production run of the
@@ -217,7 +234,7 @@ CFG submission (`production_cfg_e0p025_w6_cut50`, card not shared except for its
 15 min).
 
 The card runs under a deliberate 250 W power cap (about 1 GHz SM clock under sustained
-load). The GPU-bound DiffCSP++ figures are therefore slower than an uncapped card would
+load). The GPU-bound GeoCSP figures are therefore slower than an uncapped card would
 give, which only strengthens the comparison below.
 
 | stage | input → output | wall time | per gene / structure |
@@ -225,8 +242,8 @@ give, which only strengthens the comparison below.
 | WyFormer sampling, CFG w=6 (two forward passes per step), GPU | 46,020 draws → 35,400 formally valid genes | 45.7 s | **1.0 ms per draw** |
 | Uniqueness + novelty screen vs alex-mp-20 (tensor gene keys), CPU | 35,400 → 20,635 unique, novel | 2.7 s | **0.08 ms per gene** |
 | Gene e_hull predictor + top-50% cut, GPU | 20,635 → 10,400 | 23.1 s | **1.1 ms per gene** |
-| DiffCSP++ initialisation (PyXtal + CrystalNN graphs), 20 CPU threads | 10,400 genes | 7 min 3 s | 41 ms per gene |
-| **DiffCSP++ GeoV2 sampling** (1000 steps, batch 128), GPU | 10,400 → 10,383 structures | **4 h 14 min** | **1.47 s per structure** |
+| GeoCSP initialisation (PyXtal + CrystalNN graphs), 20 CPU threads | 10,400 genes | 7 min 3 s | 41 ms per gene |
+| **GeoCSP sampling** (1000 steps, batch 128), GPU | 10,400 → 10,383 structures | **4 h 14 min** | **1.47 s per structure** |
 | Start checks, rattle and writing the submission, CPU | 10,383 → 10,000 | ≈ 1.3 min | < 10 ms per structure |
 
 - **Generation costs about the same for all three generators.**
@@ -238,14 +255,14 @@ give, which only strengthens the comparison below.
 - **Process start-up dominates the gene-level wall clock:** loading models, the 670k-entry
   alex-mp-20 key table and the predictor takes about 30–60 s per process. The whole
   gene-level stage (sample, screen, rank, write) took 2.5 min wall for the 10,400-gene
-  production, against 4 h 21 min for DiffCSP++.
+  production, against 4 h 21 min for GeoCSP.
 - **Per 1000 submitted structures:**
   - The CFG recipe generates 4,600 draws, screens 3,540 genes and ranks 2,060.
-  - That is about 7 s of gene-level compute, against about 25 min of DiffCSP++ — **a ratio
+  - That is about 7 s of gene-level compute, against about 25 min of GeoCSP — **a ratio
     of roughly 1 : 200**.
   - Per gene, sampling a gene is about 1,500× cheaper than reconstructing one.
 - **What the gene filters avoid:**
-  - 77% of the drawn genes never reach DiffCSP++: duplicates, genes already in
+  - 77% of the drawn genes never reach GeoCSP: duplicates, genes already in
     alex-mp-20, and the predicted-unstable half.
   - Reconstructing all 46,020 would have taken about 19 GPU-hours instead of 4.2.
   - Fire-control trades about 45 s of extra gene sampling and ranking for a +0.09 MSUN
