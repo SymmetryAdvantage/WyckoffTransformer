@@ -1,4 +1,4 @@
-# MLIP relaxation bias study handoff — 2026-10-04
+# MLIP relaxation bias study handoff — 2026-10-05
 
 ## Objective and provenance
 
@@ -25,6 +25,13 @@ GRACE-3L-OAM-L is intentionally skipped because the user does not want the
 TensorFlow dependency. On 2026-10-05, the user also excluded EquFlash in favor
 of EquFlashV2. EquFlashV2 remains planned; historical EquFlash probe records
 are retained, but no further EquFlash setup, relaxation or scoring is planned.
+
+On 2026-10-05, the user assigned **PET-OAM-XL and EquFlashV2 to the other,
+larger-VRAM machine**, where they will run those arms themselves. These two
+arms remain in the study, but are not scheduled for iapetus. Use the same raw
+input artifact, published checkpoints, relaxation protocol and 600-second
+timeout, with results and environment provenance logged to W&B. The other
+machine's identity and new arm run links are pending.
 
 ## Latest state — resumed 2026-10-04
 
@@ -161,7 +168,8 @@ using the pinned source commits in the study notes; they are not W&B artifacts.
   cuEquivariance operations or a validated source change are required.
 - PET-OAM-XL passes the metatomic ABI and architecture imports with
   `deps/pet_clean` plus `python-hostlist`, but GPU 2's 2 GiB memory is exhausted
-  during model initialization, before a single point. Try a larger GPU.
+  during model initialization, before a single point. The user will run this
+  arm on the other, larger-VRAM machine, alongside EquFlashV2.
 
 The detailed dated log, model ranking, and scoring contract are in
 [docs/mlip_relaxation_bias_study.md](docs/mlip_relaxation_bias_study.md).
