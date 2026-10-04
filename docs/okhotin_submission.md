@@ -186,7 +186,7 @@ with the same pipeline and the same ~50% fire-control cut.
   against 5336 for the unguided conditioned model, which has 10% fewer MSUN.
 - CFG also over-produces quaternaries and quinaries relative to the dataset.
 - **For a discovery score that weighs diversity, the conditioned model is the better
-  trade.** That is the user's choice for track 2.
+  trade**, which is why it was chosen for track 2.
 - **The unconditional model is the closest to the dataset** on every distributional
   measure here, which is what track 1 rewards.
 - These diversity and similarity numbers are our own proxies. The benchmark's own
