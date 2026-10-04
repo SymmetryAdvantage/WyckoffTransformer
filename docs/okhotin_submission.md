@@ -8,6 +8,80 @@
 > our ORB proxy, against 0.652 for the same generator under fire-discipline and 0.458 for
 > the unconditional generator. The production run is in [Production](#production).
 
+## Introduction: how a structure is made
+
+The submissions are produced in two steps: first decide *what* the crystal is, then decide
+*where* its atoms sit. Everything that selects which crystals to submit acts on the first,
+cheap step.
+
+**1. The Wyckoff gene.**
+- A crystal's symmetry is given by its space group, one of 230.
+- Within a space group, every atom sits on a *Wyckoff position*: a family of sites related
+  by the group's symmetry operations, with a fixed multiplicity and a site symmetry.
+- A *Wyckoff gene* is the list of (element, Wyckoff position) pairs plus the space group.
+  For example: space group 225, Na on 4a, Cl on 4b is rock salt.
+- The gene fixes the composition, the symmetry and how atoms are related to each other. It
+  leaves open only a handful of continuous parameters: the lattice lengths and angles, and
+  the free coordinates of the less symmetric Wyckoff positions.
+- So it is a short, discrete, symmetry-exact description of a crystal. Our genes have a
+  median of 4 sites (3–7 for 90% of them), where a full structure has dozens of
+  coordinates.
+
+**2. WyFormer: sampling genes.**
+- WyFormer (Wyckoff Transformer, ICML 2025) is an autoregressive transformer over genes.
+  Given a space group, it emits the gene's sites one at a time; each site is an element
+  token, a site-symmetry token and an enumeration token.
+- A Wyckoff position's sites form an unordered set, so the model is trained to be
+  invariant to the order of sites and uses no positional encoding.
+- **Unconditional (UC)** samples genes as they occur in the training set.
+- **Conditioned (CON)** is the same model with a scalar input, the DFT energy above the
+  convex hull (`e_hull`) of the training structure, so a target stability can be asked
+  for at sampling time.
+- **Classifier-free guidance (CFG)** trains one model both with and without the condition
+  (the condition is dropped for 10% of training rows). At sampling time it extrapolates
+  from the unconditional prediction towards the conditional one by a guidance scale w,
+  which pushes harder towards the target than conditioning alone.
+- Sampling a gene takes about a millisecond on a GPU.
+
+**3. Choosing genes before any structure exists (the "rules of engagement").**
+- **Broadside** submits genes as sampled.
+- **Fire-discipline** first drops duplicate genes and genes already present in the
+  reference dataset (alex-mp-20). This is an exact lookup of a gene fingerprint that is
+  invariant to equivalent choices of Wyckoff setting.
+- **Fire-control** additionally ranks the remaining genes with a second WyFormer, trained
+  as a regressor to predict the lowest `e_hull` achievable by any structure with that
+  gene. It keeps the best-ranked fraction (here ~50%).
+- These steps cost milliseconds per gene. They decide which genes reach the expensive
+  step, so the pipeline can afford to sample several times more genes than it submits.
+
+**4. GeoCSP: from gene to 3D structure.**
+- GeoCSP is our crystal-structure model, a heavily customised descendant of the DiffCSP++
+  diffusion model. Given a gene, it samples the lattice and the free atomic coordinates.
+- It starts from noise and denoises over 1000 steps with a symmetry-aware graph neural
+  network.
+- Each update is projected onto the degrees of freedom the gene leaves open. Coordinates
+  fixed by symmetry stay exactly fixed, so the output has exactly the gene's space group
+  and composition.
+- This is the expensive step: about 1.5 GPU-seconds per structure.
+
+**5. Rattle and submit.**
+- A perfectly symmetric structure sits at a stationary point that a local relaxation
+  cannot leave, even when a lower-energy, lower-symmetry structure is nearby.
+- Each GeoCSP structure is therefore *rattled*, by random displacements of about 0.05 Å
+  and a 1% random cell strain, before submission. This lets the organisers' relaxation
+  find such distortions.
+
+**How the choices were made.**
+- To compare generators, sampling settings and rules of engagement, every candidate went
+  through the same pipeline. Its structures were relaxed with the ORB-v3 machine-learned
+  interatomic potential, scored against an ORB convex hull and matched against alex-mp-20
+  for novelty.
+- The metric is MSUN: the fraction of submitted structures that are **m**etastable
+  (e_hull ≤ 0.1 eV/atom), **u**nique and **n**ovel.
+- ORB is used only for this evaluation; it never touches the submitted structures.
+- All models — WyFormer generators, the gene e_hull regressor and GeoCSP — were trained on
+  alex-mp-20 `train.csv` only.
+
 ## Names
 
 | label | generator | sampling | rule of engagement | submission directory |
