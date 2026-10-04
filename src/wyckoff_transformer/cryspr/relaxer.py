@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,33 @@ from ase.optimize.optimize import Optimizer
 import spglib
 
 logger = logging.getLogger(__name__)
+
+
+def _print_logm_warning_once() -> None:
+    """Show SciPy's varying-residual logm warning once per worker process.
+
+    The residual changes the message on every call, defeating warnings' usual
+    message-based deduplication. Keep the first occurrence of this family,
+    including its residual and source, without filtering other warnings.
+    """
+    original = warnings.showwarning
+    if getattr(original, "_prints_logm_once", False):
+        return
+    shown_pid = None
+
+    def showwarning(message, category, filename, lineno, file=None, line=None):
+        nonlocal shown_pid
+        if (issubclass(category, RuntimeWarning)
+                and str(message).startswith("logm result may be inaccurate")):
+            pid = os.getpid()
+            if shown_pid == pid:
+                return
+            shown_pid = pid
+        original(message, category, filename, lineno, file, line)
+
+    showwarning._prints_logm_once = True
+    warnings.showwarning = showwarning
+
 
 #: Stage labels, which name the CIF each stage writes.  Which of them holds the
 #: structure a trial *kept* is decided on energy by the rattle stage, so
