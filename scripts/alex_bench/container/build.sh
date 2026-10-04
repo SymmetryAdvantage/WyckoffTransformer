@@ -36,18 +36,19 @@ mkdir -p "$stage/wyformer" "$stage/geocsp" "$stage/okhotin/runs" "$stage/okhotin
     "$stage/okhotin/geocsp" "$OUT_DIR/cache" "$OUT_DIR/tmp"
 
 git -C "$REPO" archive --format=tar "$wyformer_revision" -- \
-    pyproject.toml uv.lock README.md LICENSE src scripts yamls docs/archive/okhotin_submission.md |
+    pyproject.toml README.md LICENSE src scripts yamls docs/archive/okhotin_submission.md |
     tar -x -C "$stage/wyformer"
 git -C "$GEOCSP_REPO" archive --format=tar "$geocsp_revision" -- \
     pyproject.toml uv.lock README.md diffcsp bench |
     tar -x -C "$stage/geocsp"
 
-# WyFormer's exact environment, without torch (the base image's) and spglib (zeus builds
-# its own; the image takes the same version from PyPI). GeoCSP runs in it too: its only
-# extra dependency is torch-geometric, taken at the version GeoCSP's own lock pins.
-(cd "$stage/wyformer" && uv export --frozen --no-dev --no-hashes --no-emit-project \
-    --no-emit-package torch --no-emit-package triton --no-emit-package spglib \
-    --no-header > "$stage/requirements.lock.txt")
+# WyFormer's exact environment: zeus's uv.lock is machine-specific and not tracked, so its
+# export is (container/requirements.lock.txt). Regenerate with
+#   uv export --frozen --no-dev --no-hashes --no-emit-project --no-emit-package torch \
+#       --no-emit-package triton --no-emit-package spglib --no-header
+# GeoCSP runs in the same environment: its only extra dependency is torch-geometric,
+# taken at the version GeoCSP's own (tracked) lock pins.
+cp "$stage/wyformer/scripts/alex_bench/container/requirements.lock.txt" "$stage/requirements.lock.txt"
 torch_geometric_pin=$(cd "$stage/geocsp" && uv export --frozen --no-dev --no-hashes \
     --no-emit-project --no-header | grep -E '^torch-geometric==' | cut -d' ' -f1)
 [[ -n "$torch_geometric_pin" ]] || { echo "no torch-geometric pin in GeoCSP's lock" >&2; exit 1; }
