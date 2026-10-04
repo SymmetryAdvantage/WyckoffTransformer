@@ -153,6 +153,54 @@ POOL_SIZE=35400 BUDGET=10400 N=10000
   benchmark caps cell size (alex-mp-20 itself is ≤ 20 atoms).
 - Files: `$STORE/alex_bench/submission_cfg_e0p025_w6_cut50/{cifs/,structures.extxyz,manifest.csv,manifest.json}`.
 
+## Computational cost: genes are essentially free
+
+Every selection in this submission happens at the gene level, before any 3D structure
+exists. That is affordable because a Wyckoff gene costs about a millisecond to sample and
+a few milliseconds to screen and rank, while turning one gene into a structure with
+DiffCSP++ costs about 1.5 GPU-seconds. Discarding genes costs little; placing atoms is
+expensive.
+
+Measured on zeus (one NVIDIA RTX 6000 Ada, Intel Xeon w7-3455), production run of the
+CFG submission (`production_cfg_e0p025_w6_cut50`, card not shared except for its first
+15 min):
+
+| stage | input → output | wall time | per gene / structure |
+|---|---|---|---|
+| WyFormer sampling, CFG w=6 (two forward passes per step), GPU | 46,020 draws → 35,400 formally valid genes | 45.7 s | **1.0 ms per draw** |
+| Uniqueness + novelty screen vs alex-mp-20 (tensor gene keys), CPU | 35,400 → 20,635 unique, novel | 2.7 s | **0.08 ms per gene** |
+| Gene e_hull predictor + top-50% cut, GPU | 20,635 → 10,400 | 23.1 s | **1.1 ms per gene** |
+| DiffCSP++ initialisation (PyXtal + CrystalNN graphs), 20 CPU threads | 10,400 genes | 7 min 3 s | 41 ms per gene |
+| **DiffCSP++ GeoV2 sampling** (1000 steps, batch 128), GPU | 10,400 → 10,383 structures | **4 h 14 min** | **1.47 s per structure** |
+| Start checks, rattle and writing the submission, CPU | 10,383 → 10,000 | ≈ 1.3 min | < 10 ms per structure |
+
+- **Generation costs about the same for all three generators.**
+  - Unconditional: 38,870 draws in 28.5 s, 0.73 ms each.
+  - e_hull-conditioned: 40,560 draws in 39.8 s, 0.98 ms each.
+  - CFG: 1.0–1.4 ms per draw.
+  - Every run screened in 2.4–2.7 s for about 30k genes, and the predictor took 22–25 s
+    for about 20k.
+- **Process start-up dominates the gene-level wall clock:** loading models, the 670k-entry
+  alex-mp-20 key table and the predictor takes about 30–60 s per process. The whole
+  gene-level stage (sample, screen, rank, write) took 2.5 min wall for the 10,400-gene
+  production, against 4 h 21 min for DiffCSP++.
+- **Per 1000 submitted structures:**
+  - The CFG recipe generates 4,600 draws, screens 3,540 genes and ranks 2,060.
+  - That is about 7 s of gene-level compute, against about 25 min of DiffCSP++ — **a ratio
+    of roughly 1 : 200**.
+  - Per gene, sampling a gene is about 1,500× cheaper than reconstructing one.
+- **What the gene filters avoid:**
+  - 77% of the drawn genes never reach DiffCSP++: duplicates, genes already in
+    alex-mp-20, and the predicted-unstable half.
+  - Reconstructing all 46,020 would have taken about 19 GPU-hours instead of 4.2.
+  - Fire-control trades about 45 s of extra gene sampling and ranking for a +0.09 MSUN
+    gain over fire-discipline (0.7465 vs 0.652).
+- **Evaluation, for scale (not part of making the submission):**
+  - ORB relaxation of the 10,400 structures took 52 min on the same card (8 workers,
+    0.30 s per structure).
+  - Scoring took 53 min, 99% of it in the serial per-structure validity and
+    charge-balance check over two readouts.
+
 ## Caveats
 
 - **Proxy evaluation:** ORB relaxation and the LeMat ORB hull, not the organisers' MLIP
