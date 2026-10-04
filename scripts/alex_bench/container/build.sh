@@ -58,7 +58,14 @@ for run in "${RUNS[@]}"; do
 done
 cp "$STORE/alex_bench/refs/alex_mp_20_labelled_train+val_keys.npz" "$stage/okhotin/refs/"
 cp "$GEOCSP_CKPT" "$stage/okhotin/geocsp/"
-cp "$(command -v uv)" "$stage/uv"
+# A standalone, pinned uv: the host's may be a launcher (snap) that does not run in the image.
+UV_VERSION="${UV_VERSION:-0.12.20}"
+if [[ ! -x "$OUT_DIR/tools/uv-$UV_VERSION/uv" ]]; then
+    mkdir -p "$OUT_DIR/tools/uv-$UV_VERSION"
+    curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" |
+        env UV_UNMANAGED_INSTALL="$OUT_DIR/tools/uv-$UV_VERSION" sh
+fi
+cp "$OUT_DIR/tools/uv-$UV_VERSION/uv" "$stage/uv"
 cp "$HERE/WyFormer-GeoCSP.def" "$stage/"
 
 sif="$OUT_DIR/WyFormer-GeoCSP-$IMAGE_TAG.sif"
