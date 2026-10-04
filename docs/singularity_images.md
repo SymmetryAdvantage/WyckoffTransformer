@@ -25,6 +25,7 @@ development images unambiguous:
 | `v1.0.7` | `latest` | Most recent stable release image |
 | `main` | `main` | Current default-branch image |
 | `training-loss-fixes` | `training-loss-fixes` | Current feature-branch image |
+| `okhotin-submission` | `wyformer-geocsp-v2.3` | Immutable: samples the WyFormer-GeoCSP v2.3 alex-mp-20 submissions, with the models baked in. Built by `scripts/alex_bench/container/build.sh`, not by the recipe below; see `docs/archive/okhotin_submission.md` |
 
 `latest` must only be moved when publishing a new stable Git tag. Branch tags
 are intentionally mutable and should be rebuilt when their branch tip changes.

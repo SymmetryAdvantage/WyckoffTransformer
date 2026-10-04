@@ -423,6 +423,52 @@ give, which only strengthens the comparison below.
   - Scoring took 53 min, 99% of it in the serial per-structure validity and
     charge-balance check over two readouts.
 
+## Reproducing the submissions: the container
+
+`oras://ghcr.io/symmetryadvantage/wyckofftransformer:wyformer-geocsp-v2.3` is a
+Singularity image that samples submissions the way the three were made:
+1. WyFormer samples a gene pool.
+2. Fire-control drops duplicate and known genes, then keeps the ~50% with the lowest
+   predicted e_hull.
+3. GeoCSP builds one structure per kept gene.
+4. The start checks and the seeded rattle run, and the first N structures are written in
+   predicted-e_hull order.
+
+It carries the four pinned WyFormer runs, the GeoCSP weights and the alex-mp-20 gene-key
+table that fire-control screens against. It needs no network and no other data.
+
+```bash
+singularity pull oras://ghcr.io/symmetryadvantage/wyckofftransformer:wyformer-geocsp-v2.3
+singularity run --nv wyckofftransformer_wyformer-geocsp-v2.3.sif CFG out_cfg 10000   # or CON, UC
+singularity run wyckofftransformer_wyformer-geocsp-v2.3.sif                          # usage
+```
+
+- **Output:** `out_cfg/submission/` holds `cifs/`, `structures.extxyz`, `manifest.csv`
+  (gene and predicted e_hull per structure) and `manifest.json` (label, models, source
+  commit). The pool, the fire-control cohort and the GeoCSP intermediates stay beside it.
+- **Not bit-for-bit:**
+  - WyFormer sampling is unseeded.
+  - GeoCSP's GPU sampling is not deterministic: two runs on identical inputs agreed on
+    21 of 42 structures.
+  - The image's torch is 2.14.0 built for CUDA 13.2, where the study ran 2.14.0 for
+    CUDA 13.3.
+  - The recipe, the models and every other dependency version are the study's.
+- **ORB is not included:** the evaluation that chose the recipe is not needed to sample
+  with it.
+- **Time:** 40 structures take about 3 min on one RTX 6000 Ada, most of it start-up. A
+  10,000-structure run takes about 4–5 h, dominated by GeoCSP
+  ([cost](#computational-cost-genes-are-essentially-free)).
+- **Built by** `scripts/alex_bench/container/build.sh` from committed sources only:
+  - WyFormer at the image's `org.opencontainers.image.revision` label;
+  - GeoCSP at `geocsp.revision`, DiffCSPNew `1d8b164`;
+  - the base image `pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime`;
+  - one environment pinned to zeus's `uv.lock`, exported to
+    `scripts/alex_bench/container/requirements.lock.txt` and installed with `--no-deps`
+    so that the base image's torch is the only torch.
+- The same script runs outside the container:
+  `scripts/alex_bench/sample_submission.sh LABEL OUT [N]`, with the paths given in its
+  header.
+
 ## Caveats
 
 - **Incomplete structure uniqueness:** the saved evaluator compares relaxed structures
