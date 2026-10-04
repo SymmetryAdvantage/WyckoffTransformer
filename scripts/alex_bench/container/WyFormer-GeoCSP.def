@@ -31,8 +31,11 @@ From: pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
     /usr/local/bin/uv venv --system-site-packages \
         /opt/wyformer/.venv
     PY=/opt/wyformer/.venv/bin/python
-    /usr/local/bin/uv pip install --python $PY -r /opt/wyformer/requirements.lock.txt \
-        "spglib==2.7.0" "{{ TORCH_GEOMETRIC_PIN }}"
+    # --no-deps: the list is the lock's complete, exact closure. uv does not count the base
+    # image's system torch as installed, so resolving would pull a second torch -- and its
+    # CUDA wheels -- from PyPI for every package that declares one.
+    /usr/local/bin/uv pip install --python $PY --no-deps \
+        -r /opt/wyformer/requirements.lock.txt "spglib==2.7.0" "{{ TORCH_GEOMETRIC_PIN }}"
     /usr/local/bin/uv pip install --python $PY --no-deps /opt/wyformer /opt/geocsp
     rm -rf /tmp/uv-cache
     mkdir -p /opt/okhotin/cache /opt/okhotin/data
@@ -66,6 +69,11 @@ import wyckoff_transformer.roe.cli, wyckoff_transformer.cli.generate, wyckoff_tr
 torch_path = pathlib.Path(torch.__file__).resolve()
 assert torch.__version__.startswith("2.14.0"), torch.__version__
 assert not torch_path.is_relative_to("/opt/wyformer/.venv"), torch_path
+import importlib.metadata as md
+stray = [d.metadata["Name"] for d in md.distributions()
+         if d.metadata["Name"].lower().startswith(("nvidia-", "triton"))
+         and "/opt/wyformer/.venv" in str(d.locate_file(""))]
+assert not stray, f"CUDA wheels in the venv shadow the base image's: {stray}"
 print("wyformer ok, torch", torch.__version__, "cuda", torch.version.cuda)
 PY
     /opt/wyformer/.venv/bin/python - <<'PY'
