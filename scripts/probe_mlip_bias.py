@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Probe the 2026-10-01 Matbench top ten and ORB control in this environment.
+"""Probe the study's retained Matbench models and ORB control.
 
 This is a local diagnostic. A missing adapter or dependency is recorded as a
 setup failure; it is not called a scientific failure of the MLIP itself.
@@ -21,7 +21,8 @@ from wyckoff_transformer.cryspr.mlips import MLIP_REGISTRY, build_prerelax_calcu
 from wyckoff_transformer.evaluation.hull_mlips import HULL_MLIPS
 
 # Matbench Discovery commit 71633e8, default CPS (F1 .5, kappa .4, RMSD .1).
-TOP_TEN = (
+# Preserve original ranks; EquFlash was excluded in favor of EquFlashV2.
+STUDY_MODELS = (
     (1, "Prophet-OAME-MBD", "prophet-oame-mbd", 0.9116400),
     (2, "TECE-OAM-RRA-1.0", "tece-oam-rra-1.0", 0.9076267),
     (3, "EquFlashV2", "equflashv2-45m-oam", 0.9072133),
@@ -30,7 +31,6 @@ TOP_TEN = (
     (6, "PET-OAM-XL", "pet-oam-xl-1.0.0", 0.8984267),
     (7, "TACE-OAM-L", "tace-oam-l", 0.8894000),
     (8, "eSEN-30M-OAM", "esen-30m-oam", 0.8878867),
-    (9, "EquFlash", "equflash-29m-oam", 0.8877067),
     (10, "Nequip-OAM-XL", "nequip-oam-xl-0.1", 0.8859600),
     (None, "orb_conserv_inf", "control", None),
 )
@@ -87,7 +87,7 @@ def main() -> None:
         "gpu": torch.cuda.get_device_name(args.device) if args.device.startswith("cuda") else None,
         "models": [],
     }
-    for rank, name, key, cps in TOP_TEN:
+    for rank, name, key, cps in STUDY_MODELS:
         if args.model and name not in args.model:
             continue
         row = {"rank": rank, "name": name, "matbench_key": key, "cps": cps}

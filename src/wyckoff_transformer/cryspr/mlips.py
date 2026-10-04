@@ -69,12 +69,6 @@ MLIP_REGISTRY: dict[str, MlipSpec] = {
         checkpoint="https://figshare.com/ndownloader/files/65435007",
         pip="equflash",
     ),
-    "EquFlash": MlipSpec(
-        name="EquFlash",
-        backend="equflash",
-        checkpoint="https://figshare.com/ndownloader/files/65435004",
-        pip="equflash",
-    ),
     "TACE-OAM-RRA-Preview": MlipSpec(
         name="TACE-OAM-RRA-Preview",
         backend="tace",

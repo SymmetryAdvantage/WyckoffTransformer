@@ -1,5 +1,11 @@
 # MLIP relaxation bias study
 
+The current cohort contains eight MLIPs plus the ORB control. GRACE is skipped
+to avoid its TensorFlow dependency. On 2026-10-05, at WyFormer commit
+`35104ff`, the user excluded EquFlash in favor of EquFlashV2; V2 remains in
+the cohort. Historical EquFlash probes below are retained as setup records,
+but EquFlash is excluded from future setup, relaxation and scoring.
+
 Initial status on 2026-10-01: GPU relaxations were running; final LeMat-GenBench metrics were **not yet available**. WyFormer commit: `c360bb35e28ca9fdebc1a892ccc8d3d8b51a68c6`. The leaderboard snapshot is Matbench Discovery commit `71633e8bdfdfd41d56d64b1d777e5686d9eda3ec`; LeMat-GenBench is commit `fbf1ba4855934acb8fe87135315504899064080d`.
 
 Later on 2026-10-01 the user stopped all three GPU jobs. The iapetus image was then replaced with `iapetus/pytorch:2.14.0-cuda11.8-py312`. The WyFormer environment in that image now has `openequivariance` 0.7.0, `torch_scatter` 2.1.2, and `metatomic-torch` 0.1.18; all three import successfully. The compatibility outcomes below were measured before that image update. In particular, the EquFlash, EquiformerV3, PET, and eSEN failures need new model-level probes before they can be treated as current blockers. At 2026-10-01 19:57 Asia/Singapore, the user requested resumption and the GPU 0 ORB/Prophet/NequIP round robin, GPU 1 TECE, and GPU 2 TACE jobs restarted from their local trial ledgers on the new image. The new image needed `WANDB_DATA_DIR` set to the mounted W&B store to upload artifacts; the launcher now sets it. The user then identified CPU oversubscription, so the three jobs were capped at two distinct physical CPU cores each before resuming again.
@@ -30,7 +36,7 @@ Ranking is the Matbench Discovery site's default Composite Performance Score amo
 | 6 | PET-OAM-XL | 0.898427 | Installed UPET in an isolated overlay; its `metatomic-torch` binary rejects Torch `2.14.0.post2` (published wheels through 2.13). |
 | 7 | TACE-OAM-L | 0.889400 | Running on GPU 2; Si2 probe and completed relaxations passed. At least one larger trial hit the 2 GiB GPU memory limit and is recorded as failed for later `--retry-failed` on a larger GPU. [W&B run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/8eb9d70c). |
 | 8 | eSEN-30M-OAM | 0.887887 | FairChem 1.10.0 overlay import fails at `ModuleNotFoundError: torch_scatter`; its published environment pins Torch 2.4 and CUDA 12.1 extensions. No compatible adapter yet. |
-| 9 | EquFlash | 0.887707 | Same GGNN `torch_scatter` blocker; its source also imports cuEquivariance directly. |
+| 9 | EquFlash | 0.887707 | Excluded on 2026-10-05 in favor of EquFlashV2. Historical probe: same GGNN `torch_scatter` blocker; its source also imports cuEquivariance directly. |
 | 10 | Nequip-OAM-XL | 0.885960 | Running in alternating batches on GPU 0. The unpinned NequIP 0.19.1 adapter and published OAM-XL package run eagerly under Torch 2.14 without compilation; GPU energy, force, stress, and a complete relaxation trial passed. [W&B run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/4fb7a19a). |
 | control | `orb_conserv_inf` | — | Running in alternating batches with Prophet on GPU 0; Si2 and complete relaxation probes passed. [W&B run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/717bb362). |
 

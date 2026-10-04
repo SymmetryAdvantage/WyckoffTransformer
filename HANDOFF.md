@@ -4,7 +4,8 @@
 
 Relax the 2,698 raw PyXtal draws from W&B artifact
 `symmetry-advantage/WyckoffTransformer/protocol_ehull_adamw_wsd_5x_cfg-20260924-223159.cfg-grid-e0p05-w5:v0`
-with the frozen Matbench Discovery top ten MLIPs plus `orb_conserv_inf`, then
+with eight retained MLIPs from the frozen Matbench Discovery top ten plus
+`orb_conserv_inf`, then
 compute LeMat-GenBench ORB, MACE and UMA single-point energies and all requested
 metrics except relaxation RMSD. The raw draws must be common starting structures;
 the input artifact's selected CIFs already carry ORB bias. The Matbench ranking
@@ -21,7 +22,9 @@ User constraints: use iapetus GPUs, not iapetus CPU, for relaxations; log model
 setup and GPU failures; keep outputs recoverable through W&B. Iapetus has six
 physical CPU cores. The active workers were limited to separate pairs of two.
 GRACE-3L-OAM-L is intentionally skipped because the user does not want the
-TensorFlow dependency.
+TensorFlow dependency. On 2026-10-05, the user also excluded EquFlash in favor
+of EquFlashV2. EquFlashV2 remains planned; historical EquFlash probe records
+are retained, but no further EquFlash setup, relaxation or scoring is planned.
 
 ## Latest state — resumed 2026-10-04
 
@@ -152,7 +155,7 @@ using the pinned source commits in the study notes; they are not W&B artifacts.
   on 2026-10-04; the iapetus container sees the Hugging Face token and
   `huggingface_hub` downloaded it into the mounted cache. Its probe and
   relaxations pass. A new host needs the same authorized access.
-- EquFlashV2 and EquFlash pass `torch_sparse` import but fail in the upstream
+- EquFlashV2 passes `torch_sparse` import but fails in the upstream
   cuEquivariance convolution wrapper: the unpinned Python-only fallback is
   `SegmentedPolynomialNaive`, which lacks `buffer_num_segments`. Compatible
   cuEquivariance operations or a validated source change are required.

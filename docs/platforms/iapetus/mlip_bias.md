@@ -1,5 +1,9 @@
 # MLIP bias study on iapetus
 
+EquFlash was excluded from the study on 2026-10-05 in favor of EquFlashV2.
+Keep EquFlashV2 in future compatibility checks and larger-GPU plans; the
+historical EquFlash probe artifacts are preserved.
+
 Run from the WyFormer checkout. Check W&B runs and local processes before starting a command; **never run two processes for the same arm concurrently**. Prophet, NequIP, and ORB together exceed GPU 0's memory, so alternate them with `scripts/platforms/iapetus/run_mlip_bias_gpu0.sh`. It runs five trials per arm per invocation and checkpoints each batch to W&B. Its local working copies and W&B artifacts carry the same trial identities across invocations.
 
 ```bash
