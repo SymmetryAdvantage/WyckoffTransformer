@@ -149,9 +149,60 @@ POOL_SIZE=35400 BUDGET=10400 N=10000
   0.732, matching the 0.7465 confirmation arm within its interval.
 - Re-checked in a fresh process: 10,000 distinct genes and IDs, and every rattled
   structure passes `check_start`.
-- Cells are DiffCSP++'s conventional cells: mean 19.6 atoms, max 87. Check whether the
-  benchmark caps cell size (alex-mp-20 itself is ≤ 20 atoms).
+- **Cell size.** Cells are DiffCSP++'s conventional cells: mean 19.6 atoms, max 87.
+  - Counted from the genes, primitive cells average 11.0 atoms, and only 1.1% exceed
+    alex-mp-20's 20-atom limit (pool: 0.7%). alex-mp-20 train averages 9.6.
+  - spglib on the rattled cells cannot tell this: the 1% strain hides the centring.
 - Files: `$STORE/alex_bench/submission_cfg_e0p025_w6_cut50/{cifs/,structures.extxyz,manifest.csv,manifest.json}`.
+
+## Three submissions, one per objective
+
+The benchmark has two tracks:
+- **Track 1** scores *similarity to the dataset*. The fraction of structures passing each
+  stability test should match the dataset's, and the passing structures should be
+  distributed like the dataset's own passing structures.
+- **Track 2** scores *discovery*: as many stable structures as possible, and diverse ones.
+
+The CFG run above maximises MSUN. Guidance narrows the sampler, though: 9% of CFG genes
+repeat within a 31k pool, against about 1% unguided. So two more submissions were made
+with the same pipeline and the same ~50% fire-control cut.
+
+| | CFG, target 0.025, w 6 | **Track 2:** e_hull-conditioned, target 0.025 | **Track 1:** unconditional |
+|---|---|---|---|
+| run | `cfg_e0p025_w6_cut50` | `cond_e0p025_cut50` | `uncond_t1_cut50` |
+| pool → unique novel → kept | 35,400 → 20,635 → 10,400 (50.4%) | 31,200 → 20,822 → 10,400 (49.9%) | 29,900 → 20,812 → 10,400 (50.0%) |
+| **expected MSUN**, submitted 10k | **0.7315** [0.723, 0.740] | **0.6551** [0.646, 0.664] | **0.5957** [0.586, 0.605] |
+| expected SUN | 0.0389 | 0.0273 | 0.0234 |
+| valid / valid novel | 9644 / 9054 | 9526 / 8959 | 9469 / 8996 |
+| MSUN: distinct reduced formulas | 6995 | 6488 | 5921 |
+| MSUN: distinct chemical systems | 4490 | **5336** | 5312 |
+| MSUN: distinct chemical systems per MSUN structure | 0.61 | **0.81** | **0.89** |
+| MSUN: space groups | 104 | 107 | 106 |
+| space-group JS divergence vs alex-mp-20 train (all / MSUN) | 0.029 / 0.052 | 0.026 / 0.039 | **0.024 / 0.036** |
+| elements per system in MSUN, 3 / 4 / 5 (train: 0.48 / 0.45 / 0.002) | 0.35 / 0.52 / 0.056 | 0.39 / 0.52 / 0.020 | 0.42 / 0.50 / 0.014 |
+
+**Reading:**
+- **CFG gives the most metastable structures, but fewer distinct chemical systems:** 4490,
+  against 5336 for the unguided conditioned model, which has 10% fewer MSUN.
+- CFG also over-produces quaternaries and quinaries relative to the dataset.
+- **For a discovery score that weighs diversity, the conditioned model is the better
+  trade.** That is the user's choice for track 2.
+- **The unconditional model is the closest to the dataset** on every distributional
+  measure here, which is what track 1 rewards.
+- These diversity and similarity numbers are our own proxies. The benchmark's own
+  measures are not specified.
+
+Both track runs (2026-10-04, `scripts/platforms/zeus/make_alex_bench_submission.sh` with
+`POOL_SIZE=31200` and `29900`) ran side by side on GPU 1.
+- **Wall times:** about 8.7 h of DiffCSP++ sampling each while sharing the card (about
+  4.3 h alone), 1.7–1.9 h of relaxation while sharing CPU and card, and 1.1 h of scoring.
+- **Gene-level work:** sampling, screening and ranking took 28–40 s, 2.5–2.7 s and
+  22–23 s, as in the cost table below.
+- **Track 2 lost one structure after the rattle.** One start (gene 9676) cleared the
+  0.5 Å floor before the rattle (0.566 Å) and fell below it after (0.493 Å). The
+  assembler now judges the rattled structure too, so that gene was dropped and the next
+  one taken. All three submissions pass `check_start` in a fresh process.
+- Files: `$STORE/alex_bench/submission_{cond_e0p025_cut50,uncond_t1_cut50}/`.
 
 ## Computational cost: genes are essentially free
 
@@ -163,7 +214,11 @@ expensive.
 
 Measured on zeus (one NVIDIA RTX 6000 Ada, Intel Xeon w7-3455), production run of the
 CFG submission (`production_cfg_e0p025_w6_cut50`, card not shared except for its first
-15 min):
+15 min).
+
+The card runs under a deliberate 250 W power cap (about 1 GHz SM clock under sustained
+load). The GPU-bound DiffCSP++ figures are therefore slower than an uncapped card would
+give, which only strengthens the comparison below.
 
 | stage | input → output | wall time | per gene / structure |
 |---|---|---|---|

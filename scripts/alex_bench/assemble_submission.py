@@ -70,7 +70,7 @@ def main() -> None:
     frames = {int(a.info["gene"]): a
               for a in read(str(args.arm_dir / "diffcsp" / "starts.extxyz"), index=":")}
 
-    chosen, skipped = [], {}
+    chosen, skipped, rattled = [], {}, {}
     for index in _order(args.arm_dir, len(genes)):
         if len(chosen) == args.n:
             break
@@ -84,6 +84,13 @@ def main() -> None:
         if check.error:
             skipped[index] = check.error
             continue
+        # Judged again after the rattle: a start that just clears the distance floor
+        # can be pushed below it, and what is checked must be what is submitted.
+        rattled[index] = rattle_start(frames[index], index, 0)
+        check = check_start(rattled[index], genes[index])
+        if check.error:
+            skipped[index] = f"after the rattle: {check.error}"
+            continue
         chosen.append(index)
     if len(chosen) < args.n:
         raise SystemExit(f"Only {len(chosen)} usable genes for a submission of {args.n}; "
@@ -93,7 +100,7 @@ def main() -> None:
     cif_dir.mkdir(parents=True, exist_ok=True)
     submitted, records = [], []
     for rank, index in enumerate(chosen):
-        atoms = rattle_start(frames[index], index, 0)
+        atoms = rattled[index]
         atoms.info = {"submission_id": rank, "gene": index}
         name = f"{rank:05d}"
         CifWriter(AseAtomsAdaptor.get_structure(atoms)).write_file(cif_dir / f"{name}.cif")
