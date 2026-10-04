@@ -146,7 +146,14 @@ STAGES = ("screen", "generate", "relax", "score")
 #: cheap potential and offers everything it found to the same selection.
 #: Leaving all three out of ``all`` is what keeps ``--stage all`` the published
 #: protocol.
-OPTIONAL_STAGES = ("template", "prescreen", "basinhop")
+OPTIONAL_STAGES = ("template", "prescreen", "basinhop", "starts")
+
+#: Diagnostics of the ``starts`` stage: one row per externally generated start.
+STARTS_FILE = "starts.csv"
+STARTS_COLUMNS = (
+    "index", "trial", "status", "error", "n_atoms", "min_distance",
+    "spacegroup_gene", "spacegroup_start", "volume_per_atom", "rattled",
+)
 
 #: Per-walk log and every minimum a walk visited.
 BASINHOP_TRIALS_FILE = "basinhop.csv"
@@ -169,6 +176,14 @@ BASINHOP_SELECTION_FILE = "basinhop_selection.csv"
 #: budget, and the stride above any plausible hop count.
 BASINHOP_TRIAL_BASE = 100_000
 BASINHOP_TRIAL_STRIDE = 1_000
+
+#: How ``relax`` relaxes a start.  ``cryspr`` is the published protocol: fix-cell
+#: warm-up, symmetric cell + positions, symmetry release, rattle.  ``single`` is
+#: one unconstrained cell + positions relaxation of the start as given -- what a
+#: benchmark that relaxes submitted structures with an MLIP does to them, and so
+#: the right schedule for a start that is already a structure (``starts``), not a
+#: random PyXtal cell.
+RELAX_SCHEDULES = ("cryspr", "single")
 
 #: Where ``relax`` may take its starting structures from.
 RELAX_SOURCES = {
@@ -1571,6 +1586,106 @@ def stage_template(args) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Optional stage: starts
+# --------------------------------------------------------------------------- #
+def stage_starts(args) -> None:
+    """Starts made elsewhere -- DiffCSP++ -- filed as the draws ``relax`` reads.
+
+    In place of ``generate``: each structure in ``--starts`` (an extxyz tagged
+    ``gene`` and ``trial``, from ``scripts/alex_bench/export_predictions.py``) is
+    checked against its gene by :func:`wyckoff_transformer.diffcsp_bridge.check_start`,
+    rattled unless ``--no-starts-rattle``, and written to ``pyxtal.extxyz``; every
+    attempt listed in ``--starts-log``, failures included, gets a ``pyxtal.csv``
+    row. A gene whose start failed therefore has no structure, which the funnel
+    counts as invalid -- the external generator's failure, charged to it.
+    Diagnostics, including the spglib space group before the rattle, go to
+    ``starts.csv``.
+    """
+    from ase.io import read as ase_read
+    from ase.io import write as ase_write
+
+    from wyckoff_transformer.diffcsp_bridge import check_start, rattle_start
+
+    if args.starts is None or args.starts_log is None:
+        raise ValueError("--stage starts needs --starts and --starts-log")
+    genes = load_genes(args.input)
+    screen = read_screen(args.output_dir / SCREEN_FILE)
+    todo = set(_todo_representatives(screen, args.limit))
+
+    attempts = pd.read_csv(args.starts_log, keep_default_na=False)
+    attempts = attempts[attempts["index"].isin(todo)]
+    missing = todo - set(attempts["index"])
+    if missing:
+        raise ValueError(
+            f"{len(missing)} unique genes have no row in {args.starts_log} "
+            f"(e.g. {sorted(missing)[:5]}); the starts were made for another gene file")
+    frames = {}
+    if Path(args.starts).stat().st_size:
+        for atoms in ase_read(str(args.starts), index=":", format="extxyz"):
+            frames[(int(atoms.info["gene"]), int(atoms.info["trial"]))] = atoms
+
+    _claim_draws_log(args, genes, resume=False)
+    log = RowLog(args.output_dir / PYXTAL_TRIALS_FILE, PYXTAL_COLUMNS, resume=False)
+    diagnostics = RowLog(args.output_dir / STARTS_FILE, STARTS_COLUMNS, resume=False)
+    structures_path = args.output_dir / PYXTAL_FILE
+    if structures_path.exists():
+        structures_path.unlink()
+    trials_per_gene = attempts.groupby("index").size()
+
+    n_ok = 0
+    try:
+        for index, trial, status, error in attempts[
+                ["index", "trial", "status", "error"]].itertuples(index=False):
+            index, trial = int(index), int(trial)
+            gene = genes[index]
+            row = {"index": index, "trial": trial, "status": "failed",
+                   "dof_positional": positional_dof(gene),
+                   "n_trials": int(trials_per_gene[index]), "seconds": 0.0,
+                   "error": error or None}
+            diag = {"index": index, "trial": trial, "status": "failed",
+                    "error": error or None, "spacegroup_gene": gene.get("group"),
+                    "rattled": False}
+            atoms = frames.get((index, trial))
+            if status == "ok" and atoms is None:
+                row["error"] = diag["error"] = "listed as ok but absent from --starts"
+            elif atoms is not None:
+                check = check_start(atoms, gene)
+                diag.update(n_atoms=check.n_atoms, min_distance=round(check.min_distance, 4),
+                            spacegroup_start=check.spacegroup,
+                            volume_per_atom=round(check.volume_per_atom, 4))
+                if check.error is not None:
+                    row["error"] = diag["error"] = check.error
+                else:
+                    if args.starts_rattle:
+                        atoms = rattle_start(atoms, index, trial)
+                        diag["rattled"] = True
+                    atoms.info = {"gene": index, "trial": trial}
+                    _trial_dir(args.output_dir, index, trial).mkdir(parents=True, exist_ok=True)
+                    ase_write(str(structures_path), atoms, format="extxyz", append=True)
+                    row.update(status="ok", error=None, n_atoms=len(atoms),
+                               formula=atoms.get_chemical_formula(mode="metal"))
+                    diag.update(status="ok", error=None)
+                    n_ok += 1
+            log.write(row)
+            diagnostics.write(diag)
+    finally:
+        log.close()
+        diagnostics.close()
+
+    frame = log.frame()
+    _update_manifest(args.output_dir / MANIFEST_FILE, {
+        "input": str(args.input),
+        "starts": str(args.starts),
+        "starts_log": str(args.starts_log),
+        "starts_rattle": bool(args.starts_rattle),
+        "trials_total": int(len(frame)),
+        "pyxtal_ok": int((frame["status"] == "ok").sum()),
+        "pyxtal_failed": int((frame["status"] != "ok").sum()),
+    })
+    print(f"{n_ok}/{len(frame)} starts passed and were filed -> {structures_path}")
+
+
+# --------------------------------------------------------------------------- #
 # Optional stage: prescreen
 # --------------------------------------------------------------------------- #
 def _prescreen_one(
@@ -2236,6 +2351,8 @@ def _relax_one(
     timeout: Optional[float],
     prerelax_fmax: float = 0.1,
     prerelax_max_expansion: Optional[float] = None,
+    schedule: str = "cryspr",
+    steps_limit: int = 500,
 ) -> dict:
     """Relax one generated draw in a pool worker.  Returns a row for the CSV.
 
@@ -2286,6 +2403,11 @@ def _relax_one(
                         prerelax_calculator=_WORKER_PRERELAX_CALCULATOR,
                         prerelax_fmax=prerelax_fmax,
                         prerelax_max_expansion=prerelax_max_expansion,
+                        steps_limit=steps_limit,
+                        # The single schedule: no warm-up and no symmetric stage,
+                        # so the fixed-symmetry readout is the start, unrelaxed.
+                        **({"fix_symmetry": False, "warmup": False}
+                           if schedule == "single" else {}),
                     )
             finally:
                 if _WORKER_DEVICE and _WORKER_DEVICE.startswith("cuda"):
@@ -2394,6 +2516,20 @@ def stage_relax(args) -> None:
         produced_by="generate" if source == "pyxtal" else source,
     )
     prerelax_mlip = getattr(args, "prerelax_mlip", None)
+    schedule = getattr(args, "relax_schedule", "cryspr")
+    if schedule not in RELAX_SCHEDULES:
+        raise ValueError(f"--relax-schedule must be one of {RELAX_SCHEDULES}")
+    if schedule == "single" and prerelax_mlip:
+        raise ValueError(
+            "--relax-schedule single relaxes the start once, as given; a "
+            "--prerelax-mlip would make it two relaxations.")
+    if schedule == "single" and args.rattle:
+        raise ValueError(
+            "--relax-schedule single runs no rattle stage; pass --no-rattle (a "
+            "start that should be rattled is rattled by --stage starts).")
+    if schedule == "single" and not args.release_symmetry:
+        raise ValueError("--relax-schedule single *is* the symmetry-free stage; "
+                         "it cannot run with --no-release-symmetry.")
     if source == "prescreen" and prerelax_mlip:
         # Not refused: pre-relaxing again on a *different* potential is a
         # coherent thing to ask for.  But the wide-then-narrow variant's draws
@@ -2455,6 +2591,8 @@ def stage_relax(args) -> None:
                     args.relax_timeout,
                     getattr(args, "prerelax_fmax", 0.1),
                     getattr(args, "prerelax_max_expansion", None),
+                    schedule,
+                    getattr(args, "relax_steps", 500),
                 ))
                 for index, trial, atoms in todo
             ),
@@ -2492,6 +2630,8 @@ def stage_relax(args) -> None:
         ),
         "release_symmetry": args.release_symmetry,
         "rattle": args.rattle,
+        "relax_schedule": schedule,
+        "relax_steps": getattr(args, "relax_steps", 500),
         "fmax": args.fmax,
         "relax_timeout": args.relax_timeout,
         "workers": len(slots),
@@ -2793,6 +2933,9 @@ def stage_score(args) -> None:
         except Exception as exc:
             logger.warning("Gene %d: no fingerprint (%s)", index, exc)
 
+    validity_timeout = getattr(args, "validity_timeout", None)
+    validity_timeouts = []
+
     def read_variant(target: pd.DataFrame, directory: Path) -> dict:
         """Structures, validity, relaxed fingerprints and hull energies for one readout."""
         out = {"validity": {}, "structures": {}, "relaxed": {}, "hull": {}}
@@ -2807,7 +2950,18 @@ def stage_score(args) -> None:
             except Exception as exc:
                 logger.warning("Gene %d: unreadable CIF at %s (%s)", index, cif_path, exc)
                 continue
-            out["validity"][index] = is_valid(structure)
+            # Bounded: the charge-balance fallbacks enumerate oxidation states
+            # combinatorially and have stalled a whole score stage for hours on
+            # one large many-element cell. A structure that cannot be judged in
+            # time is counted invalid, which can only lower the rates.
+            try:
+                with time_limit(validity_timeout):
+                    out["validity"][index] = is_valid(structure)
+            except Timeout:
+                out["validity"][index] = False
+                validity_timeouts.append(int(index))
+                logger.warning("Gene %d: validity check exceeded %s s; counted invalid",
+                               index, validity_timeout)
             out["structures"][index] = structure
             # The relaxed structure's own fingerprint, which relaxation -- the
             # rattle stage especially -- can move away from the sampled gene's.
@@ -2897,6 +3051,7 @@ def stage_score(args) -> None:
         cache=args.reference_cache,
         splits=splits,
         lemat_cif_csv=args.lemat_cif_csv,
+        id_column=getattr(args, "reference_id_column", None),
     )
     phase.done("build the novelty reference")
     # Which reference a number was judged against is not recoverable from the
@@ -2905,6 +3060,9 @@ def stage_score(args) -> None:
         "reference_cache": str(args.reference_cache),
         "reference_splits": ",".join(splits),
         "lemat_cif_csv": str(args.lemat_cif_csv),
+        "reference_id_column": getattr(args, "reference_id_column", None),
+        "validity_timeout": validity_timeout,
+        "validity_timeouts": sorted(set(validity_timeouts)),
         "novelty_reference": {
             **reference_identity(args.reference_cache, splits),
             "colliding_fingerprints": reference["fingerprint"].nunique()
@@ -3096,6 +3254,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    starts = parser.add_argument_group("external starts (stage: starts)")
+    starts.add_argument(
+        "--starts", type=Path, default=None,
+        help="extxyz of generated structures, each tagged gene= and trial=.",
+    )
+    starts.add_argument(
+        "--starts-log", type=Path, default=None,
+        help="CSV of every attempted (index, trial) with its status and error.",
+    )
+    starts.add_argument(
+        "--starts-rattle", action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "Rattle each start as CrySPR's rattle stage does, seeded per (gene, "
+            "trial). Off for starts that were rattled before they were written."
+        ),
+    )
+
     template = parser.add_argument_group("template starts (stage: template)")
     template.add_argument(
         "--template-index", type=Path, default=None,
@@ -3130,6 +3305,19 @@ def build_parser() -> argparse.ArgumentParser:
     relax = parser.add_argument_group("relaxation (stage: relax)")
     relax.add_argument(
         "--fmax", type=float, default=0.05, help="Force convergence in eV/A.",
+    )
+    relax.add_argument(
+        "--relax-schedule", type=str, default="cryspr", choices=RELAX_SCHEDULES,
+        help=(
+            "'cryspr' (default) is the published four-stage schedule. 'single' is "
+            "one unconstrained cell + positions relaxation of each start as given, "
+            "with --no-rattle: what a benchmark relaxing submitted structures does. "
+            "Its fixed-symmetry readout is then the unrelaxed start."
+        ),
+    )
+    relax.add_argument(
+        "--relax-steps", type=int, default=500,
+        help="Optimiser steps allowed per relaxation stage.",
     )
     relax.add_argument(
         "--relax-from", type=str, default="pyxtal", choices=sorted(RELAX_SOURCES),
@@ -3361,6 +3549,21 @@ def build_parser() -> argparse.ArgumentParser:
             "holds, so it must have been built from --reference-cache and "
             "--reference-splits. Defaults to gene_fingerprints.pkl.gz beside "
             "--reference-cache (with the splits in the name when not all of them)."
+        ),
+    )
+    reference.add_argument(
+        "--validity-timeout", type=float, default=60.0,
+        help=(
+            "Seconds the validity check of one structure may take; one that "
+            "takes longer is counted invalid. 0 disables the limit."
+        ),
+    )
+    reference.add_argument(
+        "--reference-id-column", type=str, default=None,
+        help=(
+            "Id column of the reference cache and CIF export, for a dataset whose "
+            "cache index is not an id (alex-mp-20: material_id). Default: the "
+            "cache index and the export's immutable_id, as for LeMat-Bulk."
         ),
     )
     reference.add_argument(

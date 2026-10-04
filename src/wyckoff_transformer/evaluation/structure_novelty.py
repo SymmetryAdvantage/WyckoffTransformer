@@ -49,6 +49,7 @@ def collect_reference_ids(
     fingerprints: Iterable[tuple],
     cache: Optional[Path] = None,
     splits: Optional[Sequence[str]] = None,
+    id_column: Optional[str] = None,
 ) -> dict[tuple, list[str]]:
     """Find the LeMat-Bulk entries whose fingerprint is one of *fingerprints*.
 
@@ -62,6 +63,10 @@ def collect_reference_ids(
         cache: A dataset cache directory in the Wyckoff representation, indexed
             by ``immutable_id``.  Defaults to the protocol's.
         splits: Which splits count as known.  Defaults to all of them.
+        id_column: Column holding the entry id, for a cache whose index is not
+            one -- alex-mp-20's is a row number that restarts in every split, so
+            its ids are ``material_id``.  ``None`` uses the index, as LeMat-Bulk's
+            caches are keyed.
 
     Returns:
         Fingerprint -> the ``immutable_id``s carrying it.  Fingerprints with no
@@ -87,9 +92,11 @@ def collect_reference_ids(
         )
 
     hits: dict[tuple, list[str]] = {}
-    for split, frame in iter_splits(cache, splits, columns=_FINGERPRINT_COLUMNS):
+    read_columns = list(_FINGERPRINT_COLUMNS) + ([id_column] if id_column else [])
+    for split, frame in iter_splits(cache, splits, columns=read_columns):
         columns = [frame[name].values for name in _FINGERPRINT_COLUMNS]
-        for immutable_id, values in zip(frame.index.values, zip(*columns)):
+        ids = frame[id_column].values if id_column else frame.index.values
+        for immutable_id, values in zip(ids, zip(*columns)):
             fingerprint = record_to_augmented_fingerprint(
                 dict(zip(_FINGERPRINT_COLUMNS, values))
             )
@@ -169,6 +176,7 @@ def load_reference_structures(
     chunksize: int = DEFAULT_CHUNKSIZE,
     cache: Optional[Path] = None,
     splits: Optional[Sequence[str]] = None,
+    id_column: str = "immutable_id",
 ) -> dict[str, "object"]:
     """Read the named LeMat-Bulk structures out of the CIF export or dataset splits.
 
@@ -179,6 +187,7 @@ def load_reference_structures(
         chunksize: Rows per chunk; the file is ~1 GB gzipped.
         cache: Reference cache path used to infer dataset when *lemat_cif_csv* is default.
         splits: Splits to search when loading from dataset directory.
+        id_column: The export's id column; ``material_id`` for alex-mp-20.
 
     Returns:
         ``immutable_id`` -> ``pymatgen`` ``Structure``.  Ids the export does not
@@ -204,9 +213,9 @@ def load_reference_structures(
     structures: dict[str, object] = {}
     for source in sources:
         for chunk in pd.read_csv(
-            source, chunksize=chunksize, usecols=["immutable_id", "cif"]
+            source, chunksize=chunksize, usecols=[id_column, "cif"]
         ):
-            for immutable_id, cif in zip(chunk["immutable_id"], chunk["cif"]):
+            for immutable_id, cif in zip(chunk[id_column].astype(str), chunk["cif"]):
                 if immutable_id not in wanted or immutable_id in structures:
                     continue
                 try:
@@ -232,6 +241,7 @@ def build_novelty_reference(
     splits: Optional[Sequence[str]] = None,
     lemat_cif_csv: Optional[Path] = None,
     chunksize: int = DEFAULT_CHUNKSIZE,
+    id_column: Optional[str] = None,
 ) -> pd.DataFrame:
     """Assemble the reference frame :class:`NoveltyFilter` expects.
 
@@ -246,6 +256,8 @@ def build_novelty_reference(
         splits: Splits to treat as known.
         lemat_cif_csv: CIF export; see :func:`load_reference_structures`.
         chunksize: Rows per chunk while scanning it.
+        id_column: Id column of both the cache and the export; ``None`` keys the
+            cache by its index and the export by ``immutable_id``.
 
     Returns:
         A frame indexed by ``immutable_id`` with ``fingerprint`` and
@@ -260,7 +272,7 @@ def build_novelty_reference(
             reference, not a property of the model, so it is refused rather than
             counted.
     """
-    hits = collect_reference_ids(fingerprints, cache=cache, splits=splits)
+    hits = collect_reference_ids(fingerprints, cache=cache, splits=splits, id_column=id_column)
     if not hits:
         logger.info("No generated fingerprint occurs in LeMat-Bulk; nothing to match.")
         return pd.DataFrame(columns=["fingerprint", "structure"])
@@ -271,7 +283,8 @@ def build_novelty_reference(
         len(hits), len(ids),
     )
     structures = load_reference_structures(
-        ids, lemat_cif_csv=lemat_cif_csv, chunksize=chunksize, cache=cache, splits=splits
+        ids, lemat_cif_csv=lemat_cif_csv, chunksize=chunksize, cache=cache, splits=splits,
+        id_column=id_column or "immutable_id",
     )
     unresolved = sorted(set(ids) - set(structures))
     if unresolved:
