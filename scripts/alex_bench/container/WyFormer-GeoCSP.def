@@ -1,0 +1,87 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
+
+# WyFormer-GeoCSP-{CFG,CON,UC}-v2.3: sample alex-mp-20 benchmark submissions the way they
+# were made. Built by scripts/alex_bench/container/build.sh, which stages the inputs below;
+# see docs/archive/okhotin_submission.md.
+
+%labels
+    org.opencontainers.image.title WyFormer-GeoCSP v2.3
+    org.opencontainers.image.description WyFormer gene sampling, fire-control gene selection and GeoCSP structure generation, as used for the WyFormer-GeoCSP-{CFG,CON,UC}-v2.3 alex-mp-20 benchmark submissions
+    org.opencontainers.image.source https://github.com/SymmetryAdvantage/WyckoffTransformer
+    org.opencontainers.image.revision {{ SOURCE_REVISION }}
+    org.opencontainers.image.version {{ IMAGE_VERSION }}
+    org.opencontainers.image.base.name pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
+    geocsp.revision {{ GEOCSP_REVISION }}
+
+%files
+    ./uv /usr/local/bin/uv
+    ./wyformer /opt/wyformer
+    ./geocsp /opt/geocsp
+    ./okhotin /opt/okhotin
+    ./wyformer-requirements.txt /opt/wyformer/requirements.lock.txt
+    ./geocsp-requirements.txt /opt/geocsp/requirements.lock.txt
+
+%post
+    set -eu
+    export UV_CACHE_DIR=/tmp/uv-cache
+    # Every dependency at the version uv.lock pinned for the study, except torch, which
+    # the base image provides (2.14.0; the study ran 2.14.0 built for CUDA 13.3), and
+    # spglib, which the study ran from a local build of the same version.
+    for project in wyformer geocsp; do
+        /usr/local/bin/uv venv --system-site-packages --python /opt/conda/bin/python \
+            /opt/$project/.venv
+        /usr/local/bin/uv pip install --python /opt/$project/.venv/bin/python \
+            -r /opt/$project/requirements.lock.txt "spglib==2.7.0"
+        /usr/local/bin/uv pip install --python /opt/$project/.venv/bin/python \
+            --no-deps /opt/$project
+    done
+    rm -rf /tmp/uv-cache
+    mkdir -p /opt/okhotin/cache /opt/okhotin/data
+    chmod -R a+rX /opt/wyformer /opt/geocsp /opt/okhotin
+
+%environment
+    export WYFORMER_RUNS=/opt/okhotin/runs
+    export WYFORMER_CACHE=/opt/okhotin/cache
+    export WYFORMER_DATA=/opt/okhotin/data
+    export WYFORMER_REVISION={{ SOURCE_REVISION }}
+    export WANDB_MODE=disabled
+    export PATH="/opt/wyformer/.venv/bin:${PATH}"
+
+%runscript
+    case "${1:-}" in
+        CFG|CON|UC)
+            exec /opt/wyformer/scripts/alex_bench/sample_submission.sh "$@" ;;
+        "")
+            sed -n '2,/^set -euo/p' /opt/wyformer/scripts/alex_bench/sample_submission.sh | sed '$d'
+            exit 0 ;;
+        *)
+            exec "$@" ;;
+    esac
+
+%test
+    set -eu
+    /opt/wyformer/.venv/bin/python - <<'PY'
+import pathlib
+import torch
+import wyckoff_transformer.roe.cli, wyckoff_transformer.cli.generate, wyckoff_transformer.diffcsp_bridge
+torch_path = pathlib.Path(torch.__file__).resolve()
+assert torch.__version__.startswith("2.14.0"), torch.__version__
+assert not torch_path.is_relative_to("/opt/wyformer/.venv"), torch_path
+print("wyformer ok, torch", torch.__version__, "cuda", torch.version.cuda)
+PY
+    /opt/geocsp/.venv/bin/python - <<'PY'
+import torch, torch_geometric, pyxtal
+from diffcsp.models.geo_v2_diffusion import GeoV2Diffusion
+from diffcsp.models.geo_v2_cspnet import GeoV2CSPNet
+raw = torch.load("/opt/okhotin/geocsp/geov2_alex_mp20_150e.pt", map_location="cpu", weights_only=False)
+model = GeoV2Diffusion(device="cpu", decoder=GeoV2CSPNet(hidden_dim=512, num_layers=6))
+names = {n for n, p in model.decoder.named_parameters() if p.requires_grad}
+assert names == set(raw["ema_state_dict"]), "GeoCSP EMA weights do not cover the decoder"
+print("geocsp ok, epoch", raw["epoch"])
+PY
+    for run in uncond_adamw_wsd_5x-20260929-143845 ehull_adamw_wsd_5x-20260929-143848 \
+               ehull_adamw_wsd_5x_cfg-20260929-150414 gene_min_ehull_adamw_wsd-20260929-154926; do
+        test -s /opt/okhotin/runs/$run/best_model_params.pt
+    done
+    test -s "/opt/okhotin/refs/alex_mp_20_labelled_train+val_keys.npz"

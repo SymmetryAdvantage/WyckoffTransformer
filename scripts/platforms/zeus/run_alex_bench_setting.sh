@@ -107,7 +107,7 @@ evaluate_arm() {  # $1 = arm dir
         > "$dir/screen.log" 2>&1
     if [[ ! -f "$D/starts.csv" ]]; then
         log "$(basename "$dir"): DiffCSP++"
-        "$PY" scripts/alex_bench/write_benchset.py "$genes" "$P" "$D/benchset.pkl"
+        "$PY" scripts/alex_bench/write_benchset.py "$genes" "$D/benchset.pkl" --protocol-dir "$P"
         ( cd "$DIFFCSP" \
           && LOKY_MAX_CPU_COUNT="$CPUS" "$DPY" bench/gen_init.py --benchset "$D/benchset.pkl" \
                 --trials 1 --out "$D/inits.pkl" \

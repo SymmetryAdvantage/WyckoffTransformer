@@ -14,6 +14,7 @@ expected score, in ``manifest.json``.
 """
 import argparse
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -65,8 +66,11 @@ def main() -> None:
 
     genes = load_genes(args.arm_dir / "engaged_genes.json.gz")
     protocol = args.arm_dir / "protocol"
-    screen = read_screen(protocol / "screen.json")
-    representatives = set(screen.counts)
+    # Without a protocol run (sampling only, as in the container) every engaged gene is
+    # its own representative: fire-control and fire-discipline screen for uniqueness.
+    screen_path = protocol / "screen.json"
+    representatives = (set(read_screen(screen_path).counts) if screen_path.is_file()
+                       else set(range(len(genes))))
     frames = {int(a.info["gene"]): a
               for a in read(str(args.arm_dir / "diffcsp" / "starts.extxyz"), index=":")}
 
@@ -118,17 +122,22 @@ def main() -> None:
             left_on="gene_index", right_on="index", how="left").drop(columns="index")
     manifest.to_csv(args.out_dir / "manifest.csv", index=False)
 
-    structures = pd.read_csv(protocol / "structures.csv").set_index("index")
+    structures_path = protocol / "structures.csv"
+    pool_path = args.arm_dir.parent / "pool" / "pool.json"
     record = {
         "arm_dir": str(args.arm_dir),
         "arm": json.loads((args.arm_dir / "arm.json").read_text()),
-        "pool": json.loads((args.arm_dir.parent / "pool" / "pool.json").read_text()),
+        "pool": json.loads(pool_path.read_text()) if pool_path.is_file() else None,
         "n_submitted": len(chosen),
         "skipped": pd.Series(skipped).value_counts().to_dict() if skipped else {},
         "rattle": "cryspr.relaxer.perturb, seed _trial_seed(gene_index, 0)",
-        "expected_orb_score": _expected(structures, chosen, len(chosen)),
-        "wyformer_commit": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
-                                          text=True).stdout.strip(),
+        # Only when the arm was evaluated: sampling alone has no ORB numbers to report.
+        "expected_orb_score": (
+            _expected(pd.read_csv(structures_path).set_index("index"), chosen, len(chosen))
+            if structures_path.is_file() else None),
+        "wyformer_commit": os.environ.get("WYFORMER_REVISION") or subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+            cwd=Path(__file__).resolve().parent).stdout.strip() or None,
     }
     (args.out_dir / "manifest.json").write_text(json.dumps(record, indent=1) + "\n")
     print(json.dumps({k: record[k] for k in ("n_submitted", "skipped", "expected_orb_score")},
