@@ -35,7 +35,7 @@
 # commit capture) fails inside the container.
 set -euo pipefail
 
-WYFORMER_IMAGE="${WYFORMER_IMAGE:-iapetus/pytorch:2.14.0-cuda11.8-py312}"
+WYFORMER_IMAGE="${WYFORMER_IMAGE:-ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3}"
 WYFORMER_REPO="${WYFORMER_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 WYFORMER_VENV="${WYFORMER_VENV:-$WYFORMER_REPO/.venv}"
 

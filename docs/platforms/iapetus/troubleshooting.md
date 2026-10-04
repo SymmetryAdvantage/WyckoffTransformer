@@ -4,6 +4,7 @@
 | --- | --- |
 | `ModuleNotFoundError: No module named 'torch'` from `.venv/bin/python` | The venv was created without `--system-site-packages`, or it was created on the host. Rebuild it with `scripts/platforms/iapetus/build_venv.sh`; see [environment.md](environment.md). |
 | `torch.__file__` points into `.venv` | uv installed a second torch instead of inheriting the image's custom build. Rebuild with `scripts/platforms/iapetus/build_venv.sh`; do not run `uv sync` or bare `uv pip install` in the venv. |
+| cuDNN is unavailable or `libcudnn.so.8` cannot be loaded | Use `ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3`, the launcher default, which includes cuDNN 8.7. Check for an older `WYFORMER_IMAGE` override and that `torch.__file__` points into `/opt/venv312`. Run the health check below. |
 | `torch.cuda.is_available()` is false | Ensure the command uses Docker's `--runtime=nvidia` and `NVIDIA_VISIBLE_DEVICES=all`, then check `nvidia-smi` inside the same container. An empty `CUDA_VISIBLE_DEVICES` deliberately hides GPUs. |
 | `CUDA driver version is insufficient` or `no kernel image is available` | A stock PyPI CUDA torch has replaced the image build. Rebuild the venv; do not install torch from PyPI. |
 | `CUDA initialization: CUDA unknown error` / `RuntimeError: CUDA unknown error` | After a host reboot, `/dev/nvidia-uvm` is not created until `nvidia-modprobe` runs. Without it, the NVIDIA container runtime cannot mount UVM into the container, breaking CUDA initialization. `scripts/platforms/iapetus/run.sh` runs `nvidia-modprobe -c 0 -u` automatically when `/dev/nvidia-uvm` is missing, or run `nvidia-modprobe -c 0 -u` manually on the host. |
@@ -26,17 +27,19 @@ Run this through the container after creating the venv:
 ```bash
 docker run --rm --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all --ipc=host \
     -v "$PWD:/workspace" -w /workspace \
-    iapetus/pytorch:2.14.0-cuda11.8-py312 \
+    ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3 \
     .venv/bin/python -c "
 import torch, wyckoff_transformer
 print(torch.__version__, torch.version.cuda)
 print(torch.__file__)
+print('cuDNN:', torch.backends.cudnn.is_available(), torch.backends.cudnn.version())
 print(torch.cuda.is_available(), torch.cuda.device_count())
 "
 ```
 
 Python must be 3.12.x and `torch.__file__` must be under
 `/opt/venv312/lib/python3.12/site-packages`, not `.venv`.
+cuDNN must be available and report version `8700` (8.7.0).
 
 ## ORB CPU-neighbour/GPU-forward check
 
@@ -48,7 +51,7 @@ uses the patched calculator already used by the CRySPR reconstruction study.
 docker run --rm --entrypoint /bin/bash --runtime=nvidia \
     -e NVIDIA_VISIBLE_DEVICES=0 --ipc=host \
     -v "$PWD:/workspace" -w /workspace \
-    iapetus/pytorch:2.14.0-cuda11.8-py312 -lc '
+    ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3 -lc '
 .venv/bin/python -c "
 from ase.build import bulk
 from scripts.run_cryspr_reconstruction_study import build_patched_orb_calculator

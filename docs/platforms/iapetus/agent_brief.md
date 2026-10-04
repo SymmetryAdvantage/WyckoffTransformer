@@ -3,8 +3,9 @@
 Linked as `CLAUDE.local.md` by `scripts/platforms/iapetus/build_venv.sh`. A
 brief; the full pages are in `docs/platforms/iapetus/`.
 
-- **Environment:** the Docker image `iapetus/pytorch:2.14.0-cuda11.8-py312`
-  (custom torch for `sm_35`/`sm_50`) with the project `.venv` layered over it.
+- **Environment:** the Docker image `ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3`
+  (custom torch 2.14.0.post3 for `sm_35`/`sm_50`, cuDNN 8.7) with the project
+  `.venv` layered over it.
   The venv is valid **only inside the image**; never create or activate it on
   the host, whose Python is 3.14.
 - **Build** a checkout's venv -- the main one or a worktree, one each -- with

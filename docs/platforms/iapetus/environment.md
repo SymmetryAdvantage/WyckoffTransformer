@@ -1,10 +1,18 @@
 # The iapetus environment
 
 WyFormer runs inside
-`iapetus/pytorch:2.14.0-cuda11.8-py312`, the custom image from
+`ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3`, the custom image from
 `/mnt/hdd/kna/pytorch-research/`. It contains Python 3.12, custom PyTorch
-2.14.0.post2, CUDA 11.8, and kernels for both the K20c (`sm_35`) and GTX 750 Ti
-(`sm_50`). It is matched to the host's NVIDIA 470.256.02 driver.
+2.14.0.post3, CUDA 11.8, cuDNN 8.7, and kernels for both the K20c (`sm_35`) and
+GTX 750 Ti (`sm_50`). It is matched to the host's NVIDIA 470.256.02 driver.
+
+`run.sh` uses this image by default; `build_venv.sh` and the job wrappers use
+the same launcher. If the image is not present locally, pull it before building
+or running:
+
+```bash
+docker pull ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3
+```
 
 The project venv is created **inside that container**, at the bind-mounted
 repository path. It inherits the container site-packages so torch remains the
