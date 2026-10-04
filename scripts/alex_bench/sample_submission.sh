@@ -16,7 +16,7 @@
 #
 # Environment (defaults are the container's layout):
 #   WYFORMER_PYTHON   interpreter with wyckoff_transformer     (/opt/wyformer/.venv/bin/python)
-#   GEOCSP_PYTHON     interpreter with GeoCSP's dependencies   (/opt/geocsp/.venv/bin/python)
+#   GEOCSP_PYTHON     interpreter for GeoCSP                   (WYFORMER_PYTHON: one environment)
 #   GEOCSP_DIR        GeoCSP source (the DiffCSPNew repository) (/opt/geocsp)
 #   GEOCSP_CKPT       GeoCSP weights                (/opt/okhotin/geocsp/geov2_alex_mp20_150e.pt)
 #   WYFORMER_RUNS     the four WyFormer run directories         (/opt/okhotin/runs)
@@ -31,7 +31,7 @@ N="${3:-10000}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY="${WYFORMER_PYTHON:-/opt/wyformer/.venv/bin/python}"
-GPY="${GEOCSP_PYTHON:-/opt/geocsp/.venv/bin/python}"
+GPY="${GEOCSP_PYTHON:-$PY}"
 GEOCSP_DIR="${GEOCSP_DIR:-/opt/geocsp}"
 GEOCSP_CKPT="${GEOCSP_CKPT:-/opt/okhotin/geocsp/geov2_alex_mp20_150e.pt}"
 export WYFORMER_RUNS="${WYFORMER_RUNS:-/opt/okhotin/runs}"

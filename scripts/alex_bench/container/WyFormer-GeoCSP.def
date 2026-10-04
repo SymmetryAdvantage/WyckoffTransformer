@@ -19,23 +19,21 @@ From: pytorch/pytorch:2.14.0-cuda13.2-cudnn9-runtime
     ./wyformer /opt/wyformer
     ./geocsp /opt/geocsp
     ./okhotin /opt/okhotin
-    ./wyformer-requirements.txt /opt/wyformer/requirements.lock.txt
-    ./geocsp-requirements.txt /opt/geocsp/requirements.lock.txt
+    ./requirements.lock.txt /opt/wyformer/requirements.lock.txt
 
 %post
     set -eu
     export UV_CACHE_DIR=/tmp/uv-cache
-    # Every dependency at the version uv.lock pinned for the study, except torch, which
-    # the base image provides (2.14.0; the study ran 2.14.0 built for CUDA 13.3), and
-    # spglib, which the study ran from a local build of the same version.
-    for project in wyformer geocsp; do
-        /usr/local/bin/uv venv --system-site-packages --python /opt/conda/bin/python \
-            /opt/$project/.venv
-        /usr/local/bin/uv pip install --python /opt/$project/.venv/bin/python \
-            -r /opt/$project/requirements.lock.txt "spglib==2.7.0"
-        /usr/local/bin/uv pip install --python /opt/$project/.venv/bin/python \
-            --no-deps /opt/$project
-    done
+    # One environment for both: WyFormer's uv.lock versions, plus GeoCSP's only extra
+    # dependency, torch-geometric, at the version GeoCSP's uv.lock pins. torch comes from
+    # the base image (2.14.0; the study ran 2.14.0 built for CUDA 13.3) and spglib from
+    # PyPI at the version the study ran from a local build.
+    /usr/local/bin/uv venv --system-site-packages \
+        /opt/wyformer/.venv
+    PY=/opt/wyformer/.venv/bin/python
+    /usr/local/bin/uv pip install --python $PY -r /opt/wyformer/requirements.lock.txt \
+        "spglib==2.7.0" "{{ TORCH_GEOMETRIC_PIN }}"
+    /usr/local/bin/uv pip install --python $PY --no-deps /opt/wyformer /opt/geocsp
     rm -rf /tmp/uv-cache
     mkdir -p /opt/okhotin/cache /opt/okhotin/data
     chmod -R a+rX /opt/wyformer /opt/geocsp /opt/okhotin
@@ -70,7 +68,7 @@ assert torch.__version__.startswith("2.14.0"), torch.__version__
 assert not torch_path.is_relative_to("/opt/wyformer/.venv"), torch_path
 print("wyformer ok, torch", torch.__version__, "cuda", torch.version.cuda)
 PY
-    /opt/geocsp/.venv/bin/python - <<'PY'
+    /opt/wyformer/.venv/bin/python - <<'PY'
 import torch, torch_geometric, pyxtal
 from diffcsp.models.geo_v2_diffusion import GeoV2Diffusion
 from diffcsp.models.geo_v2_cspnet import GeoV2CSPNet

@@ -42,14 +42,15 @@ git -C "$GEOCSP_REPO" archive --format=tar "$geocsp_revision" -- \
     pyproject.toml uv.lock README.md diffcsp bench |
     tar -x -C "$stage/geocsp"
 
-# The exact versions of the study's environments, without torch (the base image's) and
-# spglib (zeus builds its own; the image takes the same version from PyPI).
-for pair in "wyformer:$REPO" "geocsp:$GEOCSP_REPO"; do
-    name=${pair%%:*}; source=${pair#*:}
-    (cd "$stage/$name" && uv export --frozen --no-dev --no-hashes --no-emit-project \
-        --no-emit-package torch --no-emit-package triton --no-emit-package spglib \
-        --no-header > "$stage/$name-requirements.txt")
-done
+# WyFormer's exact environment, without torch (the base image's) and spglib (zeus builds
+# its own; the image takes the same version from PyPI). GeoCSP runs in it too: its only
+# extra dependency is torch-geometric, taken at the version GeoCSP's own lock pins.
+(cd "$stage/wyformer" && uv export --frozen --no-dev --no-hashes --no-emit-project \
+    --no-emit-package torch --no-emit-package triton --no-emit-package spglib \
+    --no-header > "$stage/requirements.lock.txt")
+torch_geometric_pin=$(cd "$stage/geocsp" && uv export --frozen --no-dev --no-hashes \
+    --no-emit-project --no-header | grep -E '^torch-geometric==' | cut -d' ' -f1)
+[[ -n "$torch_geometric_pin" ]] || { echo "no torch-geometric pin in GeoCSP's lock" >&2; exit 1; }
 
 for run in "${RUNS[@]}"; do
     cp -r "$STORE/runs/$run" "$stage/okhotin/runs/"
@@ -67,6 +68,7 @@ sif="$OUT_DIR/WyFormer-GeoCSP-$IMAGE_TAG.sif"
             --build-arg "SOURCE_REVISION=$wyformer_revision" \
             --build-arg "GEOCSP_REVISION=$geocsp_revision" \
             --build-arg "IMAGE_VERSION=$IMAGE_TAG" \
+            --build-arg "TORCH_GEOMETRIC_PIN=$torch_geometric_pin" \
             "$sif" WyFormer-GeoCSP.def
 )
 singularity test "$sif"
