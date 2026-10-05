@@ -7,6 +7,17 @@ where they will run those arms themselves. Both remain in the study; future
 setup and relaxation of these two arms belong on that machine. Iapetus
 continues its existing workers.
 
+On 2026-10-05, TECE finished its first pass with 2,698 recorded trials,
+2,284 successes and 896 selected genes per track, and uploaded its final
+snapshot to W&B run `55f04b6c`. GPU 1's freed K20c was then assigned to TACE
+retries, retaining the original e3nn backend and 600-second timeout. The
+773 first-pass failures and complete original ledger were preserved in W&B
+before requeuing. Use `scripts/platforms/iapetus/run_mlip_bias_gpu1_tace.sh`
+to resume this pass. Its initial invocation used `--retry-failed`; omit that
+flag when resuming to avoid requeuing newly failed trials. The existing
+tmux window `0:2` shows this worker and logs to
+`generated/mlip_bias_study/gpu1_tace_retry_20261005.log`.
+
 Run from the WyFormer checkout. Check W&B runs and local processes before starting a command; **never run two processes for the same arm concurrently**. Prophet, NequIP, and ORB together exceed GPU 0's memory, so alternate them with `scripts/platforms/iapetus/run_mlip_bias_gpu0.sh`. It runs five trials per arm per invocation and checkpoints each batch to W&B. Its local working copies and W&B artifacts carry the same trial identities across invocations.
 
 ```bash

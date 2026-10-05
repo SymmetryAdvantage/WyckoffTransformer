@@ -33,7 +33,30 @@ input artifact, published checkpoints, relaxation protocol and 600-second
 timeout, with results and environment provenance logged to W&B. The other
 machine's identity and new arm run links are pending.
 
-## Latest state — resumed 2026-10-04
+## Latest state — GPU 1 reassigned 2026-10-05
+
+TECE completed its full 2,698-trial first pass normally at 2026-10-05 07:40
+Asia/Singapore (23:40 UTC on October 4). It recorded 2,284 successful trials
+and selected 896 genes in each free/fixed-symmetry track. The final snapshot
+was uploaded to W&B run `55f04b6c` before the worker exited with status 0.
+
+When the user reported idle GPU 1 on 2026-10-05, its free K20c was assigned
+to retry TACE's 773 failed first-pass trials (766 OOM, seven timeouts), with
+the saved 1,925 successes retained. Before requeuing, the full arm snapshot,
+original ledger and dated transition were preserved in W&B run `8eb9d70c`;
+the transition artifact is `mlip-bias-tace-gpu1-retry-20261005`.
+The retry uses the original e3nn backend, the same checkpoint and seeds,
+the 600-second timeout and CPU cores 2–3. TACE has not been switched to OEQ.
+
+The existing tmux window `0:2` is reused for this TACE pass; its log is
+`generated/mlip_bias_study/gpu1_tace_retry_20261005.log`. The launcher is
+`scripts/platforms/iapetus/run_mlip_bias_gpu1_tace.sh --retry-failed` for the
+initial requeue. Resume an interrupted pass **without** `--retry-failed`, so
+newly recorded failures are not repeatedly requeued. GPU 0 and GPU 2 retain
+their existing round-robin workers. PET and EquFlashV2 remain assigned to
+the user's other machine. TECE's failed trials remain recorded.
+
+## Resumption history — 2026-10-04
 
 At approximately 21:29 Asia/Singapore, the user requested continuing the study
 and using the current tmux session. After confirming that all GPUs were idle
