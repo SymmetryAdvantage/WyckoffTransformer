@@ -35,6 +35,20 @@ machine's identity and new arm run links are pending.
 
 ## Latest state — GPU 1 reassigned 2026-10-05
 
+On 2026-10-05, the user requested a test of
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on GPU 2. The eSEN/
+Equiformer round robin was stopped after Equiformer's current 10-trial batch
+and W&B upload completed. A matched, fresh-process eSEN comparison used the
+same six raw draws (8, 20, 28 and 69 atoms) and a diagnostic 120-second cap.
+Baseline and expandable-segments modes both completed the same two draws and
+OOMed on the same four; successful timings were 24.660/105.534 seconds versus
+24.722/105.747 seconds. Expandable segments explicitly failed to map another
+20 MiB when only 12--14 MiB was physically free. This sample shows capacity
+failures rather than fragmentation recoverable by the option, so it remains
+disabled. The original 600-second round robin resumed in tmux window `0:3`.
+The full diagnostic is in compatibility artifact
+`mlip-bias-gpu2-expandable-segments-20261005` under W&B run `mlipbias1`.
+
 TECE completed its full 2,698-trial first pass normally at 2026-10-05 07:40
 Asia/Singapore (23:40 UTC on October 4). It recorded 2,284 successful trials
 and selected 896 genes in each free/fixed-symmetry track. The final snapshot

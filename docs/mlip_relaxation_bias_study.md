@@ -22,6 +22,18 @@ preserved in artifact `mlip-bias-tace-gpu1-retry-20261005` under
 [TACE run 8eb9d70c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/8eb9d70c).
 These counts describe relaxation coverage; LeMat-GenBench scoring remains pending.
 
+Also on 2026-10-05, at WyFormer commit `6e19309`, GPU 2's allocator was tested
+with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Fresh baseline and
+candidate processes relaxed the same six eSEN raw draws, ordered identically,
+under a diagnostic 120-second cap. Both modes succeeded on the 8- and 20-atom
+draws and OOMed on the same two 28-atom and two 69-atom draws. Successful
+times were 24.660 and 105.534 seconds at baseline and 24.722 and 105.747
+seconds with expandable segments. The candidate allocator reported memory
+mapping failures when another 20 MiB was requested with only 12--14 MiB
+physically free. It gave no coverage or speed benefit in this matched sample,
+so GPU 2 continues without the option. Results are stored in W&B compatibility
+artifact `mlip-bias-gpu2-expandable-segments-20261005`.
+
 Initial status on 2026-10-01: GPU relaxations were running; final LeMat-GenBench metrics were **not yet available**. WyFormer commit: `c360bb35e28ca9fdebc1a892ccc8d3d8b51a68c6`. The leaderboard snapshot is Matbench Discovery commit `71633e8bdfdfd41d56d64b1d777e5686d9eda3ec`; LeMat-GenBench is commit `fbf1ba4855934acb8fe87135315504899064080d`.
 
 Later on 2026-10-01 the user stopped all three GPU jobs. The iapetus image was then replaced with `iapetus/pytorch:2.14.0-cuda11.8-py312`. The WyFormer environment in that image now has `openequivariance` 0.7.0, `torch_scatter` 2.1.2, and `metatomic-torch` 0.1.18; all three import successfully. The compatibility outcomes below were measured before that image update. In particular, the EquFlash, EquiformerV3, PET, and eSEN failures need new model-level probes before they can be treated as current blockers. At 2026-10-01 19:57 Asia/Singapore, the user requested resumption and the GPU 0 ORB/Prophet/NequIP round robin, GPU 1 TECE, and GPU 2 TACE jobs restarted from their local trial ledgers on the new image. The new image needed `WANDB_DATA_DIR` set to the mounted W&B store to upload artifacts; the launcher now sets it. The user then identified CPU oversubscription, so the three jobs were capped at two distinct physical CPU cores each before resuming again.

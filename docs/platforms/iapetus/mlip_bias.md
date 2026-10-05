@@ -18,6 +18,14 @@ flag when resuming to avoid requeuing newly failed trials. The existing
 tmux window `0:2` shows this worker and logs to
 `generated/mlip_bias_study/gpu1_tace_retry_20261005.log`.
 
+On 2026-10-05, a matched six-draw eSEN test on GPU 2 compared the default
+allocator with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Both modes
+completed the same two cases and OOMed on the same four, with essentially
+identical successful runtimes. The candidate failed to map another 20 MiB
+when only 12--14 MiB was physically free. Do not enable expandable segments
+in the iapetus GPU 2 launcher; the tested OOMs are capacity limited. The
+round-robin worker resumed with its original allocator settings.
+
 Run from the WyFormer checkout. Check W&B runs and local processes before starting a command; **never run two processes for the same arm concurrently**. Prophet, NequIP, and ORB together exceed GPU 0's memory, so alternate them with `scripts/platforms/iapetus/run_mlip_bias_gpu0.sh`. It runs five trials per arm per invocation and checkpoints each batch to W&B. Its local working copies and W&B artifacts carry the same trial identities across invocations.
 
 ```bash
