@@ -1,4 +1,4 @@
-# MLIP relaxation bias study handoff — 2026-10-05
+# MLIP relaxation bias study handoff — 2026-10-06
 
 ## Objective and provenance
 
@@ -13,6 +13,8 @@ snapshot is commit `71633e8bdfdfd41d56d64b1d777e5686d9eda3ec` and the
 LeMat-GenBench checkout is commit `fbf1ba4855934acb8fe87135315504899064080d`.
 WyFormer HEAD at the earlier stop was `7638adc28976bdde8ae0b04a5cc0cc51dc4ed56d`;
 at the latest resumption it is `6d17079e3181073dbbeda3371385a01a39e451b3`.
+The last code commit before this handoff update is
+`d54050bf38454e99429f916f7f5723d4228af8fb`.
 Study code and docs are committed together with this handoff; the dated
 compatibility artifacts in
 [W&B](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/mlipbias1)
@@ -27,13 +29,67 @@ of EquFlashV2. EquFlashV2 remains planned; historical EquFlash probe records
 are retained, but no further EquFlash setup, relaxation or scoring is planned.
 
 On 2026-10-05, the user assigned **PET-OAM-XL and EquFlashV2 to the other,
-larger-VRAM machine**, where they will run those arms themselves. These two
-arms remain in the study, but are not scheduled for iapetus. Use the same raw
-input artifact, published checkpoints, relaxation protocol and 600-second
-timeout, with results and environment provenance logged to W&B. The other
-machine's identity and new arm run links are pending.
+larger-VRAM machine**. On 2026-10-06 that machine was identified as **zeus**,
+which has two shared RTX 6000 Ada GPUs with 46,068 MiB each. These two arms
+remain in the study and must use the same raw input artifact, published
+checkpoints, relaxation protocol and 600-second timeout, with results and
+environment provenance logged to W&B. Their arm run links are still pending.
 
-## Latest state — GPU 1 reassigned 2026-10-05
+## Migration to zeus — decision and boundary on 2026-10-06
+
+The user requested that only one MLIP continue on iapetus and that the rest of
+the study move to the proper GPUs on zeus. Keep **NequIP-OAM-XL** as the sole
+iapetus MLIP: it has been reliable on the K20c, with 1,662 successful results
+and 71 failures in the 1,733-row snapshot below. ORB is a control rather than
+an MLIP. Do not restart the existing GPU 0 round-robin launcher after the
+migration boundary because it also schedules ORB and Prophet.
+
+This is the local-ledger snapshot observed on 2026-10-06 at approximately
+21:00 Asia/Singapore. NequIP and TACE were still advancing when it was taken,
+so later rows must be preserved before moving their writers.
+
+| Arm | Rows | Successful | Failed | Assignment | W&B run |
+| --- | ---: | ---: | ---: | --- | --- |
+| ORB control | 1,766 | 1,756 | 10 | zeus: finish first pass | [717bb362](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/717bb362) |
+| Prophet-OAME-MBD | 1,739 | 1,067 | 672 | zeus: finish first pass | [79114e40](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/79114e40) |
+| NequIP-OAM-XL | 1,733 | 1,662 | 71 | **iapetus: sole remaining MLIP** | [4fb7a19a](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/4fb7a19a) |
+| TECE-OAM-RRA-1.0 | 2,698 | 2,284 | 414 | zeus: retry failures | [55f04b6c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/55f04b6c) |
+| TACE-OAM-L | 2,563 | 2,464 | 99 | zeus: resume active retry pass | [8eb9d70c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/8eb9d70c) |
+| eSEN-30M-OAM | 2,698 | 1,836 | 862 | zeus: retry failures | [e18262dd](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/e18262dd) |
+| EquiformerV3+DeNS-OAM | 2,698 | 1,181 | 1,517 | zeus: retry failures | [756e18ed](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/756e18ed) |
+| PET-OAM-XL | 0 | 0 | 0 | zeus: first pass | pending |
+| EquFlashV2 | 0 | 0 | 0 | zeus: first pass after compatibility fix | pending |
+
+Create a clean single-writer boundary before launching anything on zeus:
+
+1. On iapetus, let the active GPU 0 batch save and upload, stop the round
+   robin, and resume only NequIP using the NequIP command inside
+   `run_mlip_bias_gpu0.sh`. A dedicated NequIP-only launcher should replace
+   the round robin for unattended use.
+2. Let TACE save its active trial, stop its GPU 1 worker, and force a final
+   W&B snapshot. Its original failed rows were already requeued. Resume this
+   interrupted retry ledger on zeus **without** `--retry-failed`; using that
+   option again would discard newly recorded retry failures and requeue them.
+3. Confirm the latest ORB, Prophet and TACE ledgers and CIF outputs are present
+   in their W&B artifacts before starting their zeus writers. Never run the
+   same arm on both hosts concurrently.
+4. ORB and Prophet have incomplete first passes. Resume missing trials without
+   `--retry-failed`, then decide whether to retry their failures. TECE, eSEN
+   and EquiformerV3 completed their first passes; invoke `--retry-failed` once
+   on zeus, then omit it after any interruption.
+
+Follow [the zeus agent brief](docs/platforms/zeus/agent_brief.md): use the host
+`.venv/bin/python` or `uv run`, never iapetus's container or package overlays;
+check `nvidia-smi` because both GPUs are shared; and select one GPU explicitly
+with `CUDA_VISIBLE_DEVICES=0` or `1`. Recreate and probe each model's pinned
+dependencies on zeus before its first relaxation. The current zeus environment
+has not yet been verified for these adapters, PET initialization,
+EquFlashV2/cuEquivariance compatibility, the gated eSEN checkpoint, or access
+to the current W&B arm artifacts. Run at most one arm per free RTX 6000 Ada.
+No zeus worker or new PET/EquFlashV2 W&B run had been verified when this
+handoff section was written.
+
+## Previous state — GPU 1 reassigned 2026-10-05
 
 On 2026-10-05, the user requested a test of
 `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on GPU 2. The eSEN/
@@ -211,7 +267,7 @@ using the pinned source commits in the study notes; they are not W&B artifacts.
 The detailed dated log, model ranking, and scoring contract are in
 [docs/mlip_relaxation_bias_study.md](docs/mlip_relaxation_bias_study.md).
 
-## Resuming the relaxation arms later
+## Resuming the relaxation arms
 
 First check `nvidia-smi`, `docker ps`, `tmux list-windows -t 0`, and any legacy
 `tmux -L mlipbias list-sessions` so
@@ -222,7 +278,7 @@ ledger is absent, the same runner invocation downloads its latest W&B artifact
 before continuing. All run IDs and checkpoint locators are deterministic from
 the study manifest.
 
-On iapetus, the prepared launchers are:
+The following iapetus launchers describe the historical three-GPU schedule:
 
 ```bash
 scripts/platforms/iapetus/run_mlip_bias_gpu0.sh
@@ -230,14 +286,16 @@ scripts/platforms/iapetus/run_mlip_bias_gpu1.sh
 scripts/platforms/iapetus/run_mlip_bias_gpu2_roundrobin.sh
 ```
 
-GPU 0 alternates ORB, Prophet and NequIP in five-trial batches. GPU 1 runs TECE.
-GPU 2 alternates eSEN and EquiformerV3 in ten-trial batches. TACE already has
-a full first-pass ledger. Each wrapper pins its GPU and two physical CPU cores.
-The GPU 0 and GPU 2 scripts are foreground loops; use detached `tmux` sessions
-if they should survive a client disconnect. On another host, adapt CUDA device
-selection and package overlays. To recover out-of-memory rows on a larger GPU,
-use `scripts/run_mlip_bias_relax.py --retry-failed` with the same arm output,
-model, checkpoint and input; do not run it concurrently with the normal arm.
+GPU 0 alternates ORB, Prophet and NequIP in five-trial batches; do not use that
+round robin after the 2026-10-06 migration. The original GPU 1 launcher runs
+TECE, while `run_mlip_bias_gpu1_tace.sh` runs TACE's active failed-trial pass.
+GPU 2 alternates eSEN and EquiformerV3 in ten-trial batches; both first passes
+are now complete. Each wrapper pins its GPU and two physical CPU cores. Keep a
+NequIP-only worker on iapetus and follow the migration section for all other
+arms. To recover out-of-memory rows on zeus, use
+`scripts/run_mlip_bias_relax.py --retry-failed` with the same arm output,
+model, checkpoint and input exactly once per newly initiated retry pass; do not
+run it concurrently with another writer for that arm.
 
 ## Scoring still required
 
