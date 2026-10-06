@@ -7,10 +7,26 @@ the cohort. Historical EquFlash probes below are retained as setup records,
 but EquFlash is excluded from future setup, relaxation and scoring.
 
 On 2026-10-05, the user assigned PET-OAM-XL and EquFlashV2 to the other,
-larger-VRAM machine and will run those arms themselves. Both remain in the
-cohort. Their runs should use the same raw input artifact, checkpoints and
-relaxation protocol with the 600-second timeout and W&B logging; the machine
-identity and run links are pending. Iapetus continues its existing arms.
+larger-VRAM machine, Zeus. Both arms completed their normal and recovery
+passes on 2026-10-06 and remain in the cohort. Their runs should use the same raw input artifact, checkpoints and
+relaxation protocol with W&B logging; the Zeus timeout was increased from
+600 to 1,200 seconds on 2026-10-05, with timeout failures requeued. The machine
+is Zeus. Both GPU 1 energy/forces/stress probes passed on 2026-10-05, at
+WyFormer HEAD `c3cb84e4dcfd6e08360e4ee7a2232786143c1a9a`, with local Torch
+2.14.1/CUDA 13.4. The normal Zeus worker finished EquFlashV2 before continuing PET.
+EquFlashV2's first successful full relaxation is in
+[run 9b5e07e1](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/9b5e07e1);
+seven successful PET trials started prematurely by an initial launcher bug
+were preserved in [run a4bbbd2f](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/a4bbbd2f).
+The count bug was corrected and sequential launch checks pass. The detached
+worker, package/source versions and local-wheel issue reports are in
+[the Zeus notes](platforms/zeus/mlip_bias.md). Setup provenance and source
+snapshots are in W&B compatibility artifact `mlip-bias-zeus-setup-20261005`
+under run `mlipbias1`. On 2026-10-06 the migration handoff at commit
+`9e4a1de` assigns only NequIP to iapetus. ORB and Prophet move to Zeus
+to finish their first passes, TACE to resume its interrupted retry ledger,
+and TECE/eSEN/EquiformerV3 to retry failures once. The single-writer
+boundary must be verified before starting these Zeus arms; see [HANDOFF.md](../HANDOFF.md).
 
 On 2026-10-05, at WyFormer commit `44abb58`, TECE's completed first-pass
 snapshot was confirmed in [W&B run 55f04b6c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/55f04b6c):
@@ -20,7 +36,8 @@ trials, retaining 1,925 successful rows, the original checkpoint and e3nn
 backend, and the 600-second timeout. The prior ledger and transition are
 preserved in artifact `mlip-bias-tace-gpu1-retry-20261005` under
 [TACE run 8eb9d70c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/8eb9d70c).
-These counts describe relaxation coverage; LeMat-GenBench scoring remains pending.
+These historical counts describe relaxation coverage; scoring was pending
+at that snapshot. Completed Zeus scoring is recorded below.
 
 Also on 2026-10-05, at WyFormer commit `6e19309`, GPU 2's allocator was tested
 with `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Fresh baseline and
@@ -50,7 +67,7 @@ Later on 2026-10-04, access to the [official OMat24 repository](https://huggingf
 
 The input is W&B artifact `symmetry-advantage/WyckoffTransformer/protocol_ehull_adamw_wsd_5x_cfg-20260924-223159.cfg-grid-e0p05-w5:v0`. Its `pyxtal.extxyz` contains 2,698 successful raw draws from 1,000 genes. The study starts every relaxation from these raw draws. The input artifact's selected CIFs have already been selected and relaxed with ORB, so using them as common starts would retain the bias being measured. The frozen [Matbench Discovery snapshot](https://github.com/janosh/matbench-discovery/tree/71633e8bdfdfd41d56d64b1d777e5686d9eda3ec) defines the model list and published environments.
 
-`scripts/run_mlip_bias_relax.py` applies the WyFormer protocol's fixed-cell, symmetry-preserving cell, released cell, and rattle stages at `fmax=0.05 eV/Å`. The input manifest supplies the original 300-second per-trial timeout. On 2026-10-04 the user doubled the study's timeout to **600 seconds** for resumed/future trials, using a recorded runtime override; the source artifact remains unchanged. Each arm's `relaxation_settings.json` records timeout changes and their completed-trial boundaries, is included in W&B snapshots, and is restored on resume even when `--relax-timeout` is omitted. Earlier timeout failures remain recorded, so coverage reflects both timeout budgets until those rows are explicitly retried. The runner selects the lowest-energy successful trial for each gene using that relaxation MLIP's own energy. Selection energies are **only** used within each model; they are not compared across models. Fixed-symmetry and free tracks are saved separately. Each arm logs a trial ledger, every retained trial CIF, and the current selected CIFs to W&B artifact type `mlip_bias_relax` every 25 new trials and at normal exit. If the local ledger is missing, rerunning the identical command restores the latest W&B artifact before resuming. The control is `orb_conserv_inf`.
+`scripts/run_mlip_bias_relax.py` applies the WyFormer protocol's fixed-cell, symmetry-preserving cell, released cell, and rattle stages at `fmax=0.05 eV/Å`. The input manifest supplies the original 300-second per-trial timeout. On 2026-10-04 the user doubled the study's timeout to **600 seconds** for resumed/future trials, using a recorded runtime override; the source artifact remains unchanged. Each arm's `relaxation_settings.json` records timeout changes and their completed-trial boundaries, is included in W&B snapshots, and is restored on resume even when `--relax-timeout` is omitted. Earlier timeout failures remain recorded, so coverage reflects both timeout budgets until those rows are explicitly retried. On 2026-10-05 the user raised the Zeus EquFlashV2/PET-OAM-XL limit to **1,200 seconds** and timeout failures from the shorter budget are selectively requeued using `--retry-timeouts`. Iapetus launchers remain at 600 seconds. The user also requested a later Zeus recovery pass, after both normal arms complete: GPU 1, one worker and 3,600 seconds per trial, selectively retrying OOM/timeouts with `--retry-oom-timeouts`; see the Zeus study notes. The runner selects the lowest-energy successful trial for each gene using that relaxation MLIP's own energy. Selection energies are **only** used within each model; they are not compared across models. Fixed-symmetry and free tracks are saved separately. Each arm logs a trial ledger, every retained trial CIF, and the current selected CIFs to W&B artifact type `mlip_bias_relax` every 25 new trials and at normal exit. If the local ledger is missing, rerunning the identical command restores the latest W&B artifact before resuming. The control is `orb_conserv_inf`.
 
 Ranking is the Matbench Discovery site's default Composite Performance Score among active models with the requisite metrics: unique-prototype F1 (weight 0.5), phonon conductivity score (0.4), and geometry optimization RMSD (0.1). This is a frozen ranking, not a claim about which model is best for these generated structures.
 
@@ -74,10 +91,122 @@ These are **execution setup** outcomes on iapetus, not performance results or cl
 
 For each completed arm, run LeMat-GenBench on its selected free and fixed-symmetry CIFs. Its `comprehensive_multi_mlip_hull` config uses **ORB, MACE and UMA single-point energies**, each compared only to its own compatible hull; it also requests validity, distribution, diversity, novelty, uniqueness, HHI, SUN and stability metrics. Force `MultiMLIPStabilityPreprocessor(relax_structures=False, calculate_formation_energy=True, calculate_energy_above_hull=True)` while scoring. The upstream `scripts/run_benchmarks.py` currently derives `relax_structures` from whether stability was requested and ignores the config's `relax_structures` setting, so calling it unchanged would relax the structures again. Exclude `relaxation_rmse` and relaxation RMSD metrics. Report per-arm coverage and scoring failures; do not silently compare arms with different successful-gene sets.
 
-No final metric is reported until the applicable relaxation arm and single-point scoring finish. The LeMat-GenBench repository has its own Torch 2.6/CUDA 12.4 and PyG extension requirements, which also require a compatible environment for full scoring. This setup is still pending.
+No final metric is reported until the applicable relaxation arm and single-point scoring finish. On 2026-10-06, a compatible isolated scoring environment was prepared and tested on Zeus against the frozen LeMat checkout; see [the Zeus scoring notes](platforms/zeus/mlip_bias.md). Results retain scorer-specific energy definitions and the frozen source's known UMA energy/hull discrepancy warning.
 
 ## Resume and scoring
 
 Rerun an arm with the same input, output, model, checkpoint and settings. The runner restores its most recent W&B artifact if its local trial ledger is missing, then skips completed trials. Do not run two processes for the same arm concurrently. W&B snapshots are recoverable across machines, but the most recent local trials after a snapshot have not yet been uploaded. Preserve a local working directory if a process exits unexpectedly; restart from it to retain those trials.
 
-`scripts/run_mlip_bias_genbench.py` is the scoring entry point. It refuses to score an incomplete trial ledger by default, can download the relaxation arm with `--arm-artifact`, uses the LeMat-GenBench `comprehensive_multi_mlip_hull` configuration, disables its internal relaxation, records ORB/MACE/UMA single-point energies separately, and uploads its metrics and energies to W&B. It reports per-model scoring coverage and marks incomplete scoring. The LeMat-GenBench checkout and compatible dependencies must be available to the scoring process. Host-specific launch commands and installation notes live in `docs/platforms/iapetus/mlip_bias.md`.
+`scripts/run_mlip_bias_genbench.py` is the scoring entry point. It refuses to score an incomplete trial ledger by default, can download the relaxation arm with `--arm-artifact`, uses the LeMat-GenBench `comprehensive_multi_mlip_hull` configuration, disables its internal relaxation, records ORB/MACE/UMA single-point energies separately, and uploads its metrics and energies to W&B. It reports per-model and per-quantity scoring coverage, failed gene IDs, and missing primary metrics. Validity, partial single-point scores every 25 structures, and complete single-point scores are mirrored as W&B checkpoints for resumption. Host-specific launch commands and installation notes live in `docs/platforms/iapetus/mlip_bias.md` and `docs/platforms/zeus/mlip_bias.md`.
+
+Formation energies use elemental minima from each scorer's own published MLIP hull. Frozen upstream formation-energy methods subtract PBE elemental references from MLIP totals; the scoring adapter replaces these incompatible references and checks compatibility through `energy_fields.check_compatible`. This correction does not change single-point energies or energies above hull. The validity predicate is preserved, including the frozen source's known charge-validity limitations; its oxidation-state enumeration skips only combinations rejected by the original adjacency rule.
+
+### Zeus relaxation completion, 2026-10-06
+
+At WyFormer commit `3f9ec13525b217dc5997401ef0c592ea5af0f735`, both Zeus arms completed 2,698 trial rows, including a one-worker, 3,600-second OOM/timeout recovery pass. PET has 2,696 successful trials; EquFlashV2 has 2,694 after the requested fresh-parent retry of `(991, 2)` succeeded in 157.8 seconds. That retry peaked at 45,260 MiB GPU memory and recovered from a transient OOM. The remaining EquFlashV2 failures are one OOM `(991, 0)` and three neighbor overflows; PET retains two neighbor overflows. Each arm selects 991 genes in both tracks. Relaxation artifacts are `mlip-bias-9b5e07e1c31040ee:v116` and `mlip-bias-a4bbbd2f9825a3a3:v130`, respectively, under the [EquFlashV2 run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/9b5e07e1) and [PET run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/a4bbbd2f). Fresh-retry diagnostics are preserved in `mlip-bias-zeus-fresh-991-2-20261006` under the [compatibility run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/mlipbias1).
+
+The scoring queue includes both tracks for EquFlashV2, PET, TECE (`mlip-bias-55f04b6c21bc18d4:v111`, 896 selected genes), and EquiformerV3 (`mlip-bias-756e18ed10a3f423:v268`, 480 selected genes). These are different successful-gene cohorts; their raw full-cohort metrics do not establish a controlled ranking. Other arms remain incomplete at this snapshot.
+
+On the next 2026-10-06 W&B refresh, eSEN's complete 2,698-row snapshot
+`mlip-bias-e18262dd1ae93acd:v271` became available: 1,836 successful
+trials and 718 selected genes in both tracks. It was downloaded and both
+tracks queued after the first four arms, sharing the exclusive GPU 1 lock.
+Other arms are still incomplete; all snapshots are pinned independently
+of any later recovery on the originating machine.
+
+TACE's latest ledger is incomplete because OOM/timeout recovery is ongoing,
+but its complete first-pass snapshot `mlip-bias-8eb9d70c27c24afd:v108`
+is retained. Both tracks of that snapshot are also queued, under the
+explicit `tace_oam_l_first_pass` namespace: 1,925 successful trials and
+747 selected genes. Its metrics describe the first pass, before recovery.
+
+Novelty matching uses the full LeMat-Bulk `compatible_pbe` reference pinned
+at revision `0dc17eea904b860ad7288141e9870f67f8e6bb2c` (5,335,299 rows).
+The adapter applies StructureMatcher's composition rejection before building
+reference structures and stops on the first equivalent structure. The
+matching predicate and tolerances are unchanged. Matching results are cached
+by geometry, matcher settings and reference revision, including reuse for SUN
+and identical fixed/free structures. The frozen reference composition matrix
+is used explicitly; it was verified numerically identical to the older local
+matrix despite different compressed-file hashes.
+The matrix was also checked against the pinned dataset's elements in all
+5,335,299 rows; every row matches. Six tests pass, including
+matcher equivalence for supercells, charged species and unmatched compositions.
+Each completed benchmark family and partial novelty cache is also mirrored to
+W&B, so restarting the CPU matching stage preserves earlier results.
+
+The comparison report includes full-cohort metrics with explicit coverage,
+per-scorer matched-gene energy statistics, and all seven benchmark families
+recomputed on the intersection of valid, fully scored genes across every included arm and
+both tracks. This last comparison reuses saved single-point properties and
+embeddings; it runs no calculators or relaxation. Validity is not recomputed
+on the already-valid intersection. A two-track EquFlashV2 check passed all
+families on the same 887 genes before queuing the full comparison.
+
+eSEN/free has one unsupported UMA single point, gene 722 (Cs16Rb4Hg2):
+its minimum periodic distance is 6.0449 Å, beyond UMA's 6 Å cutoff.
+A fresh CPU process reproduced the empty-neighbor-graph rejection, so this
+is not a VRAM failure. ORB and MACE cover all 657 valid structures; UMA
+covers 656. The full-cohort result remains incomplete, including a
+Fréchet distance using only two models. This gene is excluded from the
+fully scored common-cohort comparison. Diagnostics are in
+`setup/genbench_esen_722_fresh_probe_20261006.json`.
+
+The first complete scoring result is EquFlashV2/free, W&B run
+`862c7545`: 888/991 valid genes, all 888 scored by ORB/MACE/UMA,
+81.7568% novelty, 100% uniqueness and 56.4189% LeMat MetaSUN.
+UMA's mean hull distance is strongly affected by several noble-gas
+compositions (for example Al2HeNe5 and Ga2Ne7, around 62 and 57 eV/atom).
+A fresh UMA-only GPU 1 process reproduced their very large predictions;
+the diagnostic values and repeated-call differences are retained in
+`setup/genbench_uma_outlier_probe_20261006.json`. These are retained in
+the protocol results, alongside the frozen UMA reference warning; no
+outlier filtering is applied.
+
+### Completed comparison, 2026-10-06
+
+At WyFormer HEAD `3f9ec13525b217dc5997401ef0c592ea5af0f735`, scoring
+attempts finished for all six pinned snapshots in both tracks. The
+uncommitted scoring/report adapters and their provenance are preserved in
+`mlip-bias-zeus-genbench-setup-20261006:v6` under the compatibility run.
+The frozen LeMat commit remains `fbf1ba4855934acb8fe87135315504899064080d`.
+The [audited W&B comparison](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/6c532304)
+contains artifact `mlip-bias-genbench-comparison-6c53230488bb6d61:v1`:
+all seven benchmark families on **440 identical valid, fully scored genes**
+in every arm and both tracks, full-cohort metrics with coverage flags,
+scorer-specific energy tables and the passed consistency audit. Scoring
+uses saved geometries without further relaxation; relaxation RMSE/RMSD
+outputs are excluded.
+
+| Relaxation arm | Selected genes | Valid free / fixed | MetaSUN free / fixed on common 440 (%) |
+| --- | ---: | ---: | ---: |
+| EquFlashV2 | 991 | 888 / 887 | 61.36 / 45.68 |
+| PET-OAM-XL | 991 | 888 / 889 | 61.59 / 46.59 |
+| TECE-OAM-RRA-1.0 | 896 | 815 / 815 | 61.14 / 46.14 |
+| EquiformerV3+DeNS-OAM | 480 | 441 / 441 | 60.68 / 44.32 |
+| eSEN-30M-OAM | 718 | 657 / 657 | 61.59 / 45.45 |
+| TACE-OAM-L, first pass | 747 | 682 / 683 | 61.59 / 45.68 |
+
+These shared-cohort rates are conditional on successful relaxation,
+validity and complete single-point scoring in every track. They do not
+estimate performance on all original draws. Full-cohort rates use different
+gene sets and are retained separately. Eleven source tracks have complete
+ORB/MACE/UMA coverage; eSEN/free retains its one unsupported UMA score and
+`final_results=false`. Its full-cohort Fréchet distance uses two models and
+is explicitly marked incomplete. Every common-cohort Fréchet distance
+uses all three models.
+
+UMA's frozen formation/hull helpers independently reevaluate energy.
+Paired formation-minus-total-energy changes therefore have small numerical
+residuals, up to 0.00163269 eV/atom; ORB/MACE agree to floating-point
+precision. Compositions and compatible reference definitions match.
+The reported values are retained, with per-gene residuals and an additional
+audit table. The known UMA hull-reference discrepancy, noble-gas outliers
+and frozen charge-validity limitations also remain explicit.
+
+At the 17:28 SGT W&B refresh, ORB, Prophet and NequIP had 1,726, 1,694
+and 1,691 trial rows out of 2,698. Their completed-arm metrics await
+relaxation completion. TACE recovery had 2,475 rows; this report uses its
+earlier completed first-pass snapshot. Scoring run IDs for all twelve
+tracks, input hashes, model hashes and dataset revisions are in the
+comparison artifact's `report_provenance.json` and environment records.

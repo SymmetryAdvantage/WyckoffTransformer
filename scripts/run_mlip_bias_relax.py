@@ -5,6 +5,8 @@ Run one model per environment. Dependencies of leaderboard MLIPs conflict, so
 ``--calculator-factory`` can name a factory in that model's own environment.
 The factory takes ``device=...`` and returns an ASE calculator. Registered
 WyFormer MLIPs need no factory. The output is resumable by (gene, trial).
+Use ``--workers`` for concurrent trials of the same arm; the coordinator
+alone writes its ledger and W&B snapshots.
 """
 
 from __future__ import annotations
@@ -16,10 +18,12 @@ import importlib
 import json
 import logging
 import math
+import multiprocessing
 import os
-import signal
 import shutil
+import signal
 import time
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,8 +36,7 @@ from wyckoff_transformer.cryspr.generator import (
     _trial_seed,
     relax_trial,
 )
-from wyckoff_transformer.cryspr.mlips import build_prerelax_calculator
-from wyckoff_transformer.cryspr.mlips import MLIP_REGISTRY
+from wyckoff_transformer.cryspr.mlips import MLIP_REGISTRY, build_prerelax_calculator
 from wyckoff_transformer.cryspr.relaxer import _print_logm_warning_once
 from wyckoff_transformer.evaluation.hull_mlips import HULL_MLIPS
 
@@ -102,6 +105,17 @@ def load_rows(path: Path) -> dict[tuple[int, int], dict]:
     return result
 
 
+def is_oom_or_timeout(row: dict) -> bool:
+    """Recognise Torch, cuEquivariance and Warp allocation failures."""
+    error = row["error"].lower()
+    return row["status"] == "failed" and any(
+        text in error for text in (
+            "timeouterror", "out of memory", "outofmemoryerror",
+            "cudaerrormemoryallocation", "failed to allocate",
+        )
+    )
+
+
 def apply_historical_timeout(rows_path: Path, rows: dict, seconds: float) -> int:
     """Discard earlier successes exceeding the effective timeout."""
     changed = 0
@@ -127,6 +141,29 @@ def write_json(path: Path, value: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
     os.replace(temporary, path)
+
+
+def prepare_recovery(output: Path, rows: dict, seconds: float, workers: int) -> dict:
+    """Save the retry set so recovery resumes without repeating finished attempts."""
+    path = output / "recovery_settings.json"
+    saved = json.loads(path.read_text()) if path.exists() else {"history": []}
+    history = saved["history"]
+    if not history or history[-1]["relax_timeout_s"] != seconds:
+        history.append({
+            "date_utc": datetime.now(timezone.utc).isoformat(),
+            "relax_timeout_s": seconds, "workers": workers,
+            "original_failures": [row.copy() for row in rows.values() if is_oom_or_timeout(row)],
+            "completed": [],
+        })
+    attempt = history[-1]
+    finished = {tuple(key) for key in attempt["completed"]}
+    for original in attempt["original_failures"]:
+        key = int(original["gene"]), int(original["trial"])
+        # A flushed replacement may precede the completion marker on a crash.
+        if key in rows and rows[key] != original and key not in finished:
+            attempt["completed"].append(list(key))
+    write_json(path, saved)
+    return saved
 
 
 def resolve_relax_timeout(output: Path, source_timeout: float,
@@ -161,6 +198,21 @@ def wandb_identity(manifest: dict) -> tuple[str, str]:
     return digest[:8], f"mlip-bias-{digest[:16]}"
 
 
+def record_execution(output: Path, workers: int, device: str, rows: dict) -> None:
+    """Keep execution changes outside the scientific trial/run identity."""
+    path = output / "execution_settings.json"
+    saved = json.loads(path.read_text()) if path.exists() else {"history": []}
+    current = {"workers": workers, "device": device,
+               "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+               "cpu_affinity": sorted(os.sched_getaffinity(0)),
+               "omp_num_threads": os.environ.get("OMP_NUM_THREADS")}
+    if saved.get("current") != current:
+        saved["history"].append({"date_utc": datetime.now(timezone.utc).isoformat(),
+                                 "completed_trials_at_change": len(rows), **current})
+        saved["current"] = current
+        write_json(path, saved)
+
+
 def restore_from_wandb(output: Path, artifact_name: str, *, entity: str, project: str) -> bool:
     """Restore a complete snapshot when the local trial log is absent."""
     import wandb
@@ -191,7 +243,7 @@ def snapshot_to_wandb(run, output: Path, artifact_name: str, rows: dict) -> None
     artifact = wandb.Artifact(artifact_name, type=ARTIFACT_TYPE, metadata=metadata)
     for name in ("study_manifest.json", "trials.csv", "selected_free.json",
                  "selected_fixed_symmetry.json", "backend_transition.json",
-                 "relaxation_settings.json"):
+                 "relaxation_settings.json", "execution_settings.json", "recovery_settings.json"):
         path = output / name
         if path.is_file():
             artifact.add_file(str(path), name=name)
@@ -248,6 +300,110 @@ def select_structures(output: Path, rows: dict[tuple[int, int], dict]) -> None:
         LOG.info("Selected %d %s structures", len(chosen), track)
 
 
+def execute_trial(atoms, *, calculator, output: Path, mlip: str, device: str,
+                  fmax: float, relax_timeout: float) -> dict:
+    """Run one uniquely named trial; the coordinator owns the ledger and W&B."""
+    gene, trial = int(atoms.info["gene"]), int(atoms.info["trial"])
+    started = time.monotonic()
+    formula = atoms.get_chemical_formula(mode="metal")
+    row = dict.fromkeys(FIELDS, "")
+    row.update(gene=gene, trial=trial, status="failed", formula=formula,
+               n_atoms=len(atoms))
+    trial_dir = output / "trials" / str(gene) / f"trial-{trial}"
+    clear_cuda_cache = False
+    try:
+        with trial_timeout(relax_timeout):
+            relaxed, energy, (fixed, fixed_energy) = relax_trial(
+                atoms_in=atoms, calculator=calculator, trial_dir=trial_dir,
+                label=f"{mlip} gene {gene} trial {trial}",
+                release_symmetry=True, rattle=True,
+                seed=_trial_seed(gene, trial), fmax=fmax,
+            )
+        if relaxed is not None:
+            row.update(status="ok", energy_ev=energy,
+                       energy_ev_per_atom=energy / len(relaxed),
+                       cif=str((trial_dir / f"{formula}{KEPT_CIF_SUFFIX}").relative_to(output)))
+        else:
+            row.update(status="clash")
+        if fixed is not None:
+            row.update(fixed_energy_ev=fixed_energy,
+                       fixed_energy_ev_per_atom=fixed_energy / len(fixed),
+                       fixed_cif=str((trial_dir / f"{formula}{KEPT_FIXED_CIF_SUFFIX}").relative_to(output)))
+    except Exception as exc:
+        row["error"] = f"{type(exc).__name__}: {exc}"
+        LOG.exception("Failed gene %d trial %d", gene, trial)
+        clear_cuda_cache = device.startswith("cuda") and (
+            "out of memory" in str(exc).lower()
+            or "CUBLAS_STATUS_ALLOC_FAILED" in str(exc)
+        )
+    if clear_cuda_cache:
+        import torch
+
+        torch.cuda.empty_cache()
+    row["seconds"] = round(time.monotonic() - started, 3)
+    return row
+
+
+_WORKER_CALCULATOR = None
+_WORKER_OPTIONS = None
+
+
+def initialise_worker(mlip, device, factory, output, fmax, relax_timeout):
+    global _WORKER_CALCULATOR, _WORKER_OPTIONS
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(processName)s %(levelname)s %(message)s")
+    _print_logm_warning_once()
+    _WORKER_OPTIONS = {"output": output, "mlip": mlip, "device": device,
+                       "fmax": fmax, "relax_timeout": relax_timeout}
+    _WORKER_CALCULATOR = build_calculator(mlip, device, factory)
+
+
+def execute_worker_trial(atoms):
+    return execute_trial(atoms, calculator=_WORKER_CALCULATOR, **_WORKER_OPTIONS)
+
+
+def parallel_rows(draws, *, workers: int, mlip: str, device: str, factory,
+                  output: Path, fmax: float, relax_timeout: float):
+    """Keep at most one outstanding trial per spawned calculator process.
+
+    Return finished rows immediately, so a slow trial cannot delay recording
+    other results. The parent remains the sole ledger and artifact writer.
+    """
+    with ProcessPoolExecutor(
+        max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
+        initializer=initialise_worker,
+        initargs=(mlip, device, factory, output, fmax, relax_timeout),
+    ) as pool:
+        draws = iter(draws)
+        pending = set()
+        for _ in range(workers):
+            atoms = next(draws, None)
+            if atoms is None:
+                break
+            pending.add(pool.submit(execute_worker_trial, atoms))
+        while pending:
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in finished:
+                yield future.result()
+                atoms = next(draws, None)
+                if atoms is not None:
+                    pending.add(pool.submit(execute_worker_trial, atoms))
+
+
+def pending_draws(draws_path, done, *, limit_genes=None, max_trials=None):
+    count = 0
+    for atoms in iread(str(draws_path), index=":", format="extxyz"):
+        gene, trial = int(atoms.info["gene"]), int(atoms.info["trial"])
+        if limit_genes is not None and gene >= limit_genes:
+            continue
+        if (gene, trial) in done:
+            continue
+        if max_trials is not None and count >= max_trials:
+            break
+        count += 1
+        yield atoms
+
+
 def main() -> None:
     _print_logm_warning_once()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -256,6 +412,8 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mlip", required=True)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Independent calculator processes; one coordinator writes results")
     parser.add_argument("--calculator-factory",
                         help="Optional MODULE:FUNCTION taking device and returning ASE calculator")
     parser.add_argument("--checkpoint-id",
@@ -266,8 +424,13 @@ def main() -> None:
     parser.add_argument("--limit-genes", type=int)
     parser.add_argument("--max-trials", type=int,
                         help="Bound this invocation; rerun to continue")
-    parser.add_argument("--retry-failed", action="store_true",
-                        help="Rerun failed trials, replacing their ledger rows")
+    retry = parser.add_mutually_exclusive_group()
+    retry.add_argument("--retry-failed", action="store_true",
+                       help="Rerun failed trials, replacing their ledger rows")
+    retry.add_argument("--retry-timeouts", action="store_true",
+                       help="Rerun timeout failures, preserving other failed trials")
+    retry.add_argument("--retry-oom-timeouts", action="store_true",
+                       help="Rerun OOM/timeout failures once at this budget; resume unfinished retries")
     parser.add_argument("--input-artifact", default=DEFAULT_INPUT_ARTIFACT)
     parser.add_argument("--wandb-entity", default="symmetry-advantage")
     parser.add_argument("--wandb-project", default="WyckoffTransformer")
@@ -280,6 +443,8 @@ def main() -> None:
         parser.error("--fmax and --limit-genes must be positive")
     if args.calculator_factory and not args.checkpoint_id:
         parser.error("--checkpoint-id is required with --calculator-factory")
+    if args.workers < 1:
+        parser.error("--workers must be positive")
     if args.sync_every < 1:
         parser.error("--sync-every must be positive")
     if args.relax_timeout is not None and (
@@ -327,6 +492,7 @@ def main() -> None:
         write_json(manifest_path, manifest)
     rows_path = args.output / "trials.csv"
     done = load_rows(rows_path)
+    record_execution(args.output, args.workers, args.device, done)
     relax_timeout = resolve_relax_timeout(args.output, source_timeout, args.relax_timeout, done)
     LOG.info("Relaxation timeout: %g s per trial (input manifest: %g s)",
              relax_timeout, source_timeout)
@@ -334,8 +500,17 @@ def main() -> None:
     if invalidated:
         LOG.warning("Invalidated %d earlier trials exceeding %.0f s", invalidated,
                     relax_timeout)
-    if args.retry_failed:
-        failed = [key for key, row in done.items() if row["status"] == "failed"]
+    recovery = None
+    if args.retry_oom_timeouts:
+        recovery = prepare_recovery(args.output, done, relax_timeout, args.workers)
+        finished = {tuple(key) for key in recovery["history"][-1]["completed"]}
+        retry_keys = {(int(row["gene"]), int(row["trial"]))
+                      for row in recovery["history"][-1]["original_failures"]} - finished
+    if args.retry_failed or args.retry_timeouts or args.retry_oom_timeouts:
+        failed = [key for key, row in done.items() if row["status"] == "failed"
+                  and (args.retry_failed
+                       or (args.retry_timeouts and "TimeoutError" in row["error"])
+                       or (args.retry_oom_timeouts and key in retry_keys))]
         if failed:
             for key in failed:
                 del done[key]
@@ -349,6 +524,7 @@ def main() -> None:
     run = None
     if not args.no_wandb:
         import wandb
+
         from wyckoff_transformer.paths import wandb_dir
 
         run = wandb.init(entity=args.wandb_entity, project=args.wandb_project,
@@ -356,12 +532,14 @@ def main() -> None:
                          job_type="mlip_bias_relax", config=manifest)
         run.summary["relax_timeout_s"] = relax_timeout
         run.summary["source_relax_timeout_s"] = source_timeout
+        run.summary["relaxation_workers"] = args.workers
     if invalidated:
         select_structures(args.output, done)
         if run is not None:
             snapshot_to_wandb(run, args.output, artifact_name, done)
     try:
-        calculator = build_calculator(args.mlip, args.device, args.calculator_factory)
+        calculator = (build_calculator(args.mlip, args.device, args.calculator_factory)
+                      if args.workers == 1 else None)
     except Exception as exc:
         if run is not None:
             run.summary["setup_failure"] = f"{type(exc).__name__}: {exc}"
@@ -379,68 +557,49 @@ def main() -> None:
             "openequivariance" if oeq_modules else "cuequivariance" if cue_modules else "e3nn"
         )
         LOG.info("Loaded TACE checkpoint with %d OpenEquivariance modules", oeq_modules)
-    with rows_path.open("a", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=FIELDS)
-        if stream.tell() == 0:
-            writer.writeheader()
-        completed = 0
-        for atoms in iread(str(draws_path), index=":", format="extxyz"):
-            gene, trial = int(atoms.info["gene"]), int(atoms.info["trial"])
-            if args.limit_genes is not None and gene >= args.limit_genes:
-                continue
-            if (gene, trial) in done:
-                continue
-            if args.max_trials is not None and completed >= args.max_trials:
-                break
-            started = time.monotonic()
-            formula = atoms.get_chemical_formula(mode="metal")
-            row = dict.fromkeys(FIELDS, "")
-            row.update(gene=gene, trial=trial, status="failed", formula=formula,
-                       n_atoms=len(atoms))
-            trial_dir = args.output / "trials" / str(gene) / f"trial-{trial}"
-            clear_cuda_cache = False
-            try:
-                with trial_timeout(relax_timeout):
-                    relaxed, energy, (fixed, fixed_energy) = relax_trial(
-                        atoms_in=atoms, calculator=calculator, trial_dir=trial_dir,
-                        label=f"{args.mlip} gene {gene} trial {trial}",
-                        release_symmetry=True, rattle=True,
-                        seed=_trial_seed(gene, trial), fmax=args.fmax,
-                    )
-                if relaxed is not None:
-                    row.update(status="ok", energy_ev=energy,
-                               energy_ev_per_atom=energy / len(relaxed),
-                               cif=str((trial_dir / f"{formula}{KEPT_CIF_SUFFIX}").relative_to(args.output)))
-                else:
-                    row.update(status="clash")
-                if fixed is not None:
-                    row.update(fixed_energy_ev=fixed_energy,
-                               fixed_energy_ev_per_atom=fixed_energy / len(fixed),
-                               fixed_cif=str((trial_dir / f"{formula}{KEPT_FIXED_CIF_SUFFIX}").relative_to(args.output)))
-            except Exception as exc:
-                row["error"] = f"{type(exc).__name__}: {exc}"
-                LOG.exception("Failed gene %d trial %d", gene, trial)
-                clear_cuda_cache = args.device.startswith("cuda") and (
-                    "out of memory" in str(exc).lower()
-                    or "CUBLAS_STATUS_ALLOC_FAILED" in str(exc)
-                )
-            if clear_cuda_cache:
-                import torch
-
-                torch.cuda.empty_cache()
-            row["seconds"] = round(time.monotonic() - started, 3)
-            writer.writerow(row)
-            stream.flush()
-            done[(gene, trial)] = row
-            completed += 1
-            LOG.info("%s gene %d trial %d: %s", args.mlip, gene, trial, row["status"])
-            if run is not None and completed % args.sync_every == 0:
-                select_structures(args.output, done)
-                snapshot_to_wandb(run, args.output, artifact_name, done)
-    select_structures(args.output, done)
-    if run is not None:
-        snapshot_to_wandb(run, args.output, artifact_name, done)
-        run.finish()
+    completed = 0
+    results = None
+    failed = False
+    try:
+        with rows_path.open("a", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=FIELDS)
+            if stream.tell() == 0:
+                writer.writeheader()
+            draws = pending_draws(draws_path, done, limit_genes=args.limit_genes,
+                                  max_trials=args.max_trials)
+            options = {"output": args.output, "mlip": args.mlip, "device": args.device,
+                       "fmax": args.fmax, "relax_timeout": relax_timeout}
+            if args.workers == 1:
+                results = (execute_trial(atoms, calculator=calculator, **options) for atoms in draws)
+            else:
+                results = parallel_rows(draws, workers=args.workers,
+                                        factory=args.calculator_factory, **options)
+            LOG.info("Relaxing with %d calculator worker(s)", args.workers)
+            for row in results:
+                gene, trial = int(row["gene"]), int(row["trial"])
+                writer.writerow(row)
+                stream.flush()
+                done[(gene, trial)] = row
+                if recovery is not None and (gene, trial) in retry_keys:
+                    recovery["history"][-1]["completed"].append([gene, trial])
+                    write_json(args.output / "recovery_settings.json", recovery)
+                completed += 1
+                LOG.info("%s gene %d trial %d: %s", args.mlip, gene, trial, row["status"])
+                if run is not None and completed % args.sync_every == 0:
+                    select_structures(args.output, done)
+                    snapshot_to_wandb(run, args.output, artifact_name, done)
+    except BaseException as exc:
+        failed = True
+        if run is not None:
+            run.summary["execution_failure"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        if results is not None:
+            results.close()
+        select_structures(args.output, done)
+        if run is not None:
+            snapshot_to_wandb(run, args.output, artifact_name, done)
+            run.finish(exit_code=1 if failed else 0)
     LOG.info("%d trials recorded; %d completed this invocation", len(done), completed)
 
 

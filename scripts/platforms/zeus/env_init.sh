@@ -36,6 +36,17 @@ done
 # destroy and recreate an existing environment.
 uv sync "${extra_args[@]}" "$@"
 
+# Torch 2.14.1's local build refers to a removed NVSHMEM build directory.
+# Its $ORIGIN RUNPATH can find this link to the installed host CUDA 13 library.
+# Keep --dry-run read-only and honour scratch/worktree environments.
+if [[ " $* " != *" --dry-run "* ]]; then
+    torch_lib="${UV_PROJECT_ENVIRONMENT:-.venv}/lib/python3.12/site-packages/torch/lib"
+    nvshmem_lib=/usr/lib/x86_64-linux-gnu/nvshmem/13/libnvshmem_host.so.3
+    if [[ -d "$torch_lib" && -f "$nvshmem_lib" && ! -e "$torch_lib/libnvshmem_host.so.3" ]]; then
+        ln -s "$nvshmem_lib" "$torch_lib/libnvshmem_host.so.3"
+    fi
+fi
+
 cat <<MSG
 
 Environment synced with extras: ${WYFORMER_EXTRAS}

@@ -17,7 +17,7 @@ name = "zeus"
 url = "file:///mnt/hdd/torch_wheels/"
 format = "flat"
 
-# torch-2.14.0+cu133 declares `triton==3.8.0; platform_system == "Linux" and
+# torch-2.14.1+cu134 declares `triton==3.8.0; platform_system == "Linux" and
 # platform_machine == "x86_64"` in its own METADATA -- unlike the torch-2.11.0
 # build it replaces, which was built before that pin was added and declared no
 # triton dependency at all. Without this constraint a resolver is otherwise

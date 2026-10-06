@@ -105,15 +105,34 @@ tracked and stayed). Everything tracked by git stayed in the checkout.
 
 ## The state of the current venv
 
+Updated 2026-10-05 for the [MLIP bias study](mlip_bias.md). The local lock
+was upgraded with `uv lock --upgrade-package torch`; the new wheel still
+requires Triton 3.8.0.
+
 | | |
 | --- | --- |
 | Python | 3.12.3, the system interpreter (`home = /usr/bin` in `pyvenv.cfg`) |
 | `include-system-site-packages` | `false` — nothing is inherited from the host Python |
-| torch | 2.14.0+cu133, CUDA 13.3, locally built wheel |
+| torch | 2.14.1+cu134, CUDA 13.4, locally built wheel |
 | triton | 3.8.0, from PyPI, via the `compile` extra |
-| `nvidia-*` distributions | none — CUDA and MKL come from the host |
+| NVIDIA CUDA runtime distributions | none — CUDA and MKL come from the host; `nvidia-ml-py` is the Python NVML interface |
 | Extras installed | `dev`, `relax`, `compile` |
 | Project | installed editable (`_editable_impl_wyckoff_transformer.pth`) |
+
+The Torch 2.14.1 wheel's NVSHMEM RUNPATH names a removed build directory.
+The host library is installed by `libnvshmem3-cuda-13`, but its subdirectory
+is absent from the system loader path. Link it into Torch's `$ORIGIN` search
+directory, without installing a conflicting NVIDIA runtime wheel:
+
+```bash
+ln -s /usr/lib/x86_64-linux-gnu/nvshmem/13/libnvshmem_host.so.3 \
+    .venv/lib/python3.12/site-packages/torch/lib/libnvshmem_host.so.3
+```
+
+`env_init.sh` creates this link after a real sync (including scratch venvs),
+and leaves `--dry-run` untouched. This fixes `import torch` and GPU use with
+no shell activation or library-path exports. Reinstalling Torch removes the
+link; recreate it after an explicit wheel reinstall.
 
 ---
 
@@ -136,7 +155,7 @@ rest come from PyPI, git or local path sources:
 
 | Package | Version |
 | --- | --- |
-| `torch` | 2.14.0+cu133 |
+| `torch` | 2.14.1+cu134 |
 | `spglib` | 2.7.0 |
 
 The directory also holds wheels for unrelated work on this box (`vllm`,
@@ -151,7 +170,7 @@ Nothing prunes it.
 
 ```toml
 name = "torch"
-version = "2.14.0+cu133"
+version = "2.14.1+cu134"
 source = { registry = "/mnt/hdd/torch_wheels/" }
 ```
 
@@ -183,7 +202,7 @@ export USE_MKL=1 USE_MKLDNN=ON USE_OPENMP=1 USE_NUMA=1 USE_NCCL=1
 export _GLIBCXX_USE_CXX11_ABI=1
 ```
 
-`/etc/profile.d/cuda.sh` adds `CUDA_HOME=/usr/local/cuda` (→ 13.3), and
+`/etc/profile.d/cuda.sh` adds `CUDA_HOME=/usr/local/cuda` (→ 13.4), and
 `/etc/ld.so.conf.d/mkl.conf` puts oneAPI's MKL on the system library path.
 
 Three consequences worth knowing:
@@ -363,7 +382,7 @@ zeus invention.
 ## `torch.compile`, triton, and CPU-only installs
 
 `torch.compile` works on zeus. It needs `triton`, which is installed by the
-`compile` extra and pinned to `3.6.0` by `constraint-dependencies` in
+`compile` extra and pinned to `3.8.0` by `constraint-dependencies` in
 `scripts/platforms/zeus/uv.toml`.
 
 This used to fail with `TritonMissing`, which matters because
@@ -385,7 +404,7 @@ something fixed once and for all:
 | PyPI (GPU) `torch` | pinned for Linux (e.g. `triton==3.6.0; platform_system == "Linux"` on 2.11.0) |
 | `download.pytorch.org/whl/cpu` | no triton |
 | Built from source on zeus, torch 2.11.0 (previous) | no triton — the release process hadn't started adding the pin to source builds yet |
-| Built from source on zeus, torch 2.14.0+cu133 (current) | `triton==3.8.0; platform_system == "Linux" and platform_machine == "x86_64"` — now baked in, same as the official wheels |
+| Built from source on zeus, torch 2.14.1+cu134 (current) | `triton==3.8.0; platform_system == "Linux" and platform_machine == "x86_64"` — now baked in, same as the official wheels |
 
 So the CPU-only story that kept triton out of the base dependencies is real and
 worth preserving: triton is a 640 MB Linux-only GPU compiler, and a CPU-only or
@@ -412,14 +431,18 @@ The version pin is split for the same reason. The extra keeps a loose floor
 constraint-dependencies = ["triton ==3.8.0"]
 ```
 
-because this host's torch is 2.14.0+cu133, and that wheel's own METADATA
+because this host's torch is 2.14.1+cu134, and that wheel's own METADATA
 requires exactly triton 3.8.0. Without that constraint nothing stops a
 resolver taking whichever triton pairs with the next torch bump on its own
 schedule. **Bump both together when torch is rebuilt, and check the new
 wheel's `Requires-Dist` for triton rather than assuming the old
 "source builds carry no pin" behaviour still holds.**
 
-`cuequivariance_torch` is a separate matter and is still not installed; the MLIP
-code gates cuEQ behind an import check and degrades silently. Its
-`cuequivariance-cu13` extra also depends on `triton >=3`, which is why triton
-was already present in `uv.lock` — locked, but not installed, until now.
+`cuequivariance`, `cuequivariance-torch`, `cuequivariance-ops-cu13` and
+`cuequivariance-ops-torch-cu13` 0.12.0 were installed on 2026-10-05 with
+`uv pip install --no-deps` for EquFlashV2. The ops package declares a
+`nvidia-cublas` dependency, but this host supplies cuBLAS through system CUDA
+13.4. Do not install the CUDA extra with unrestricted dependency resolution:
+it can replace host libraries or local Torch. The EquFlashV2 GPU energy,
+forces and stress probe passed. See [mlip_bias.md](mlip_bias.md) for the
+separate model overlays and provenance.

@@ -164,12 +164,12 @@ calculator with `build_hull_calculator`
 (`src/wyckoff_transformer/evaluation/hull_mlips.py`) and so stay paired with
 the hull.
 
-`cuequivariance_torch` is **not installed**, so the cuEQ acceleration path for
-MACE and TACE is off. Both builders check for it by import and fall back
-silently, so nothing breaks; GPU MACE is simply not accelerated. Installing the
-`cuequivariance-cu13` extra would also pull in `cuequivariance-ops-torch-cu13`
-against a locally built torch, which is untested here — see
-[environment.md](environment.md#torchcompile-triton-and-cpu-only-installs).
+cuEquivariance 0.12.0 and its CUDA 13 ops are installed for the EquFlashV2
+study as of 2026-10-05. Its GPU energy, forces and stress probe passed with
+local Torch 2.14.1/CUDA 13.4. This does not validate the cuEQ paths of other
+MLIPs. Install these packages with `--no-deps`; the ops metadata declares
+`nvidia-cublas`, which this machine supplies through system CUDA. See
+[mlip_bias.md](mlip_bias.md) for the model environments and launcher.
 
 ---
 

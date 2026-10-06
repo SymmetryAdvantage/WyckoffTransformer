@@ -1,5 +1,16 @@
 # MLIP relaxation bias study handoff — 2026-10-06
 
+Current state on 2026-10-06: Zeus EquFlashV2/PET relaxations and serial recovery
+are complete, including the successful fresh-parent `(991, 2)` retry.
+GenBench scoring attempts finished for EquFlashV2, PET, TECE,
+EquiformerV3, eSEN and TACE's completed first pass, both tracks.
+All seven benchmark families completed on the same 440 valid, fully
+scored genes across all twelve tracks. eSEN/free retains one unsupported
+UMA score (gene 722, empty graph at the 6 Å cutoff), so its full-cohort
+result is flagged incomplete. The audited comparison is in
+[W&B run 6c532304](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/6c532304).
+Current launch/provenance details are in [the Zeus notes](docs/platforms/zeus/mlip_bias.md).
+
 ## Objective and provenance
 
 Relax the 2,698 raw PyXtal draws from W&B artifact
@@ -12,9 +23,10 @@ the input artifact's selected CIFs already carry ORB bias. The Matbench ranking
 snapshot is commit `71633e8bdfdfd41d56d64b1d777e5686d9eda3ec` and the
 LeMat-GenBench checkout is commit `fbf1ba4855934acb8fe87135315504899064080d`.
 WyFormer HEAD at the earlier stop was `7638adc28976bdde8ae0b04a5cc0cc51dc4ed56d`;
-at the latest resumption it is `6d17079e3181073dbbeda3371385a01a39e451b3`.
-The last code commit before this handoff update is
-`d54050bf38454e99429f916f7f5723d4228af8fb`.
+at the iapetus resumption it was `6d17079e3181073dbbeda3371385a01a39e451b3`.
+The migration handoff was merged from `9e4a1de` on 2026-10-06;
+the completed Zeus results below were produced at `3f9ec13` with the
+source snapshots recorded in W&B.
 Study code and docs are committed together with this handoff; the dated
 compatibility artifacts in
 [W&B](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/mlipbias1)
@@ -25,28 +37,76 @@ setup and GPU failures; keep outputs recoverable through W&B. Iapetus has six
 physical CPU cores. The active workers were limited to separate pairs of two.
 GRACE-3L-OAM-L is intentionally skipped because the user does not want the
 TensorFlow dependency. On 2026-10-05, the user also excluded EquFlash in favor
-of EquFlashV2. EquFlashV2 remains planned; historical EquFlash probe records
+of EquFlashV2. EquFlashV2 remains in the study; historical EquFlash probe records
 are retained, but no further EquFlash setup, relaxation or scoring is planned.
 
 On 2026-10-05, the user assigned **PET-OAM-XL and EquFlashV2 to the other,
-larger-VRAM machine**. On 2026-10-06 that machine was identified as **zeus**,
-which has two shared RTX 6000 Ada GPUs with 46,068 MiB each. These two arms
-remain in the study and must use the same raw input artifact, published
-checkpoints, relaxation protocol and 600-second timeout, with results and
-environment provenance logged to W&B. Their arm run links are still pending.
+larger-VRAM machine**, Zeus, where both arms completed on 2026-10-06. These two
+arms remain in the study, but are not scheduled for iapetus. Use the same raw
+input artifact, published checkpoints and relaxation protocol, with results
+and environment provenance logged to W&B. The original 600-second Zeus
+timeout was raised to 1,200 seconds at the user's request on 2026-10-05;
+shorter-budget timeout failures are requeued before completing each arm. The other
+machine is Zeus. Both GPU 1 single-point probes passed on 2026-10-05 with
+local Torch 2.14.1/CUDA 13.4. The user requested completing EquFlashV2 first,
+then PET-OAM-XL. The detached Zeus worker and environment are documented in
+[the Zeus study notes](docs/platforms/zeus/mlip_bias.md). EquFlashV2's first
+successful full relaxation was uploaded to
+[run 9b5e07e1](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/9b5e07e1).
+An initial launcher count bug prematurely started PET; its seven successful
+trials were preserved and uploaded to
+[run a4bbbd2f](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/a4bbbd2f).
+The corrected, tested launcher now resumes EquFlashV2 before continuing PET.
+After the user requested greater GPU utilization, the runner gained spawned
+calculator workers with one ledger/W&B writer. The normal Zeus pass ran four EquFlashV2
+trials concurrently, then two PET trials concurrently. Four repeated sample
+relaxations agreed with serial energies within `6.36e-6 eV/atom`; GPU 1 was
+observed at 84% utilization. The six serial EquFlashV2 trials were checkpointed
+before the parallel resume. Parallel validation/source snapshots are in
+compatibility artifact `mlip-bias-zeus-parallel-20261005`; details and worker
+counts are in the Zeus notes.
+Zeus setup records are published under compatibility artifact
+`mlip-bias-zeus-setup-20261005` in run `mlipbias1`, at WyFormer HEAD
+`c3cb84e4dcfd6e08360e4ee7a2232786143c1a9a` plus its uploaded source snapshots.
+
+On 2026-10-05 at 22:21 Asia/Singapore, a timeout audit found two
+EquFlashV2 and six PET timeouts, all on 304–464-atom cells still progressing
+through the multi-stage protocol. The limit was 600 seconds at this audit; the subsequent user-requested
+Zeus limit is 1,200 seconds, including selective timeout retries. A second launcher count bug counted multiline CSV exception
+messages as multiple trials and switched arms with 42 EquFlashV2 draws
+missing. The launcher now counts actual CSV records; a regression check
+verified ordering and completed-arm skipping. PET was checkpointed at
+1,857 rows; EquFlashV2 resumed from 2,656 rows before PET continues.
+Detailed evidence, HEAD and W&B provenance are in the Zeus notes and
+compatibility artifact `mlip-bias-zeus-timeout-audit-20261005`.
+
+On 2026-10-05, the user queued serial recovery after both Zeus normal
+arms finish: retry OOM/allocation and timeout failures on GPU 1 with one
+worker and a 3,600-second whole-trial timeout. That recovery launcher was
+`scripts/platforms/zeus/run_mlip_bias_gpu1_recovery.sh` in tmux window `0:5`.
+It acquires the normal launcher's GPU lock, requires both normal ledgers
+complete, saves/uploads the candidate plan, then recovers EquFlashV2 before
+PET. Each recovered trial is uploaded to the same arm's W&B run; successes
+and unrelated failures remain intact. Recovery attempts and completion are
+recorded so an interrupted pass can resume without repeating failed attempts.
+All 18 runner tests and the mocked lock/order/filter queue check passed.
+See the Zeus study notes and compatibility artifact
+`mlip-bias-zeus-recovery-queued-20261005` for provenance.
 
 ## Migration to zeus — decision and boundary on 2026-10-06
+
 
 The user requested that only one MLIP continue on iapetus and that the rest of
 the study move to the proper GPUs on zeus. Keep **NequIP-OAM-XL** as the sole
 iapetus MLIP: it has been reliable on the K20c, with 1,662 successful results
-and 71 failures in the 1,733-row snapshot below. ORB is a control rather than
-an MLIP. Do not restart the existing GPU 0 round-robin launcher after the
+and 71 failures in the 1,733-row snapshot below. ORB is the control arm. Do not restart the existing GPU 0 round-robin launcher after the
 migration boundary because it also schedules ORB and Prophet.
 
-This is the local-ledger snapshot observed on 2026-10-06 at approximately
-21:00 Asia/Singapore. NequIP and TACE were still advancing when it was taken,
-so later rows must be preserved before moving their writers.
+This is the iapetus local-ledger snapshot observed on 2026-10-06 at approximately
+21:00 Asia/Singapore, combined with the already completed Zeus arms. NequIP
+and TACE were still advancing on iapetus when it was taken, so later rows
+must be preserved before moving their writers. The migration boundary has
+not yet been verified from Zeus.
 
 | Arm | Rows | Successful | Failed | Assignment | W&B run |
 | --- | ---: | ---: | ---: | --- | --- |
@@ -57,8 +117,8 @@ so later rows must be preserved before moving their writers.
 | TACE-OAM-L | 2,563 | 2,464 | 99 | zeus: resume active retry pass | [8eb9d70c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/8eb9d70c) |
 | eSEN-30M-OAM | 2,698 | 1,836 | 862 | zeus: retry failures | [e18262dd](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/e18262dd) |
 | EquiformerV3+DeNS-OAM | 2,698 | 1,181 | 1,517 | zeus: retry failures | [756e18ed](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/756e18ed) |
-| PET-OAM-XL | 0 | 0 | 0 | zeus: first pass | pending |
-| EquFlashV2 | 0 | 0 | 0 | zeus: first pass after compatibility fix | pending |
+| PET-OAM-XL | 2,698 | 2,696 | 2 | zeus: completed normal/recovery | [a4bbbd2f](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/a4bbbd2f) |
+| EquFlashV2 | 2,698 | 2,694 | 4 | zeus: completed normal/recovery | [9b5e07e1](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/9b5e07e1) |
 
 Create a clean single-writer boundary before launching anything on zeus:
 
@@ -82,12 +142,14 @@ Follow [the zeus agent brief](docs/platforms/zeus/agent_brief.md): use the host
 `.venv/bin/python` or `uv run`, never iapetus's container or package overlays;
 check `nvidia-smi` because both GPUs are shared; and select one GPU explicitly
 with `CUDA_VISIBLE_DEVICES=0` or `1`. Recreate and probe each model's pinned
-dependencies on zeus before its first relaxation. The current zeus environment
-has not yet been verified for these adapters, PET initialization,
-EquFlashV2/cuEquivariance compatibility, the gated eSEN checkpoint, or access
-to the current W&B arm artifacts. Run at most one arm per free RTX 6000 Ada.
-No zeus worker or new PET/EquFlashV2 W&B run had been verified when this
-handoff section was written.
+dependencies on zeus before its first relaxation. EquFlashV2/PET and the
+ORB/MACE/UMA scoring environment are already verified on Zeus. The newly
+migrating relaxation adapters still require their own probes, including the
+gated eSEN checkpoint. W&B access and the six scored relaxation snapshots
+are verified; obtain fresh boundary snapshots for ORB, Prophet and TACE.
+Run at most one arm per available RTX 6000 Ada, completing an arm before
+starting the next. The user's current Zeus assignment is GPU 1. Preserve
+the recorded 1,200-second normal and 3,600-second serial-recovery limits.
 
 ## Previous state — GPU 1 reassigned 2026-10-05
 
@@ -126,7 +188,7 @@ newly recorded failures are not repeatedly requeued. GPU 0 and GPU 2 retain
 their existing round-robin workers. PET and EquFlashV2 remain assigned to
 the user's other machine. TECE's failed trials remain recorded.
 
-## Resumption history — 2026-10-04
+## Historical resumption — 2026-10-04
 
 At approximately 21:29 Asia/Singapore, the user requested continuing the study
 and using the current tmux session. After confirming that all GPUs were idle
@@ -187,7 +249,7 @@ Check `tmux list-windows -t 0` and Docker before starting any other worker;
 the historical `tmux -L mlipbias` server is not used by this resumption.
 
 The user subsequently doubled the per-trial relaxation timeout to 600 seconds.
-All prepared study launchers now pass `--relax-timeout 600`; the runtime
+At that resumption all prepared study launchers passed `--relax-timeout 600`; the runtime
 override is persisted in each arm's `relaxation_settings.json` and included
 in W&B snapshots, so an artifact-only resume also remembers it. The original
 input manifest retains its 300-second value and SHA-256, and run IDs remain
@@ -267,7 +329,7 @@ using the pinned source commits in the study notes; they are not W&B artifacts.
 The detailed dated log, model ranking, and scoring contract are in
 [docs/mlip_relaxation_bias_study.md](docs/mlip_relaxation_bias_study.md).
 
-## Resuming the relaxation arms
+## Resuming the relaxation arms later
 
 First check `nvidia-smi`, `docker ps`, `tmux list-windows -t 0`, and any legacy
 `tmux -L mlipbias list-sessions` so
@@ -278,7 +340,7 @@ ledger is absent, the same runner invocation downloads its latest W&B artifact
 before continuing. All run IDs and checkpoint locators are deterministic from
 the study manifest.
 
-The following iapetus launchers describe the historical three-GPU schedule:
+On iapetus, the prepared launchers are:
 
 ```bash
 scripts/platforms/iapetus/run_mlip_bias_gpu0.sh
@@ -286,29 +348,67 @@ scripts/platforms/iapetus/run_mlip_bias_gpu1.sh
 scripts/platforms/iapetus/run_mlip_bias_gpu2_roundrobin.sh
 ```
 
-GPU 0 alternates ORB, Prophet and NequIP in five-trial batches; do not use that
-round robin after the 2026-10-06 migration. The original GPU 1 launcher runs
-TECE, while `run_mlip_bias_gpu1_tace.sh` runs TACE's active failed-trial pass.
-GPU 2 alternates eSEN and EquiformerV3 in ten-trial batches; both first passes
-are now complete. Each wrapper pins its GPU and two physical CPU cores. Keep a
-NequIP-only worker on iapetus and follow the migration section for all other
-arms. To recover out-of-memory rows on zeus, use
-`scripts/run_mlip_bias_relax.py --retry-failed` with the same arm output,
-model, checkpoint and input exactly once per newly initiated retry pass; do not
-run it concurrently with another writer for that arm.
+GPU 0 alternates ORB, Prophet and NequIP in five-trial batches. GPU 1 runs TECE.
+GPU 2 alternates eSEN and EquiformerV3 in ten-trial batches. TACE already has
+a full first-pass ledger. Each wrapper pins its GPU and two physical CPU cores.
+The GPU 0 and GPU 2 scripts are foreground loops; use detached `tmux` sessions
+if they should survive a client disconnect. On another host, adapt CUDA device
+selection and package overlays. To recover out-of-memory rows on a larger GPU,
+use `scripts/run_mlip_bias_relax.py --retry-failed` with the same arm output,
+model, checkpoint and input; do not run it concurrently with the normal arm.
 
-## Scoring still required
+## Zeus completion and GenBench scoring
 
-`scripts/run_mlip_bias_genbench.py` is prepared but has not been run or validated
-against a complete LeMat-GenBench environment. It reads each arm's selected
-free/fixed-symmetry CIFs, invokes the `comprehensive_multi_mlip_hull` protocol,
-disables internal relaxation, records separate ORB/MACE/UMA single-point
-energies, excludes relaxation RMSD, and uploads metrics and energies to W&B.
-It refuses an incomplete 2,698-row trial ledger by default; `--allow-partial`
-is diagnostic only. The LeMat checkout at `/home/kna/lemat-genbench` must be
-mounted into the container, for example with
-`WYFORMER_EXTRA_MOUNTS=/home/kna/lemat-genbench:/lemat-genbench:ro` and
-`--lemat-root /lemat-genbench`. Its dependency environment and actual scoring
-run are still pending. Report per-arm successful-gene coverage and scoring
-failures; do not compare energies across different MLIP definitions by column
-name.
+On 2026-10-06 at WyFormer HEAD `3f9ec13525b217dc5997401ef0c592ea5af0f735`,
+EquFlashV2 and PET each have complete 2,698-row ledgers. The normal
+1,200-second pass and one-worker, 3,600-second recovery finished.
+The requested fresh-parent retry of EquFlashV2 `(991, 2)` succeeded
+in 157.8 seconds, with peak GPU usage 45,260 MiB. EquFlashV2 has
+2,694 successful trials, PET 2,696; both select 991 genes in each track.
+Their pinned artifacts are `mlip-bias-9b5e07e1c31040ee:v116` and
+`mlip-bias-a4bbbd2f9825a3a3:v130`. Fresh-retry diagnostics are
+`mlip-bias-zeus-fresh-991-2-20261006` under compatibility run `mlipbias1`.
+
+The user requested following through the study scoring contract.
+The isolated Zeus GenBench environment and frozen LeMat worktree
+are prepared; GPU energy/embedding probes pass for all three scorers.
+`scripts/platforms/zeus/run_mlip_bias_genbench_gpu1.sh` scores free and
+fixed-symmetry tracks sequentially for EquFlashV2, PET, completed TECE
+(896 selected genes) and completed EquiformerV3 (480 selected genes).
+See [Zeus notes](docs/platforms/zeus/mlip_bias.md) for dependency pins,
+hull provenance and launch details, and [the study](docs/mlip_relaxation_bias_study.md)
+for the formation-energy correction and comparison limitations.
+No further relaxation is performed during scoring. Outputs and
+partial/full score checkpoints are W&B artifacts; local copies are
+under `generated/mlip_bias_study/metrics/<arm>/<track>/`.
+Other relaxation arms were incomplete at this snapshot.
+
+On the next 2026-10-06 W&B refresh, eSEN's complete 2,698-row snapshot
+`mlip-bias-e18262dd1ae93acd:v271` became available: 1,836 successful
+trials and 718 selected genes in both tracks. It was downloaded and both
+tracks queued after the first four arms, sharing the exclusive GPU 1 lock.
+Other arms are still incomplete; all snapshots are pinned independently
+of any later recovery on the originating machine.
+
+TACE's complete first-pass snapshot `mlip-bias-8eb9d70c27c24afd:v108`
+was scored, under `tace_oam_l_first_pass`, after eSEN: 1,925 successful
+trials and 747 selected genes. The remote recovery is ongoing; this score
+set is explicitly the earlier completed first pass.
+
+All twelve source scoring attempts and all twelve matched-cohort benchmarks
+finished on 2026-10-06. The comparison artifact is
+`mlip-bias-genbench-comparison-6c53230488bb6d61:v1` under run `6c532304`:
+full-cohort and 440-gene common-cohort metrics, scorer-specific energy
+tables, numerical residuals, dependency/model/reference provenance and a
+passed consistency audit. No further relaxation was performed; relaxation
+RMSE/RMSD outputs are excluded. Eleven source tracks have full coverage;
+eSEN/free has UMA coverage 656/657, with the same cutoff rejection
+reproduced in a fresh CPU process. Its two-model full-cohort Fréchet
+distance remains marked incomplete. The common cohort has all three
+scorers in every track. GPU 1 scoring jobs have finished.
+
+At the 17:28 SGT W&B refresh, ORB, Prophet and NequIP had 1,726, 1,694
+and 1,691 trial rows, respectively; their complete-arm metrics await
+relaxation completion. TACE recovery had 2,475 rows; this report uses its
+earlier complete first-pass snapshot. Results and limitations are in
+[the study](docs/mlip_relaxation_bias_study.md).

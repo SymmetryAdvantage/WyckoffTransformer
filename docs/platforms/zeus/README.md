@@ -2,7 +2,13 @@
 
 `zeus.nus.edu.sg` — Ubuntu 24.04.4, kernel 6.8.0-138, Intel Xeon w7-3455
 (**24 physical cores**, 48 threads), 1 TB RAM (1,007 GiB), 2x NVIDIA RTX 6000 Ada
-Generation (46 GB each), NVIDIA driver **610.57.04**, CUDA toolkit **13.3**.
+Generation (46 GB each), NVIDIA driver **615.71.09**, CUDA toolkit **13.4**.
+
+On 2026-10-05 the venv was upgraded to local Torch `2.14.1+cu134`, retaining
+Triton 3.8.0, for the [EquFlashV2/PET study](mlip_bias.md). Both GPU 1
+single-point probes pass. [environment.md](environment.md) documents the
+NVSHMEM runtime link needed by this wheel and the controlled cuEquivariance
+installation. The older verification table below records the previous setup.
 
 WyFormer runs **directly on the host** here, in an ordinary uv venv — no
 container. The one unusual part is the other end: **torch is a locally built

@@ -9,9 +9,10 @@ Symptoms seen on this machine, and what they mean.
 | MACE, ORB, triton, `pytest` or `ruff` suddenly missing | Something ran a bare `uv sync`, which prunes every extra. Restore with `scripts/platforms/zeus/env_init.sh`. |
 | A resolver picking triton 3.7.x, or a version mismatch with torch | The `constraint-dependencies` pin is gone. The root `uv.toml` is untracked — re-copy it via `env_init.sh`. |
 | `uv pip list` shows `nvidia-cublas`, `nvidia-cudnn-cu13`, ... | A PyPI manylinux torch was installed over the locally built one. The count of `nvidia-*` distributions should be 0. Reinstall torch from the local index. |
-| Nothing resolves; uv cannot find torch 2.14.0+cu133 | `uv.toml` is missing, so the local flat index is not declared. It is untracked — recreate it with `cp scripts/platforms/zeus/uv.toml uv.toml`, or just rerun `env_init.sh`. |
+| Nothing resolves; uv cannot find torch 2.14.1+cu134 | `uv.toml` is missing, so the local flat index is not declared. It is untracked — recreate it with `cp scripts/platforms/zeus/uv.toml uv.toml`, or just rerun `env_init.sh`. |
 | `warning: Found both a uv.toml file and a [tool.uv] section ... extra-build-dependencies` | Expected on every uv invocation here, and harmless: the zeus `uv.toml` repeats the shadowed value. See [environment.md](environment.md#tooluvextra-build-dependencies-and-the-shadowing-warning). |
 | `import torch` fails with a missing `libmkl_*.so.3` | The wheel finds MKL through a RUNPATH into `/opt/intel/oneapi/mkl/latest/lib/intel64`. oneAPI has moved or been removed. |
+| `import torch` fails with `libnvshmem_host.so.3` after the 2.14.1 upgrade | The wheel names a removed NVSHMEM build directory. Run `env_init.sh --inexact`, or create the host-library symlink described in [environment.md](environment.md#the-state-of-the-current-venv). |
 | Jobs are much slower than the core count suggests | 48 is threads, not cores; there are 24 physical cores. A CrySPR script with `NP` unset uses 48 workers. See [usage.md](usage.md#worker-counts-24-physical-cores-not-48). |
 | `:: initializing oneAPI environment ...` in the middle of scripted output | `~/.profile` sources `~/.torch_profile.sh` in every login shell. Set `SETVARS_COMPLETED=1` to skip the re-init. |
 | `torch.cuda.is_available()` is False while `nvidia-smi` is fine | `CUDA_VISIBLE_DEVICES` was set to the empty string somewhere. Empty means *no GPUs*, not *any GPU*. |
@@ -33,13 +34,13 @@ print('magma    ', torch._C._has_magma)
 import triton
 print('triton   ', triton.__version__)
 "
-uv pip list | grep -c '^nvidia' ; echo '^ must be 0'
+uv pip list | grep '^nvidia'  # only nvidia-ml-py; no CUDA runtime wheels
 ```
 
 Expected:
 
 ```text
-torch     2.14.0+cu133 / cuda 13.3
+torch     2.14.1+cu134 / cuda 13.4
 file      /home/kna/WyckoffTransformer/.venv/lib/python3.12/site-packages/torch/__init__.py
 available True 2
 magma     True
