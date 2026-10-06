@@ -4,7 +4,7 @@
 > at `ebd0ad6`). Scripts: `scripts/cu_ge_te_switching/s0`–`s9`. Outputs:
 > `artifacts/cu_ge_te_switching/` (gitignored, on zeus). Input: the hull
 > campaign of [`cu_ge_te_hull_mapping_20260929.md`](archive/cu_ge_te_hull_mapping_20260929.md).
-> Compute: one RTX 6000 Ada (GPU 0, borrowed for ~7 h) and the zeus CPUs.
+> Compute: one RTX 6000 Ada (GPU 0, borrowed for ~5 h) and the zeus CPUs.
 
 The question: the hull campaign found ~17,700 Cu–Ge–Te structures within
 100 meV/atom of the ORB hull. Can some of them be used for a material that
@@ -34,9 +34,10 @@ to (volume for pressure, polarisation for a field, entropy for heat).
    * **Heat, amorphous ↔ crystal (phase-change memory).** ORB+D3 melt-quench
      glasses lie 79 (Cu₂GeTe₃), 98 (Cu₃GeTe₄) and 156 (GeTe) meV/atom above
      their crystals. The Cu ternaries are predicted to *densify* by 11% on
-     amorphisation, the opposite of GeTe (+2.5%). That sign depends on the
-     dispersion correction, so it needs an experimental check.
-     Crystallisation at 600 K: PENDING.
+     amorphisation, the opposite of GeTe (+2.5%). PBE-D3 single points confirm
+     the glass energies to 1–5 meV/atom; the sign of the volume change depends
+     on including dispersion at all, so it needs an experimental check. No
+     glass crystallised in 150 ps at 600 K or 100 ps at 700 K.
    * **Heat, ferroelectric ↔ paraelectric GeTe.** ORB reproduces the
      transition: the average rhombohedral strain disappears at 675 ± 25 K
      (ORB+D3: 575 ± 25 K; experiment ~700 K) while the local Peierls
@@ -89,7 +90,8 @@ has no dispersion, barely binds. Examples: GeTe P6₃/mmc at +7.6 meV/atom with
 cut.
 
 **ORB versus PBE (`s5_dft.py`, pslibrary 1.0.0 PAW, 50/400 Ry, PBE single points
-at ORB geometries).** The ordering is preserved, the gaps are not:
+at ORB geometries).** The ordering is preserved; the ternary polymorph gaps are
+2–4× larger in PBE, while GeTe's ferroelectric well is smaller:
 
 | Pair | ORB (meV/atom) | PBE (meV/atom) |
 |---|---:|---:|
@@ -100,8 +102,9 @@ at ORB geometries).** The ordering is preserved, the gaps are not:
 | Cu₂GeTe₃ dense Cmcm − Imm2 | 29.8 | 65.0 |
 | GeTe Fm‑3m − R3m (relaxed cells, per atom) | 28.3 | 19.0 |
 
-ORB's systematic softening matters for counting: a 50 meV/atom window in ORB is
-roughly a 100+ meV/atom window in PBE.
+ORB's systematic softening of the ternary polymorph gaps matters for counting:
+a 50 meV/atom window in ORB is roughly a 100+ meV/atom window in PBE. GeTe goes
+the other way: ORB over-distorts it (§4.3) and deepens its double well.
 
 ## 2. What the states are
 
@@ -179,8 +182,21 @@ settle. PBE-D3 at Γ gives the glasses gaps of 5 meV (GeTe) and 31 meV
 crystal; with the PBE gap problem and a 10 K/ps quench, these are not a
 contrast prediction.
 
-Crystallisation at 600 K (`--mode anneal`, 150 ps, crystalline fraction from
-Te-sublattice q6 bond order): PENDING.
+**Crystallisation** (`--mode anneal`, ORB+D3, zero pressure; crystalline
+fraction from Te-sublattice q6 bond order, which reads 1.0 for every crystal
+here up to its melting point and 0.0 for the liquids). After 150 ps at 600 K no
+glass has a single crystalline Te atom; after relaxing the final frame they lie
+85 (Cu₂GeTe₃), 104 (Cu₃GeTe₄) and 154 (GeTe) meV/atom above the crystal, the
+same as the as-quenched glasses within the scatter of one quench. At 700 K
+(100 ps, GeTe and Cu₂GeTe₃) the result is the same: no crystalline Te, and the
+relaxed final frames lie 162 and 98 meV/atom above their crystals.
+
+So the simulations bracket, but do not measure, crystallisation: it is slower
+than ~10² ps at 600 K for all three in 216-atom cells without seeds. That is
+consistent with how phase-change materials behave (nanosecond crystallisation
+needs pre-existing nuclei or a crystalline interface), and it means a speed
+comparison between GeTe and the Cu ternaries needs ns-scale runs or seeded
+cells, which did not fit in this session.
 
 ### 4.2 Heat: ferroelectric GeTe
 
@@ -194,7 +210,9 @@ cell. The mean long-minus-short Ge–Te bond difference barely moves:
 0.45–0.50 Å (ORB) and 0.40–0.47 Å (ORB+D3) on both sides of the transition. The
 transition is order–disorder: the crystal becomes cubic on average while each
 Ge stays off-centre, which is also what EXAFS on GeTe shows. The heating rate
-(5 K/ps) and cell size make these ±25 K estimates.
+(5 K/ps) and cell size make these ±25 K estimates. The transition is
+reversible on cooling and holds no state, so it is a sensor or actuator
+mechanism, not a memory.
 
 The same protocol on Cu₂GeTe₃ (ORB+D3) keeps the crystal intact to ~850 K.
 Cu starts to diffuse at ~850 K (mean-square displacement 3.2 Å² at 900 K, Ge
@@ -202,9 +220,6 @@ Cu starts to diffuse at ~850 K (mean-square displacement 3.2 Å² at 900 K, Ge
 to the denser liquid's volume. There is no wide temperature window in which
 the cations are mobile on a fixed Te framework, so the cation-ordering
 variants of §2 interconvert only near melting on MD timescales.
-
-The transition is reversible on cooling and holds no state, so it is a sensor
-or actuator mechanism, not a memory.
 
 ### 4.3 Electric field: polarisation reversal
 

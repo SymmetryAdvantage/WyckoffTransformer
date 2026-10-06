@@ -3,7 +3,6 @@
 pressure.png  -- enthalpy above the lowest state vs pressure, GeTe and Cu2GeTe3
 heating.png   -- GeTe rhombohedral strain and Peierls distortion vs T (ORB and
                  ORB+D3), and the crystalline Te fraction of every heating run
-anneal.png    -- crystalline Te fraction of the glasses held at 600 K
 """
 from __future__ import annotations
 
@@ -78,29 +77,12 @@ def heating_figure(out):
     fig.savefig(out / "heating.png", dpi=200)
 
 
-def anneal_figure(out):
-    path = OUT_DIR / "md_anneal.csv"
-    if not path.exists():
-        return
-    anneal = pd.read_csv(path)
-    fig, ax = plt.subplots(figsize=(5.5, 3.3), constrained_layout=True)
-    for k, (run, rows) in enumerate(anneal.groupby("run")):
-        name = run.split("_")[1].replace("2", "$_2$").replace("3", "$_3$").replace("4", "$_4$")
-        ax.plot(rows["time_ps"], rows["te_crystalline"], color=SERIES[k], label=f"{name}, 600 K")
-    ax.set_xlabel("time (ps)")
-    ax.set_ylabel("crystalline Te fraction")
-    ax.set_ylim(-0.02, 1.02)
-    ax.legend(fontsize=8)
-    fig.savefig(out / "anneal.png", dpi=200)
-
-
 def main() -> None:
     out = OUT_DIR / "figures"
     out.mkdir(exist_ok=True)
     pressure_figure(out)
     if (OUT_DIR / "md_heat.csv").exists():
         heating_figure(out)
-    anneal_figure(out)
 
 
 if __name__ == "__main__":
