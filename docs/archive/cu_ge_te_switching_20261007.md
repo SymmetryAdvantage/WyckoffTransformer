@@ -314,6 +314,7 @@ cd scripts/cu_ge_te_switching
 ../../.venv/bin/python s8_pressure.py --workers 5 --threads 3
 ../../.venv/bin/python s5_dft.py --nproc 16 --states "Cu2GeTe3#0" "Cu2GeTe3#1"
 ../../.venv/bin/python s7_analyze_md.py && ../../.venv/bin/python s9_figures.py
+../../.venv/bin/python s10_dof.py   # structural DoF per state -> dof.csv
 ```
 
 `s5_dft.py` needs the conda Quantum ESPRESSO 7.5 in `/home/kna/mamba/envs/qe`
