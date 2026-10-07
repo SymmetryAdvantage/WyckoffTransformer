@@ -3,7 +3,7 @@
 > **STATUS: MEASUREMENT, 2026-10-07.** Branch `cu-ge-te-switching` (from `main`
 > at `ebd0ad6`). Scripts: `scripts/cu_ge_te_switching/s0`–`s9`. Outputs:
 > `artifacts/cu_ge_te_switching/` (gitignored, on zeus). Input: the hull
-> campaign of [`cu_ge_te_hull_mapping_20260929.md`](archive/cu_ge_te_hull_mapping_20260929.md).
+> campaign of [`cu_ge_te_hull_mapping_20260929.md`](cu_ge_te_hull_mapping_20260929.md).
 > Compute: one RTX 6000 Ada (GPU 0, borrowed for ~5 h) and the zeus CPUs.
 
 The question: the hull campaign found ~17,700 Cu–Ge–Te structures within
@@ -283,7 +283,7 @@ transitions go through diffusion, partial dislocations or domain walls.
 
 1. Treat the hull map as composition-level information. For each composition,
    collapse cation-ordering variants on a common anion framework into one
-   phase (the disorder-parent analysis, `cu_ge_te_disorder_parent_inference_20260929.md`,
+   phase (the disorder-parent analysis, [`cu_ge_te_disorder_parent_inference_20260929.md`](../cu_ge_te_disorder_parent_inference_20260929.md),
    does this for the binaries already).
 2. If the goal is a device, pursue phase-change behaviour along the
    GeTe–Cu₂GeTe₃ line: crystallisation temperature and speed (longer anneals,
