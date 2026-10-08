@@ -32,7 +32,7 @@ definition groups structures by their sampled gene before matching, so two
 genes that relax to the same structure both count; ``strict`` columns collapse
 such pairs with StructureMatcher, as a check.
 
-    python scripts/analyse_roe_surprisal.py $WYFORMER_RUNS/roe_surprisal/cfg --primary w5
+    python scripts/analyse_roe_surprisal.py $WYFORMER_RUNS/roe_surprisal/cfg
 """
 from __future__ import annotations
 
@@ -523,7 +523,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("root", type=Path, help="The pool's root: pool/, scores/, protocol/.")
     parser.add_argument("--variants", type=str, default=None,
                         help="Surprisal variants, comma-separated (default: every "
-                             "scores/gene_novelty_*.csv). The first is the primary one.")
+                             "scores/gene_novelty_*.csv).")
     parser.add_argument("--budgets", type=str, default=",".join(map(str, BUDGETS)))
     parser.add_argument("--main-budget", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=16)
@@ -579,10 +579,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 "difference": a["metasun_rate"] - b["metasun_rate"], "p": fisher(a, b)}
     report["contrasts"] = contrasts
     report["estimators"] = estimator_quality(frame, variants)
-    primary = variants[0]
     report["band_surface"] = {
-        str(b): band_surface(frame, primary, b) for b in (250, args.main_budget)}
-    report["split_half"] = split_half(frame, primary, args.main_budget)
+        variant: {str(b): band_surface(frame, variant, b) for b in (250, args.main_budget)}
+        for variant in variants}
+    report["split_half"] = {
+        variant: split_half(frame, variant, args.main_budget) for variant in variants}
 
     frame.to_csv(out_dir / "genes.csv.gz")
     with open(out_dir / "report.json", "wt", encoding="utf-8") as handle:
