@@ -2,6 +2,7 @@
 import json
 import logging
 import os
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -19,6 +20,33 @@ from ase.optimize.optimize import Optimizer
 import spglib
 
 logger = logging.getLogger(__name__)
+
+
+def _print_logm_warning_once() -> None:
+    """Show SciPy's varying-residual logm warning once per worker process.
+
+    The residual changes the message on every call, defeating warnings' usual
+    message-based deduplication. Keep the first occurrence of this family,
+    including its residual and source, without filtering other warnings.
+    """
+    original = warnings.showwarning
+    if getattr(original, "_prints_logm_once", False):
+        return
+    shown_pid = None
+
+    def showwarning(message, category, filename, lineno, file=None, line=None):
+        nonlocal shown_pid
+        if (issubclass(category, RuntimeWarning)
+                and str(message).startswith("logm result may be inaccurate")):
+            pid = os.getpid()
+            if shown_pid == pid:
+                return
+            shown_pid = pid
+        original(message, category, filename, lineno, file, line)
+
+    showwarning._prints_logm_once = True
+    warnings.showwarning = showwarning
+
 
 #: Stage labels, which name the CIF each stage writes.  Which of them holds the
 #: structure a trial *kept* is decided on energy by the rattle stage, so
@@ -309,6 +337,7 @@ def stepwise_relax_stages(
         wdir: Path = Path("."),
         logfile_prefix: str = "",
         logfile_postfix: str = "",
+        warmup: bool = True,
 ) -> Atoms:
     """Relax under symmetry constraints, then release them, then rattle.
 
@@ -364,6 +393,11 @@ def stepwise_relax_stages(
         wdir: Directory for output CIF and log files.
         logfile_prefix: Prefix for log file names.
         logfile_postfix: Postfix for log file names.
+        warmup: Run the fix-cell warm-up.  Off only for a start that is not a
+            random PyXtal cell -- one that is already a plausible structure, which
+            the warm-up would merely pre-relax.  With *fix_symmetry* also off the
+            schedule is a single unconstrained relaxation, and the
+            fixed-symmetry readout is the input structure, unrelaxed.
 
     Returns:
         A :class:`RelaxStages` carrying both the kept structure and the
@@ -407,14 +441,15 @@ def stepwise_relax_stages(
     )
 
     # Step 1: symmetry-constrained, cell fixed first and then released.
-    atoms = run_ase_relaxer(
-        atoms_in=atoms,
-        fix_symmetry=fix_symmetry,
-        cell_filter=None,
-        label=WARMUP_CIF_LABEL,
-        logfile=logfile_for("fix-cell"),
-        **shared,
-    )
+    if warmup:
+        atoms = run_ase_relaxer(
+            atoms_in=atoms,
+            fix_symmetry=fix_symmetry,
+            cell_filter=None,
+            label=WARMUP_CIF_LABEL,
+            logfile=logfile_for("fix-cell"),
+            **shared,
+        )
     if fix_symmetry:
         atoms = run_ase_relaxer(
             atoms_in=atoms,

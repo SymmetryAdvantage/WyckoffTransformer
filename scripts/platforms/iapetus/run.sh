@@ -35,7 +35,7 @@
 # commit capture) fails inside the container.
 set -euo pipefail
 
-WYFORMER_IMAGE="${WYFORMER_IMAGE:-iapetus/pytorch:2.14.0-cuda11.8-py312}"
+WYFORMER_IMAGE="${WYFORMER_IMAGE:-ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3}"
 WYFORMER_REPO="${WYFORMER_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 WYFORMER_VENV="${WYFORMER_VENV:-$WYFORMER_REPO/.venv}"
 
@@ -94,6 +94,12 @@ docker_args=(
     --env "HOST_USER=$(id -un)"
 )
 
+# Optional per-job affinity. The MLIP study uses two distinct physical cores
+# per GPU worker on this six-core host.
+if [[ -n "${WYFORMER_CPUSET_CPUS:-}" ]]; then
+    docker_args+=(--cpuset-cpus "$WYFORMER_CPUSET_CPUS")
+fi
+
 # The host's caches and credentials, at the same paths the container's own
 # $HOME uses. See WHY THE MOUNTS above.
 if [[ -d "$HOME/.cache" ]]; then
@@ -115,6 +121,11 @@ for key in WYFORMER_DATA WYFORMER_CACHE WYFORMER_RUNS WANDB_DIR; do
     fi
     mkdir -p "$dir"
     docker_args+=(--env "$key=$dir")
+    # W&B otherwise stages artifacts under the container user's unwritable
+    # ~/.local/share, even when its run directory is in the mounted store.
+    if [[ "$key" == WANDB_DIR ]]; then
+        docker_args+=(--env "WANDB_DATA_DIR=$dir")
+    fi
     if [[ -z "${mounted[$dir]:-}" ]]; then
         docker_args+=(--volume "$dir:$dir")
         mounted[$dir]=1
@@ -135,7 +146,8 @@ done
 # Forward these only when actually set. Passing CUDA_VISIBLE_DEVICES="" does not
 # mean "no preference", it means *no GPUs are visible*, and
 # torch.cuda.is_available() silently becomes False.
-for var in CUDA_VISIBLE_DEVICES WANDB_MODE WANDB_ENTITY WANDB_API_KEY HF_TOKEN; do
+for var in CUDA_VISIBLE_DEVICES WANDB_MODE WANDB_ENTITY WANDB_API_KEY HF_TOKEN \
+           OMP_NUM_THREADS MKL_NUM_THREADS OPENBLAS_NUM_THREADS NUMEXPR_NUM_THREADS; do
     if [[ -n "${!var:-}" ]]; then
         docker_args+=(--env "$var=${!var}")
     fi

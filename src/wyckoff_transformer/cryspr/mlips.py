@@ -57,6 +57,12 @@ MLIP_REGISTRY: dict[str, MlipSpec] = {
         checkpoint="https://huggingface.co/xvzemin/tace-foundations/resolve/main/TECE-OAM-RRA-1.0.pt",
         pip="tace",
     ),
+    "TACE-OAM-L": MlipSpec(
+        name="TACE-OAM-L",
+        backend="tace",
+        checkpoint="https://huggingface.co/xvzemin/tace-foundations/resolve/main/TACE-OAM-L.pt",
+        pip="tace",
+    ),
     "EquFlashV2": MlipSpec(
         name="EquFlashV2",
         backend="equflash",
@@ -77,6 +83,12 @@ MLIP_REGISTRY: dict[str, MlipSpec] = {
             "checkpoint/omat24-mptrj-salex_gradient.pt"
         ),
         pip="equiformer-v3",
+    ),
+    "eSEN-30M-OAM": MlipSpec(
+        name="eSEN-30M-OAM",
+        backend="fairchem",
+        checkpoint="https://huggingface.co/facebook/OMAT24/resolve/main/esen_30m_oam.pt",
+        pip="fairchem-core",
     ),
     "GRACE-3L-OAM-L": MlipSpec(
         name="GRACE-3L-OAM-L",
@@ -153,11 +165,15 @@ def _build_tace(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Cal
     model = checkpoint if not checkpoint.startswith("http") else str(_local_checkpoint(checkpoint))
     # cuEQ is a CUDA-only acceleration path; enabling it on CPU makes the
     # backend allocate on the GPU anyway.  Same trap as in calculator.py.
+    use_oeq = device.startswith("cuda") and os.environ.get("TACE_USE_OEQ", "0") == "1"
+    use_cue = device.startswith("cuda") and not use_oeq and _cueq_importable()
+    logger.info("TACE acceleration: OEQ=%s, cuEQ=%s", use_oeq, use_cue)
     return TACEAseCalc(
         model=model,
         device=device,
         dtype=dtype,
-        enable_cue=device.startswith("cuda") and _cueq_importable(),
+        enable_oeq=use_oeq,
+        enable_cue=use_cue,
     )
 
 
@@ -177,9 +193,28 @@ def _build_equflash(spec: MlipSpec, checkpoint: str, device: str, dtype: str) ->
 
 
 def _build_equiformer_v3(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Calculator:
-    from equiformer_v3.core.common.relaxation.ase_utils import OCPCalculator
+    # The upstream equiformer_v3 repository packages its calculator under
+    # fairchem.core, but registers the model from its experimental source.
+    import experimental.models.equiformer_v3.equiformer_v3  # noqa: F401
 
-    return OCPCalculator(checkpoint_path=str(_local_checkpoint(checkpoint)), cpu=device == "cpu")
+    return _build_fairchem(spec, checkpoint, device, dtype)
+
+
+def _build_fairchem(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Calculator:
+    from fairchem.core.common.relaxation.ase_utils import OCPCalculator
+
+    # The OMat24 checkpoint is gated. Hugging Face Hub uses the user's token
+    # and keeps the downloaded file in its shared cache; urllib does neither.
+    omat24_prefix = "https://huggingface.co/facebook/OMAT24/resolve/main/"
+    if checkpoint.startswith(omat24_prefix):
+        from huggingface_hub import hf_hub_download
+
+        local_checkpoint = hf_hub_download(
+            repo_id="facebook/OMAT24", filename=checkpoint.removeprefix(omat24_prefix)
+        )
+    else:
+        local_checkpoint = _local_checkpoint(checkpoint)
+    return OCPCalculator(checkpoint_path=str(local_checkpoint), cpu=device == "cpu")
 
 
 #: Hard per-process GPU cap for TensorFlow, in MiB. See _build_grace.
@@ -227,10 +262,10 @@ def _build_nep(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Calc
 def _build_pet(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Calculator:
     from upet.calculator import UPETCalculator
 
-    # upet keeps local files on a separate kwarg from its HuggingFace model tags,
-    # and recovers model/size/version from the standard checkpoint filename.
+    # upet requires the model name even when loading a local checkpoint.
     if checkpoint.startswith("http") or Path(checkpoint).exists():
-        return UPETCalculator(checkpoint_path=str(_local_checkpoint(checkpoint)), device=device)
+        return UPETCalculator(model=spec.name.lower(),
+                              checkpoint_path=str(_local_checkpoint(checkpoint)), device=device)
     return UPETCalculator(model=checkpoint, device=device)
 
 
@@ -239,6 +274,7 @@ _BUILDERS: dict[str, Callable[[MlipSpec, str, str, str], Calculator]] = {
     "tace": _build_tace,
     "equflash": _build_equflash,
     "equiformer_v3": _build_equiformer_v3,
+    "fairchem": _build_fairchem,
     "grace": _build_grace,
     "pet": _build_pet,
     "nep": _build_nep,

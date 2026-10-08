@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Build the WyFormer-GeoCSP v2.3 Singularity image from committed sources only.
+#
+# Stages: WyFormer at WYFORMER_REF (git archive, no local state), GeoCSP (the
+# DiffCSPNew repository) at GEOCSP_REF, the exact dependency pins of both uv.lock
+# files, the four pinned WyFormer runs, the GeoCSP weights and the alex-mp-20 gene-key
+# table. Writes $OUT_DIR/WyFormer-GeoCSP-$IMAGE_TAG.sif and runs its %test.
+#
+#   scripts/alex_bench/container/build.sh
+#   singularity push $OUT_DIR/WyFormer-GeoCSP-v2.3.sif \
+#       oras://ghcr.io/symmetryadvantage/wyckofftransformer:wyformer-geocsp-v2.3
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../../.." && pwd)"
+WYFORMER_REF="${WYFORMER_REF:-HEAD}"
+GEOCSP_REPO="${GEOCSP_REPO:-/home/kna/DiffCSPNew}"
+GEOCSP_REF="${GEOCSP_REF:-1d8b164a47db39f9c86f5e9e6d47b430f6ff1a0f}"
+GEOCSP_CKPT="${GEOCSP_CKPT:-$GEOCSP_REPO/runs/alex_mp20_geov2/geov2_alex_mp20_150e.pt}"
+STORE="${STORE:-/home/kna/.local/share/wyformer}"
+IMAGE_TAG="${IMAGE_TAG:-v2.3}"
+OUT_DIR="${OUT_DIR:-$STORE/containers}"
+RUNS=(uncond_adamw_wsd_5x-20260929-143845 ehull_adamw_wsd_5x-20260929-143848
+      ehull_adamw_wsd_5x_cfg-20260929-150414 gene_min_ehull_adamw_wsd-20260929-154926)
+
+if [[ -n "$(git -C "$REPO" status --porcelain -uno)" && "$WYFORMER_REF" == HEAD ]]; then
+    echo "The WyFormer checkout has uncommitted changes; the image is built from commits only." >&2
+    exit 1
+fi
+wyformer_revision=$(git -C "$REPO" rev-parse "$WYFORMER_REF")
+geocsp_revision=$(git -C "$GEOCSP_REPO" rev-parse "$GEOCSP_REF")
+
+stage="$OUT_DIR/stage-$IMAGE_TAG"
+rm -rf "$stage"
+mkdir -p "$stage/wyformer" "$stage/geocsp" "$stage/okhotin/runs" "$stage/okhotin/refs" \
+    "$stage/okhotin/geocsp" "$OUT_DIR/cache" "$OUT_DIR/tmp"
+
+git -C "$REPO" archive --format=tar "$wyformer_revision" -- \
+    pyproject.toml README.md LICENSE src scripts yamls docs/archive/okhotin_submission.md |
+    tar -x -C "$stage/wyformer"
+git -C "$GEOCSP_REPO" archive --format=tar "$geocsp_revision" -- \
+    pyproject.toml uv.lock README.md diffcsp bench |
+    tar -x -C "$stage/geocsp"
+
+# WyFormer's exact environment: zeus's uv.lock is machine-specific and not tracked, so its
+# export is (container/requirements.lock.txt). Regenerate with
+#   uv export --frozen --no-dev --no-hashes --no-emit-project --no-emit-package torch \
+#       --no-emit-package triton --no-emit-package spglib --no-header
+# GeoCSP runs in the same environment: its only extra dependency is torch-geometric,
+# taken at the version GeoCSP's own (tracked) lock pins.
+cp "$stage/wyformer/scripts/alex_bench/container/requirements.lock.txt" "$stage/requirements.lock.txt"
+torch_geometric_pin=$(cd "$stage/geocsp" && uv export --frozen --no-dev --no-hashes \
+    --no-emit-project --no-header | grep -E '^torch-geometric==' | cut -d' ' -f1)
+[[ -n "$torch_geometric_pin" ]] || { echo "no torch-geometric pin in GeoCSP's lock" >&2; exit 1; }
+
+for run in "${RUNS[@]}"; do
+    cp -r "$STORE/runs/$run" "$stage/okhotin/runs/"
+done
+cp "$STORE/alex_bench/refs/alex_mp_20_labelled_train+val_keys.npz" "$stage/okhotin/refs/"
+cp "$GEOCSP_CKPT" "$stage/okhotin/geocsp/"
+# A standalone, pinned uv: the host's may be a launcher (snap) that does not run in the image.
+UV_VERSION="${UV_VERSION:-0.12.20}"
+if [[ ! -x "$OUT_DIR/tools/uv-$UV_VERSION/uv" ]]; then
+    mkdir -p "$OUT_DIR/tools/uv-$UV_VERSION"
+    curl -LsSf "https://astral.sh/uv/$UV_VERSION/install.sh" |
+        env UV_UNMANAGED_INSTALL="$OUT_DIR/tools/uv-$UV_VERSION" sh
+fi
+cp "$OUT_DIR/tools/uv-$UV_VERSION/uv" "$stage/uv"
+cp "$HERE/WyFormer-GeoCSP.def" "$stage/"
+
+sif="$OUT_DIR/WyFormer-GeoCSP-$IMAGE_TAG.sif"
+(
+    cd "$stage"
+    SINGULARITY_CACHEDIR="$OUT_DIR/cache" SINGULARITY_TMPDIR="$OUT_DIR/tmp" \
+        singularity build --fakeroot --force \
+            --build-arg "SOURCE_REVISION=$wyformer_revision" \
+            --build-arg "GEOCSP_REVISION=$geocsp_revision" \
+            --build-arg "IMAGE_VERSION=$IMAGE_TAG" \
+            --build-arg "TORCH_GEOMETRIC_PIN=$torch_geometric_pin" \
+            "$sif" WyFormer-GeoCSP.def
+)
+singularity test "$sif"
+echo "built $sif (wyformer $wyformer_revision, geocsp $geocsp_revision)"

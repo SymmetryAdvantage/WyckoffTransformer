@@ -4,6 +4,7 @@
 | --- | --- |
 | `ModuleNotFoundError: No module named 'torch'` from `.venv/bin/python` | The venv was created without `--system-site-packages`, or it was created on the host. Rebuild it with `scripts/platforms/iapetus/build_venv.sh`; see [environment.md](environment.md). |
 | `torch.__file__` points into `.venv` | uv installed a second torch instead of inheriting the image's custom build. Rebuild with `scripts/platforms/iapetus/build_venv.sh`; do not run `uv sync` or bare `uv pip install` in the venv. |
+| cuDNN is unavailable or `libcudnn.so.8` cannot be loaded | Use `ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3`, the launcher default, which includes cuDNN 8.7. Check for an older `WYFORMER_IMAGE` override and that `torch.__file__` points into `/opt/venv312`. Run the health check below. |
 | `torch.cuda.is_available()` is false | Ensure the command uses Docker's `--runtime=nvidia` and `NVIDIA_VISIBLE_DEVICES=all`, then check `nvidia-smi` inside the same container. An empty `CUDA_VISIBLE_DEVICES` deliberately hides GPUs. |
 | `CUDA driver version is insufficient` or `no kernel image is available` | A stock PyPI CUDA torch has replaced the image build. Rebuild the venv; do not install torch from PyPI. |
 | `CUDA initialization: CUDA unknown error` / `RuntimeError: CUDA unknown error` | After a host reboot, `/dev/nvidia-uvm` is not created until `nvidia-modprobe` runs. Without it, the NVIDIA container runtime cannot mount UVM into the container, breaking CUDA initialization. `scripts/platforms/iapetus/run.sh` runs `nvidia-modprobe -c 0 -u` automatically when `/dev/nvidia-uvm` is missing, or run `nvidia-modprobe -c 0 -u` manually on the host. |
@@ -15,6 +16,7 @@
 | `ModuleNotFoundError: No module named 'torch'` from a venv that has `container-base.pth` missing | The image keeps torch in `/opt/venv312`, which `--system-site-packages` does not reach; the build adds it with `container-base.pth`. A venv built by calling `build_singularity_venv.sh` without `BASE_PYTHON=/opt/venv312/bin/python` lacks it. Rebuild with `build_venv.sh`. |
 | `ModuleNotFoundError` for a project dependency inside `run.sh bash -c '...'` | Only `run.sh`'s first word is resolved against the venv; inside `bash -c` a bare `python` is the image's. Call `/workspace/.venv/bin/python`. |
 | `run.sh`: `error: ... exists, so it is authoritative, but does not set <KEY>` | `~/.config/wyformer/paths.env` lacks a key. Add it with the value from [environment.md](environment.md#data-store-cache-and-runs). |
+| W&B artifact upload fails because `/home/kna/.local/share/wandb/artifacts/staging` is not writable | The container home is not mounted for writes. Use `scripts/platforms/iapetus/run.sh`, which sets `WANDB_DATA_DIR` to the mounted `WANDB_DIR` store. Existing local trial ledgers are safe to resume; the next artifact snapshot includes them. |
 | `fatal: not a git repository` inside the container, in a worktree | The worktree's `.git` names the main checkout's `.git` by host path, and that directory is not mounted. `run.sh` mounts it; a hand-written `docker run` must add `-v /home/kna/WyckoffTransformer/.git:/home/kna/WyckoffTransformer/.git:ro`. |
 | `nvcc: command not found` on the host | Expected. The CUDA toolkit is part of the image; build and run extensions from inside the container. |
 | `ModuleNotFoundError` for a pure-Python dep (`sklearn`, `omegaconf`, …) that is installed in `.venv`, and `sys.executable` is `/opt/venv312/bin/python` | `.venv/bin/` is gone, so `run.sh` cannot resolve `python` against the venv and falls through to the image interpreter. Almost always caused by running `uv` or `uv run` **on the host**: it sees the venv's interpreter symlink as broken, deletes `.venv/bin/`, then aborts on a permission error in `.venv/lib` (container-owned files), leaving `.venv` half-destroyed. Never run `uv*` on the host. `lib/site-packages` (deps, the editable `.pth`, and `container-base.pth` which wires in the image's torch) survives, so recreate only `bin/` inside the container, no rebuild: `run.sh bash -lc '/opt/uv-python/cpython-3.12-linux-x86_64-gnu/bin/python3.12 -m venv --system-site-packages --without-pip /workspace/.venv'` — `venv` without `--clear` re-uses the directory and leaves `lib/` untouched. Then run the health check above. |
@@ -26,17 +28,19 @@ Run this through the container after creating the venv:
 ```bash
 docker run --rm --runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all --ipc=host \
     -v "$PWD:/workspace" -w /workspace \
-    iapetus/pytorch:2.14.0-cuda11.8-py312 \
+    ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3 \
     .venv/bin/python -c "
 import torch, wyckoff_transformer
 print(torch.__version__, torch.version.cuda)
 print(torch.__file__)
+print('cuDNN:', torch.backends.cudnn.is_available(), torch.backends.cudnn.version())
 print(torch.cuda.is_available(), torch.cuda.device_count())
 "
 ```
 
 Python must be 3.12.x and `torch.__file__` must be under
 `/opt/venv312/lib/python3.12/site-packages`, not `.venv`.
+cuDNN must be available and report version `8700` (8.7.0).
 
 ## ORB CPU-neighbour/GPU-forward check
 
@@ -48,7 +52,7 @@ uses the patched calculator already used by the CRySPR reconstruction study.
 docker run --rm --entrypoint /bin/bash --runtime=nvidia \
     -e NVIDIA_VISIBLE_DEVICES=0 --ipc=host \
     -v "$PWD:/workspace" -w /workspace \
-    iapetus/pytorch:2.14.0-cuda11.8-py312 -lc '
+    ghcr.io/kazeevn/pytorch:2.14.0-cuda11.8-cudnn8.7-iapetus-r3 -lc '
 .venv/bin/python -c "
 from ase.build import bulk
 from scripts.run_cryspr_reconstruction_study import build_patched_orb_calculator
