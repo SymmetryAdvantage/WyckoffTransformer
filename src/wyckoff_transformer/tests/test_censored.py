@@ -241,3 +241,20 @@ class TestGeneLevelPolymorphDelta(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_tight_rows_are_fitted_as_the_optimum_itself():
+    """A tight row costs the Gaussian 0.5 t^2 and gives the scale head no gradient; others are unchanged."""
+    import torch
+    from wyckoff_transformer.censored import CensoredMinLoss
+
+    criterion = CensoredMinLoss(reduction="none", noise=0.1, tight_field="icsd_backed")
+    prediction = torch.tensor([[0.0, -2.0], [0.0, -2.0]], requires_grad=True)
+    target = torch.tensor([0.3, 0.3])
+    loose = criterion(prediction, target)
+    mixed = criterion(prediction, target, tight=torch.tensor([True, False]))
+    assert torch.isclose(mixed[0], torch.tensor(0.5 * 3.0 ** 2))
+    assert torch.isclose(mixed[1], loose[1])
+    mixed[0].backward()
+    assert prediction.grad[0, 1] == 0
+    assert prediction.grad[0, 0] < 0  # pulled up towards the observation

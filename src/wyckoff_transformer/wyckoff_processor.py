@@ -319,6 +319,106 @@ def argsort_multiple(*tensors, dim: int):
     raise NotImplementedError("Only one or two tensors are supported")
 
 
+# Memory. A LeMat-Bulk-sized split (5.1M rows) yields ~75M small per-row tensors in the
+# counter and augmented fields, and each costs ~700 B resident beyond its data, whether
+# allocated on its own or as a view. That and the 24 GB frame are more than a 110 GB job
+# holds: 25633469 and 25639029 reached the limit and thrashed for hours without an OOM
+# kill. tokenise_dataset(packed=True) keeps these fields packed instead.
+
+
+class PackedTensorList:
+    """A list of tensors held as one tensor: data.unbind(0) when lengths is None, else
+    data.split(lengths).
+
+    save_tensor_cache writes it exactly as it writes the list it stands for, so the file
+    and what load_tensor_cache returns from it are the same either way.
+    """
+    def __init__(self, data: "torch.Tensor", lengths: Optional["torch.Tensor"] = None):
+        self.data = data
+        self.lengths = lengths
+
+    def __len__(self) -> int:
+        return len(self.data) if self.lengths is None else len(self.lengths)
+
+    def to_list(self) -> List["torch.Tensor"]:
+        import torch  # noqa: PLC0415
+        if self.lengths is None:
+            return list(self.data.unbind(0))
+        return list(torch.split(self.data, self.lengths.tolist()))
+
+
+class PackedNestedList:
+    """A list of lists of tensors: row i holds the next lengths[i] items of items."""
+    def __init__(self, lengths: "torch.Tensor", items: PackedTensorList):
+        self.lengths = lengths
+        self.items = items
+
+    def __len__(self) -> int:
+        return len(self.lengths)
+
+    def to_list(self) -> List[List["torch.Tensor"]]:
+        flat = self.items.to_list()
+        output = []
+        offset = 0
+        for length in self.lengths.tolist():
+            output.append(flat[offset:offset + length])
+            offset += length
+        return output
+
+
+def _pack_rows(rows, function, block_size: int = 1 << 16) -> Tuple["torch.Tensor", "torch.Tensor"]:
+    """function(row) for every row, concatenated along dim 0, and each result's length.
+
+    Concatenated a block at a time, so that only one block's per-row tensors are alive.
+    A row whose result is empty (a structure with no variants) contributes nothing.
+    """
+    import torch  # noqa: PLC0415
+    parts = []
+    lengths = []
+    block = []
+    for row in rows:
+        result = function(row)
+        lengths.append(len(result))
+        if len(result):
+            block.append(result)
+        if len(block) >= block_size:
+            parts.append(torch.cat(block))
+            block = []
+    if block:
+        parts.append(torch.cat(block))
+    data = torch.cat(parts) if parts else torch.empty(0)
+    return data, torch.tensor(lengths, dtype=torch.int64)
+
+
+def _stack_variants(record: Series, feature_function) -> "torch.Tensor":
+    """feature_function's per-variant tensors as one block: one object to pickle back
+    from a worker instead of several."""
+    import torch  # noqa: PLC0415
+    variants = feature_function(record)
+    return torch.stack(variants) if variants else torch.empty(0)
+
+
+def _lean_parallel_apply(dataset: DataFrame, function, engineer: "FeatureEngineer") -> list:
+    """dataset.parallel_apply(function, axis=1), shipping the workers only the columns
+    the engineer reads: its keys, their augmented variants, and its own name (for the
+    consistency check in get_feature_tensor_from_series).
+
+    gc.freeze() keeps the forked workers' garbage collector off the parent's objects;
+    otherwise each collection writes to every page of the parent heap it scans, copying it.
+    """
+    import gc  # noqa: PLC0415
+    names = list(engineer.db.index.names)
+    wanted = names + [f"{name}_augmented" for name in names] + [engineer.db.name]
+    columns = [column for column in dict.fromkeys(wanted) if column in dataset.columns]
+    lean = dataset[columns]
+    gc.collect()
+    gc.freeze()
+    try:
+        return lean.parallel_apply(function, axis=1).to_list()
+    finally:
+        gc.unfreeze()
+
+
 
 #: Fields whose meaning depends on another field, and so cannot be augmented alone.
 #:
@@ -590,7 +690,15 @@ class WyckoffProcessor:
         datasets_pd: Dict[str, DataFrame],
         tokenizer_path=None,
         n_jobs: Optional[int] = None,
+        packed: bool = False,
     ):
+        """Tokenise every split of datasets_pd.
+
+        With packed, the list-valued fields -- the counters and the augmented fields -- come
+        back as PackedTensorList / PackedNestedList rather than as lists of tensors. They
+        save to the same file, and take a fraction of the memory: what a LeMat-Bulk-sized
+        build needs to fit a 110 GB job.
+        """
         import torch  # noqa: PLC0415
         from pandarallel import pandarallel  # noqa: PLC0415
         from wyckoff_transformer.tokenization import (  # noqa: PLC0415
@@ -677,6 +785,9 @@ class WyckoffProcessor:
             map(itemgetter(config.token_fields.pure_categorical[0]),
                 datasets_pd.values()))))
 
+        def unpack(packed_list):
+            return packed_list if packed else packed_list.to_list()
+
         tensors = defaultdict(dict)
         for dataset_name, dataset in datasets_pd.items():
             dataset = dataset[dataset['spacegroup_number'].isin(tokenisers['spacegroup_number'])]
@@ -699,9 +810,10 @@ class WyckoffProcessor:
                         raw_engineers[field].get_feature_tensor_from_series,
                         original_max_len=original_max_len,
                         dtype=field_dtype)
-                    tensor_list = dataset.parallel_apply(
-                        compute_feature_function, axis=1).to_list()
+                    tensor_list = _lean_parallel_apply(
+                        dataset, compute_feature_function, raw_engineers[field])
                     tensors[dataset_name][field] = torch.stack(tensor_list)
+                    del tensor_list
                     logger.debug("Engineered field %s shape %s", field, tensors[dataset_name][field].shape)
 
             if "pure_categorical" in config.sequence_fields:
@@ -728,13 +840,13 @@ class WyckoffProcessor:
                 # Counter fields are processed into two tensors: tokenised values, and the counts
                 # WARNING Cell variable tokeniser_filed defined in loopPylintW0640:cell-var-from-loop
                 for field, tokeniser_field in config.sequence_fields.counters.items():
-                    tensors[dataset_name][f"{field}_tokens"] = \
-                            dataset[field].map(lambda dict_:
-                                torch.stack([tokenisers[tokeniser_field].tokenise_single(key, dtype=dtype)
-                                    for key in dict_.keys()])).to_list()
-                    tensors[dataset_name][f"{field}_counts"] = \
-                            dataset[field].map(lambda dict_:
-                                torch.tensor(tuple(dict_.values()), dtype=dtype)).to_list()
+                    tensors[dataset_name][f"{field}_tokens"] = unpack(PackedTensorList(
+                        *_pack_rows(dataset[field], lambda dict_:
+                            torch.stack([tokenisers[tokeniser_field].tokenise_single(key, dtype=dtype)
+                                for key in dict_.keys()]))))
+                    tensors[dataset_name][f"{field}_counts"] = unpack(PackedTensorList(
+                        *_pack_rows(dataset[field], lambda dict_:
+                            torch.tensor(tuple(dict_.values()), dtype=dtype))))
 
             if "augmented_token_fields" in config:
                 validate_augmented_token_fields(config)
@@ -742,10 +854,12 @@ class WyckoffProcessor:
                 # WARNING Cell variable field defined in loopPylintW0640:cell-var-from-loop
                 for field in config.augmented_token_fields:
                     augmented_field = f"{field}_augmented"
-                    tensors[dataset_name][augmented_field] = dataset[augmented_field].map(lambda variants:
-                            [tokenisers[field].tokenise_sequence(
-                                variant, original_max_len=original_max_len, dtype=dtype)
-                                for variant in variants]).to_list()
+                    data, lengths = _pack_rows(dataset[augmented_field], lambda variants:
+                        torch.stack([tokenisers[field].tokenise_sequence(
+                            variant, original_max_len=original_max_len, dtype=dtype)
+                            for variant in variants]) if len(variants) else torch.empty(0))
+                    tensors[dataset_name][augmented_field] = unpack(
+                        PackedNestedList(lengths, PackedTensorList(data)))
 
             for field, field_config in config.token_fields.get("augmented_engineered", {}).items():
                 augmented_field = f"{field}_augmented"
@@ -753,12 +867,19 @@ class WyckoffProcessor:
                     field_dtype = getattr(torch, config.token_fields.engineered[field].dtype)
                 else:
                     field_dtype = dtype
-                tensors[dataset_name][augmented_field] = dataset.parallel_apply(
-                    partial(
+                # One [n_variants, L] block per row from the workers, packed here
+                blocks = _lean_parallel_apply(
+                    dataset,
+                    partial(_stack_variants, feature_function=partial(
                         raw_engineers[field].get_feature_from_augmented_series,
                         augmented_field_orginal_name=field_config.augmented_input,
                         original_max_len=original_max_len,
-                        dtype=field_dtype), axis=1).to_list()
+                        dtype=field_dtype)),
+                    raw_engineers[field])
+                data, lengths = _pack_rows(blocks, lambda block: block)
+                del blocks
+                tensors[dataset_name][augmented_field] = unpack(
+                    PackedNestedList(lengths, PackedTensorList(data)))
 
             # We can have long sequences, but still a limited number of tokens
             if "pure_sequence_length_dtype" in config:

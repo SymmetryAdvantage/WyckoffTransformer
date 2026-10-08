@@ -415,11 +415,25 @@ def check_cache_matches(dataset: str | Path, recorded: Optional[Mapping[str, Any
         return
     expected = manifest.fields_record(table)
     # Only what the cache holds: a manifest may declare fields a build did not carry.
-    changed = sorted(k for k, v in recorded.items() if expected.get(k) != _plain(v))
+    changed = sorted(k for k, v in recorded.items()
+                     if expected.get(k) != _field_record(v))
     if changed:
         raise CacheManifestMismatch(
             f"The cache of {name!r} was built when its manifest said something else about "
             f"{changed}.  Rebuild the cache, or restore the manifest it was built under.")
+
+
+def _field_record(value: Any) -> Any:
+    """A recorded field as :meth:`DatasetField.to_record` writes it.
+
+    A record without an ``energy`` key is a field that is not an energy, which
+    ``to_record`` writes as ``energy: None``; the lemat_bulk_fmax1_stress_icsd cache
+    was recorded so by an early scripts/add_icsd_provenance.py.
+    """
+    value = _plain(value)
+    if isinstance(value, Mapping) and "energy" not in value:
+        value = {**value, "energy": None}
+    return value
 
 
 def _plain(value: Any) -> Any:

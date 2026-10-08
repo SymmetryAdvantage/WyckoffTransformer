@@ -23,6 +23,8 @@ from wyckoff_transformer.wyckoff_processor import (
     ENGINEERS_DIR,
     MODEL_ENGINEERS_DIRNAME,
     FeatureEngineer,
+    PackedNestedList,
+    PackedTensorList,
     WyckoffProcessor,
     argsort_multiple,
 )
@@ -356,9 +358,38 @@ def _serialise_tensor_list(node: list[torch.Tensor], flat_tensors: dict[str, tor
     }
 
 
+def _serialise_packed_tensor_list(node: PackedTensorList, flat_tensors: dict[str, torch.Tensor]) -> dict[str, Any]:
+    """What _serialise_tensor_tree writes for node.to_list(), without making the list."""
+    if len(node) == 0:
+        return {"type": "list", "storage": "empty"}
+    if node.lengths is None:
+        # Rows of one tensor: all the same shape, so stacked
+        return {"type": "tensor_list", "storage": "stack",
+                "data": _store_cache_tensor(flat_tensors, node.data)}
+    lengths = node.lengths.tolist()
+    if len(set(lengths)) == 1:
+        return {"type": "tensor_list", "storage": "stack",
+                "data": _store_cache_tensor(flat_tensors, node.data.reshape(
+                    len(lengths), lengths[0], *node.data.shape[1:]))}
+    data_key = _store_cache_tensor(flat_tensors, node.data)
+    lengths_key = _store_cache_tensor(flat_tensors, node.lengths.to(torch.int64))
+    return {"type": "tensor_list", "storage": "concat", "data": data_key, "lengths": lengths_key}
+
+
 def _serialise_tensor_tree(node: Any, flat_tensors: dict[str, torch.Tensor]) -> dict[str, Any]:
     if isinstance(node, torch.Tensor):
         return {"type": "tensor", "key": _store_cache_tensor(flat_tensors, node)}
+
+    if isinstance(node, PackedTensorList):
+        return _serialise_packed_tensor_list(node, flat_tensors)
+
+    if isinstance(node, PackedNestedList):
+        # As the nested-list branch below writes node.to_list()
+        if len(node) == 0:
+            return {"type": "list", "storage": "empty"}
+        lengths_key = _store_cache_tensor(flat_tensors, node.lengths.to(torch.int64))
+        return {"type": "list", "storage": "nested", "lengths": lengths_key,
+                "items": _serialise_packed_tensor_list(node.items, flat_tensors)}
 
     if isinstance(node, dict):
         if not all(isinstance(key, str) for key in node):

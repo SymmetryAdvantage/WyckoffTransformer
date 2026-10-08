@@ -1,0 +1,112 @@
+# ICSD-aware censored gene-energy predictor on lemat_bulk_fmax1_stress_icsd.
+#
+# min_energy_adamw_wsd.yaml (this directory; W&B run min_energy_adamw_wsd-20260924-102431) with
+# the likelihood changed and nothing else about the model:
+#
+#   target_name gene_min_formation_energy_per_atom -> formation_energy_per_atom: every structure
+#     is its own observation, read as an upper bound on its gene's attainable minimum m(g)
+#     (wyckoff_transformer.censored), instead of MSE on the observed gene minimum.
+#   scalar_loss mse -> censored; outputs 1 -> 2 ([location m(g), log excess scale s(g)]).
+#   censored_loss_args.tight_field: icsd_backed. An ICSD-descended row is fitted as the
+#     optimum itself, N(m, sigma), not as an upper bound. Evidence: an ICSD-backed entry is its
+#     formula's archive minimum 56.9% of the time against 11.4% for theoretical MP
+#     (docs/composition_screening_results.md). The stronger hypothesis -- ICSD unaries and
+#     binaries on the hull -- does not hold (within 1 meV/atom: 15% of unaries, 35% of binaries
+#     on the LeMat DFT hull, 2026-09-30), so the hull is not used.
+#   noise 0.025 eV/atom. The first run (W&B min_energy_censored_icsd-20261001-221804) used 0.10, taken
+#     from the formula-level study, and degenerated: by epoch 500 the fitted excess scale was
+#     ~0.021, far inside the 0.10 noise, so the floor was unidentifiable and the location slid to
+#     the conditional mean (val.violation 0.06 -> 0.46; it should stay near 0). At gene level the
+#     label noise is of the order of the MSE model's 0.038 MAE or less, and sigma must sit at or
+#     below the excess it is meant to separate from.
+#   tokeniser der_tokenizer_v1 -> der_tokenizer_v1_icsd, which carries both new columns.
+#   epochs 2859 -> 20000, decay_fraction 0.2130 -> 0.2: paired with min_energy_adamw_wsd_cont
+#     (the MSE run continued to 20000 epochs in total).
+#
+# Compare against the MSE run on the location head's MAE to the observed gene minimum, and on
+# the violation rate split by ICSD / non-ICSD rows.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - multiplicity
+    # der_tokenizer_v1's corrected augmentation relabels the site-symmetry symbol together
+    # with the enumeration; both must be listed, and are sampled at matching indices.
+    # multiplicity is a normaliser invariant, so it is not augmented.
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    embedding_size:
+      elements: 40
+      site_symmetries: 40
+      sites_enumeration: 16
+      multiplicity: 0
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: formation_energy_per_atom
+    scalar_loss: censored
+    censored_loss_args:
+      noise: 0.025
+      predict_scale: true
+      tight_field: icsd_backed
+    evaluation_samples: 1
+    train_batch_size: 12500
+    val_batch_size: 12500
+    test_batch_size: 12500
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 2
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 320
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.003
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 250
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 20000
+tokeniser:
+  name: der_tokenizer_v1_icsd
+# scripts/train.py --pilot only. train_batch_size is global, sharded over the chain's 4 GPUs
+# (3125 rows per card, as in 102431); the 1-GPU pilot of censored_icsd_pipeline.pbs ran out
+# of the A100's 40 GB at the full 12500. Validation and test are not sharded, so stay.
+pilot:
+  model:
+    WyckoffTrainer_args:
+      train_batch_size: 3125
+evaluation:
+  n_structures_to_generate: 10000

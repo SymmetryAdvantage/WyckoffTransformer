@@ -58,7 +58,9 @@ def main():
     # tokenizer_path again: without it the processor builds fresh tokenisers from this
     # data, whatever it was loaded from
     tensors, _, token_engineers = processor.tokenise_dataset(
-        datasets_pd, tokenizer_path=args.tokenizer_path, n_jobs=args.n_jobs)
+        datasets_pd, tokenizer_path=args.tokenizer_path, n_jobs=args.n_jobs,
+        # Lists of per-row tensors would not fit a 110 GB job for LeMat-Bulk; the file is the same
+        packed=True)
     if args.debug and "multiplicity" in token_engineers:
         index = 0
         multiplicities_from_tokens = token_engineers["multiplicity"].get_feature_from_token_batch(
