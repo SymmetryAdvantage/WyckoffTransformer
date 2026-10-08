@@ -48,6 +48,11 @@ def main():
                              "to the new schedule. Every other config difference is still "
                              "refused. Use it to land a run on a deadline -- bringing the decay "
                              "forward -- not to change what is being trained.")
+    parser.add_argument("--init-weights", type=Path, default=None, metavar="PATH",
+                        help="Start a new run from these model weights (another run's "
+                             "best_model_params.pt) with a fresh optimiser and schedule: continued "
+                             "training as its own W&B run. The architecture must match. Ignored "
+                             "with --resume, so a chain can pass it to every link.")
     parser.add_argument("--allow-obsolete-tokeniser", action="store_true",
         help="Train on a tokeniser configuration marked obsolete. Only for "
              "reproducing a previous run; the reason it is obsolete is logged, "
@@ -164,9 +169,9 @@ def main():
         if args.debug:
             config["model"]['WyckoffTrainer_args']['compile_model'] = False
             with torch.autograd.detect_anomaly():
-                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed, allow_obsolete_dataset=args.allow_obsolete_dataset)
+                train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed, allow_obsolete_dataset=args.allow_obsolete_dataset, init_weights=args.init_weights)
         else:
-            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed, allow_obsolete_dataset=args.allow_obsolete_dataset)
+            train_from_config(config, args.device, run_path=args.run_path, production_training=args.production, no_test=args.no_test, resume=bool(args.resume), reschedule=args.reschedule, distributed=distributed, allow_obsolete_dataset=args.allow_obsolete_dataset, init_weights=args.init_weights)
     shutdown_distributed(distributed)
 
 

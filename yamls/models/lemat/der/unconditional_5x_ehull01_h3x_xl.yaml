@@ -1,0 +1,123 @@
+# unconditional_5x_ehull01_h3x.yaml at a larger size: the same run in every respect except capacity and, because of it,
+# the peak learning rate. It pairs with unconditional_5x_ehull01_h3x.yaml at an identical horizon, so the two
+# isolate size.
+#
+#   width  x2: embeddings 48/48/24 -> 96/96/48 (d_model 120 -> 240), dim_feedforward 320 -> 640, nhead -> 8.
+#   depth 3 -> 4 encoder layers. The previous capacity step (the "5x" configs) was width-only;
+#     a second doubling of width alone would put 4x the parameters into attention over
+#     sequences of at most ~60 tokens, so part of this step goes into depth.
+#   lr 3e-3 -> 1.5e-3. The 5x configs record 3e-3 as their least-established number and name
+#     ~1/width scaling (muP) as the rule to reach for at larger width; doubling the width
+#     again is where that note applies. Changing lr with size confounds the two, deliberately:
+#     a diverged multi-day run costs more than the confound.
+#
+# Expected ~4-5x the parameters of the reference. Neither peak memory nor step time has been
+# measured at this size; the first chain link is the measurement. Expect it to be slower per
+# epoch than the reference, so the chain needs more links for the same horizon.
+#
+# Unconditional WyFormer on lemat_bulk_fmax1_stress_ehull01, der_tokenizer_v1 edition: the
+# backup to ehull_adamw_wsd_5x_cfg_h3x.yaml for pipelines that already screen on energy.
+# A CFG model sampled at an e_hull target and then filtered by an energy predictor applies
+# the energy preference twice, and the two can interfere. This model carries the energy
+# preference only through its training data (e_hull <= 0.1), leaving the ranking to the
+# screen.
+#
+# unconditional_5x_ehull01.yaml (one directory up) with three changes and nothing else:
+#
+#   tokeniser.name lemat_bulk_fmax1_sg_multiplicity -> der_tokenizer_v1, the current tokeniser
+#     with the corrected Wyckoff augmentation (docs/wyckoff_augmentation_audit.md).
+#   model.cascade.augmented: [site_symmetries, sites_enumeration]. Without it the trainer
+#     does not augment at all; both fields must be listed, as in der/ehull_adamw_wsd_5x_cfg.yaml.
+#   epochs 131613 -> 309678, so that it gets the same optimiser steps as
+#     ehull_adamw_wsd_5x_cfg_h3x.yaml: 1,576,041 // 50,000 = 31 steps per epoch, and
+#     31 x 309,678 = 9.6M steps, against that run's 80 x 120,000. validation_period stays
+#     1645 epochs (~51k steps), so the curve has ~188 points.
+#
+# The reference config follows, with only those lines changed. Its note on `epochs` describes
+# the reference's step-matching to unconditional_5x, which this file supersedes.
+# LeMat-Bulk unconditional WyFormer for lemat_bulk_fmax1_stress_ehull01 (E_hull <= 0.1).
+# train_batch_size is set to 50,000 so each gradient step fits comfortably in GPU memory (A100-40GB),
+# while val_batch_size (30,543) and test_batch_size (30,818) cover the full validation and test splits.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    is_target:
+      elements: true
+      site_symmetries: true
+      sites_enumeration: true
+    # 3x the baseline, preserving the 2:2:1 split between the three cascade fields.
+    # These sum to d_model = 120.
+    embedding_size:
+      elements: 96
+      site_symmetries: 96
+      sites_enumeration: 48
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: true
+    target: NextToken
+    evaluation_samples: 1
+    train_batch_size: 50000
+    val_batch_size: 30543
+    test_batch_size: 30818
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: true
+    aggregate_after_encoder: false
+    mixer_layers: 1
+    token_aggregation: null
+    include_start_in_aggregation: false
+    aggregation_inclsion: null
+    outputs: token_scores
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      # 120 / 8 = 15 per head.
+      nhead: 8
+      dim_feedforward: 640
+      dropout: 0.0
+    TransformerEncoder_args:
+      num_layers: 4
+      # Nested tensors are broken in the current version of PyTorch
+      # https://github.com/pytorch/pytorch/issues/97111
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.0015
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  # Scaled with `epochs` to validate every ~51k steps, the same cadence as unconditional_5x
+  # (500 epochs x 102 steps), so the two loss curves line up step for step.
+  validation_period: 1645
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.
+  # Matched to unconditional_5x in optimiser steps, not epochs: that run does
+  # 5,127,342 // 50,000 = 102 steps x 40,000 epochs = 4,080,000 steps. Here
+  # 1,576,041 // 50,000 = 31 steps per epoch, so 131,613 epochs = 4,080,003 steps.
+  # The fraction-based warmup (8,160 steps) and decay (816k steps) then match too.
+  # At 40,000 epochs (run unconditional_5x_ehull01-20260913-210123) warmup was only
+  # 2,480 steps, and the trunk collapsed at peak LR until the decay phase.
+  epochs: 309678
+tokeniser:
+  name: der_tokenizer_v1
+evaluation:
+  n_structures_to_generate: 10000
