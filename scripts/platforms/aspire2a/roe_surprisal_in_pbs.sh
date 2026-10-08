@@ -79,11 +79,13 @@ run_job_payload() {
     if [ ! -s "$GENES" ]; then
         echo "--- pool ($(date -Is))"
         local started=$SECONDS
+        # wyformer-generate insists on exactly the suffixes .json.gz, so the
+        # temporary name may not carry a .tmp of its own.
         # shellcheck disable=SC2086 # GEN_ARGS is a list of flags
-        "${RUN[@]}" python -m wyckoff_transformer.cli.generate "$ROOT/pool/draw.tmp.json.gz" \
+        "${RUN[@]}" python -m wyckoff_transformer.cli.generate "$ROOT/pool/draw_partial.json.gz" \
             --model-path "$MODEL" --initial-n-samples "$INITIAL" --firm-n-samples "$POOL" \
             --device cuda:0 $GEN_ARGS
-        mv "$ROOT/pool/draw.tmp.json.gz" "$GENES"
+        mv "$ROOT/pool/draw_partial.json.gz" "$GENES"
         cat > "$ROOT/pool/pool_manifest.json" <<EOF
 {"model": "$MODEL", "generation_args": "$GEN_ARGS", "initial_n_samples": $INITIAL,
  "firm_n_samples": $POOL, "seconds": $((SECONDS - started)), "commit": "$COMMIT",
