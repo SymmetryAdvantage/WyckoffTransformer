@@ -200,12 +200,22 @@ def representation_log_likelihood(
     trainer,
     frame: pd.DataFrame,
     cond: Optional[Tensor] = None,
+    uncond: Optional[Tensor] = None,
+    guidance_scale: float = 1.0,
 ) -> Tensor:
     """log p(sequence | space group) for rows already in a fixed order and enumeration.
 
     ``frame`` must carry the plain (non-augmented) site fields: this is the
     likelihood of one *representation*, not of the gene.
+
+    With ``uncond`` and a ``guidance_scale`` other than 1, every token is scored
+    under the classifier-free-guided distribution generation samples from,
+    ``softmax(l_u + w (l_c - l_u))`` -- the formula of
+    :meth:`~wyckoff_transformer.generator.WyckoffGenerator.guided_logits`.  That
+    is a normalised distribution at every step, so the product is a proper
+    density of the guided sampler rather than of the conditional model.
     """
+    guided = uncond is not None and guidance_scale != 1.0
     data = build_tokenised_prediction_tensors(frame, trainer)
     dataset = AugmentedCascadeDataset(
         data=data,
@@ -240,6 +250,7 @@ def representation_log_likelihood(
                 break
             stopping = lengths[viable] == known_seq_len
             batch_cond = None if cond is None else cond[viable]
+            batch_uncond = uncond[viable] if guided else None
             for known_cascade_len in trainer.cascade_target_indices:
                 if known_cascade_len != stop_index and bool(stopping.all()):
                     # Every row here has already stopped, so the only term that
@@ -254,7 +265,18 @@ def representation_log_likelihood(
                     apply_permutation=False,
                     truncate_invalid_targets=False,
                 )
-                logits = trainer.model(start, cascade, None, known_cascade_len, cond=batch_cond)
+                if guided:
+                    rows = start.size(0)
+                    doubled = trainer.model(
+                        torch.cat([start, start], dim=0),
+                        [torch.cat([field, field], dim=0) for field in cascade],
+                        None, known_cascade_len,
+                        cond=torch.cat([batch_cond, batch_uncond], dim=0))
+                    conditional, unconditional = doubled[:rows], doubled[rows:]
+                    logits = unconditional + guidance_scale * (conditional - unconditional)
+                else:
+                    logits = trainer.model(
+                        start, cascade, None, known_cascade_len, cond=batch_cond)
                 token_log_probability = torch.log_softmax(logits.float(), dim=-1).gather(
                     1, target.to(torch.int64).unsqueeze(1)).squeeze(1)
                 if known_cascade_len != stop_index:
@@ -300,6 +322,7 @@ def score_gene_likelihood(
     permutation_samples: int = 8,
     seed: int = 0,
     batch_size: Optional[int] = None,
+    guidance_scale: float = 1.0,
 ) -> pd.DataFrame:
     """The generative model's log-density, and its surprisal, for each gene.
 
@@ -317,6 +340,10 @@ def score_gene_likelihood(
         seed: Seeds the representation draws.
         batch_size: Genes per forward sweep. ``None`` scores the whole pool at
             once, which is what a GPU wants and what a large pool cannot afford.
+        guidance_scale: Score under the classifier-free-guided sampler at this w
+            instead of the conditional model (w = 1). A pool drawn with guidance
+            came from the guided density, so that is the sampler's own. Needs a
+            model trained with ``condition_dropout``, and ``cond``.
 
     Returns:
         One row per record, with :data:`LIKELIHOOD_COLUMNS`.
@@ -354,12 +381,23 @@ def score_gene_likelihood(
         trainer._validate_condition_values(cond)
         cond = trainer.transform_condition(cond.to(trainer.device, dtype=torch.float32))
         if getattr(trainer, "classifier_free_guidance", False):
-            # Scored as p(gene | cond), the conditional model, not a guided mixture.
+            # p(gene | cond) at w = 1; the guided sampler's density otherwise.
             cond = trainer.with_null_indicator(cond)
     elif trainer.condition_features:
         raise ValueError(
             f"This generator is conditioned on {list(trainer.condition_features)}; pass "
             "cond in physical units, at the value the pool was generated at.")
+    uncond = None
+    if guidance_scale != 1.0:
+        if not getattr(trainer, "classifier_free_guidance", False):
+            raise ValueError(
+                f"guidance_scale={guidance_scale} needs a model trained with "
+                "condition_dropout; this one has no unconditional mode to guide away from.")
+        if cond is None:
+            raise ValueError("Guidance extrapolates towards a condition; pass cond.")
+        if guidance_scale < 0:
+            raise ValueError(f"guidance_scale must be non-negative, got {guidance_scale}")
+        uncond = trainer.null_condition(len(records), device=cond.device)
 
     multisets, weights = [], []
     for _, record in records.iterrows():
@@ -376,7 +414,9 @@ def score_gene_likelihood(
             frame = _draw_representations(
                 records.iloc[start:stop], multisets[start:stop], weights[start:stop], rng)
             samples[draw, start:stop] = representation_log_likelihood(
-                trainer, frame, cond=None if cond is None else cond[start:stop]
+                trainer, frame, cond=None if cond is None else cond[start:stop],
+                uncond=None if uncond is None else uncond[start:stop],
+                guidance_scale=guidance_scale,
             ).cpu().numpy()
 
     log_representations = np.fromiter(
