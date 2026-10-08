@@ -478,6 +478,46 @@ def markdown(report: dict, main_budget: int) -> str:
     return "\n".join(lines)
 
 
+def upload(root: Path, out_dir: Path, report: dict, name: str, main_budget: int) -> None:
+    """One W&B run per pool: the pool, its scores, the protocol outputs and the report.
+
+    Nothing under the runs store is the only copy of a result.
+    """
+    import wandb
+
+    from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT
+    from wyckoff_transformer.cli.protocol_wandb import add_protocol_outputs
+    from wyckoff_transformer.paths import wandb_dir
+
+    manifest_path = root / "pool" / "pool_manifest.json"
+    config = json.loads(manifest_path.read_text()) if manifest_path.is_file() else {}
+    config.update({"root": str(root), "band": list(BAND), "variants": report["variants"]})
+    run = wandb.init(dir=wandb_dir(), entity=WANDB_ENTITY, project=WANDB_PROJECT,
+                     name=name, id=name, resume="allow", job_type="roe_surprisal",
+                     config=config)
+    try:
+        artifact = wandb.Artifact(name, type="roe", metadata=config)
+        for sub in ("pool", "scores"):
+            for path in sorted((root / sub).glob("*")):
+                if path.is_file() and ".tmp" not in path.name:
+                    artifact.add_file(str(path), name=f"{sub}/{path.name}")
+        add_protocol_outputs(artifact, root / "protocol", prefix="protocol/")
+        for path in sorted(out_dir.glob("*")):
+            if path.is_file():
+                artifact.add_file(str(path), name=f"analysis/{path.name}")
+        summary = {"pool/" + key: value for key, value in report["pool"].items()
+                   if isinstance(value, (int, float))}
+        for arm, values in report["arms"][str(main_budget)].items():
+            for key in ("metasun_rate", "sun_rate", "metasun_per_draw",
+                        "metasun_per_relax_hour", "metasun_strict_rate"):
+                if values.get(key) is not None:
+                    summary[f"B{main_budget}/{arm}/{key}"] = values[key]
+        run.summary.update(summary)
+        run.log_artifact(artifact)
+    finally:
+        run.finish()
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("root", type=Path, help="The pool's root: pool/, scores/, protocol/.")
@@ -489,6 +529,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--no-strict", action="store_true")
     parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument("--wandb-name", type=str, default=None,
+                        help="Log the pool, scores, protocol outputs and report to this "
+                             "W&B run (also its id and the artifact name).")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -547,6 +590,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     (out_dir / "tables.md").write_text(markdown(report, args.main_budget), encoding="utf-8")
     print(markdown(report, args.main_budget))
     print(f"\nReport: {out_dir / 'report.json'}")
+    if args.wandb_name:
+        upload(root, out_dir, report, args.wandb_name, args.main_budget)
 
 
 if __name__ == "__main__":
