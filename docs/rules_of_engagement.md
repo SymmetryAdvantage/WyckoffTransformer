@@ -16,6 +16,15 @@
 >   - SUN did not move (18 against 20).
 >   - A per-system residual correction of the energy predictor failed held-out
 >     validation, and was not used.
+> - **The generator's surprisal in the screen slot** has been compared with the
+>   lookup (2026-10-09), on two fully relaxed 10,000-gene pools:
+>   [generative novelty screening](generative_novelty_screen.md#under-the-rules-of-engagement-2026-10).
+>   - Without a reference, fire-discipline matches the lookup on both backbones.
+>   - Fire-control without a reference beats the lookup on the CFG backbone
+>     (MetaSUN 0.744 against 0.647) and loses on the unconditional one (0.526
+>     against 0.636).
+>   - The lookup followed by the least surprising 30% is best on both (0.854 and
+>     0.778).
 
 Generating a (M)SUN structure is an attack on the convex hull: a candidate that
 lands below it does not merely pass a threshold, it redraws the hull beneath
