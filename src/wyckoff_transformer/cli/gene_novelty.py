@@ -48,6 +48,7 @@ def score_genes(
     permutation_samples: int = 8,
     seed: int = 0,
     batch_size: int | None = None,
+    guidance_scale: float = 1.0,
 ) -> pd.DataFrame:
     """One row per sampled gene, unscorable ones kept with a reason."""
     records, reasons = records_from_genes(genes, trainer)
@@ -77,6 +78,7 @@ def score_genes(
         permutation_samples=permutation_samples,
         seed=seed,
         batch_size=batch_size,
+        guidance_scale=guidance_scale,
     )
     output.loc[scored.index, list(LIKELIHOOD_COLUMNS)] = scored
     return output
@@ -100,6 +102,10 @@ def main() -> None:
                         help="Representations drawn per gene; the bound tightens with this.")
     parser.add_argument("--batch-size", type=int, default=None,
                         help="Genes per forward sweep (default: the whole pool).")
+    parser.add_argument("--guidance-scale", type=float, default=1.0,
+                        help="Score under the classifier-free-guided sampler at this w; "
+                             "pass the w the pool was generated at. 1 is the conditional "
+                             "model.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out", type=Path, default=Path("gene_novelty.csv"))
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"))
@@ -125,6 +131,7 @@ def main() -> None:
         permutation_samples=args.permutation_samples,
         seed=args.seed,
         batch_size=args.batch_size,
+        guidance_scale=args.guidance_scale,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     scored.to_csv(args.out)

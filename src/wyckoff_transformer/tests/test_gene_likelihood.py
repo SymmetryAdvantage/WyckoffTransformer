@@ -247,5 +247,57 @@ class TestGeneLikelihood(unittest.TestCase):
         self.assertAlmostEqual(float(prior.iloc[1]), math.log(0.25), places=6)
 
 
+class _LinearConditionedModel(torch.nn.Module):
+    """Logits linear in the conditioning row, so a guided combination of two rows
+    is the model evaluated at the same combination of the rows themselves."""
+
+    start_type = "one_hot"
+
+    def __init__(self, num_classes: List[int]):
+        super().__init__()
+        self.num_classes = num_classes
+
+    def forward(self, start, cascade, padding_mask, known_cascade_len, cond=None):
+        ramp = torch.arange(self.num_classes[known_cascade_len], dtype=torch.float32)
+        return cond[:, :1] * ramp + cond[:, 1:2] * ramp.flip(0)
+
+
+class TestGuidedLikelihood(unittest.TestCase):
+    """The guided density is the one ``WyckoffGenerator.guided_logits`` samples from."""
+
+    def setUp(self):
+        self.trainer = _TrainerStub()
+        self.trainer.model = _LinearConditionedModel(
+            [self.trainer.num_classes_dict[f] for f in CASCADE_ORDER])
+        records = [
+            _record(["Fe", "O"], ["1", "2"], ["a", "b"]),
+            _record(["Fe", "O", "Li"], ["1", "2", "4"], ["a", "b", "c"]),
+        ]
+        self.frame = pd.DataFrame.from_records(records)
+        self.frame.index.name = "index"
+        self.cond = torch.tensor([[0.7, 0.0]] * len(records))
+        self.uncond = torch.tensor([[0.0, 1.0]] * len(records))
+
+    def _score(self, cond, **guidance):
+        return representation_log_likelihood(self.trainer, self.frame, cond=cond, **guidance)
+
+    def test_unit_scale_is_the_conditional_model(self):
+        torch.testing.assert_close(
+            self._score(self.cond),
+            self._score(self.cond, uncond=self.uncond, guidance_scale=1.0))
+
+    def test_zero_scale_is_the_unconditional_model(self):
+        torch.testing.assert_close(
+            self._score(self.uncond),
+            self._score(self.cond, uncond=self.uncond, guidance_scale=0.0))
+
+    def test_extrapolation_is_renormalised_at_every_token(self):
+        scale = 3.0
+        combined = self.uncond + scale * (self.cond - self.uncond)
+        torch.testing.assert_close(
+            self._score(combined),
+            self._score(self.cond, uncond=self.uncond, guidance_scale=scale))
+
+
 if __name__ == "__main__":
     unittest.main()
