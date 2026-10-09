@@ -83,7 +83,17 @@ def _as_bool(series: pd.Series) -> pd.Series:
                       if not isinstance(value, (bool, np.bool_)) else bool(value))
 
 
-def load_pool(root: Path, variants: Sequence[str]) -> tuple[pd.DataFrame, pd.DataFrame, GeneScreen]:
+#: The protocol's two readouts: the structure kept after the symmetry release and
+#: the rattle, and the one relaxed with the gene's symmetry held, which is still
+#: the gene's Wyckoff representation at the end.
+TRACKS = {
+    "free": ("structures.csv", "cifs"),
+    "fixed_symmetry": ("structures_fixed_symmetry.csv", "cifs_fixed_symmetry"),
+}
+
+
+def load_pool(root: Path, variants: Sequence[str], track: str = "free",
+              ) -> tuple[pd.DataFrame, pd.DataFrame, GeneScreen]:
     """One row per sampled gene, and one per relaxed representative.
 
     Each gene is mapped to its representative -- the first gene of its
@@ -120,8 +130,9 @@ def load_pool(root: Path, variants: Sequence[str]) -> tuple[pd.DataFrame, pd.Dat
         scored = pd.read_csv(root / "scores" / f"gene_novelty_{variant}.csv", index_col=0)
         frame[f"surprisal_{variant}"] = scored["surprisal"].reindex(frame.index).astype(float)
 
-    structures = pd.read_csv(root / "protocol" / "structures.csv", index_col=0)
-    for column in ("has_structure", "valid_structure", "unique_structure", "novel_structure"):
+    structures = pd.read_csv(root / "protocol" / TRACKS[track][0], index_col=0)
+    for column in ("has_structure", "valid_structure", "unique_structure", "novel_structure",
+                   "relaxed_fingerprint_changed"):
         structures[column] = _as_bool(structures[column])
     energies = structures["e_above_hull"].astype(float)
     alive = (structures["has_structure"] & structures["valid_structure"]
@@ -136,9 +147,10 @@ def load_pool(root: Path, variants: Sequence[str]) -> tuple[pd.DataFrame, pd.Dat
     outcome = structures.reindex(frame["representative"].to_numpy())
     outcome.index = frame.index
     for column in ("metastable", "metasun", "sun", "novel_structure", "e_above_hull",
-                   "n_atoms", "n_trials", "relax_seconds"):
+                   "n_atoms", "n_trials", "relax_seconds", "relaxed_fingerprint_changed"):
         frame[column] = outcome[column].to_numpy()
-    for column in ("metastable", "metasun", "sun", "novel_structure"):
+    for column in ("metastable", "metasun", "sun", "novel_structure",
+                   "relaxed_fingerprint_changed"):
         frame[column] = frame[column].fillna(False).astype(bool)
     frame.loc[frame["representative"] < 0, ["metastable", "metasun", "sun"]] = False
     return frame, structures, screen
@@ -161,7 +173,8 @@ def _match_group(paths: list) -> list:
     return pairs
 
 
-def strict_classes(root: Path, structures: pd.DataFrame, workers: int) -> pd.Series:
+def strict_classes(root: Path, structures: pd.DataFrame, workers: int,
+                   track: str = "free") -> pd.Series:
     """A class id per MetaSUN structure: those StructureMatcher calls the same.
 
     Only structures with the same reduced formula can match, so only those are
@@ -173,7 +186,7 @@ def strict_classes(root: Path, structures: pd.DataFrame, workers: int) -> pd.Ser
     hits = structures.index[structures["metasun"]]
     groups: dict = defaultdict(list)
     for index in hits:
-        path = root / "protocol" / "cifs" / f"{index}.cif"
+        path = root / "protocol" / TRACKS[track][1] / f"{index}.cif"
         if path.is_file():
             formula = Composition(structures.at[index, "formula"]).reduced_formula
             groups[formula].append((int(index), str(path)))
@@ -297,6 +310,15 @@ def evaluate(frame: pd.DataFrame, structures: pd.DataFrame, slots: list, consume
         "mean_atoms": float(chosen["n_atoms"].mean()),
         "median_predicted_e_hull": float(chosen["predicted_e_hull"].median()),
     }
+    # Whether a hit is still the gene's Wyckoff representation once relaxed: a
+    # relaxed fingerprint that differs from the gene's means relaxation moved the
+    # structure off the orbit set the screen judged.
+    hits = structures.reindex(distinct)
+    hit_mask = hits["metasun"].fillna(False).astype(bool)
+    changed = hits["relaxed_fingerprint_changed"].fillna(False).astype(bool)
+    result["metasun_fingerprint_kept"] = int((hit_mask & ~changed).sum())
+    result["metasun_fingerprint_changed"] = int((hit_mask & changed).sum())
+    result["fingerprint_changed_slots"] = int(changed.sum())
     if strict is not None:
         hits = [r for r in distinct if bool(structures.at[r, "metasun"])] \
             if distinct else []
@@ -451,8 +473,8 @@ def markdown(report: dict, main_budget: int) -> str:
     lines.append(f"### Arms at B = {main_budget}\n")
     lines.append("| arm | MetaSUN | 95% CI | SUN | gene-novel slots | novel structure | "
                  "P(meta \\| novel) | draws | MetaSUN per draw | relax h | MetaSUN per relax h "
-                 "| atoms | strict MetaSUN | p vs broadside |")
-    lines.append("|" + "---|" * 14)
+                 "| atoms | strict MetaSUN | MetaSUN, fingerprint kept | p vs broadside |")
+    lines.append("|" + "---|" * 15)
     for name, arm in arms.items():
         lines.append(
             f"| {name} | {_fmt(arm['metasun_rate'])} | "
@@ -462,6 +484,7 @@ def markdown(report: dict, main_budget: int) -> str:
             f"{_fmt(arm['metasun_per_draw'])} | {_fmt(arm['relax_hours'], 1)} | "
             f"{_fmt(arm['metasun_per_relax_hour'], 1)} | {_fmt(arm['mean_atoms'], 1)} | "
             f"{_fmt(arm.get('metasun_strict_rate'))} | "
+            f"{_fmt(arm['metasun_fingerprint_kept'] / arm['budget'])} | "
             f"{'--' if name == 'broadside' else '%.1e' % fisher(arm, broadside)} |")
     lines.append("\n### MetaSUN per slot against the budget\n")
     budgets = list(report["arms"])
@@ -528,7 +551,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--main-budget", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--no-strict", action="store_true")
-    parser.add_argument("--out-dir", type=Path, default=None)
+    parser.add_argument("--track", choices=sorted(TRACKS), default="free",
+                        help="The protocol readout to score: 'free' (after the symmetry "
+                             "release and the rattle) or 'fixed_symmetry' (relaxed with the "
+                             "gene's symmetry held, so still its Wyckoff representation).")
+    parser.add_argument("--out-dir", type=Path, default=None,
+                        help="Default: ROOT/analysis, or ROOT/analysis_<track> off the "
+                             "free track.")
     parser.add_argument("--wandb-name", type=str, default=None,
                         help="Log the pool, scores, protocol outputs and report to this "
                              "W&B run (also its id and the artifact name).")
@@ -542,14 +571,17 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         variants = sorted(path.stem.removeprefix("gene_novelty_")
                           for path in (root / "scores").glob("gene_novelty_*.csv"))
     budgets = [int(b) for b in args.budgets.split(",")]
-    out_dir = args.out_dir or root / "analysis"
+    out_dir = args.out_dir or root / (
+        "analysis" if args.track == "free" else f"analysis_{args.track}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    frame, structures, screen = load_pool(root, variants)
-    strict = None if args.no_strict else strict_classes(root, structures, args.workers)
+    frame, structures, screen = load_pool(root, variants, args.track)
+    strict = None if args.no_strict else strict_classes(
+        root, structures, args.workers, args.track)
 
     report = {
         "root": str(root),
+        "track": args.track,
         "variants": variants,
         "band": list(BAND),
         "pool": {
