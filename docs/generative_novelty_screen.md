@@ -24,6 +24,12 @@
 >   regressor's error, and mostly its optimism, better than any size proxy: AUC
 >   0.75 and 0.71 for a miss of more than 0.1 eV/atom
 >   ([below](#what-the-surprisal-knows-about-the-energy-predictor)).
+> - **Corrected, not cut, after the lookup.** Ranking the novel genes by a
+>   calibrated P(metastable | predicted, surprisal) matches the hard 30% cut
+>   (0.848 against 0.854 out of sample) and holds where the cut runs out (0.757
+>   against 0.500 at B = 2000). It needs about 250 calibration genes and no
+>   novelty labels. Without a lookup no correction beats the band
+>   ([below](#correcting-the-ranking-instead-of-cutting)).
 
 ## Why a second lever
 
@@ -139,6 +145,7 @@ bash scripts/platforms/aspire2a/roe_surprisal_in_pbs.sh --backbone cfg      # or
 python scripts/analyse_roe_surprisal.py $WYFORMER_RUNS/roe_surprisal/cfg    # the replay alone
 python scripts/analyse_roe_surprisal.py $WYFORMER_RUNS/roe_surprisal/cfg --track fixed_symmetry
 python scripts/analyse_surprisal_energy_error.py $WYFORMER_RUNS/roe_surprisal/{cfg,uncond}
+python scripts/analyse_surprisal_correction.py $WYFORMER_RUNS/roe_surprisal/{cfg,uncond} --budget 1000
 ```
 
 ## Under the rules of engagement (2026-10)
@@ -301,6 +308,12 @@ What each arm cost at B = 1000, in relaxation worker-hours:
 - The band discards the most typical genes, and that is where stable structures
   live. As on `e9ywwsie`, a surprisal band is a MetaSUN lever, not a SUN lever.
 
+**The protocol's uniqueness caveat does not move these numbers.** The protocol
+groups structures by sampled gene, so two genes relaxing to one structure would
+both count. StructureMatcher, run across genes within each reduced formula,
+finds 2 such duplicates among the CFG pool's 4,544 MetaSUN structures and none
+among the unconditional pool's 3,791.
+
 ### Is the win a symmetry artefact?
 
 **Not this one.**
@@ -414,19 +427,91 @@ free readout, metastability is 0.91, 0.71 and 0.44 for CFG.
   the spread across its augmented Wyckoff descriptions and an ensemble. Whether
   they carry the same signal as the surprisal is open.
 
-**What follows.** A bias that is predictable can be corrected instead of cut.
-- One option is to fit `residual ~ f(surprisal)` on a relaxed calibration pool,
-  then rank by `predicted + f(surprisal)`. That would replace the hard band with
-  a pessimistic estimate.
-- The calibration needs relaxations and the hull, which fire-control already
-  needs, but no novelty lookup. Unlike placing the band, it would not bring the
-  reference back in.
+**What follows.** A bias that is predictable can be corrected instead of cut;
+[the next section](#correcting-the-ranking-instead-of-cutting) tries it.
 
-**The protocol's uniqueness caveat does not move these numbers.** The protocol
-groups structures by sampled gene, so two genes relaxing to one structure would
-both count. StructureMatcher, run across genes within each reduced formula,
-finds 2 such duplicates among the CFG pool's 4,544 MetaSUN structures and none
-among the unconditional pool's 3,791.
+### Correcting the ranking instead of cutting
+
+`scripts/analyse_surprisal_correction.py` fits a correction on relaxed genes and
+ranks by it, in place of a hard surprisal cut.
+
+**The corrections.**
+- **expected `e_hull`:** `predicted + f(surprisal)`, with *f* an isotonic fit
+  of the error.
+- **P(metastable):** `P(metastable | predicted, surprisal)`, a logistic
+  regression on `(p, s, p·s, s²)`. This is the outcome MetaSUN counts.
+- **P(MetaSUN):** the same model fitted on MetaSUN labels. It is the only
+  correction that reads novelty: the reference is used once, on the calibration
+  pool, and selection then needs no lookup.
+
+The first two need only relaxations and the hull, which fire-control needs
+anyway.
+
+**How they are tried.** A correction repairs the band's *upper* edge, the
+improbable genes the regressor is optimistic about. It is not a novelty lever,
+so each one is tried three ways:
+- after the lookup;
+- after dropping the most typical 40% (the band's lower edge), with no
+  reference;
+- alone.
+
+**How they are scored.** Out of sample: each pool's unique genes are split in
+half 40 times, the correction is fitted on one half (known and novel genes
+alike), and the arms are scored on the other half at half the budget.
+
+MetaSUN per slot:
+
+| arm | reference used | CFG B = 1000 | uncond B = 1000 | CFG B = 2000 | uncond B = 2000 |
+|---|---|---|---|---|---|
+| lookup | lookup | 0.649 | 0.638 | 0.723 | 0.683 |
+| lookup, least surprising 30% | lookup | **0.854** | **0.782** | 0.787 | 0.500 (runs short) |
+| lookup, P(metastable) | lookup | **0.848** | 0.764 | **0.791** | **0.757** |
+| lookup, expected `e_hull` | lookup | 0.691 | 0.706 | 0.748 | 0.727 |
+| surprisal band | none | 0.741 | 0.527 | 0.741 | 0.568 |
+| typical cut, P(metastable) | none | 0.693 | 0.466 | 0.664 | 0.532 |
+| typical cut, expected `e_hull` | none | 0.647 | 0.523 | 0.699 | 0.561 |
+| P(metastable) alone | none | 0.232 | 0.138 | 0.387 | 0.188 |
+| P(MetaSUN) alone | only to calibrate | 0.713 | 0.608 | 0.705 | 0.610 |
+
+**With the lookup, P(metastable) is a principled replacement for the hard 30% cut.**
+- It matches the cut where the cut fits: −0.006 on CFG and −0.018 on the
+  unconditional pool at B = 1000.
+- It does not break where the cut runs out. At B = 2000 the unconditional pool
+  has only 1,364 genes in its least surprising 30%, and the cut falls to 0.500;
+  the correction holds 0.757.
+- It beats plain lookup fire-control in every one of the 40 splits: +0.199 and
+  +0.126 at B = 1000.
+- 250 relaxed calibration genes are enough: 0.840 and 0.757, against 0.848 and
+  0.764 with the whole half.
+- It transfers between backbones. Fitted on the other pool, it scores 0.854 on
+  CFG and 0.761 on the unconditional pool.
+- Its calibration reads no novelty label. Only the selection uses the lookup.
+
+**The expected `e_hull` is the wrong target.** Ranking by
+`predicted + f(surprisal)` gives only 0.691 and 0.706. The error is skewed and
+MetaSUN counts a threshold, so the probability of crossing it ranks better than
+the mean.
+
+**Without the lookup, no correction beats the band.** Plausibility points towards
+typical genes, and without a lookup the typical genes are the known ones.
+- Ranked by P(metastable) alone, 91% (CFG) and 96% (unconditional) of the picks
+  are known genes. That is worse than energy alone.
+- After the typical cut, the correction still crowds against the cut's edge:
+  only 46% of its unconditional picks are novel, against 59% in the band.
+- The band works because its upper edge is a cut, not a pull.
+
+**Calibrating on MetaSUN partly repairs the unconditional pool.**
+- P(MetaSUN), with the reference used only to calibrate, scores 0.608 against
+  the band's 0.527. It is still below lookup fire-control's 0.638.
+- On CFG it is slightly below the band: 0.713 against 0.741.
+- It needs about 1,000 calibration genes; with 250 it scores 0.411 on CFG.
+
+**What this leaves.**
+- The strongest pipeline still uses the lookup at selection. The best version is
+  now lookup, then rank by a calibrated P(metastable). The calibration is an
+  energy-model correction, not a novelty filter.
+- Reference-free, the band remains the best screen found here. It wins on CFG
+  and loses on the unconditional pool.
 
 ### Provenance
 
