@@ -16,6 +16,14 @@
 > because a quantile band has to be placed for each pool and placing it needs
 > the reference. The best arm still uses both levers: the lookup, then the least
 > surprising 30%, then energy (0.854 and 0.778).
+>
+> - **Not a symmetry artefact.** With every structure relaxed in its gene's
+>   symmetry, the CFG fire-control win holds at the same size: +0.093 against
+>   +0.097 ([below](#is-the-win-a-symmetry-artefact)).
+> - **It works through the regressor.** Surprisal predicts the energy
+>   regressor's error, and mostly its optimism, better than any size proxy: AUC
+>   0.75 and 0.71 for a miss of more than 0.1 eV/atom
+>   ([below](#what-the-surprisal-knows-about-the-energy-predictor)).
 
 ## Why a second lever
 
@@ -129,6 +137,8 @@ same command continues from where it stopped.
 ```bash
 bash scripts/platforms/aspire2a/roe_surprisal_in_pbs.sh --backbone cfg      # or uncond; --pilot for 200 genes
 python scripts/analyse_roe_surprisal.py $WYFORMER_RUNS/roe_surprisal/cfg    # the replay alone
+python scripts/analyse_roe_surprisal.py $WYFORMER_RUNS/roe_surprisal/cfg --track fixed_symmetry
+python scripts/analyse_surprisal_energy_error.py $WYFORMER_RUNS/roe_surprisal/{cfg,uncond}
 ```
 
 ## Under the rules of engagement (2026-10)
@@ -290,6 +300,127 @@ What each arm cost at B = 1000, in relaxation worker-hours:
   fire-control: 39 against 14 on CFG, 74 against 59 on the unconditional pool.
 - The band discards the most typical genes, and that is where stable structures
   live. As on `e9ywwsie`, a surprisal band is a MetaSUN lever, not a SUN lever.
+
+### Is the win a symmetry artefact?
+
+**Not this one.**
+- **The concern.** The protocol keeps the structure it relaxed *after*
+  releasing the gene's symmetry and rattling it. A hit can therefore end up
+  as a structure that is not its gene's Wyckoff representation. If the
+  surprisal arm won by picking genes that relax *away* from themselves, its
+  win would say little about the genes it chose.
+- **The test.** The protocol also keeps a second readout, each gene relaxed
+  with its symmetry held, which is still exactly the gene's Wyckoff
+  representation. Replaying every arm on that readout
+  (`--track fixed_symmetry`) gives:
+
+| arm, B = 1000 | CFG free | CFG fixed symmetry | uncond free | uncond fixed symmetry |
+|---|---|---|---|---|
+| broadside | 0.458 | 0.319 | 0.397 | 0.291 |
+| fire-discipline / lookup | 0.548 | 0.383 | 0.550 | 0.434 |
+| fire-discipline / surprisal | 0.580 | 0.409 | 0.538 | 0.408 |
+| fire-control / lookup | 0.647 | 0.502 | 0.636 | 0.524 |
+| fire-control / surprisal | **0.744** | **0.595** | 0.526 | 0.449 |
+| fire-control / lookup+plausible | 0.854 | 0.766 | 0.778 | 0.705 |
+
+- **The ordering is the same on both readouts.** Fire-control on surprisal
+  beats the lookup by 0.093 with symmetry held (p = 4e-5), against 0.097 free.
+  At B = 250 the gap is wider still: 0.468 against 0.308. On the unconditional
+  pool the lookup still wins, by 0.075 (p = 9e-4). The fire-discipline
+  differences stay insignificant.
+- **Releasing the symmetry lifts every arm by about the same amount:** +0.139
+  broadside, +0.145 lookup fire-control, +0.149 surprisal fire-control. Only the
+  lookup+plausible arm gains less, +0.088.
+- **Hits whose fingerprint changes are common in every arm,** so they are not
+  where the surprisal arm's lead comes from. On the free readout 51% of
+  broadside's hits relax to a fingerprint other than their gene's, against 39%
+  for lookup fire-control, 44% for surprisal fire-control and 29% for
+  lookup+plausible.
+- **A changed fingerprint is not always a broken symmetry.** Between 11% and 15%
+  of hits change fingerprint even with the symmetry held, which can only be
+  symmetry *gained*.
+
+### What the surprisal knows about the energy predictor
+
+**The question.** The best arm keeps the least surprising 30% of the novel genes
+*before* ranking by predicted `e_hull`. Does that work because the surprisal
+predicts where the regressor is wrong?
+
+**The method.** `scripts/analyse_surprisal_energy_error.py` reads every
+gene-novel representative. A known gene's minimum may be among the regressor's
+training targets, so known genes are excluded.
+- The outcome is the gene's own energy: ORB `e_above_hull` of the
+  fixed-symmetry relaxation, which is still the gene's Wyckoff representation.
+- The error is `realized - predicted`, after removing the median. Positive
+  means the regressor was optimistic.
+- The prediction is against the PBE hull and the outcome against the ORB one,
+  so a cross-theory offset is expected: +0.027 on CFG, +0.017 on the
+  unconditional pool.
+
+| | CFG (w = 1) | unconditional |
+|---|---|---|
+| novel genes | 6,901 | 4,531 |
+| mean \|error\|, eV/atom | 0.138 | 0.103 |
+| Spearman, surprisal against \|error\| | **0.374** | **0.341** |
+| the same, within genes of equal site count | 0.357 | 0.254 |
+| AUC for \|error\| > 0.1: surprisal | **0.753** | **0.708** |
+| — number of sites | 0.594 | 0.656 |
+| — number of atoms | 0.562 | 0.631 |
+| — the prediction itself | 0.604 | 0.521 |
+| AUC for an optimistic miss (realized > predicted + 0.1): surprisal | **0.769** | **0.703** |
+
+**Yes, and mostly as a bias.**
+- Surprisal predicts the regressor's error better than any size proxy, and
+  most of the signal survives holding the site count fixed.
+- The error is mostly *optimism*. From the most typical decile to the most
+  surprising, the median signed error on CFG climbs from −0.027 to +0.217
+  eV/atom. The share of optimistic misses climbs from 8% to 71% (13% to 65% on
+  the unconditional pool).
+- On CFG the regressor still *ranks* genes about as well inside every decile
+  (Spearman 0.39–0.49). What goes wrong is the level.
+- On the unconditional pool the ranking collapses too, in the two most
+  surprising deciles: 0.32 and 0.14.
+- **Why this would happen:** the two models were trained on the same archive,
+  so a gene the generator finds improbable is also outside the regressor's
+  support. There the regressor shrinks towards typical values, and for these
+  genes that is optimistic. Improbable genes are mostly unstable.
+
+**This is the mechanism behind the fire-control results.** Among the 1000 lowest
+predictions over the novel genes, split by the surprisal tercile each gene falls
+in:
+
+| surprisal tercile | CFG n | predicted | realized | metastable | uncond n | predicted | realized | metastable |
+|---|---|---|---|---|---|---|---|---|
+| low | 421 | 0.021 | 0.033 | 0.78 | 508 | 0.012 | 0.022 | 0.78 |
+| middle | 302 | 0.020 | 0.086 | 0.56 | 239 | 0.014 | 0.043 | 0.68 |
+| high | 277 | 0.013 | 0.214 | 0.19 | 253 | 0.009 | 0.221 | 0.22 |
+
+Values are median `e_hull` in eV/atom, on the fixed-symmetry readout. On the
+free readout, metastability is 0.91, 0.71 and 0.44 for CFG.
+
+- The predictions are flat across the terciles; the outcomes are not.
+- A quarter or more of lookup fire-control's picks come from the most surprising
+  third. About four in five of those miss metastability with symmetry held, and
+  more than half do when it is released.
+- The lookup+plausible arm removes them. Unlike lookup fire-control, it is good
+  from its first slots: 0.812 at B = 250 on CFG, against 0.432.
+
+**Caveats.**
+- **The "error" is not only the regressor's.** It also contains the shortfall of
+  the reconstruction: three PyXtal trials may not find a gene's minimum, and
+  that may be harder for an improbable gene. Holding the site count fixed closes
+  the route through size, but not every route.
+- **The regressor's own uncertainty has not been compared.** Two candidates are
+  the spread across its augmented Wyckoff descriptions and an ensemble. Whether
+  they carry the same signal as the surprisal is open.
+
+**What follows.** A bias that is predictable can be corrected instead of cut.
+- One option is to fit `residual ~ f(surprisal)` on a relaxed calibration pool,
+  then rank by `predicted + f(surprisal)`. That would replace the hard band with
+  a pessimistic estimate.
+- The calibration needs relaxations and the hull, which fire-control already
+  needs, but no novelty lookup. Unlike placing the band, it would not bring the
+  reference back in.
 
 **The protocol's uniqueness caveat does not move these numbers.** The protocol
 groups structures by sampled gene, so two genes relaxing to one structure would
