@@ -243,7 +243,8 @@ def snapshot_to_wandb(run, output: Path, artifact_name: str, rows: dict) -> None
     artifact = wandb.Artifact(artifact_name, type=ARTIFACT_TYPE, metadata=metadata)
     for name in ("study_manifest.json", "trials.csv", "selected_free.json",
                  "selected_fixed_symmetry.json", "backend_transition.json",
-                 "relaxation_settings.json", "execution_settings.json", "recovery_settings.json"):
+                 "relaxation_settings.json", "execution_settings.json", "recovery_settings.json",
+                 "failure_pass_settings.json", "before_failure_pass.csv"):
         path = output / name
         if path.is_file():
             artifact.add_file(str(path), name=name)
@@ -257,10 +258,22 @@ def snapshot_to_wandb(run, output: Path, artifact_name: str, rows: dict) -> None
         if not path.is_file():
             raise FileNotFoundError(f"Cannot checkpoint missing {path}")
         artifact.add_file(str(path), name=relative)
+    failure_settings = output / "failure_pass_settings.json"
+    if failure_settings.is_file():
+        # Intermediate cells and optimizer logs explain a failed recovery.
+        for row in json.loads(failure_settings.read_text())["original_failures"]:
+            directory = output / "trials" / str(row["gene"]) / f"trial-{row['trial']}"
+            for path in sorted(directory.glob("*")):
+                relative = str(path.relative_to(output))
+                if path.is_file() and path.suffix in (".cif", ".log") and relative not in paths:
+                    artifact.add_file(str(path), name=relative)
     for directory in ("cifs", "cifs_fixed_symmetry"):
         path = output / directory
         if path.is_dir():
             artifact.add_dir(str(path), name=directory)
+    diagnostics = output / "failure_pass_diagnostics"
+    if diagnostics.is_dir():
+        artifact.add_dir(str(diagnostics), name="failure_pass_diagnostics")
     run.log_artifact(artifact).wait()
     run.summary["completed_trials"] = len(rows)
     run.summary["successful_trials"] = sum(r["status"] == "ok" for r in rows.values())

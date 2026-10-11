@@ -1,5 +1,6 @@
 """Scoring preserves benchmark values and the frozen validity predicate."""
 
+import hashlib
 import json
 import sys
 import types
@@ -19,6 +20,47 @@ from scripts.run_mlip_bias_genbench import (
     _matched_formation_energy,
 )
 from wyckoff_transformer.energy_fields import EnergyField, IncompatibleEnergyFieldError
+
+
+def test_snapshot_identity_preserves_legacy_and_isolates_changed_sources():
+    manifest = {"mlip": "probe", "input_sha256": "same-initial-structures"}
+    checkpoint = {"selected_cif_hashes": {"7": "first"}, "arm_artifact": "arm:v1",
+                  "trials_sha256": "ledger1", "scoring_config": {"relax_structures": False}}
+    legacy = hashlib.sha256(json.dumps({"arm": manifest, "track": "free"},
+                                      sort_keys=True).encode()).hexdigest()
+    assert scorer._scoring_digest(manifest, "free", checkpoint) == legacy
+    digest = scorer._scoring_digest(manifest, "free", checkpoint, "recovery-20261006")
+    assert digest != legacy
+    assert digest == scorer._scoring_digest(manifest, "free", dict(reversed(list(checkpoint.items()))),
+                                            "recovery-20261006")
+    for key, value in [("selected_cif_hashes", {"7": "second"}), ("arm_artifact", "arm:v2"),
+                       ("trials_sha256", "ledger2"), ("scoring_config", {"relax_structures": True})]:
+        assert scorer._scoring_digest(manifest, "free", {**checkpoint, key: value},
+                                     "recovery-20261006") != digest
+    assert scorer._scoring_digest(manifest, "fixed_symmetry", checkpoint, "recovery-20261006") != digest
+    assert scorer._scoring_digest(manifest, "free", checkpoint, "another-recovery") != digest
+
+
+def test_score_reuse_separates_relaxation_provenance_from_scoring_contract():
+    source = {"arm": {"calculator_factory": None}, "track": "free",
+              "selected_cif_hashes": {"7": "old-cif"}, "lemat_commit": "frozen",
+              "scoring_config": {"model": "pinned", "reference": "hull"},
+              "formation_energy_reference": "matched", "scorer_input_metadata": "isolated",
+              "extract_embeddings": True}
+    target = {**source, "arm": {"calculator_factory": "optimized"},
+              "track": "fixed_symmetry", "selected_cif_hashes": {"7": "new-cif"},
+              "snapshot_namespace": "failure-recovery", "arm_artifact": "arm:v2",
+              "trials_sha256": "new-ledger"}
+    scorer._validate_score_reuse(target, source)
+    for key in source.keys() - {"arm", "track", "selected_cif_hashes"}:
+        with pytest.raises(ValueError, match=key):
+            scorer._validate_score_reuse({**target, key: "changed"}, source)
+        incomplete = dict(source)
+        del incomplete[key]
+        with pytest.raises(ValueError, match=key):
+            scorer._validate_score_reuse(target, incomplete)
+    with pytest.raises(ValueError, match="new_scoring_setting"):
+        scorer._validate_score_reuse(target, {**source, "new_scoring_setting": True})
 
 
 def test_optimized_oxidation_search_preserves_candidates_and_order():
@@ -130,10 +172,11 @@ def test_scoring_resumes_partial_checkpoint_without_recomputing_or_relaxing(tmp_
     sys.argv.extend(["--track", "fixed_symmetry", "--reuse-scores-from", str(output)])
     sys.argv[sys.argv.index("--output") + 1] = str(fixed_output)
     scorer.main()
-    assert calls == {"validity": 2, "single_point": 27}
+    assert calls == {"validity": 1, "single_point": 27}
     fixed = json.loads((fixed_output / "metrics.json").read_text())
     assert fixed["scored_gene_ids"] == list(range(26))
     assert fixed["reused_byte_identical_scores"] == 26
+    assert not (fixed_output / 'single_point_partial_checkpoint.json.gz').exists()
 
     class ImmediatePool:
         def __init__(self, **settings):
@@ -161,13 +204,44 @@ def test_scoring_resumes_partial_checkpoint_without_recomputing_or_relaxing(tmp_
     sys.argv[sys.argv.index('--output') + 1] = str(parallel_output)
     sys.argv.extend(['--workers', '4'])
     scorer.main()
-    assert calls == {'validity': 3, 'single_point': 53}
+    assert calls == {'validity': 2, 'single_point': 53}
     (parallel_output / 'single_point_checkpoint.json.gz').unlink()
     scorer.main()
-    assert calls == {'validity': 3, 'single_point': 54}
+    assert calls == {'validity': 2, 'single_point': 54}
     parallel = json.loads((parallel_output / 'metrics.json').read_text())
     assert parallel['scored_gene_ids'] == list(range(26))
     assert parallel['single_point_workers'] == 4
+
+    # A new snapshot cannot resume an older local checkpoint, even without W&B.
+    sys.argv.extend(['--snapshot-namespace', 'recovery-20261006', '--arm-artifact', 'entity/project/probe:v2'])
+    with pytest.raises(ValueError, match='Scoring checkpoint inputs changed'):
+        scorer.main()
+    snapshot_output = tmp_path / 'snapshot_output'
+    sys.argv[sys.argv.index('--output') + 1] = str(snapshot_output)
+    # Reuse across namespaces and a changed relaxation factory; only exact CIF
+    # matches can reuse scores, so changing one CIF must trigger one new score.
+    (arm / 'study_manifest.json').write_text(json.dumps({"mlip": "probe", "calculator_factory": "optimized"}))
+    changed = Structure(Lattice.cubic(3.7), ["Cu"], [[0, 0, 0]])
+    changed.to(filename=str(arm / '0.cif'))
+    sys.argv.extend(['--reuse-scores-from', str(parallel_output)])
+    before_reuse = calls['single_point']
+    before_validity = calls['validity']
+    scorer.main()
+    snapshot = json.loads((snapshot_output / 'metrics.json').read_text())
+    assert snapshot['reused_byte_identical_scores'] == 25
+    assert calls['single_point'] == before_reuse + 1
+    assert calls['validity'] == before_validity + 1
+    # The newly evaluated CIF is durable even when fewer than 25 scores changed.
+    assert len(scorer._load_checkpoint(snapshot_output / 'single_point_partial_checkpoint.json.gz')) == 1
+    (snapshot_output / 'single_point_checkpoint.json.gz').unlink()
+    assert snapshot['snapshot_namespace'] == 'recovery-20261006'
+    assert snapshot['scoring_run_id'] != parallel['scoring_run_id']
+    before_resume = calls.copy()
+    scorer.main()
+    assert calls == before_resume
+    sys.argv[sys.argv.index('--arm-artifact') + 1] = 'entity/project/probe:latest'
+    with pytest.raises(SystemExit):
+        scorer.main()
 
 
 def test_formation_energy_requires_matched_elemental_references():

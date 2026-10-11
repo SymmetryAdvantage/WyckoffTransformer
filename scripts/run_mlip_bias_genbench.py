@@ -16,6 +16,7 @@ import json
 import math
 import multiprocessing
 import numbers
+import shutil
 import subprocess
 import sys
 import time
@@ -43,6 +44,29 @@ FAMILIES = ("distribution", "diversity", "novelty", "uniqueness", "hhi", "sun", 
 SCORING_MLIPS = ("orb", "mace", "uma")
 SCORING_HULLS = {"orb": "orb_conserv_inf", "mace": "mace_mp", "uma": "uma"}
 NOVELTY_REFERENCE_REVISION = "0dc17eea904b860ad7288141e9870f67f8e6bb2c"
+
+
+def _validate_score_reuse(target, source):
+    """Require identical scoring physics; match each geometry separately by CIF hash.
+
+    Relaxation provenance identifies the output snapshot, not the single-point
+    scorer. It may change across a failure recovery or another relaxation arm.
+    These fields still participate in the target's checkpoint/run identity.
+    """
+    provenance = {"arm", "track", "selected_cif_hashes", "snapshot_namespace",
+                  "arm_artifact", "trials_sha256"}
+    for key in (target.keys() | source.keys()) - provenance:
+        if key not in target or key not in source or target[key] != source[key]:
+            raise ValueError(f"Cannot reuse scores with different {key}")
+
+
+def _scoring_digest(arm_manifest, track, checkpoint_identity, snapshot_namespace=None):
+    """Keep historical IDs; isolate explicitly versioned inputs by their contents."""
+    identity = {"arm": arm_manifest, "track": track}
+    if snapshot_namespace is not None:
+        identity.update(snapshot_namespace=snapshot_namespace,
+                        checkpoint_identity=checkpoint_identity)
+    return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
 _WORKER_PROCESS = None
 
 
@@ -401,10 +425,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--arm", type=Path, required=True)
     parser.add_argument("--arm-artifact", help="W&B relaxation artifact path, e.g. entity/project/name:latest")
+    parser.add_argument("--snapshot-namespace",
+                        help="New snapshot scoring identity; includes pinned artifact, ledger and CIF hashes")
     parser.add_argument("--lemat-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--reuse-scores-from", type=Path,
-                        help="Completed other-track scores; reuse only byte-identical CIFs")
+                        help="Completed frozen scores; reuse only byte-identical CIFs")
     parser.add_argument("--workers", type=int, default=1,
                         help="Spawned single-point scoring workers; parent owns checkpoints")
     parser.add_argument("--track", choices=("free", "fixed_symmetry"), default="free")
@@ -414,6 +440,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.workers < 1:
         parser.error("--workers must be positive")
+    if args.snapshot_namespace and (not args.arm_artifact or ":v" not in args.arm_artifact or
+                                   not args.arm_artifact.rsplit(":v", 1)[-1].isdigit()):
+        parser.error("--snapshot-namespace requires a pinned --arm-artifact ending in :v<number>")
 
     if args.arm_artifact and not (args.arm / "trials.csv").is_file():
         import wandb
@@ -470,7 +499,13 @@ def main() -> None:
 
     def remember_score(result):
         single_point_progress.append(_compact_score(result))
-        if len(single_point_progress) % 25 == 0:
+        # Reused scores already have a durable source checkpoint. Avoid
+        # repeatedly uploading their growing prefix; reconstruct it on resume.
+        # During reuse, persist every new model result immediately instead.
+        new_during_reuse = (args.reuse_scores_from
+                            and "scores_reused_from_cif_sha256" not in result.properties)
+        regular_batch = not args.reuse_scores_from and len(single_point_progress) % 25 == 0
+        if new_during_reuse or regular_batch:
             save_checkpoint("single_point_partial_checkpoint", single_point_progress)
         return result
 
@@ -541,21 +576,6 @@ def main() -> None:
     config["preprocessor_config"]["relax_structures"] = False
 
     args.output.mkdir(parents=True, exist_ok=True)
-    identity = json.dumps({"arm": arm_manifest, "track": args.track}, sort_keys=True)
-    digest = hashlib.sha256(identity.encode()).hexdigest()
-    run = None
-    if not args.no_wandb:
-        import wandb
-
-        run = wandb.init(entity="symmetry-advantage", project="WyckoffTransformer",
-                         id=digest[:8], resume="allow", dir=str(wandb_dir()),
-                         job_type="mlip_bias_genbench",
-                         config={"track": args.track, "arm": arm_manifest,
-                                 "relaxation_settings": relaxation_settings,
-                                 "relax_structures": False,
-                                 "single_point_workers": args.workers,
-                                 "lemat_genbench_commit": lemat_commit})
-
     checkpoint_identity = {
         "arm": arm_manifest, "track": args.track, "lemat_commit": lemat_commit,
         "scoring_config": config,
@@ -565,7 +585,30 @@ def main() -> None:
         "selected_cif_hashes": {str(gene): hashlib.sha256(
             (args.arm / selected[str(gene)]["cif"]).read_bytes()).hexdigest() for gene in genes},
     }
+    if args.snapshot_namespace:
+        checkpoint_identity.update(
+            snapshot_namespace=args.snapshot_namespace,
+            arm_artifact=args.arm_artifact,
+            trials_sha256=hashlib.sha256((args.arm / "trials.csv").read_bytes()).hexdigest())
+    digest = _scoring_digest(arm_manifest, args.track, checkpoint_identity, args.snapshot_namespace)
     checkpoint_manifest = args.output / "checkpoint_manifest.json"
+    # Reject changed inputs before opening a W&B run or recovering old checkpoints.
+    if checkpoint_manifest.exists() and json.loads(checkpoint_manifest.read_text()) != checkpoint_identity:
+        raise ValueError("Scoring checkpoint inputs changed; use a separate output directory")
+    run = None
+    if not args.no_wandb:
+        import wandb
+
+        run = wandb.init(entity="symmetry-advantage", project="WyckoffTransformer",
+                         id=digest[:8], resume="allow", dir=str(wandb_dir()),
+                         job_type="mlip_bias_genbench",
+                         config={"track": args.track, "arm": arm_manifest,
+                                 "snapshot_namespace": args.snapshot_namespace,
+                                 "arm_artifact": args.arm_artifact,
+                                 "relaxation_settings": relaxation_settings,
+                                 "relax_structures": False,
+                                 "single_point_workers": args.workers,
+                                 "lemat_genbench_commit": lemat_commit})
     if not checkpoint_manifest.exists() and run is not None:
         try:
             wandb.Api().artifact(
@@ -583,9 +626,18 @@ def main() -> None:
 
     if args.reuse_scores_from:
         source_identity = json.loads((args.reuse_scores_from / "checkpoint_manifest.json").read_text())
-        for key in checkpoint_identity.keys() - {"track", "selected_cif_hashes"}:
-            if checkpoint_identity[key] != source_identity.get(key):
-                raise ValueError(f"Cannot reuse scores with different {key}")
+        _validate_score_reuse(checkpoint_identity, source_identity)
+        # Validity is also invariant when every gene has the exact same CIF,
+        # order and frozen preprocessing configuration. Never reuse it for a
+        # changed geometry or overwrite the target's own resume checkpoint.
+        source_validity = args.reuse_scores_from / "validity_checkpoint.json.gz"
+        target_validity = args.output / "validity_checkpoint.json.gz"
+        if (source_identity["selected_cif_hashes"] == checkpoint_identity["selected_cif_hashes"]
+                and source_validity.is_file() and not target_validity.exists()):
+            temporary = target_validity.with_suffix(".tmp")
+            shutil.copyfile(source_validity, temporary)
+            temporary.replace(target_validity)
+            print("Reused validity checkpoint: all selected CIF hashes and scoring configuration match", flush=True)
         source_metrics = json.loads((args.reuse_scores_from / "metrics.json").read_text())
         source_scores = _load_checkpoint(args.reuse_scores_from / "single_point_checkpoint.json.gz")
         if len(source_scores) != len(source_metrics["scored_gene_ids"]):
@@ -696,6 +748,10 @@ def main() -> None:
         "wyformer_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "arm_manifest": arm_manifest,
         "arm_artifact": args.arm_artifact,
+        "snapshot_namespace": args.snapshot_namespace,
+        "scoring_run_id": digest[:8],
+        "checkpoint_identity_sha256": hashlib.sha256(
+            json.dumps(checkpoint_identity, sort_keys=True).encode()).hexdigest(),
         "relaxation_settings": relaxation_settings,
         "track": args.track,
         "completed_trials": completed_trials,

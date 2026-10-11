@@ -166,7 +166,8 @@ def _build_tace(spec: MlipSpec, checkpoint: str, device: str, dtype: str) -> Cal
     # cuEQ is a CUDA-only acceleration path; enabling it on CPU makes the
     # backend allocate on the GPU anyway.  Same trap as in calculator.py.
     use_oeq = device.startswith("cuda") and os.environ.get("TACE_USE_OEQ", "0") == "1"
-    use_cue = device.startswith("cuda") and not use_oeq and _cueq_importable()
+    use_cue = (device.startswith("cuda") and not use_oeq
+               and os.environ.get("TACE_USE_CUE", "1") != "0" and _cueq_importable())
     logger.info("TACE acceleration: OEQ=%s, cuEQ=%s", use_oeq, use_cue)
     return TACEAseCalc(
         model=model,
@@ -344,7 +345,10 @@ def build_prerelax_calculator(name: str, device: str = "cpu") -> Calculator:
     if name in MLIP_REGISTRY:
         return build_calculator(name, device=device)
 
-    from wyckoff_transformer.evaluation.hull_mlips import HULL_MLIPS, build_hull_calculator
+    from wyckoff_transformer.evaluation.hull_mlips import (
+        HULL_MLIPS,
+        build_hull_calculator,
+    )
 
     if name in HULL_MLIPS:
         return build_hull_calculator(name, device=device)

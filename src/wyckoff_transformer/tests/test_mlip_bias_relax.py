@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,23 @@ from scripts.run_mlip_bias_relax import (
     trial_timeout,
     wandb_identity,
 )
+from wyckoff_transformer.cryspr import mlips
+
+
+@pytest.mark.parametrize("setting,expected", [("0", False), ("1", True), (None, True)])
+def test_tace_respects_explicit_cue_disable(monkeypatch, setting, expected):
+    calculator = types.ModuleType("tace.interface.ase.calculator")
+    calculator.TACEAseCalc = lambda **options: options
+    monkeypatch.setitem(sys.modules, "tace.interface.ase.calculator", calculator)
+    monkeypatch.setattr(mlips, "_cueq_importable", lambda: True)
+    monkeypatch.setenv("TACE_USE_OEQ", "0")
+    if setting is None:
+        monkeypatch.delenv("TACE_USE_CUE", raising=False)
+    else:
+        monkeypatch.setenv("TACE_USE_CUE", setting)
+    options = mlips._build_tace(mlips.MLIP_REGISTRY["TACE-OAM-L"], "local.pt",
+                                "cuda", "float32")
+    assert options["enable_cue"] is expected
 
 
 def test_snapshot_restores_trial_ledger_and_both_cifs(tmp_path, monkeypatch):

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
+from functools import wraps
 from pathlib import Path
 
 from wyckoff_transformer.cryspr.calculator import resolve_model_path
@@ -20,6 +21,58 @@ def build_prophet(*, device: str):
 
     return KairosCalculator(model_path=str(resolve_model_path(PROPHET_OAME_MBD)),
                             use_kernel=False, use_compile=False, device=device)
+
+
+def build_prophet_kernel_compile(*, device: str):
+    """Explicit optimized identity; preserve the historical eager factory."""
+    from prophet import KairosCalculator
+
+    return KairosCalculator(model_path=str(resolve_model_path(PROPHET_OAME_MBD)),
+                            use_kernel=True, use_compile=True, device=device)
+
+
+def build_prophet_kernel(*, device: str):
+    from prophet import KairosCalculator
+
+    return KairosCalculator(model_path=str(resolve_model_path(PROPHET_OAME_MBD)),
+                            use_kernel=True, use_compile=False, device=device)
+
+
+def _with_neighbor_capacity(neighbor_list, minimum=4096, maximum=65536):
+    """Grow scratch space on overflow without changing the cutoff or edge cap."""
+    @wraps(neighbor_list)
+    def resized(*args, **kwargs):
+        capacity = max(minimum, kwargs.get("max_neighbors") or 0)
+        while True:
+            try:
+                return neighbor_list(*args, **{**kwargs, "max_neighbors": capacity})
+            except Exception as exc:
+                # Only a documented capacity overflow is safe to retry here.
+                if type(exc).__name__ != "NeighborOverflowError":
+                    raise
+                required = int(exc.num_neighbors)
+                if capacity >= maximum or required > maximum:
+                    raise
+                capacity = min(maximum, max(capacity * 2, required))
+    return resized
+
+
+def build_equflash_large_neighbors(*, device: str):
+    from GGNN.common import utils
+
+    from wyckoff_transformer.cryspr.mlips import build_prerelax_calculator
+
+    utils.neighbor_list = _with_neighbor_capacity(utils.neighbor_list)
+    return build_prerelax_calculator("EquFlashV2", device=device)
+
+
+def build_pet_large_neighbors(*, device: str):
+    import metatomic_ase._neighbors as neighbors
+
+    from wyckoff_transformer.cryspr.mlips import build_prerelax_calculator
+
+    neighbors.nvalchemi_neighbor_list = _with_neighbor_capacity(neighbors.nvalchemi_neighbor_list)
+    return build_prerelax_calculator("PET-OAM-XL", device=device)
 
 
 def build_nequip(*, device: str):

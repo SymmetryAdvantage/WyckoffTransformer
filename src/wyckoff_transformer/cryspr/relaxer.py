@@ -10,6 +10,7 @@ from typing import Optional
 os.environ.setdefault("SPGLIB_OLD_ERROR_HANDLING", "0")
 
 import numpy as np
+import spglib
 from ase import Atoms
 from ase.calculators.calculator import Calculator
 from ase.constraints import FixAtoms, FixSymmetry
@@ -17,7 +18,6 @@ from ase.filters import FrechetCellFilter as CellFilter
 from ase.io import write
 from ase.optimize import BFGS
 from ase.optimize.optimize import Optimizer
-import spglib
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +110,16 @@ class RelaxStages:
 
 def _get_spacegroup_info(atoms: Atoms, symprec: float) -> tuple[str, int]:
     """Return the international symbol and number from spglib."""
+    # Optimisers can overflow and leave NaN coordinates. spglib's native
+    # symmetry search may segfault on these rather than raising SpglibError.
+    if not np.isfinite(atoms.cell.array).all() or not np.isfinite(atoms.positions).all():
+        raise ValueError("Non-finite cell or atomic positions after relaxation")
+    scaled_positions = atoms.get_scaled_positions()
+    if not np.isfinite(scaled_positions).all():
+        raise ValueError("Non-finite fractional atomic positions after relaxation")
     try:
         dataset = spglib.get_symmetry_dataset(
-            (atoms.cell.array, atoms.get_scaled_positions(), atoms.numbers),
+            (atoms.cell.array, scaled_positions, atoms.numbers),
             symprec=symprec,
         )
     except spglib.SpglibError as exc:

@@ -1,5 +1,56 @@
 # MLIP relaxation bias study
 
+The additional failure pass completed relaxation on 2026-10-10: 64 of 67
+draws recovered, including all 19 Prophet and all 40 NequIP OOM failures.
+Prophet used the validated kernel backend with compilation disabled;
+NequIP moved to the larger Zeus GPU. EquFlashV2 recovered three of four
+and PET both; one EquFlashV2 CUDA OOM during cell collapse and two geometry
+failures (TACE/EquiformerV3) remain. On 2026-10-11 the separate frozen
+GenBench comparison resumed after repairing cache reuse across recovery
+provenance: only byte-identical CIFs with identical scoring contracts reuse
+scores. Eight scorer tests passed. The new comparison completed on
+**2026-10-11 at 14:14 SGT**, with all seven benchmark families passing
+across 18 tracks on **884 common valid, fully scored genes**. This retains
+all 874 original common genes and adds ten. The publication is
+[W&B run `1aaf8610`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/1aaf8610),
+artifact `mlip-bias-genbench-comparison-1aaf8610d42b5413:v0`.
+The audit and independent publication hash check passed. Only the original
+eSEN/free UMA score at gene 722 remains unsupported in the full-cohort
+exports; no new panel scoring failures occurred. The original report below
+remains intact. Source baseline is `ebd0ad6` plus dated W&B patches in the
+recovery setup/progress runs. Earlier dated states below are historical.
+
+On 2026-10-09 the user requested another recovery pass at the 67 remaining
+relaxation failures. It is in progress under a separate namespace and
+[W&B progress run](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/mlipfailurepass20261009).
+The published comparison below is preserved. Recovery uses the same raw
+draws, seeds, checkpoint weights and relaxation schedule; backend changes
+must pass energy/force/stress checks. New selected geometries receive
+frozen GenBench scoring, with byte-identical prior single points reusable
+only after checkpoint/reference and CIF-hash validation. A new matched
+comparison will follow completion. Source baseline remains `ebd0ad6` plus
+dated W&B patches; operational details are in the platform notes.
+
+The nine-arm campaign completed on 2026-10-09. The final audited comparison
+is [W&B run `d115c18c`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/d115c18c),
+artifact `mlip-bias-genbench-comparison-d115c18c2610b276:v0`, at source
+baseline `ebd0ad64bd90e1a52f0afe2c697aab049962d99a` plus dated W&B patches.
+All 2,698 common raw PyXtal draws were attempted by every MLIP, including
+the planned recovery passes. The report compares free and fixed-symmetry
+tracks across all nine arms on 874 common valid genes with finite ORB,
+MACE and UMA energies and graph embeddings. All requested benchmark
+families completed on this matched cohort, and the audit passed. Each
+energy/scorer field and its reference provenance remain separate.
+
+Full-cohort eSEN/free results retain one unsupported UMA single point:
+gene 722, Cs16Rb4Hg2, has minimum periodic distance 6.044885 Å and no
+neighbors inside UMA's 6 Å cutoff. ORB/MACE scored it, but UMA returned
+no energy or embedding. The full-cohort completion flag remains false;
+gene 722 is excluded from every matched track. Relaxation failures remain
+recorded separately, including 19 Prophet OOM failures after serial Zeus
+recovery and 40 NequIP OOM failures after serial iapetus recovery. The
+earlier six-arm, 440-gene first-pass report below remains historical.
+
 The current cohort contains eight MLIPs plus the ORB control. GRACE is skipped
 to avoid its TensorFlow dependency. On 2026-10-05, at WyFormer commit
 `35104ff`, the user excluded EquFlash in favor of EquFlashV2; V2 remains in
@@ -27,6 +78,22 @@ under run `mlipbias1`. On 2026-10-06 the migration handoff at commit
 to finish their first passes, TACE to resume its interrupted retry ledger,
 and TECE/eSEN/EquiformerV3 to retry failures once. The single-writer
 boundary must be verified before starting these Zeus arms; see [HANDOFF.md](../HANDOFF.md).
+
+On 2026-10-07, at baseline commit `ebd0ad64bd90e1a52f0afe2c697aab049962d99a`
+plus the dated W&B source snapshots, TECE completed its 414 failed-trial
+retries with 2,698 successes, final `mlip-bias-55f04b6c21bc18d4:v128`.
+TACE completed at 2,697 successes and one non-finite-geometry failure,
+final `mlip-bias-8eb9d70c27c24afd:v146`, with its 100-candidate recovery
+journal complete. Both final ledgers were verified against their uploaded
+CSV hashes. A reproduced TACE crash was traced to NaN optimized positions
+entering native spglib; the symmetry helper now rejects non-finite geometry
+while preserving its inputs for finite geometry. The remaining five arms
+are still running or queued. The current [status/source record](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/mlipcampaignstatus20261007)
+and [supervision record](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/zeussupervision20261007)
+retain diagnostics and bounded-restart provenance. The updated comparison
+uses namespace `recovery-20261006` and distinct scoring identities; the
+six-arm first-pass comparison below remains a historical snapshot. Current
+commands and queue state are in the platform notes and handoff.
 
 On 2026-10-05, at WyFormer commit `44abb58`, TECE's completed first-pass
 snapshot was confirmed in [W&B run 55f04b6c](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/55f04b6c):
@@ -114,7 +181,7 @@ tracks queued after the first four arms, sharing the exclusive GPU 1 lock.
 Other arms are still incomplete; all snapshots are pinned independently
 of any later recovery on the originating machine.
 
-TACE's latest ledger is incomplete because OOM/timeout recovery is ongoing,
+At this 2026-10-06 snapshot TACE's recovery ledger was incomplete,
 but its complete first-pass snapshot `mlip-bias-8eb9d70c27c24afd:v108`
 is retained. Both tracks of that snapshot are also queued, under the
 explicit `tace_oam_l_first_pass` namespace: 1,925 successful trials and
