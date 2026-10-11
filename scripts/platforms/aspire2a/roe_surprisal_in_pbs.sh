@@ -167,6 +167,7 @@ QSUB=/opt/pbs/bin/qsub
 [ -x "$QSUB" ] || QSUB=$(command -v qsub || echo "qsub")
 
 BACKBONE=""
+OVERSAMPLE_OVERRIDE=""
 # The xl energy predictor, frozen on 2026-10-08 while its chain was still in its
 # last link (val MAE 0.0253): the chain overwrites best_model_params.pt in place.
 REGRESSOR_DIR=roe_surprisal/models/min_energy_adamw_wsd_h7x_xl-20260930-030055.snapshot-20261008
@@ -195,6 +196,8 @@ Options:
                            cfg_xl: ehull_adamw_wsd_5x_cfg_h3x_xl at e_hull=0.05, w=5,
                            with the finished xl energy predictor
     --pool N               formally valid genes in the pool (default: $POOL)
+    --oversample PERCENT   draws as a percentage of the pool (default: per backbone);
+                           the pool step fails if fewer than N draws are formally valid
     --root DIR             output root (default: \$WYFORMER_RUNS/roe_surprisal/<backbone>[_pilot])
     --pilot                200 genes, 01:59:00 walltime
     --allow-dirty          submit with uncommitted changes
@@ -207,6 +210,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --backbone)    BACKBONE=${2:?}; shift 2 ;;
         --pool)        POOL=${2:?}; shift 2 ;;
+        --oversample)  OVERSAMPLE_OVERRIDE=${2:?}; shift 2 ;;
         --root)        ROOT=${2:?}; shift 2 ;;
         --pilot)       PILOT=1; shift ;;
         --allow-dirty) ALLOW_DIRTY=1; shift ;;
@@ -236,11 +240,14 @@ case "$BACKBONE" in
     cfg_xl)
         # The larger CFG model (2x width, 4 layers; finished 2026-10-10, val 16.48 against the
         # cfg backbone's 17.33), sampled and scored exactly as cfg so the two pools compare
-        # directly. w=5 is cfg's cell, not one measured for this model; its formal validity
-        # there is unmeasured too, so the cfg oversampling is kept and the pilot checks it.
+        # directly. w=5 is cfg's cell, not one tuned for this model, and its formal validity
+        # there is much lower than cfg's.
         MODEL_RUN=ehull_adamw_wsd_5x_cfg_h3x_xl-20260930-030057
         GEN_ARGS="--condition energy_above_hull=0.05 --guidance-scale 5"
-        OVERSAMPLE_PERCENT=200
+        # Formal validity at this cell, measured 2026-10-11 on 200 CPU draws: 34% (w=3 85%, w=1
+        # 100%; the cfg model 53% at w=5). 200% left the first submission short of the pool;
+        # 400% expects ~13600 valid draws and still clears 10000 at 27%.
+        OVERSAMPLE_PERCENT=400
         SURPRISAL_VARIANTS="w5|--condition energy_above_hull=0.05 --guidance-scale 5;w1|--condition energy_above_hull=0.05"
         # The finished xl energy predictor (val MAE 0.0250); cfg and uncond keep the
         # 2026-10-08 snapshot (0.0253) their pools were scored with.
@@ -258,6 +265,7 @@ if [ "$PILOT" -eq 1 ]; then
     # A pilot proves the pipeline; it is not a result, so it is not uploaded.
     ANALYSIS_ARGS="--budgets 25,50 --main-budget 50"
 fi
+[ -n "$OVERSAMPLE_OVERRIDE" ] && OVERSAMPLE_PERCENT=$OVERSAMPLE_OVERRIDE
 INITIAL=$((POOL * OVERSAMPLE_PERCENT / 100))
 MODEL="$RUNS_DIR/$MODEL_RUN"
 REGRESSOR="$RUNS_DIR/$REGRESSOR_DIR"
