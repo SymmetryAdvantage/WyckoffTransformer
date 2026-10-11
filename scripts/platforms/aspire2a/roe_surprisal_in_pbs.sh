@@ -189,8 +189,11 @@ usage() {
     cat <<EOF
 
 Options:
-    --backbone cfg|uncond  cfg: ehull_adamw_wsd_5x_cfg_cont at e_hull=0.05, w=5;
-                           uncond: unconditional_5x_ehull01_h3x_xl
+    --backbone cfg|uncond|cfg_xl
+                           cfg: ehull_adamw_wsd_5x_cfg_cont at e_hull=0.05, w=5;
+                           uncond: unconditional_5x_ehull01_h3x_xl;
+                           cfg_xl: ehull_adamw_wsd_5x_cfg_h3x_xl at e_hull=0.05, w=5,
+                           with the finished xl energy predictor
     --pool N               formally valid genes in the pool (default: $POOL)
     --root DIR             output root (default: \$WYFORMER_RUNS/roe_surprisal/<backbone>[_pilot])
     --pilot                200 genes, 01:59:00 walltime
@@ -230,7 +233,20 @@ case "$BACKBONE" in
         OVERSAMPLE_PERCENT=120
         SURPRISAL_VARIANTS="plain|"
         ;;
-    *) die "--backbone is cfg or uncond" ;;
+    cfg_xl)
+        # The larger CFG model (2x width, 4 layers; finished 2026-10-10, val 16.48 against the
+        # cfg backbone's 17.33), sampled and scored exactly as cfg so the two pools compare
+        # directly. w=5 is cfg's cell, not one measured for this model; its formal validity
+        # there is unmeasured too, so the cfg oversampling is kept and the pilot checks it.
+        MODEL_RUN=ehull_adamw_wsd_5x_cfg_h3x_xl-20260930-030057
+        GEN_ARGS="--condition energy_above_hull=0.05 --guidance-scale 5"
+        OVERSAMPLE_PERCENT=200
+        SURPRISAL_VARIANTS="w5|--condition energy_above_hull=0.05 --guidance-scale 5;w1|--condition energy_above_hull=0.05"
+        # The finished xl energy predictor (val MAE 0.0250); cfg and uncond keep the
+        # 2026-10-08 snapshot (0.0253) their pools were scored with.
+        REGRESSOR_DIR=min_energy_adamw_wsd_h7x_xl-20260930-030055
+        ;;
+    *) die "--backbone is cfg, uncond or cfg_xl" ;;
 esac
 
 SUFFIX=""
