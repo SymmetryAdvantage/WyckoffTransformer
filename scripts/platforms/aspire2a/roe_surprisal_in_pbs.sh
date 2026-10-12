@@ -187,6 +187,7 @@ ROOT=""
 PILOT=0
 DRY_RUN=0
 ALLOW_DIRTY=0
+GUIDANCE=""
 
 usage() {
     sed -n '2,29p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
@@ -198,6 +199,8 @@ Options:
                            uncond: unconditional_5x_ehull01_h3x_xl;
                            cfg_xl: ehull_adamw_wsd_5x_cfg_h3x_xl at e_hull=0.05, w=5,
                            with the finished xl energy predictor
+    --guidance W           cfg_xl only: sample at guidance scale W instead of 5; the pool
+                           and the W&B run are named cfg_xl_wW
     --pool N               formally valid genes in the pool (default: $POOL)
     --oversample PERCENT   draws as a percentage of the pool (default: per backbone);
                            the pool step fails if fewer than N draws are formally valid
@@ -214,6 +217,7 @@ while [ $# -gt 0 ]; do
         --backbone)    BACKBONE=${2:?}; shift 2 ;;
         --pool)        POOL=${2:?}; shift 2 ;;
         --oversample)  OVERSAMPLE_OVERRIDE=${2:?}; shift 2 ;;
+        --guidance)    GUIDANCE=${2:?}; shift 2 ;;
         --root)        ROOT=${2:?}; shift 2 ;;
         --pilot)       PILOT=1; shift ;;
         --allow-dirty) ALLOW_DIRTY=1; shift ;;
@@ -246,18 +250,30 @@ case "$BACKBONE" in
         # directly. w=5 is cfg's cell, not one tuned for this model, and its formal validity
         # there is much lower than cfg's.
         MODEL_RUN=ehull_adamw_wsd_5x_cfg_h3x_xl-20260930-030057
-        GEN_ARGS="--condition energy_above_hull=0.05 --guidance-scale 5"
-        # Formal validity at this cell, measured 2026-10-11 on 200 CPU draws: 34% (w=3 85%, w=1
-        # 100%; the cfg model 53% at w=5). 200% left the first submission short of the pool;
-        # 400% expects ~13600 valid draws and still clears 10000 at 27%.
-        OVERSAMPLE_PERCENT=400
-        SURPRISAL_VARIANTS="w5|--condition energy_above_hull=0.05 --guidance-scale 5;w1|--condition energy_above_hull=0.05"
+        # At w=5 the pool came out less novel than cfg's (MetaSUN .371 broadside at B=1000
+        # against .458), so --guidance samples it at a weaker w; w=5 keeps the name cfg_xl.
+        W=${GUIDANCE:-5}
+        [ "$W" = 5 ] || BACKBONE="cfg_xl_w$W"
+        GEN_ARGS="--condition energy_above_hull=0.05 --guidance-scale $W"
+        # Formal validity, measured 2026-10-11 on 200 CPU draws: w=5 34% (37.6% on 20000
+        # GPU draws), w=3 85%, w=1 100%. 200% left w=5 short of the pool; 400% cleared it.
+        case "$W" in
+            5) OVERSAMPLE_PERCENT=400 ;;
+            1) OVERSAMPLE_PERCENT=150 ;;
+            *) OVERSAMPLE_PERCENT=200 ;;
+        esac
+        # Scored under the density it was drawn from and under the conditional model,
+        # which are the same density at w=1.
+        SURPRISAL_VARIANTS="w1|--condition energy_above_hull=0.05"
+        [ "$W" = 1 ] || SURPRISAL_VARIANTS="w$W|$GEN_ARGS;$SURPRISAL_VARIANTS"
         # The finished xl energy predictor (val MAE 0.0250); cfg and uncond keep the
         # 2026-10-08 snapshot (0.0253) their pools were scored with.
         REGRESSOR_DIR=min_energy_adamw_wsd_h7x_xl-20260930-030055
         ;;
     *) die "--backbone is cfg, uncond or cfg_xl" ;;
 esac
+[ -z "$GUIDANCE" ] || [ "$MODEL_RUN" = ehull_adamw_wsd_5x_cfg_h3x_xl-20260930-030057 ] \
+    || die "--guidance is for --backbone cfg_xl"
 
 SUFFIX=""
 ANALYSIS_ARGS="--wandb-name roe_surprisal_${BACKBONE}-$(date +%Y%m%d)"
