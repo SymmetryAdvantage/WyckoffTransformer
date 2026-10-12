@@ -277,6 +277,10 @@ def main():
         " before filtering out the invalid ones.", default=1100)
     parser.add_argument("--firm-n-samples", type=int, help="The number of samples after generation, "
         "subsampling the valid ones if nesessary.", default=1000)
+    parser.add_argument("--generation-batch", type=int, default=None, metavar="N",
+                        help="Draw at most N structures per forward pass (default: all at "
+                             "once). Classifier-free guidance doubles the rows, so a large "
+                             "model at a large --initial-n-samples needs this to fit the GPU.")
     parser.add_argument("--update-wandb", action="store_true", help="Update the W&B run with the "
         "generated structures and quality metrics.")
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"), help="The device to use.")
@@ -347,6 +351,8 @@ def main():
         raise ValueError("Output file must be a .json.gz file.")
     if args.update_wandb and not args.wandb_run:
         parser.error("--update-wandb requires --wandb-run.")
+    if args.generation_batch is not None and args.generation_batch < 1:
+        parser.error("--generation-batch must be at least 1.")
     if args.space_group is not None and args.sg_dist is not None:
         parser.error("--space-group and --sg-dist both set the start tokens; use one.")
     if args.system_prior is not None and args.system_plan is not None:
@@ -508,18 +514,31 @@ def main():
         print("--- Running in constrained element generation mode ---")
     else:
         print("--- Running in default generation mode ---")
-    generated_wp = trainer.generate_structures(
-        n_structures=n_structures,
-        calibrate=args.calibrate,
-        temperature=args.temperature,
-        start_tensor=start_tensor_override,
-        cond=cond,
-        composition_cond=system_cond,
-        required_element_set=args.required_elements if use_element_constraints else None,
-        allowed_element_set=allowed_elements if allowed_elements is not None else "all",
-        allowed_element_mask=element_mask,
-        guidance_scale=args.guidance_scale,
-    )
+    # Every per-row input is sliced alongside, and the valid structures of each chunk
+    # are appended in order, so the output is in sampling order as from one batch and
+    # --firm-n-samples still keeps the first N valid draws.
+    chunk = n_structures if args.generation_batch is None else args.generation_batch
+    generated_wp = []
+    for start in range(0, n_structures, chunk):
+        rows = slice(start, min(start + chunk, n_structures))
+
+        def chunk_of(tensor, rows=rows):
+            return None if tensor is None else tensor[rows]
+
+        generated_wp.extend(trainer.generate_structures(
+            n_structures=rows.stop - rows.start,
+            calibrate=args.calibrate,
+            temperature=args.temperature,
+            start_tensor=chunk_of(start_tensor_override),
+            cond=chunk_of(cond),
+            composition_cond=chunk_of(system_cond),
+            required_element_set=args.required_elements if use_element_constraints else None,
+            allowed_element_set=allowed_elements if allowed_elements is not None else "all",
+            allowed_element_mask=chunk_of(element_mask),
+            guidance_scale=args.guidance_scale,
+        ))
+        if chunk < n_structures:
+            print(f"--- Drew {rows.stop}/{n_structures}: {len(generated_wp)} valid so far ---")
 
     generation_end_time = time.time()
     print(f"Generation in total took {generation_end_time - generation_start_time} seconds")
