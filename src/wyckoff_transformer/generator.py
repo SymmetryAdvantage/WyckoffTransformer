@@ -255,7 +255,8 @@ class WyckoffGenerator():
             required_element_set : A set of required element token IDs or a dash-separated string.
                 If provided (including an empty set), activates element-constrained generation.
             allowed_element_set : Controls the pool of allowed elements. One set for the
-                whole batch; see `allowed_element_mask` for the per-row form.
+                whole batch; see `allowed_element_mask` for the per-row form. Anything but
+                "all" activates element-constrained generation on its own.
             max_length : Maximum number of sequence sites to generate. Defaults to self.max_sequence_len.
             elements_vocab : Vocabulary dict mapping element keys to token IDs.
             delimiter : Delimiter for parsing the string form, default "-".
@@ -292,7 +293,11 @@ class WyckoffGenerator():
                 from the average at the position where any cascade field emits STOP, and at every
                 position after it. Requires `stops`.
         """
-        element_constrained = required_element_set is not None or allowed_element_mask is not None
+        # A narrowed pool is a constraint on its own: before this, a set passed without
+        # required elements was silently ignored and the model could place any element.
+        element_constrained = (required_element_set is not None
+                               or allowed_element_mask is not None
+                               or allowed_element_set != "all")
         per_row_element_mask = allowed_element_mask is not None
         device = start.device
         batch_size = start.size(0)
@@ -388,6 +393,10 @@ class WyckoffGenerator():
                                   if isinstance(k, Element) or
                                   (isinstance(k, str) and k not in ('STOP', 'PAD', 'MASK'))}
             elif allowed_element_set == "fix":
+                if not required_id_set:
+                    raise ValueError(
+                        "allowed_element_set='fix' restricts the pool to the required "
+                        "elements, and none are required.")
                 allowed_id_set = set(required_id_set)
             elif isinstance(allowed_element_set, str):
                 allowed_id_set = _parse_string_to_ids(allowed_element_set)
