@@ -6,6 +6,11 @@ quantity — one is a distance to the hull, the other is the hull's own energy a
 a composition. This is the inventory, what has been measured to agree, and the
 rules for keeping them apart.
 
+> **Known defect (2026-10-14):** items 1–3 inherit stale Materials Project energies
+> from LeMat-Bulk. These are bad relaxation energies, plus plain-GGA energies where
+> GGA+U is used, and they make some hulls up to 1.5 eV/atom too deep (Sb₂Te₃
+> `mp-1079094`). See [`lemat_stale_mp_energies.md`](lemat_stale_mp_energies.md).
+
 ## The inventory
 
 | # | name in code | what it is | energy source | reference set | sign |
