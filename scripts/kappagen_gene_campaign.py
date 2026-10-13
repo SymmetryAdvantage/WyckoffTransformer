@@ -181,7 +181,11 @@ def run_merge(args) -> None:
     requested_by = grouped["requested_system"].transform(lambda s: ",".join(sorted(set(s))))
     pools = pools.assign(count=total_count, requested_by=requested_by)
     unique = pools.drop_duplicates(["key_low", "key_high"], keep="first").reset_index(drop=True)
-    selected = unique[unique["score"] <= args.max_e_hull].sort_values("score", kind="stable")
+    # A pool may answer with a unary or, rarely, a subsystem of another target; only
+    # genes whose own system is a campaign system are kept.
+    unique["in_campaign"] = unique["chemsys"].isin(set(systems))
+    selected = unique[unique["in_campaign"] & (unique["score"] <= args.max_e_hull)]
+    selected = selected.sort_values("score", kind="stable")
 
     unique.drop(columns=["gene"]).to_parquet(args.out / "unique_genes_scored.parquet",
                                              index=False)
@@ -212,7 +216,10 @@ def run_merge(args) -> None:
         "n_unique_within_pools": int(summary["unique_in_pool"].sum()),
         "n_unique": int(len(unique)),
         "n_scored": int(unique["score"].notna().sum()),
+        "n_unique_in_campaign_systems": int(unique["in_campaign"].sum()),
         "n_selected": int(len(selected)),
+        "n_selected_ternary": int((selected["chemsys"].str.count("-") == 2).sum()),
+        "n_selected_binary": int((selected["chemsys"].str.count("-") == 1).sum()),
         "max_e_hull": args.max_e_hull,
         "generator": GENERATOR_RUN,
         "regressor": REGRESSOR_RUN,
@@ -233,7 +240,7 @@ def upload(args, totals: dict, summary: pd.DataFrame, by_chemsys: pd.DataFrame) 
 
     run = wandb.init(
         dir=wandb_dir(), entity=WANDB_ENTITY, project=WANDB_PROJECT,
-        name=args.out.name, job_type="gene_campaign",
+        name=f"{args.out.name}_{time.strftime('%Y%m%d')}", job_type="gene_campaign",
         tags=["kappagen", "chemsys", "gene_screen"],
         config={**totals, "n_genes_per_system": args.n_genes, "seed": args.seed},
         notes="100k genes per kappagen ternary and per binary subsystem, deduplicated, "
