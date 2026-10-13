@@ -159,6 +159,20 @@ class TestPerRowMask(unittest.TestCase):
             allowed_element_set={0, 1})[CASCADE.index("elements")]
         self.assertTrue(set(elements.reshape(-1).tolist()) <= {0, 1, STOP})
 
+    def test_the_batch_set_alone_restricts_the_elements(self):
+        # `wyformer-generate --chemical-system` passes the set with no required elements;
+        # it used to be ignored then, and any element could appear.
+        elements = _generator().generate_tensors(
+            self.start, elements_vocab=ELEMENTS_VOCAB,
+            allowed_element_set={0, 1})[CASCADE.index("elements")]
+        self.assertTrue(set(elements.reshape(-1).tolist()) <= {0, 1, STOP})
+
+    def test_fix_without_required_elements_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            _generator().generate_tensors(
+                self.start, elements_vocab=ELEMENTS_VOCAB, allowed_element_set="fix")
+        self.assertIn("none are required", str(caught.exception))
+
 
 class TestDrawsProduceAUsableMask(unittest.TestCase):
     """The mask the sampler builds is the one the generator accepts, end to end."""

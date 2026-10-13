@@ -2752,7 +2752,8 @@ class WyckoffTrainer():
                 that MUST appear in every generated structure.
             allowed_element_set: Controls the pool of allowed elements. "all" allows every element in
                 the vocab; "fix" restricts to required_element_set; a dash-separated string or Set[int]
-                defines a custom pool. Only used when element-constrained generation is active.
+                defines a custom pool. Anything but "all" activates element-constrained
+                generation on its own, with or without `required_element_set`.
             temperature: Softmax temperature for sampling, applied to every generated
                 cascade field, and to the start token when the model predicts it. Otherwise
                 the start token is not touched: the space group is drawn from the saved
@@ -2876,7 +2877,8 @@ class WyckoffTrainer():
             raise ValueError(
                 f"allowed_element_mask has {allowed_element_mask.size(0)} rows against "
                 f"{n_structures} structures requested; it is one mask per structure.")
-        if required_element_set is not None or allowed_element_mask is not None:
+        if (required_element_set is not None or allowed_element_mask is not None
+                or allowed_element_set != "all"):
             if 'elements' not in self.tokenisers:
                 raise ValueError("Element vocabulary ('elements') not found in self.tokenisers.")
             generated_tensors = generator.generate_tensors(
