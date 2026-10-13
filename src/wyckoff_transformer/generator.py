@@ -242,6 +242,8 @@ class WyckoffGenerator():
         allowed_element_mask: Optional[Tensor] = None,
         uncond: Optional[Tensor] = None,
         guidance_scale: float = 1.0,
+        forced_tokens: Optional[Tensor] = None,
+        conditional_masks: Optional[List[Tuple[str, str, Tensor]]] = None,
     ) -> List[Tensor] | Tuple[List[Tensor], List[float], List[float]]:
         """
         Generates a sequence of tokens.
@@ -269,6 +271,18 @@ class WyckoffGenerator():
                 with classifier-free guidance. Required when `guidance_scale` is not 1.
             guidance_scale : Classifier-free guidance scale w; see `guided_logits`. Applied
                 before calibration, element masking and the temperature.
+            forced_tokens : [batch_size, P, len(cascade_order)] int64. The first P sites of
+                each row are taken from here instead of sampled, field by field, wherever the
+                entry is >= 0 (-1 leaves that field to the model). The model is trained on
+                sites in a uniformly random order, so a forced prefix is an ordinary
+                conditional: the rest of the gene is drawn from p(rest | prefix). Forced
+                elements do not count towards `required_element_set`.
+            conditional_masks : (source field, target field, table) triples. When the target
+                field of a site is sampled, its logits are restricted to
+                ``table[token of the source field at the same site]`` (a boolean
+                [source vocabulary, target vocabulary] table). With source "elements" and
+                target "site_symmetries" this pins chosen elements to chosen site
+                symmetries. A row of the table must allow at least one token.
         Returns:
             The generated sequence of tokens. It has shape [batch_size, max_len, len(cascade_order)].
                 It doesn't include the start token.
@@ -439,6 +453,14 @@ class WyckoffGenerator():
                         else:
                             logits = self.tail_calibrators[known_cascade_len](logits)
                             
+                    if conditional_masks:
+                        for source_field, target_field, table in conditional_masks:
+                            if target_field != cascade_name:
+                                continue
+                            source_tokens = generated[cascade_index_by_name[source_field]][:, known_seq_len]
+                            allowed = table.to(device)[source_tokens.long()]
+                            logits = logits.masked_fill(~allowed[:, :logits.size(1)], float("-inf"))
+
                     if element_constrained and cascade_name == "elements":
                         if per_row_element_mask:
                             if allowed_element_mask.size(1) != logits.size(1):
@@ -489,7 +511,14 @@ class WyckoffGenerator():
                     else:
                         generated[known_cascade_len][:, known_seq_len] = \
                             torch.multinomial(calibrated_probas, num_samples=1).squeeze()
-                            
+
+                    if forced_tokens is not None and known_seq_len < forced_tokens.size(1):
+                        forced = forced_tokens[:, known_seq_len, known_cascade_len].to(device)
+                        take = forced >= 0
+                        if bool(take.any()):
+                            column = generated[known_cascade_len][:, known_seq_len]
+                            column[take] = forced[take].to(column.dtype)
+
                     if self.stops is not None:
                         this_stop = self.stops.get(cascade_name)
                         if this_stop is not None:

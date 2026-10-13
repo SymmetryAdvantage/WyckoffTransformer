@@ -290,6 +290,16 @@ def main():
                              "Below 1 sharpens, above 1 flattens. It also applies to the "
                              "space group of a model with predict_start; otherwise the "
                              "space group is drawn from the saved distribution either way.")
+    parser.add_argument("--force-sites", type=str, default=None, metavar="EL:WYCKOFF[,...]",
+                        help="Fix these sites of every gene, e.g. 'Cr:2d' or 'Ba:2c,Ti:2a', and "
+                             "let the model complete the rest (see "
+                             "wyckoff_transformer.gene_templates). Needs exactly one "
+                             "--space-group.")
+    parser.add_argument("--site-rule", type=str, default=None, metavar="EL:RULE[,...]",
+                        help="Restrict where elements may sit, by the site point group: "
+                             "'Cr:no-octahedron', 'Pd:no-square-planar-no-octahedron', "
+                             "'V:non-polar'. Combine with --required-elements to make the "
+                             "element appear, and --space-group to groups that have such sites.")
     parser.add_argument("--guidance-scale", type=float, default=1.0,
                         help="Classifier-free guidance scale, for a model trained with "
                              "condition_dropout. 1 samples the conditional model, 0 the "
@@ -514,6 +524,27 @@ def main():
         print("--- Running in constrained element generation mode ---")
     else:
         print("--- Running in default generation mode ---")
+    forced_tokens = None
+    conditional_masks = None
+    if args.force_sites is not None or args.site_rule is not None:
+        from wyckoff_transformer.gene_templates import (  # noqa: PLC0415
+            forced_prefix_tokens, parse_rules, parse_sites, site_symmetry_mask)
+        if args.force_sites is not None:
+            if space_groups is None or len(space_groups) != 1:
+                parser.error("--force-sites needs exactly one --space-group")
+            try:
+                forced_tokens = forced_prefix_tokens(
+                    trainer, space_groups[0], parse_sites(args.force_sites), n_structures)
+            except (KeyError, ValueError) as error:
+                parser.error(str(error))
+            print(f"--- Forcing sites {args.force_sites} in space group {space_groups[0]} ---")
+        if args.site_rule is not None:
+            try:
+                conditional_masks = [site_symmetry_mask(trainer, parse_rules(args.site_rule))]
+            except (KeyError, ValueError) as error:
+                parser.error(str(error))
+            print(f"--- Site rules {args.site_rule} ---")
+
     # Every per-row input is sliced alongside, and the valid structures of each chunk
     # are appended in order, so the output is in sampling order as from one batch and
     # --firm-n-samples still keeps the first N valid draws.
@@ -536,6 +567,8 @@ def main():
             allowed_element_set=allowed_elements if allowed_elements is not None else "all",
             allowed_element_mask=chunk_of(element_mask),
             guidance_scale=args.guidance_scale,
+            forced_tokens=chunk_of(forced_tokens),
+            conditional_masks=conditional_masks,
         ))
         if chunk < n_structures:
             print(f"--- Drew {rows.stop}/{n_structures}: {len(generated_wp)} valid so far ---")

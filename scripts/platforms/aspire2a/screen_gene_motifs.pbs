@@ -1,0 +1,37 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Gene-level motif flags and prototype novelty (scripts/screen_gene_motifs.py)
+# over the LeMat-Bulk archive and the generated pools, then the report.
+# CPU only. Meant to follow generate_gene_pool.pbs:
+#     qsub -W depend=afterok:<genpool job> -v REPO=$PWD scripts/platforms/aspire2a/screen_gene_motifs.pbs
+# The archive stage is skipped if its parquet exists. STAGES picks stages
+# ("archive pool report" by default), so the archive can run before the pools exist.
+# ---------------------------------------------------------------------------
+#PBS -N wyf_genescreen
+#PBS -q normal
+#PBS -P 11001786
+#PBS -l select=1:ncpus=32:mem=128gb
+#PBS -l walltime=04:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
+
+set -eu
+REPO=${REPO:-/home/project/11001786/WyFormer/WyckoffTransformer}
+GENES=${GENES:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/genes}
+OUT=${OUT:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/gene_screen}
+WORKERS=${WORKERS:-32}
+STAGES=${STAGES:-"archive pool report"}
+R="bash scripts/platforms/aspire2a/run_in_singularity.sh"
+
+cd "$REPO"
+mkdir -p "$OUT"
+case " $STAGES " in *" archive "*)
+    $R python scripts/screen_gene_motifs.py archive --out "$OUT" --workers "$WORKERS" ;; esac
+case " $STAGES " in *" pool "*)
+    for d in "$GENES"/*/; do
+        name=$(basename "$d")
+        [ -s "$OUT/pool_$name.parquet" ] && continue
+        $R python scripts/screen_gene_motifs.py pool --out "$OUT" --name "$name" --genes "$d" --workers "$WORKERS"
+    done ;; esac
+case " $STAGES " in *" report "*)
+    $R python scripts/screen_gene_motifs.py report --out "$OUT" ;; esac

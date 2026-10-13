@@ -122,3 +122,99 @@ bash $R python scripts/screen_coordination_motifs.py report --out $OUT
 ```
 
 `run` is resumable per shard and splits across processes with `--shard-mod I N`.
+
+## Strategy measurements (2026-09-28)
+
+The goal is a handful of structures striking enough for a materials-science journal.
+Genes are cheap and structures are not, so the plan is to target motifs a **gene
+guarantees** by symmetry and to spend structures only on stability. Three
+measurements decide whether that works: M1, M3 and M4. M2, the energy predictor on
+rare motifs, was dropped because the predictor is at best a 2× speed-up.
+
+### M1: motifs in generated pools that have already been relaxed
+
+`scripts/screen_generated_pools.py`, run on 14 protocol pools
+(`runs/chemsys_study/artifacts/protocol_*`, the torpedo joint and reference pools,
+`generated/gene_min_formation_energy…`). It leaves out the contaminated
+`protocol_ehull5x-20260904-213346`, the `generated/` copy of the ehull_5x pool and the
+10-gene pilots. Output is in `runs/coordination_motifs/pools/`. Energies and novelty
+come from each pool's own ORB hull and `novel_structure`.
+
+13,969 relaxed structures; **1,825 (13%) are in scope** (the rest are 9,375
+intermetallics, 2,394 without a single-valence assignment, and 375 non-ionic). 1,574
+are novel, and 553 are novel with e_hull ≤ 0.1.
+
+| motif | structures (all novel) | e_hull ≤ 0.1 |
+|---|---|---|
+| edge-sharing tetrahedra, z ≥ +4, O/F | 6 (0.33% of in-scope vs 0.005% in the database) | 2: Hf3K12Ge12O36 (0.018), Rb4P4O12 (0.071) |
+| face-sharing tetrahedra; Rule 4 hetero-sharing | 0; 1 (K2U2C8H22O48Se12, 0.52) | 0 |
+| face-sharing d⁰ octahedra (any dimensionality) | 0 | 0 |
+| tetrahedral Cr³⁺; tetrahedral/prismatic ls-d⁸; square-planar d⁰ (O/F) | 0 | 0 |
+| HSAB inversion | 1 (PtAsIO2, 0.77) | 0 |
+| out-of-range corner-sharing perovskite | 0 | 0 |
+| strong-SOJT octahedron on a non-polar site | 2 | 1: CeDy2MoZn2O10 (0.096) |
+
+**Reading.** Unconstrained generation rarely reaches the motifs, as expected. The one it
+over-produces, edge-sharing high-valent tetrahedra (70× the database rate), is the one
+Pauling's rules predict to be costly. The two near-hull cases need DFT before they
+mean anything: an ORB e_hull of 0.02–0.07 eV for edge-sharing PO4 would be remarkable
+if it held. Only 13% of generated structures are even ionic enough to judge, so a
+motif campaign has to steer the composition (chemical-system conditioning or an
+element palette), not just filter.
+
+### M3 and M4: 2 × 1M generated genes
+
+`scripts/platforms/aspire2a/generate_gene_pool.pbs` (jobs 25584285 and 25584286,
+2026-09-28) drew 1M genes per arm from `ehull_adamw_wsd_5x_cfg-20260924-223159` at
+e_hull = 0.05, with guidance w = 1 and w = 3. `scripts/screen_gene_motifs.py` then
+computed keys and flags for the pools and for all 5,327,342 LeMat-Bulk genes
+(`lemat_bulk_fmax1_stress`, all e_hull). Outputs are in
+`runs/coordination_motifs/{genes,gene_screen}/`, with the report in
+`gene_screen/report.md`.
+
+The gene keys are checked against the protocol's own `gene_novel` on the e9ywwsie
+pool: 997 of 999 agree. The prototype key is the strict AFLOW fingerprint: space
+group plus the Wyckoff orbits of each element, with elements anonymised and
+equivalent settings merged.
+
+**M4: new structure types.**
+
+| arm | unique genes | novel genes | novel prototypes | distinct novel prototypes |
+|---|---|---|---|---|
+| w = 1 | 865,602 | 67.5% | 19.8% | 77,191 |
+| w = 3 | 759,908 | 75.8% | 30.4% | 101,969 |
+
+Guidance raises prototype novelty as well as gene novelty, but novelty is almost
+entirely a matter of cell complexity. For w = 3, genes with ≤ 4 Wyckoff sites are
+new structure types 5–8% of the time; 4–6 sites, 27%; 6–10 sites, 62%; above 10
+sites, 82–98%. The archive holds 46,199 prototypes (25,764 near the hull). New
+structure types are therefore cheap at gene level. They mostly come with large
+cells, where reconstruction recovers only about 13% (`docs/de_novo_search_ideas.md`).
+
+**M3: gene-guaranteed motifs, per unique gene.**
+
+| flag | archive, all | archive, e_hull ≤ 0.1 | w = 1 | w = 3 |
+|---|---|---|---|---|
+| 2H face-sharing d⁰ chain | 0 | 0 | 0 | 0 |
+| perovskite, t outside [0.70, 1.15] | 49 | 3 | 6 (cubic CsMO3; 4 already in the archive) | 0 |
+| Cr³⁺ on a site with no octahedron | 17 | 0 | 2 (e.g. Rb6Cr2O6, Cr on −6) | 0 |
+| d⁸ on a site with no square plane | 0.041% | 0.021% | 0.043% | 0.026% |
+| strong SOJT (Mo⁶⁺, V⁵⁺) on a non-polar site | 0.046% | 0.029% | 0.030% | 0.011% |
+| any SOJT d⁰ on a non-polar site | 0.31% | 0.40% | 0.22% | 0.11% |
+| lone pair on a non-polar site | 0.34% | 0.34% | 0.35% | 0.22% |
+
+The generator reproduces the archive's rates of gene-level motifs, and stability
+guidance (w = 3) lowers them. The striking motifs (extended face-sharing d⁰, Cr³⁺
+forced off the octahedron, perovskites with t out of range) are at or near zero in
+2M genes, and the few hits are archive-style prototype decorations. **Caveat on the d⁸
+flag:** "no square-planar site" still allows an octahedron, and octahedral Pd²⁺ is
+known in fluorides (PdF2). The flag should require a site that also excludes the
+octahedron before it counts as unprecedented. Many flagged d⁸ and SOJT genes are
+actinide or mixed-lanthanide compositions whose oxidation states are doubtful.
+
+**Consequence for the campaign.** Screening an unconstrained stream will not find the
+headline motifs, however large it is. They have to be written as genes: 2H-type
+ABX3 with d⁰ B across A/X palettes, Cr³⁺ on hexagonal-symmetry sites in oxides and
+fluorides, and so on. The model then only scores how plausible each gene is, and
+structures test stability. Unconstrained pools remain a good source of new structure
+types of moderate size (4–10 sites) and of the weaker pinned-SOJT and lone-pair motifs.

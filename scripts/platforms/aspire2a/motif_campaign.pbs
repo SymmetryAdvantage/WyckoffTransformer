@@ -1,0 +1,71 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Build motif-carrying genes at three levels (wyckoff_transformer.gene_templates),
+# then score them all with the gene energy critic (scripts/score_motif_candidates.py).
+#
+#     qsub -v REPO=$PWD scripts/platforms/aspire2a/motif_campaign.pbs
+#
+# Arms (each writes $OUT/arms/<arm>.json.gz; an existing file is kept):
+#   l1_2h_d0          every charge-balanced 2H (P6_3/mmc A 2c, B 2a, O 6h) with d0 B
+#   l2_2h_<B>         sg 194, B forced on 2a and O on 6h, the model completes the gene
+#   l3_cr3            Cr on sites that admit no octahedron, oxide/fluoride palette
+#   l3_pd, l3_pt      Pd / Pt on sites that admit neither a square plane nor an octahedron
+#   l3_v, l3_mo       V / Mo on non-polar sites (SOJT pinned by symmetry)
+# ---------------------------------------------------------------------------
+#PBS -N wyf_motifs
+#PBS -q normal
+#PBS -P 11001786
+#PBS -l select=1:ngpus=1:ncpus=16:mem=110gb
+#PBS -l walltime=06:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
+
+set -u
+REPO=${REPO:-/home/project/11001786/WyFormer/WyckoffTransformer}
+MODEL=${MODEL:-/scratch/users/nus/kna/WyFormer/runs/ehull_adamw_wsd_5x_cfg-20260924-223159}
+CRITIC=${CRITIC:-/scratch/users/nus/kna/WyFormer/runs/min_energy_5x_adamw_wsd-20260921-125850}
+ARCHIVE=${ARCHIVE:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/gene_screen/archive.parquet}
+OUT=${OUT:-/scratch/users/nus/kna/WyFormer/runs/coordination_motifs/campaign}
+N_L2=${N_L2:-5000}
+N_L3=${N_L3:-40000}
+R="bash scripts/platforms/aspire2a/run_in_singularity.sh"
+# Cations that form ordinary oxides and fluorides; no actinides, noble gases or chalcogens.
+PALETTE="Li-Na-K-Rb-Cs-Be-Mg-Ca-Sr-Ba-Sc-Y-La-Ce-Pr-Nd-Sm-Eu-Gd-Tb-Dy-Ho-Er-Tm-Yb-Lu-B-Al-Ga-In-Tl-Si-Ge-Sn-Pb-P-As-Sb-Bi-Ti-Zr-Hf-V-Nb-Ta-Mo-W-Mn-Fe-Co-Ni-Cu-Zn-Cd-Ag-O-F"
+
+cd "$REPO"
+mkdir -p "$OUT/arms"
+GEN="$R wyformer-generate --model-path $MODEL --device cuda --generation-batch 5000 --condition energy_above_hull=0.05 --guidance-scale 3"
+
+arm() {   # arm <name> <wyformer-generate args...>
+    local name=$1; shift
+    [ -s "$OUT/arms/$name.json.gz" ] && return
+    echo "$(date) arm $name"
+    mkdir -p "$OUT/arms/tmp"
+    $GEN "$OUT/arms/tmp/$name.json.gz" "$@" && mv "$OUT/arms/tmp/$name.json.gz" "$OUT/arms/$name.json.gz" \
+        || echo "$(date) arm $name FAILED"
+}
+
+if [ ! -s "$OUT/arms/l1_2h_d0.json.gz" ]; then
+    $R python -c "
+import gzip, json
+from wyckoff_transformer.gene_templates import decorate, TEMPLATE_2H_D0
+json.dump(decorate(TEMPLATE_2H_D0), gzip.open('$OUT/arms/l1_2h_d0.json.gz', 'wt'))"
+fi
+for B in Ti Zr Hf Nb Ta V; do
+    arm "l2_2h_$B" --initial-n-samples "$N_L2" --space-group 194 --force-sites "$B:2a,O:6h"
+done
+NO_OCT=$($R python -c "from wyckoff_transformer.gene_templates import space_groups_with_site as s; print(','.join(map(str, s('no-octahedron'))))" | tail -1)
+NO_SQ_OCT=$($R python -c "from wyckoff_transformer.gene_templates import space_groups_with_site as s; print(','.join(map(str, s('no-square-planar-no-octahedron'))))" | tail -1)
+arm l3_cr3 --initial-n-samples "$N_L3" --space-group "$NO_OCT" --required-elements Cr \
+    --allowed-elements "$PALETTE-Cr" --site-rule Cr:no-octahedron
+for EL in Pd Pt; do
+    arm "l3_$(echo $EL | tr A-Z a-z)" --initial-n-samples "$N_L3" --space-group "$NO_SQ_OCT" \
+        --required-elements "$EL" --allowed-elements "$PALETTE-$EL" --site-rule "$EL:no-square-planar-no-octahedron"
+done
+for EL in V Mo; do
+    arm "l3_$(echo $EL | tr A-Z a-z)" --initial-n-samples "$N_L3" --required-elements "$EL" \
+        --allowed-elements "$PALETTE" --site-rule "$EL:non-polar"
+done
+
+$R python scripts/score_motif_candidates.py --arms "$OUT/arms" --archive "$ARCHIVE" \
+    --regressor-path "$CRITIC" --out "$OUT"
