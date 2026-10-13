@@ -30,6 +30,11 @@
 >   against 0.500 at B = 2000). It needs about 250 calibration genes and no
 >   novelty labels. Without a lookup no correction beats the band
 >   ([below](#correcting-the-ranking-instead-of-cutting)).
+> - **A larger CFG backbone, 2026-10-12.** At w = 5 it is worse on every arm but
+>   the best one (0.851 against 0.854). At w = 3 it reaches 0.879, within noise of
+>   the CFG backbone, and its lookup arms gain. Surprisal alone stops working at
+>   weak guidance: fire-control / surprisal falls to 0.47–0.56
+>   ([below](#the-larger-cfg-backbone-and-its-guidance-scale)).
 
 ## Why a second lever
 
@@ -528,6 +533,88 @@ typical genes, and without a lookup the typical genes are the known ones.
   Each holds its pool, the gene scores, the protocol outputs and the analysis as
   an artifact of the same name.
 - **Local copies:** `$WYFORMER_RUNS/roe_surprisal/{cfg,uncond}/analysis/{report.json,tables.md,genes.csv.gz}`.
+
+### The larger CFG backbone, and its guidance scale
+
+The same replay on the larger CFG model,
+`ehull_adamw_wsd_5x_cfg_h3x_xl-20260930-030057` (2x width, 4 layers; val 16.48
+against the CFG backbone's 17.33). It was sampled at `energy_above_hull = 0.05`,
+first at the CFG backbone's w = 5 and then at w = 3, 2 and 1. Everything else is
+as above, except that the energy predictor is the finished
+`min_energy_adamw_wsd_h7x_xl-20260930-030055` (val MAE 0.0250) rather than the
+0.0253 snapshot. On its own, that predictor ranks no better: fire-control /
+energy scores 0.340 on the w = 5 pool against the CFG pool's 0.365.
+
+| pool | draws for 10,000 valid | unique genes | gene-novel | relaxed | MetaSUN in pool |
+|---|---|---|---|---|---|
+| CFG, w = 5 | 20,000 | 9,228 | 75.4% | 9,173 | 4,544 |
+| larger, w = 5 | 40,000 | 8,077 | 66.0% | 8,039 | 3,430 |
+| larger, w = 3 | 20,000 | 9,568 | 54.4% | 9,546 | 4,344 |
+| larger, w = 2 | 20,000 | 9,841 | 47.7% | 9,824 | 4,135 |
+| larger, w = 1 | 15,000 | 9,936 | 47.5% | 9,925 | 3,621 |
+
+At w = 5 only 37.6% of the larger model's draws are formally valid (20,000 GPU
+draws), against 85% at w = 3 and 100% at w = 1 (200 CPU draws each).
+
+MetaSUN per slot at B = 1000; surprisal at w = 1:
+
+| arm | CFG, w = 5 | larger, w = 5 | larger, w = 3 | larger, w = 2 | larger, w = 1 |
+|---|---|---|---|---|---|
+| broadside | **0.458** | 0.371 | 0.452 | 0.430 | 0.382 |
+| fire-discipline / lookup | 0.548 | 0.487 | 0.631 | **0.655** | 0.559 |
+| fire-discipline / surprisal | 0.580 | 0.542 | **0.612** | 0.569 | 0.504 |
+| fire-control / energy | **0.365** | 0.340 | 0.339 | 0.285 | 0.244 |
+| fire-control / lookup | 0.647 | 0.595 | 0.685 | **0.686** | 0.682 |
+| fire-control / surprisal | **0.744** | 0.650 | 0.561 | 0.478 | 0.474 |
+| fire-control / lookup+plausible | 0.854 | 0.851 | **0.879** | 0.838 | 0.814 |
+| P(metastable \| novel), broadside | 0.629 | 0.619 | **0.705** | 0.698 | 0.646 |
+
+The 95% intervals are about ±0.03. The best cell, lookup+plausible at w = 3, is
+0.879 [0.857, 0.898] against the CFG backbone's 0.854 [0.831, 0.875]. That is
+z ≈ 1.6 on independent pools, not a significant gain.
+
+MetaSUN per slot of fire-control / lookup+plausible against the budget:
+
+| B | CFG, w = 5 | larger, w = 5 | larger, w = 3 | larger, w = 2 | larger, w = 1 |
+|---|---|---|---|---|---|
+| 250 | 0.812 | 0.800 | 0.840 | 0.792 | 0.772 |
+| 500 | 0.830 | 0.842 | 0.870 | 0.806 | 0.790 |
+| 1000 | 0.854 | 0.851 | 0.879 | 0.838 | 0.814 |
+| 2000 | **0.782** | 0.627 (runs short) | 0.645 (runs short) | 0.550 (runs short) | 0.524 (runs short) |
+
+**What it shows.**
+- **A better likelihood does not give a better pool at the same w.** At w = 5
+  the larger model loses on every arm but lookup+plausible. Its pool repeats
+  itself more (8,077 unique genes) and is less novel (597 gene-novel slots in
+  the first 1,000 draws, against 742).
+- **w = 3 is the larger model's cell.** It has the most MetaSUN-dense novel
+  structures (P(metastable | novel) 0.705), and the lookup arms gain most there:
+  fire-control / lookup 0.685 against the CFG backbone's 0.647.
+- **Weaker guidance trades novelty for uniqueness.** From w = 3 to w = 1 the
+  unique genes rise (9,568 to 9,936) and the gene-novel ones fall (5,202 to
+  4,715). Unguided, the model returns to the genes it knows.
+- **The surprisal lever needs strong guidance.** Fire-control / surprisal falls
+  from 0.650 at w = 5 to 0.474 at w = 1, below the lookup at every w. Without
+  guidance, the least surprising genes are the known ones, so the band admits
+  more of them. Surprisal still helps *after* the lookup.
+- **The lookup is the robust lever.** Fire-control / lookup holds 0.682–0.686
+  from w = 3 to w = 1.
+- **The larger pools run short sooner.** At B = 2000, lookup+plausible falls to
+  0.645 at best, against the CFG backbone's 0.782. Their least surprising 30% of
+  novel genes is smaller. P(metastable) after the lookup
+  ([above](#correcting-the-ranking-instead-of-cutting)) is the fix for that, not
+  tried here.
+
+**Provenance.**
+- **Code:** branch `denovo-cfg-xl`. `scripts/platforms/aspire2a/roe_surprisal_in_pbs.sh`
+  gains `--backbone cfg_xl` and `--guidance W`. `wyformer-generate` gains
+  `--generation-batch N`: 40,000 draws in one pass (80,000 rows under guidance)
+  ran out of a 40 GB A100, so the pool step draws 5,000 at a time.
+- **ASPIRE 2A, 4×A100 jobs:** w = 5 `25765463`, w = 3 `25769128`, w = 2
+  `25769129`, w = 1 `25769130`.
+- **W&B:** runs `roe_surprisal_cfg_xl-20261012` and
+  `roe_surprisal_cfg_xl_w{3,2,1}-20261012`.
+- **Local copies:** `$WYFORMER_RUNS/roe_surprisal/cfg_xl[_w{3,2,1}]/analysis/`.
 
 ## What it was worth on `e9ywwsie` (2026-09)
 
