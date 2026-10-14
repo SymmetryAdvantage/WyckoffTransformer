@@ -198,9 +198,14 @@ def build_convergence_labels(raw: Path, recovered: Path | None, out: Path) -> pd
     import pyarrow.parquet as pq
 
     logger.info("reading forces and stress from %s", raw)
-    parquet = pq.ParquetFile(raw)
+    # One file, or a directory of HF shards (kazeevn/LeMat-Bulk-fixed's compatible_pbe/).
+    files = sorted(raw.glob("*.parquet")) if raw.is_dir() else [raw]
+    if not files:
+        raise FileNotFoundError(f"no parquet files in {raw}")
+    row_groups = [(parquet, group) for parquet in map(pq.ParquetFile, files)
+                  for group in range(parquet.metadata.num_row_groups)]
     parts = []
-    for group in range(parquet.metadata.num_row_groups):
+    for parquet, group in row_groups:
         table = parquet.read_row_group(group, columns=["immutable_id", "forces", "stress_tensor"])
         column = table.column("stress_tensor").combine_chunks()
         present = pc.list_value_length(column).fill_null(0).to_numpy() == 3
@@ -397,7 +402,8 @@ def main():
                         help="Cached label table; rebuilt from the CSVs when absent.")
     parser.add_argument("--rebuild-labels", action="store_true")
     parser.add_argument("--raw-parquet", type=Path, default=DEFAULT_RAW,
-                        help="LeMat-Bulk parquet carrying the per-atom forces and stress tensors.")
+                        help="LeMat-Bulk parquet carrying the per-atom forces and stress tensors, "
+                             "or a directory of parquet shards.")
     parser.add_argument("--recovered-forces", type=lambda s: None if s.lower() == "none" else Path(s),
                         default=DEFAULT_RECOVERED,
                         help="scripts/recover_mp_forces.py results, filling the MP rows whose "
@@ -438,8 +444,9 @@ def main():
         labels = pd.read_parquet(args.labels)
 
     convergence_path = args.convergence_labels
-    if args.recovered_forces is None:
+    if args.recovered_forces is None and convergence_path == DEFAULT_CONVERGENCE_LABELS:
         # A table built without the recovered rows must not be read back as one built with them.
+        # An explicit path is the caller's to name: LeMat-Bulk-fixed needs no recovery at all.
         convergence_path = convergence_path.with_name(convergence_path.stem + "_archive_only.parquet")
     if args.rebuild_convergence_labels or not convergence_path.exists():
         convergence = build_convergence_labels(args.raw_parquet, args.recovered_forces, convergence_path)

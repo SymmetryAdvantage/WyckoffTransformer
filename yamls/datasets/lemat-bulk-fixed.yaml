@@ -1,0 +1,38 @@
+name: lemat-bulk-fixed
+status: source
+description: >-
+  HF kazeevn/LeMat-Bulk-fixed 'compatible_pbe' at revision bf8f0b31 (v4) and the
+  per-row tables derived from it, built as for lemat-bulk
+  (docs/lemat_bulk_pipeline.md).  Upstream LeMat-Bulk with stale Materials Project
+  records replaced and broken rows removed (docs/lemat_stale_mp_energies.md); no row
+  has empty forces or stress.  A source: lemat_bulk_fixed_fmax1_stress is built from it.
+built_by: docs/lemat_bulk_pipeline.md
+defaults:
+  source: {method: dft, dft_settings: PBE_MP, correction: none}
+  reference: lemat_bulk_fixed_pbe@bf8f0b31
+tables:
+  lemat_pbe:
+    path: lemat_pbe.csv.gz
+    description: scripts/process_lemat.py output, one row per archive entry.
+    fields:
+      energy:
+        column: energy_corrected
+        energy: {quantity: energy, extent: total}
+        description: >-
+          The raw total energy.  The name 'energy_corrected' was given by
+          scripts/process_lemat.py; the archive has no corrected energy.
+  lemat_pbe_ehull:
+    path: lemat_pbe_ehull.csv.gz
+    description: formula_energy/hull_table.py output.
+    fields:
+      energy:
+        column: energy_corrected
+        energy: {quantity: energy, extent: total}
+        description: As in lemat_pbe.
+      formation_energy_per_atom:
+        column: e_form
+        energy: {quantity: formation_energy, extent: per_atom}
+      energy_above_hull:
+        column: e_hull
+        energy: {quantity: energy_above_hull, extent: per_atom}
+        description: Unclipped.

@@ -154,6 +154,14 @@ REFERENCES = {
         "scripts/compute_e_hull.py used the same set: it left 589,250 rows (Z >= 84, Yb) "
         "unlabelled, and the 4,746,049 labels it did produce are reproduced bit for bit "
         "(docs/e_hull_definitions.md)."),
+    "lemat_bulk_fixed_pbe@bf8f0b31": (
+        "All 5,335,168 rows of HF kazeevn/LeMat-Bulk-fixed 'compatible_pbe' at revision "
+        "bf8f0b31 (v4) at their raw PBE/PBE+U energies, no correction; elemental "
+        "references and hull built as for lemat_bulk_pbe.  Upstream LeMat-Bulk with "
+        "17,998 stale Materials Project records replaced by MP's live tasks and 131 "
+        "broken rows removed (docs/lemat_stale_mp_energies.md), so formation energies "
+        "and hull distances differ from lemat_bulk_pbe in every chemical system those "
+        "rows touch."),
     "lemat_bulk_pbe_mp_oqmd": (
         "The MP (ICSD and theoretical) and OQMD rows of LeMat-Bulk only -- no Alexandria "
         "(formula_energy/answer_key.py SHALLOW_SOURCES) -- with elemental references and "

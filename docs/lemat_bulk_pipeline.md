@@ -199,6 +199,42 @@ It is the 2026-05 path that produced the `lemat_bulk_ehull` family. It cuts at
 Materials Project rows, and silently drops every row whose forces are empty. It is kept for
 provenance, not for use.
 
+## LeMat-Bulk-fixed: `lemat_bulk_fixed_fmax1_stress`
+
+The same recipe on HF `kazeevn/LeMat-Bulk-fixed` @`bf8f0b31` (v4), which replaces 17,998
+stale Materials Project records and removes 131 broken rows
+([lemat_stale_mp_energies.md](lemat_stale_mp_energies.md)). Its archive and tables live
+in `data/lemat-bulk-fixed/`, and its hull is the reference
+`lemat_bulk_fixed_pbe@bf8f0b31`. Step 3 is skipped: no row has empty forces or stress.
+
+```bash
+D=data/lemat-bulk-fixed   # the store's copy; raw/ is the HF snapshot
+python scripts/prepare_cif.py --input-dir $D/raw/compatible_pbe --output-dir $D/cif_prepared
+python scripts/process_lemat.py --input-dir $D/cif_prepared --output-file $D/lemat_pbe.csv.gz
+python -m wyckoff_transformer.formula_energy.hull_table --workers 16 \
+    --input-file $D/lemat_pbe.csv.gz --output-file $D/lemat_pbe_ehull.csv.gz
+python scripts/build_lemat_bulk_fmax.py --name lemat_bulk_fixed_fmax1_stress \
+    --structure-csv $D/lemat_pbe.csv.gz --energy-csv $D/lemat_pbe_ehull.csv.gz \
+    --labels $D/labels.parquet --convergence-labels $D/convergence_labels.parquet \
+    --raw-parquet $D/raw/compatible_pbe --recovered-forces none \
+    --split-ids cache/lemat_bulk_fmax1_stress/split_ids.json \
+    --exclude-ids data/lemat-bulk/over_61_sites.json
+wyformer-cache-dataset lemat_bulk_fixed_fmax1_stress \
+    --observed-gene-minimum-target --max-sites 61 --n-jobs 16
+python scripts/tokenise_a_dataset.py lemat_bulk_fixed_fmax1_stress \
+    yamls/tokenisers/der_tokenizer_v1.yaml \
+    --tokenizer-path cache/lemat_bulk_fmax1_stress/tokenisers/der_tokenizer_v1.json
+```
+
+- **The split is inherited** from `lemat_bulk_fmax1_stress`, because the two cover the
+  same population: the fixed archive drops 131 rows and adds none. Val loses 5 removed
+  rows and test 3, so models on either dataset are scored on the same held-out structures.
+- **The tokeniser is the parent's saved `der_tokenizer_v1`**, so the tensors are
+  token-compatible with every LeMat `der_tokenizer_v1` checkpoint.
+- **The 61-site exclusion list is the parent's.** 74 of its ids had their structure
+  replaced, nearly all by the same crystal in another setting; a replacement that now
+  exceeds the cap is dropped by `--max-sites` at cache time.
+
 ## What is on disk
 
 Produced by `scripts/audit_lemat_variants.py`, which infers each variant's force cut and
