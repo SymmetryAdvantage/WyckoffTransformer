@@ -1,7 +1,9 @@
 # Stale Materials Project energies in the LeMat-Bulk PBE hull
 
-> **STATUS: MEASUREMENT, 2026-10-14. Not fixed.** Nothing in the data store or in
-> any training cache has been changed yet. See [what to do](#what-to-do).
+> **STATUS: dataset fixed, 2026-10-14.** The corrected `compatible_pbe` is published as
+> [`kazeevn/LeMat-Bulk-fixed`](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed).
+> A local copy is on zeus in `/home/kna/.local/share/wyformer/staging/lemat_bulk_fixed/`. See [the fix](#the-fix).
+> `lemat_pbe_ehull.csv.gz`, the training caches and the models are **not rebuilt yet**.
 > Audit outputs and scripts: `$WYFORMER_RUNS/kappagen_genes/hull_audit/`.
 
 ## Summary
@@ -185,19 +187,128 @@ same for every flagged entry's gene.
   `orb_conserv_inf` split. Models trained on the bad PBE labels still feed into those
   workflows indirectly.
 
+## The fix
+
+[`kazeevn/LeMat-Bulk-fixed`](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed)
+is upstream `compatible_pbe` (revision `0dc17ee`) with 17,998 DFT records replaced, 130
+rows removed and 832 flagged, leaving 5,335,169 rows. The schema is unchanged and
+untouched rows are byte-identical. Its `audit` config lists every change, with a `cause`
+column. The dataset card has the full method. The pipeline is in
+`scripts/lemat_fixed/`.
+
+### Root cause, task by task
+
+"Use MP's current energy" turned out to be the wrong rule. The real defect is
+**provenance**: which MP task each LeMat energy came from.
+
+- **Deprecated tasks.** 15,002 of the 138,931 MP rows carry the energy of a task MP has
+  *deprecated*. Among them:
+  - 653 are plain GGA where MP requires GGA+U, or the reverse.
+  - 2,463 used POTCARs that differ from MP's current calculation.
+  - 263 have different U values, for example U on O instead of the metal.
+  - 1,343 come from the retired batch `vol_deprecated_mar_2019`, which holds
+    `mp-1079094`.
+- **Untraceable energies.** 3,744 rows match no task MP still serves. This includes
+  `mp-1400697` and `mp-725221` from
+  [LeMat-Bulk discussion #6](https://huggingface.co/datasets/LeMaterial/LeMat-Bulk/discussions/6).
+- **Merged ids.** 100 ids are no longer MP materials. MP merged them into other
+  materials as tasks, and they are followed to the parent.
+- **No defect among live tasks.** Rows whose task is live never differ from MP's chosen
+  task in POTCARs.
+- **MP itself is sometimes wrong.** `mp-554674` from #6 is the counterexample:
+  - MP's current static `mp-1840627` (−0.356 eV/atom), and the 2020 statics
+    `mp-1347023` and `mp-1771371`, ran on a corrupted input. It is the 2014 static's
+    fractional coordinates with one coordinate negated.
+  - In this γ = 120° cell that is a shear, not a mirror, and it puts Ga and O 1.21 Å
+    apart.
+  - LeMat's −5.707 (the 2014 relaxation, which agrees with the 2014 static) is kept.
+
+### Rules
+
+All energies are raw VASP energies. MP formation and hull energies are never used. The
+MLIPs (`LeMat-Bulk-MLIP-Hull-All`) only choose between DFT calculations; no row is
+removed for disagreeing with them.
+
+- **Stale rows** (deprecated, wrong run type or untraceable) take MP's current task when
+  it is on the same structure. Failing that, they take another live same-structure task.
+  Failing that, MP's task replaces the whole record (structure, forces and stress too).
+  A candidate must lie within max(0.2, |old − MLIP| + 0.05) eV/atom of the MLIP median.
+- **Live rows** switch only when they are more than 0.2 eV/atom off the MLIPs and MP's
+  task is within 0.2 and 0.05 closer. This affects 191 rows.
+- **Removed (130), each with a cause in the audit:**
+  - **112 MP rows on `Mg_pv 13Apr2007` or `Ge_d 03Jul2007`.** MP deprecated these
+    materials and has no valid replacement. The measured offsets are +0.097 eV per Mg
+    atom (116 same-structure pairs) and +0.107 eV per Ge atom (22 pairs).
+  - **10 Alexandria Cr fluorides and oxides.**
+    - Alexandria's Bader charges put 12.6–22.9 e on Cr, against 10.3–11.7 e in 24
+      normal ones.
+    - The energy deficit is 4.0–4.8 eV per excess electron (5.2–6.4 in the two
+      mixed-metal rows), in quanta of about 6 e per Cr.
+    - The relaxations in LeMat-Traj jump by the same quanta.
+    - This is consistent with a PAW ghost state, which no variational, physical
+      calculation can produce.
+  - **3 rows with overlapping atoms.** Bi–Cu at 1.09 Å, and Fe–Mg at 0.90 Å in two
+    OQMD duplicates.
+  - **2 OQMD rows whose total energy is bit-identical to a different structure's.**
+  - **2 OQMD rows contradicted by identical-structure calculations.** For `oqmd-3005551`
+    these come from MP, Alexandria and three more OQMD entries.
+  - **1 MP row (`mp-1518724`) from a relaxation that collapsed to 40 Å³ and ended in a
+    discontinuous SCF state.**
+- **Kept but flagged (832):**
+  - 793 rows of MP-deprecated materials for which MP gives no `deprecation_reasons`.
+    They use standard POTCARs and U.
+  - 35 stale rows with no replacement.
+  - 4 rows more than 0.5 eV/atom below all MLIPs with no calculation-level defect found
+    (`oqmd-3911617`, `oqmd-5269036`, `oqmd-2982764`, `agm001685190`).
+- **Changed structures.** 5,209 replacements changed the structure.
+  - 4,046 are the same crystal in a new cell.
+  - 1,163 were re-relaxed.
+
+  Recompute their MLIP energies before using them in an MLIP hull.
+
+### Outcome
+
+| | before | after |
+|---|---|---|
+| MP rows > 0.5 eV/atom below all five MLIPs | 115 | 0 |
+| MP rows > 0.2 eV/atom below all five MLIPs | 268 | 15 (Pu/U/Tc; MP agrees) |
+| `mp-1201` Sb₂Te₃ e_hull, raw PBE | 1.018 | 0.000 |
+| `mp-1079094` e_hull | 0 | 0.462 |
+| `mp-1182783` e_hull | 0 | 0.634 |
+
+The Alexandria and OQMD rows flagged at 0.2–0.5 eV/atom are dominated by Pu, Np and
+Pa, where the MLIPs are the weak side. They are kept.
+
+### Ytterbium
+
+- **No MP Yb rows.** Upstream already has none, so the fix adds none.
+- **All LeMat Yb data is `Yb_2`.** All 10,032 Yb rows come from Alexandria. On 1,210
+  rows whose structure MP also has, Alexandria equals MP's `Yb_2` energy to 0.002 eV
+  per Yb atom. All 8,274 of MP's GGA/GGA+U Yb tasks use `PAW_PBE Yb_2`; MP did *not*
+  move its GGA data to `Yb_3`.
+- **MLIPs.** MACE-MP-0b3 (MPtrj) matches these rows to 0.00 eV/Yb. ORB-v3, UMA and
+  MACE-OMAT were trained on OMat24, which used the PBE_54 `Yb_3` POTCAR according to its
+  dataset record. They sit 2.7–3.5 eV per Yb atom below the DFT.
+- **The offset is not a constant.** It is 2.75 eV/Yb in intermetallics and 3.3–3.5 in
+  oxides and fluorides, with a 10–90% range of 1.3–5.3, because `Yb_3` freezes a 4f
+  shell in the core. No single per-atom shift reconciles the two scales.
+- **Consequence for hulls.** A DFT-vs-MLIP comparison must not use OMat24-trained
+  models on Yb rows.
+
 ## What to do
 
-1. **MP-sourced entries:** replace LeMat's energy with MP's current `GGA_GGA+U`
-   uncorrected energy. Then rebuild `lemat_pbe_ehull.csv.gz` under a new name, as the
-   store is read-only.
-2. **Alexandria and OQMD entries:** exclude the flagged ones, or check them against
-   their source databases.
+1. ~~**MP-sourced entries:** replace LeMat's energy.~~ Done in `kazeevn/LeMat-Bulk-fixed`.
+   Still to do: rebuild `lemat_pbe_ehull.csv.gz` from it under a new name, as the store
+   is read-only.
+2. ~~**Alexandria and OQMD entries.**~~ Done: rows with a calculation-level defect are
+   removed. Four unexplained ones are flagged, and the rest are MLIP noise.
 3. **Rebuild the training caches and retrain** the energy regressors and the e_hull
    CFG models.
-4. **Report upstream** to LeMat-Bulk, with `mp-1079094` (bad relaxation energy) and
-   `mp-636148` (plain GGA where GGA+U is used) as minimal examples.
+4. **Report upstream** to LeMat-Bulk. Reply in discussion #6 with the provenance finding
+   and the `audit` table.
 5. **Interim fix for the kappagen campaign:** re-select against a hull without the
-   flagged entries, and drop genes that match flagged entries.
+   flagged entries, and drop genes that match flagged entries. Better, re-select against
+   the hull rebuilt in step 1.
 
 ## Reproducing
 
