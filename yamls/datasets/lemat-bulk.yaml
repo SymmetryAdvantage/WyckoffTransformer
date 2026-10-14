@@ -2,9 +2,9 @@ name: lemat-bulk
 status: source
 description: >-
   The LeMat-Bulk 'compatible_pbe' archive and the per-row tables derived from it
-  (docs/lemat_bulk_pipeline.md).  A source: training datasets such as
+  (docs/archive/lemat_bulk_upstream_pipeline.md).  A source: training datasets such as
   lemat_bulk_fmax1_stress are built from it, and screening compares against it.
-built_by: docs/lemat_bulk_pipeline.md
+built_by: docs/archive/lemat_bulk_upstream_pipeline.md
 defaults:
   source: {method: dft, dft_settings: PBE_MP, correction: none}
   reference: lemat_bulk_pbe

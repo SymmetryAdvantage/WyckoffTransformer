@@ -1,8 +1,10 @@
 # Datasets and what their energies mean
 Whether a dataset may be used, and what each of its fields means, lives in
 `yamls/datasets/<name>.yaml` -- see `docs/energy_fields.md`. The current ones are
-`lemat_bulk_fmax1_stress` (and its `_ehull01` slice), `mp_20`, `mp_2026_gga_gap` and
-`formula_energy`; `lemat-bulk` is a source they are built from. Every other dataset,
+`lemat_bulk_fixed_fmax1_stress` (LeMat-Bulk-fixed; use it for new LeMat work),
+`lemat_bulk_fmax1_stress` (upstream LeMat-Bulk, and its `_ehull01` slice), `mp_20`,
+`mp_2026_gga_gap` and `formula_energy`; `lemat-bulk-fixed` and `lemat-bulk` are the
+sources they are built from. Every other dataset,
 and any without a manifest, is obsolete: use it **only** to analyse runs already
 trained on it. Training, caching and tokenising refuse it unless
 `--allow-obsolete-dataset` is given, and reading one warns. Follow

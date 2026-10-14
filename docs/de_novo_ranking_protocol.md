@@ -334,8 +334,12 @@ scoring around the hole. No such entry exists today: every one of the 5,327,342
 ### The novelty reference
 
 Novelty is judged against **`cache/lemat_bulk_fmax1_stress`, all three splits**
-— the current LeMat-Bulk variant ([lemat_bulk_pipeline.md](lemat_bulk_pipeline.md)).
-Both halves of it are recorded in `manifest.json`: the screen's reference under
+— built from upstream LeMat-Bulk
+([archive/lemat_bulk_upstream_pipeline.md](archive/lemat_bulk_upstream_pipeline.md)).
+It has not yet moved to `lemat_bulk_fixed_fmax1_stress`
+([lemat_bulk_pipeline.md](lemat_bulk_pipeline.md)), which has 512 fewer rows: those
+LeMat-Bulk-fixed removes, and replaced MP records whose new forces fail the 1 eV/Å cut.
+Both halves of the reference are recorded in `manifest.json`: the screen's reference under
 `lineage` → `screen.json` → `reference`, with the size of its fingerprint set;
 the score stage's as `reference_cache`, `reference_splits`, `lemat_cif_csv` and
 `novelty_reference` (with how many fingerprints collided, over how many
@@ -403,7 +407,7 @@ for the equivalence results and the one-hot-encoding trap.
 
 | path | what | note |
 |---|---|---|
-| `cache/lemat_bulk_fmax1_stress/` | LeMat-Bulk in the Wyckoff representation, 5,327,342 rows over train/val/test; the novelty reference | built by [the LeMat pipeline](lemat_bulk_pipeline.md); `--reference-cache` overrides |
+| `cache/lemat_bulk_fmax1_stress/` | LeMat-Bulk in the Wyckoff representation, 5,327,342 rows over train/val/test; the novelty reference | built by [the upstream LeMat pipeline](archive/lemat_bulk_upstream_pipeline.md); `--reference-cache` overrides |
 | `cache/lemat_bulk_fmax1_stress/gene_fingerprints.pkl.gz` | 4,826,004 distinct gene fingerprints of all three splits | built on first `screen`, beside the reference |
 | `data/lemat-bulk/lemat_pbe.csv.gz` | LeMat-Bulk CIFs, by `immutable_id` | the geometry `StructureMatcher` needs; `--lemat-cif-csv` overrides |
 

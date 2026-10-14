@@ -20,7 +20,7 @@ recovered forces
     against the recovered values: equal means recovered, one repeated value means imputed,
     absent means the row was filtered out.
 
-See ``docs/lemat_bulk_pipeline.md``. Run from a checkout with the stores attached::
+See ``docs/archive/lemat_bulk_upstream_pipeline.md``. Run from a checkout with the stores attached::
 
     python scripts/audit_lemat_variants.py
     python scripts/audit_lemat_variants.py --variant data/lemat_bulk_fmax1_stress

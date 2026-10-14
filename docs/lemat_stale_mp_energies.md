@@ -3,7 +3,9 @@
 > **STATUS: dataset fixed, 2026-10-14.** The corrected `compatible_pbe` is published as
 > [`kazeevn/LeMat-Bulk-fixed`](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed).
 > A local copy is on zeus in `/home/kna/.local/share/wyformer/staging/lemat_bulk_fixed/`. See [the fix](#the-fix).
-> `lemat_pbe_ehull.csv.gz`, the training caches and the models are **not rebuilt yet**.
+> v4 is imported as the training dataset `lemat_bulk_fixed_fmax1_stress`, with its own hull
+> (`data/lemat-bulk-fixed/lemat_pbe_ehull.csv.gz`); see
+> [lemat_bulk_pipeline.md](lemat_bulk_pipeline.md). The models are **not retrained yet**.
 > Audit outputs and scripts: `$WYFORMER_RUNS/kappagen_genes/hull_audit/`.
 
 ## Summary
@@ -306,13 +308,14 @@ Pa, where the MLIPs are the weak side. They are kept.
 
 ## What to do
 
-1. ~~**MP-sourced entries:** replace LeMat's energy.~~ Done in `kazeevn/LeMat-Bulk-fixed`.
-   Still to do: rebuild `lemat_pbe_ehull.csv.gz` from it under a new name, as the store
-   is read-only.
+1. ~~**MP-sourced entries:** replace LeMat's energy.~~ Done in `kazeevn/LeMat-Bulk-fixed`;
+   its hull is `data/lemat-bulk-fixed/lemat_pbe_ehull.csv.gz`.
 2. ~~**Alexandria and OQMD entries.**~~ Done: rows with a calculation-level defect are
    removed. Four unexplained ones are flagged, and the rest are MLIP noise.
-3. **Rebuild the training caches and retrain** the energy regressors and the e_hull
-   CFG models.
+3. ~~**Rebuild the training caches**~~ Done: `lemat_bulk_fixed_fmax1_stress`, cached and
+   tokenised with `der_tokenizer_v1`, on zeus, iapetus and aspire2a. Still to do:
+   **retrain** the energy regressors and the e_hull CFG models, and rebuild the
+   `_ehull01` slice and the gene indices.
 4. **Report upstream** to LeMat-Bulk. Reply in discussion #6 with the provenance finding
    and the `audit` table.
 5. **Interim fix for the kappagen campaign:** re-select against a hull without the

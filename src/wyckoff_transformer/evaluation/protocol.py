@@ -65,7 +65,9 @@ logger = logging.getLogger(__name__)
 #: ``wyformer-cache-dataset``.  Holds ``train``/``val``/``test`` frames with the
 #: columns :func:`record_to_augmented_fingerprint` needs.
 #:
-#: ``lemat_bulk_fmax1_stress``, the current variant (docs/lemat_bulk_pipeline.md).
+#: ``lemat_bulk_fmax1_stress``, built from upstream LeMat-Bulk
+#: (docs/archive/lemat_bulk_upstream_pipeline.md); not yet moved to
+#: ``lemat_bulk_fixed_fmax1_stress`` (docs/lemat_bulk_pipeline.md).
 #: Until 2026-09-15 this was the superseded ``lemat_bulk_ehull``, which lacks
 #: 1.12M of the current variant's rows -- everything above ``max_force`` 0.02
 #: eV/A, the Materials Project rows with empty forces, Yb and actinide chemistry --

@@ -61,6 +61,13 @@ entry carries its meaning and evidence:
       rows unlabelled.
     - So `lemat_bulk_fmax1` and `lemat_bulk_fmax1_stress` share this reference;
       they differ only in which rows they cover.
+  - **`lemat_bulk_fixed_pbe@bf8f0b31`**: all 5,335,168 rows of
+    `kazeevn/LeMat-Bulk-fixed` v4, built the same way.
+    - It is a different reference from `lemat_bulk_pbe`. The fix replaces 17,998
+      stale MP energies and removes 131 rows, which moves the hull in every chemical
+      system they touch.
+    - `lemat_bulk_fixed_fmax1_stress` uses it
+      ([lemat_bulk_pipeline.md](lemat_bulk_pipeline.md)).
   - **`lemat_bulk_pbe_mp_oqmd`**: formula_energy's "shallow" subset, without
     Alexandria.
   - **`mp_gga_gga_u_2026.04.13`**: Materials Project's GGA/GGA+U hull at that

@@ -3,7 +3,7 @@ status: obsolete
 reason: >-
   Superseded by lemat_bulk_fmax1_stress, which recovers the 30,679 Materials Project
   rows whose forces LeMat-Bulk ships empty and adds stress labels
-  (docs/lemat_bulk_pipeline.md).  Use only to analyse runs already trained on it.
+  (docs/archive/lemat_bulk_upstream_pipeline.md).  Use only to analyse runs already trained on it.
 description: >-
   LeMat-Bulk 'compatible_pbe' with max_force <= 1 eV/A, before the forces were
   recovered.  Its energy labels mean the same as lemat_bulk_fmax1_stress's; it covers

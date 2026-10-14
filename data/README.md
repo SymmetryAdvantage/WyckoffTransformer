@@ -24,13 +24,15 @@ Tolerance didn't (2024) have a significant impact. Hence, for further experiment
 
 # LeMat-Bulk
 
-Rebuilding any LeMat variant: follow
+The current LeMat dataset, `lemat_bulk_fixed_fmax1_stress`, is built from
+`kazeevn/LeMat-Bulk-fixed` (`lemat-bulk-fixed/`) by
 [docs/lemat_bulk_pipeline.md](../docs/lemat_bulk_pipeline.md), which is the canonical
-order and also records which variant currently on disk was built with which rules. The
-step that is easy to miss and silently wrong to skip is `scripts/recover_mp_forces.py`:
-30,679 rows (22.1% of Materials Project) reach us with an empty `forces` array, and a
-build without it either drops them or substitutes a fabricated `max_force` at half the
-true value. `lemat_bulk_fmax1` and the whole `lemat_bulk_ehull` family predate it.
+order. The variants built from upstream LeMat-Bulk (`lemat-bulk/`) are described in
+[docs/archive/lemat_bulk_upstream_pipeline.md](../docs/archive/lemat_bulk_upstream_pipeline.md).
+For those, the step that is easy to miss and silently wrong to skip is
+`scripts/recover_mp_forces.py`: 30,679 rows (22.1% of Materials Project) reach us with
+an empty `forces` array. `lemat_bulk_fmax1` and the whole `lemat_bulk_ehull` family
+predate it. LeMat-Bulk-fixed ships those rows filled.
 
 # Provenance
 

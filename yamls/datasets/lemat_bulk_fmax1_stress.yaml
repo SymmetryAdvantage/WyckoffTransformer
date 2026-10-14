@@ -2,10 +2,11 @@ name: lemat_bulk_fmax1_stress
 status: current
 description: >-
   LeMat-Bulk 'compatible_pbe', max_force <= 1 eV/A with the Materials Project forces
-  recovered from task documents, stress labels, at most 61 sites.  The current LeMat
-  variant.  Built by scripts/build_lemat_bulk_fmax.py and wyformer-cache-dataset;
-  docs/lemat_bulk_pipeline.md has the recipe.
-built_by: docs/lemat_bulk_pipeline.md
+  recovered from task documents, stress labels, at most 61 sites.  Built from upstream
+  LeMat-Bulk, whose hull holds stale Materials Project energies; new work uses
+  lemat_bulk_fixed_fmax1_stress.  Built by scripts/build_lemat_bulk_fmax.py and
+  wyformer-cache-dataset; docs/archive/lemat_bulk_upstream_pipeline.md has the recipe.
+built_by: docs/archive/lemat_bulk_upstream_pipeline.md
 defaults:
   source: {method: dft, dft_settings: PBE_MP, correction: none}
   reference: lemat_bulk_pbe
