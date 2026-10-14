@@ -227,8 +227,15 @@ python scripts/tokenise_a_dataset.py lemat_bulk_fixed_fmax1_stress \
 ```
 
 - **The split is inherited** from `lemat_bulk_fmax1_stress`, because the two cover the
-  same population: the fixed archive drops 131 rows and adds none. Val loses 5 removed
-  rows and test 3, so models on either dataset are scored on the same held-out structures.
+  same population: the fixed archive drops 131 rows and adds none. Val keeps 99,988 ids
+  and test 99,986, so models on either dataset are scored on nearly the same held-out
+  structures. Of the 26 lost, 8 are removed rows; the other 18 are replaced MP records
+  whose new task fails the 1 eV/A cut.
+- **Replacement raises `max_force` on some MP rows.** 770 of the 17,998 replaced records
+  are above 1 eV/A, against 366 before. Most are MP's current GGA+U static run on the
+  GGA-relaxed geometry (`dep_runmismatch`, `unidentified`), whose forces are real: that
+  geometry is not a GGA+U minimum. The dataset has 5,326,830 rows, 512 fewer than
+  `lemat_bulk_fmax1_stress`.
 - **The tokeniser is the parent's saved `der_tokenizer_v1`**, so the tensors are
   token-compatible with every LeMat `der_tokenizer_v1` checkpoint.
 - **The 61-site exclusion list is the parent's.** 74 of its ids had their structure
@@ -243,6 +250,7 @@ anything; nothing in a split CSV or a cache records how it was made.
 
 | variant | rows | `max_force` cut | recovered forces | stress labels |
 | --- | ---: | --- | --- | :-: |
+| `cache/lemat_bulk_fixed_fmax1_stress` | 5,326,830 | ≤ 1.0 | in the archive (LeMat-Bulk-fixed) | yes |
 | `data/lemat_bulk_fmax1_stress` | 5,327,342 | ≤ 1.0 | **yes**, 29,648 rows | yes |
 | `cache/lemat_bulk_fmax1_stress` | 5,327,342 | ≤ 1.0 | **yes**, 29,648 rows | yes |
 | `data/lemat_bulk_fmax1` | 5,333,114 | ≤ 1.0 | no — 30,673 imputed at 0.04154436 | no |
