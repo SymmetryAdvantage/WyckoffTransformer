@@ -231,32 +231,41 @@ def main() -> None:
     parser.add_argument("--energy-csv", type=Path, default=ds.DEFAULT_ENERGY_CSV)
     parser.add_argument("--provenance", type=Path, default=ds.DEFAULT_PROVENANCE)
     parser.add_argument("--deep-table", type=Path, default=ds.DEFAULT_TABLE)
+    parser.add_argument("--force-csv", type=Path, default=ds.DEFAULT_FORCE_CSV,
+                        help="where the shallow table's max_force comes from; pass the same "
+                             "file as the deep table's build")
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--skip-hull", action="store_true",
                         help="reuse an existing shallow energy CSV instead of recomputing it")
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_DIR,
+                        help="where the shallow tables and the answer key are written, "
+                             "under their usual file names")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    shallow_rows, shallow_energies, shallow_table, answer_key = (
+        args.out_dir / path.name for path in (SHALLOW_ROWS, SHALLOW_ENERGIES, SHALLOW_TABLE, ANSWER_KEY))
 
     if not args.skip_hull:
-        extract_shallow_rows(args.energy_csv, args.provenance)
-        compute_shallow_energies(workers=args.workers)
+        extract_shallow_rows(args.energy_csv, args.provenance, out_csv=shallow_rows)
+        compute_shallow_energies(shallow_rows, shallow_energies, workers=args.workers)
 
-    shallow = ds.build(energy_csv=SHALLOW_ENERGIES, provenance_csv=args.provenance)
-    shallow.to_parquet(resolve_store_path(SHALLOW_TABLE))
+    shallow = ds.build(energy_csv=shallow_energies, provenance_csv=args.provenance,
+                       force_csv=args.force_csv)
+    shallow.to_parquet(resolve_store_path(shallow_table))
     deep = pd.read_parquet(resolve_store_path(args.deep_table))
 
-    shallow_ids = set(pd.read_csv(resolve_store_path(SHALLOW_ROWS), usecols=["immutable_id"])["immutable_id"])
+    shallow_ids = set(pd.read_csv(resolve_store_path(shallow_rows), usecols=["immutable_id"])["immutable_id"])
     delta = (elemental_references(args.energy_csv)
              - elemental_references(args.energy_csv, ids=shallow_ids)).dropna()
     logger.info("%d elemental references moved by more than 1 meV/atom (worst %.4f)",
                 int((delta.abs() > 1e-3).sum()), delta.abs().max())
 
     key = build_answer_key(deep, shallow, delta=delta)
-    key.to_parquet(resolve_store_path(ANSWER_KEY))
+    key.to_parquet(resolve_store_path(answer_key))
     width = max(len(name) for name in describe(key))
     for name, value in describe(key).items():
         print(f"  {name:<{width}}  {value:,.4f}" if isinstance(value, float) else f"  {name:<{width}}  {value:,}")
-    print(f"wrote {resolve_store_path(SHALLOW_TABLE)} and {resolve_store_path(ANSWER_KEY)}")
+    print(f"wrote {resolve_store_path(shallow_table)} and {resolve_store_path(answer_key)}")
 
 
 if __name__ == "__main__":

@@ -168,6 +168,10 @@ REFERENCES = {
         "hull recomputed from that subset.  It stands for what was known before "
         "Alexandria's substitution campaign.  Formation energies differ from "
         "lemat_bulk_pbe wherever an elemental reference came from Alexandria."),
+    "lemat_bulk_fixed_pbe_mp_oqmd@bf8f0b31": (
+        "lemat_bulk_pbe_mp_oqmd's construction on kazeevn/LeMat-Bulk-fixed @bf8f0b31: its "
+        "MP and OQMD rows only, no Alexandria, with elemental references and hull "
+        "recomputed from that subset."),
     "mp_gga_gga_u_2026.04.13": (
         "Materials Project release 2026.04.13, GGA_GGA+U thermo documents: MP's own "
         "phase diagram over its GGA/GGA+U entries, MP2020-corrected."),

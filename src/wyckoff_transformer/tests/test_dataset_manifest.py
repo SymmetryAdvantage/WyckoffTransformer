@@ -12,7 +12,8 @@ from wyckoff_transformer.energy_fields import check_compatible
 CURRENT = {"lemat_bulk_fmax1_stress", "lemat_bulk_fmax1_stress_ehull01", "mp_20",
            "mp_2026_gga_gap", "formula_energy", "alex_mp_20_labelled",
            "alex_mp_20_labelled_per_split", "lemat_bulk_fmax1_stress_icsd",
-           "lemat_bulk_fixed_fmax1_stress"}
+           "lemat_bulk_fixed_fmax1_stress", "lemat_bulk_fixed_fmax1_stress_ehull01",
+           "lemat_bulk_fixed_fmax1_stress_icsd", "formula_energy_fixed"}
 
 
 def test_every_manifest_validates_and_only_the_agreed_datasets_are_current():
@@ -22,10 +23,22 @@ def test_every_manifest_validates_and_only_the_agreed_datasets_are_current():
         assert manifest.name == name
 
 
-def test_a_slice_inherits_its_parents_labels():
-    parent = dm.load_manifest("lemat_bulk_fmax1_stress")
-    child = dm.load_manifest("lemat_bulk_fmax1_stress_ehull01")
-    assert child.fields_record() == parent.fields_record()
+@pytest.mark.parametrize("parent", ["lemat_bulk_fmax1_stress", "lemat_bulk_fixed_fmax1_stress"])
+def test_a_slice_inherits_its_parents_labels(parent):
+    child = dm.load_manifest(f"{parent}_ehull01")
+    assert child.fields_record() == dm.load_manifest(parent).fields_record()
+
+
+@pytest.mark.parametrize("name", ["formation_energy_per_atom", "energy_above_hull",
+                                  "gene_min_formation_energy_per_atom"])
+def test_the_fixed_lemat_energies_are_not_the_upstream_ones(name):
+    """LeMat-Bulk-fixed moves the hull and three elemental references."""
+    fixed = dm.load_manifest("lemat_bulk_fixed_fmax1_stress").resolve(name).energy
+    upstream = dm.load_manifest("lemat_bulk_fmax1_stress").resolve(name).energy
+    with pytest.raises(ValueError):
+        check_compatible(fixed, upstream, name)
+    icsd = dm.load_manifest("lemat_bulk_fixed_fmax1_stress_icsd").resolve(name).energy
+    assert check_compatible(icsd, fixed, name) == []
 
 
 def test_the_superseded_lemat_variant_shares_formation_energy_and_hull():
