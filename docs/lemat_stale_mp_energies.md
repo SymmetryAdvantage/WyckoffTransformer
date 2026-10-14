@@ -190,10 +190,16 @@ same for every flagged entry's gene.
 ## The fix
 
 [`kazeevn/LeMat-Bulk-fixed`](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed)
-is upstream `compatible_pbe` (revision `0dc17ee`) with 17,998 DFT records replaced, 130
-rows removed and 832 flagged, leaving 5,335,169 rows. The schema is unchanged and
+is upstream `compatible_pbe` (revision `0dc17ee`) with 17,998 DFT records replaced, 131
+rows removed and 832 flagged, leaving 5,335,168 rows. The schema is unchanged and
 untouched rows are byte-identical. Its `audit` config lists every change, with a `cause`
-column. The dataset card has the full method. The pipeline is in
+column.
+
+Since v3 no row has empty `forces` or `stress_tensor`. Upstream left both empty for 30,679
+MP rows (see [`unconverged_relaxation_energy.md`](unconverged_relaxation_energy.md)):
+- 27,332 rows whose record is otherwise upstream's take the values recovered by
+  `scripts/recover_mp_forces.py`.
+- 2,512 replaced rows take their new task's last ionic step, verified to be its output. The dataset card has the full method. The pipeline is in
 `scripts/lemat_fixed/`.
 
 ### Root cause, task by task
@@ -235,7 +241,7 @@ removed for disagreeing with them.
   A candidate must lie within max(0.2, |old − MLIP| + 0.05) eV/atom of the MLIP median.
 - **Live rows** switch only when they are more than 0.2 eV/atom off the MLIPs and MP's
   task is within 0.2 and 0.05 closer. This affects 191 rows.
-- **Removed (130), each with a cause in the audit:**
+- **Removed (131), each with a cause in the audit:**
   - **112 MP rows on `Mg_pv 13Apr2007` or `Ge_d 03Jul2007`.** MP deprecated these
     materials and has no valid replacement. The measured offsets are +0.097 eV per Mg
     atom (116 same-structure pairs) and +0.107 eV per Ge atom (22 pairs).
@@ -249,6 +255,9 @@ removed for disagreeing with them.
       calculation can produce.
   - **3 rows with overlapping atoms.** Bi–Cu at 1.09 Å, and Fe–Mg at 0.90 Å in two
     OQMD duplicates.
+  - **1 OQMD row (`oqmd-2969647`, Cu₅Mg₈) with coincident atoms** (since v4). It stores 13
+    atoms on 8 positions with each Cu on a Mg, and `nsites = 8`. OQMD has no Cu₅Mg₈, and
+    its Cu₅Mg₃ is a different structure.
   - **2 OQMD rows whose total energy is bit-identical to a different structure's.**
   - **2 OQMD rows contradicted by identical-structure calculations.** For `oqmd-3005551`
     these come from MP, Alexandria and three more OQMD entries.

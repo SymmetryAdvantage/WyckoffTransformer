@@ -20,7 +20,12 @@ from a `.env` file.
 10. `decide.py`: geometry matching and the replace/keep rules.
 11. `label_geo.py`: StructureMatcher labels for whole-structure replacements.
 12. `check_contacts.py`: shortest-bond sanity check on every replacement.
-13. `build_fixed.py`: writes the shards and `audit/changes.parquet`. Removals come only
+13. `s3_steps.py`: last-ionic-step forces/stress for replacement tasks whose output
+    fields are empty. Reads `need_steps.txt`, the new task ids of replaced rows with
+    empty forces.
+14. `build_fixed.py`: writes the shards and `audit/changes.parquet`. It also fills
+    upstream-empty forces/stress from `scripts/recover_mp_forces.py`'s
+    `cache/mp_forces_recovery/runs/full/results.parquet`. Removals come only
     from `removal_causes.py`, each with its evidence, plus MP-deprecated materials with
     measured non-standard-POTCAR offsets.
 

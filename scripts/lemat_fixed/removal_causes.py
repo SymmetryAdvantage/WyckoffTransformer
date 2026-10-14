@@ -45,6 +45,12 @@ CAUSES = {
                      "overlap; the MLIPs return +41 to +261 eV for this cell; duplicate of oqmd-5708135"),
     "oqmd-5708135": ("overlapping atoms: Fe-Mg at 0.897 A (0.31 x the sum of atomic radii); PAW spheres "
                      "overlap; duplicate of oqmd-7966826"),
+    "oqmd-2969647": ("coincident atoms: the 13 stored sites occupy only 8 positions, each of the 5 Cu "
+                     "sitting exactly (0.000 A) on a Mg, so no calculation can have been run on the stored "
+                     "Cu5Mg8 structure (nsites says 8; MACE-MP-0b3 and ORB-v3 return inf/NaN); all forces "
+                     "and magnetic moments are exactly zero; OQMD has no Cu5Mg8 entry, and its only Cu5Mg3 "
+                     "entry (1927862, P4/mmm, 14.4 A^3/atom, -0.075 eV/atom) is a different structure from "
+                     "the 8-site reading of this record (P2/m, 21.9 A^3/atom, +0.95 eV/atom)"),
     "oqmd-1922538": ("energy belongs to another structure: total energy -24.0129 eV is identical to "
                      "oqmd-2011591 (same 5-atom composition) whose cell is 43% smaller "
                      "(10.79 vs 18.81 A^3/atom); the MLIPs agree with oqmd-2011591's structure"),

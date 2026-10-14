@@ -108,6 +108,7 @@ for mid, r in f.iterrows():
             perm = choice["perm"] if choice["perm"] is not None else np.arange(len(d["species"]))
             take = lambda v: None if v is None else [v[i] for i in perm]
             payloads.append(dict(immutable_id=mid, action=action, task_id=choice["task_id"], energy=d["energy"],
+                                 perm=[int(i) for i in perm],
                                  lattice=d["lattice"], species=take(d["species"]), xyz=take(d["xyz"]),
                                  forces=take(d["forces"]) if d.get("forces") else None, stress=d.get("stress"),
                                  magmom=take(d["magmom"]), total_magnetization=d.get("total_magnetization"),

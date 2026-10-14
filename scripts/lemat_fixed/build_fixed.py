@@ -21,6 +21,29 @@ for line in open(W / "replacements.jsonl"):
 joined = pd.read_parquet(W / "joined.parquet").drop_duplicates("immutable_id")
 ml = ["orb_direct_20", "orb_conserv_inf", "uma", "mace_mp", "mace_omat"]
 
+# --- forces and stress that upstream (or a replacement task's output) left empty
+# Untouched rows: scripts/recover_mp_forces.py matched LeMat's own task bit-exactly and took the
+# values from its last ionic step, already in LeMat's site order.
+RECOVERY = Path(os.path.expanduser("~/.local/share/wyformer/cache/mp_forces_recovery/runs/full/results.parquet"))
+recovered = pd.read_parquet(RECOVERY, columns=["immutable_id", "group", "status", "forces", "stress"])
+recovered = recovered[(recovered.group == "missing") & recovered.status.str.startswith("exact")].set_index("immutable_id")
+# Replacement tasks: the last ionic step, kept only when it is the task's output (s3_steps.py).
+steps = {}
+if (W / "s3_steps" / "steps.jsonl").exists():
+    for line in open(W / "s3_steps" / "steps.jsonl"):
+        d = json.loads(line)
+        if d["ok"]:
+            steps[d["task_id"]] = d
+for i, p in rep.items():
+    st = steps.get(p["task_id"])
+    if st is not None:
+        if not p.get("forces"):
+            p["forces"] = [st["forces"][j] for j in p["perm"]]; p["forces_source"] = "last_ionic_step"
+        if not p.get("stress"):
+            p["stress"] = st["stress"]; p["stress_source"] = "last_ionic_step"
+print("replacements filled from the last ionic step:", sum("forces_source" in p for p in rep.values()),
+      "| still without forces:", sum(not p.get("forces") for p in rep.values()))
+
 # --- removals, each with a calculation-level cause (removal_causes.py); nothing is removed for
 # disagreeing with the MLIPs alone
 from removal_causes import CAUSES, UNEXPLAINED, POTCAR_OFFSETS
@@ -75,6 +98,7 @@ for i, p in rep.items():
                     new_energy=p["energy"], nsites=int(x.at[i, "nsites"]), new_nsites=len(p["species"]), old_mp_task=r.lemat_task if r.grp != "unidentified" else None,
                     old_calc_type=r.lemat_calc_type if r.grp != "unidentified" else None, old_batch=r.lemat_batch if r.grp != "unidentified" else None,
                     new_mp_task=p["task_id"], new_calc_type=r.new_calc_type, geometry_match=r.geo,
+                    forces_source=p.get("forces_source", "output") if p.get("forces") else None,
                     mlip_median_energy_per_atom=r.mlip_epa))
 for i, why in remove.items():
     r = dec.loc[i] if i in dec.index else None
@@ -98,7 +122,24 @@ for i, r in dec[dec.action == "keep_stale_mlip_consistent"].iterrows():
                         new_energy=float(x.at[i, "energy"]), nsites=int(x.at[i, "nsites"]), old_mp_task=r.lemat_task,
                         old_calc_type=r.lemat_calc_type, old_batch=r.lemat_batch, new_mp_task=None, new_calc_type=None,
                         geometry_match=None, mlip_median_energy_per_atom=r.mlip_epa))
+for i in recovered.index:
+    if i in rep or i in remove or i not in x.index:
+        continue
+    aud.append(dict(immutable_id=i, change="forces_stress_added", reason="upstream_empty",
+                    cause=("forces and stress_tensor were empty upstream; taken from the last ionic step of "
+                           "the same MP task, matched to the upstream energy and geometry "
+                           "(scripts/recover_mp_forces.py)"),
+                    old_energy=float(x.at[i, "energy"]), new_energy=float(x.at[i, "energy"]),
+                    nsites=int(x.at[i, "nsites"]), forces_source="last_ionic_step"))
 aud = pd.DataFrame(aud)
+# a flagged row that also gained forces/stress keeps one audit entry: the flag, with the forces noted
+dup = aud.immutable_id.duplicated(keep=False)
+both = set(aud.loc[dup & aud.change.eq("forces_stress_added"), "immutable_id"])
+m = aud.immutable_id.isin(both) & aud.change.eq("kept_flagged")
+aud.loc[m, "forces_source"] = "last_ionic_step"
+aud.loc[m, "cause"] = aud.loc[m, "cause"] + "; forces and stress_tensor (empty upstream) added from the last ionic step of the same MP task"
+aud = aud[~(aud.immutable_id.isin(both) & aud.change.eq("forces_stress_added"))].reset_index(drop=True)
+assert not aud.immutable_id.duplicated().any()
 geo = pd.read_parquet(W / "rs_geo.parquet").set_index("immutable_id")
 m = aud.change.eq("replace_structure")
 aud.loc[m, "geometry_match"] = aud.loc[m, "immutable_id"].map(geo.geometry_match)
@@ -113,7 +154,7 @@ print(aud.groupby(["change", "reason"]).size())
 # --- rewrite the shards
 (OUT / "compatible_pbe").mkdir(parents=True, exist_ok=True)
 files = sorted(SRC.glob("*.parquet"))
-n_in = n_out = n_rep = 0
+n_in = n_out = n_rep = n_recovered = 0
 for fn in files:
     t = pq.read_table(fn)
     schema = t.schema
@@ -149,9 +190,23 @@ for fn in files:
             idx = schema.get_field_index(name)
             t = t.set_column(idx, schema.field(name), pa.array(values, type=schema.field(name).type))
         n_rep += len(hit)
+    # untouched rows whose forces/stress upstream left empty: the recovered values
+    rec_hit = [k for k, i in enumerate(ids) if i in recovered.index and i not in rep and i not in remove]
+    if rec_hit:
+        forces = t.column("forces").to_pylist(); stress = t.column("stress_tensor").to_pylist()
+        for k in rec_hit:
+            r = recovered.loc[ids[k]]
+            if not forces[k]:
+                forces[k] = [list(map(float, f)) for f in r.forces]
+            if not stress[k]:
+                stress[k] = [list(map(float, row)) for row in r.stress]
+        for name, values in (("forces", forces), ("stress_tensor", stress)):
+            idx = schema.get_field_index(name)
+            t = t.set_column(idx, schema.field(name), pa.array(values, type=schema.field(name).type))
+        n_recovered += len(rec_hit)
     t = t.filter(pa.array(keep))
     n_in += len(ids); n_out += t.num_rows
     pq.write_table(t.replace_schema_metadata(schema.metadata), OUT / "compatible_pbe" / fn.name,
                    compression="snappy", row_group_size=20000)
     print(fn.name, len(ids), "->", t.num_rows, flush=True)
-print(f"rows {n_in} -> {n_out}; replaced {n_rep}; removed {n_in - n_out}")
+print(f"rows {n_in} -> {n_out}; replaced {n_rep}; removed {n_in - n_out}; forces/stress recovered for {n_recovered} untouched rows")
