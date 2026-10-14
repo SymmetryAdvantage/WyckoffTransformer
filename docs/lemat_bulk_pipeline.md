@@ -22,7 +22,7 @@ built from upstream, `lemat_bulk_fmax1_stress` included, is in
   already in the archive.
 - About 12 GB of free space in `data` and 14 GB in `cache`.
 - A run takes about 5 h on zeus: 2 h for the archive and hull, 3 h for the cache and
-  tokens.
+  tokens, and another hour for the derived datasets.
 
 ## The pipeline
 
@@ -177,22 +177,74 @@ scripts/store_sync.sh iapetus  push --go cache/lemat_bulk_fixed_fmax1_stress dat
 scripts/store_sync.sh aspire2a push --go cache/lemat_bulk_fixed_fmax1_stress data/lemat_bulk_fixed_fmax1_stress
 ```
 
-That is 13.6 GB of cache and 1.5 GB of split CSVs. Compare sha256 on both ends
+That is 13.6 GB of cache and 1.5 GB of split CSVs; the derived datasets of step 6 go the
+same way (`cache/lemat_bulk_fixed_fmax1_stress_ehull01`,
+`cache/lemat_bulk_fixed_fmax1_stress_icsd`, `data/formula_energy_fixed`). Compare sha256 on both ends
 afterwards. The remote checkouts also need the commit that adds the dataset manifests,
 or they refuse the dataset. `data/lemat-bulk-fixed` itself, the archive and per-row
 tables (about 10 GB), is on zeus only.
+
+### 6. Derived datasets
+
+Three datasets are derived from the cache and the hull, each in minutes, without
+re-running pyxtal. Each reuses its upstream counterpart's saved tokeniser, and each saved
+tokeniser comes out byte-identical.
+
+```bash
+# e_hull <= 0.1 eV/atom slice: tensors and records filtered, tokeniser copied     (5 min)
+python scripts/slice_dataset_by_ehull.py --source-dataset lemat_bulk_fixed_fmax1_stress \
+    --target-dataset lemat_bulk_fixed_fmax1_stress_ehull01 --tokeniser-name der_tokenizer_v1
+
+# icsd_backed column from data/mp_provenance.csv.gz, then tokenise                (50 min)
+python scripts/add_icsd_provenance.py lemat_bulk_fixed_fmax1_stress lemat_bulk_fixed_fmax1_stress_icsd
+python scripts/tokenise_a_dataset.py lemat_bulk_fixed_fmax1_stress_icsd \
+    yamls/tokenisers/der_tokenizer_v1_icsd.yaml --n-jobs 12 \
+    --tokenizer-path cache/lemat_bulk_fmax1_stress_icsd/tokenisers/der_tokenizer_v1_icsd.json
+
+# per-formula tables, the MP + OQMD ("shallow") world and its answer key          (16 min)
+python -m wyckoff_transformer.formula_energy.dataset --energy-csv $D/lemat_pbe_ehull.csv.gz \
+    --force-csv $D/lemat_pbe.csv.gz --out data/formula_energy_fixed/formula_table.parquet
+python -m wyckoff_transformer.formula_energy.answer_key --energy-csv $D/lemat_pbe_ehull.csv.gz \
+    --force-csv $D/lemat_pbe.csv.gz --deep-table data/formula_energy_fixed/formula_table.parquet \
+    --out-dir data/formula_energy_fixed --workers 10
+```
+
+- **`lemat_bulk_fixed_fmax1_stress_ehull01`:** 1,602,967 / 31,099 / 31,327 rows. That is
+  1.7% more than the upstream slice, because corrected hull vertices pull rows under the
+  cut.
+- **`lemat_bulk_fixed_fmax1_stress_icsd`:** the parent's rows, 43,407 of them ICSD-backed in
+  train.
+- **`formula_energy_fixed`:** 2,754,253 formulas, 37 fewer than `formula_energy`, with the
+  same formula-level split on the formulas both have.
+  - The shallow world is the reference `lemat_bulk_fixed_pbe_mp_oqmd@bf8f0b31`.
+  - As upstream, 17,387 of its 706,756 rows get no hull energy.
+  - Pass `--force-csv` to both commands. Without it `max_force`, a covariate in both
+    tables, is read from the upstream archive.
+
+## Training the models
+
+`yamls/models/lemat_fixed/` has the four models to retrain on these datasets: the e_hull
+CFG backbone, the gene energy regressor, the unconditional backbone and the
+chemical-system model. Each file's header names the run it reproduces and what changed.
+
+- **The CFG backbone is one run.** The model it replaces was trained as a run plus a
+  warm-started continuation; `ehull_adamw_wsd_5x_cfg_long.yaml` is the same peak-lr time
+  and anneal as a single schedule.
+- **The chemical-system model's horizon is the unconditional backbone's.** The run it
+  replaces had not converged.
 
 ## What is on disk
 
 | dataset | rows | built from | status |
 | --- | ---: | --- | --- |
 | `lemat_bulk_fixed_fmax1_stress` | 5,326,830 | LeMat-Bulk-fixed @`bf8f0b31` | current: use for new work |
-| `lemat_bulk_fmax1_stress` | 5,327,342 | upstream LeMat-Bulk, recovered forces | current in its manifest, for the runs trained on it and its `_ehull01` and `_icsd` children; its hull contains the stale MP energies |
+| `lemat_bulk_fixed_fmax1_stress_ehull01` | 1,665,393 | its e_hull <= 0.1 slice | current |
+| `lemat_bulk_fixed_fmax1_stress_icsd` | 5,326,830 | it, plus `icsd_backed` | current |
+| `formula_energy_fixed` | 2,754,253 formulas | `data/lemat-bulk-fixed/lemat_pbe_ehull.csv.gz` | current |
+| `lemat_bulk_fmax1_stress` | 5,327,342 | upstream LeMat-Bulk, recovered forces | current in its manifest, for the runs trained on it, as are its `_ehull01` and `_icsd` children and `formula_energy`; its hull contains the stale MP energies |
 
-All the data for both datasets is in the data store and the cache on zeus, iapetus and
-aspire2a:
-- the split CSVs, in `data/<name>/`;
-- the cache, in `cache/<name>/`, with `der_tokenizer_v1` tensors.
+The split CSVs live in `data/<name>/` and the caches in `cache/<name>/`, in the data store
+and the cache on zeus, iapetus and aspire2a.
 
 `yamls/datasets/<name>.yaml` records each dataset's status, which training, caching and
 tokenising enforce, and the hull reference of each energy field; see
@@ -200,9 +252,9 @@ tokenising enforce, and the hull reference of each energy field; see
 (`lemat_bulk_fixed_pbe@bf8f0b31` and `lemat_bulk_pbe`), so energies from one are refused
 against the other.
 
-The `_ehull01` slice, the `_icsd` variant, the gene indices (`gene_keys.npz`,
-`gene_fingerprints.pkl.gz`, `gene_ehull_index.pkl.gz`) and the defaults of the evaluation
-protocol and CrySPR's template index are still built on `lemat_bulk_fmax1_stress`.
+The gene indices (`gene_keys.npz`, `gene_fingerprints.pkl.gz`, `gene_ehull_index.pkl.gz`)
+and the defaults of the evaluation protocol and CrySPR's template index are still built
+on `lemat_bulk_fmax1_stress`.
 Neither the MLIP energies nor the variants older than `lemat_bulk_fmax1_stress` have been
 rebuilt on the fixed archive. The older variants are described in
 [the archived pipeline](archive/lemat_bulk_upstream_pipeline.md#what-was-on-disk-2026-10-14).

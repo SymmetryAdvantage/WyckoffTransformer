@@ -313,9 +313,9 @@ Pa, where the MLIPs are the weak side. They are kept.
 2. ~~**Alexandria and OQMD entries.**~~ Done: rows with a calculation-level defect are
    removed. Four unexplained ones are flagged, and the rest are MLIP noise.
 3. ~~**Rebuild the training caches**~~ Done: `lemat_bulk_fixed_fmax1_stress`, cached and
-   tokenised with `der_tokenizer_v1`, on zeus, iapetus and aspire2a. Still to do:
-   **retrain** the energy regressors and the e_hull CFG models, and rebuild the
-   `_ehull01` slice and the gene indices.
+   tokenised with `der_tokenizer_v1`, on zeus, iapetus and aspire2a, with its `_ehull01`
+   slice, its `_icsd` variant and `formula_energy_fixed`. Still to do: **retrain** the
+   four models in `yamls/models/lemat_fixed/`, and rebuild the gene indices.
 4. **Report upstream** to LeMat-Bulk. Reply in discussion #6 with the provenance finding
    and the `audit` table.
 5. **Interim fix for the kappagen campaign:** re-select against a hull without the

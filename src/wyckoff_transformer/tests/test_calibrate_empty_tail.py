@@ -48,5 +48,36 @@ class TestCalibrateEmptyTail(unittest.TestCase):
                 self.fail("WyckoffGenerator.calibrate failed with empty tail_predictions")
             raise e
 
+    def test_a_length_no_structure_reaches_is_skipped(self):
+        """The padded width can exceed every structure of the split being calibrated on."""
+        model = MagicMock(spec=torch.nn.Module)
+        param = torch.nn.Parameter(torch.ones(1))
+        model.parameters.side_effect = lambda: iter([param])
+
+        def forward(start, data, padding, cascade_idx, cond=None):
+            if start.size(0) == 0:
+                raise RuntimeError("cannot reshape tensor of 0 elements")
+            return torch.randn(start.size(0), 10)
+        model.side_effect = forward
+
+        def batch(size):
+            return (torch.zeros(size, dtype=torch.long), [torch.zeros(size, 1, dtype=torch.long)],
+                    torch.zeros(size, dtype=torch.long), torch.ones(size, dtype=torch.bool))
+
+        dataset = MagicMock(spec=AugmentedCascadeDataset)
+        dataset.cascade_order = ("field1",)
+        dataset.max_sequence_length = 3
+        # Lengths 0 and 1 have examples; nothing in the split is long enough for length 2.
+        dataset.get_masked_multiclass_cascade_data.side_effect = (
+            lambda known_seq_len, *args, **kwargs: batch(0 if known_seq_len == 2 else 110))
+
+        generator = WyckoffGenerator(
+            model=model, cascade_order=("field1",), cascade_is_target={"field1": True},
+            token_engineers={}, masks={"field1": 0}, max_sequence_len=3)
+        generator.calibrate(dataset, calibration_element_count_threshold=100)
+        self.assertEqual(len(generator.calibrators[0]), 2)
+        self.assertEqual(model.call_count, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

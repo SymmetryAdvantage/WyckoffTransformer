@@ -68,6 +68,9 @@ entry carries its meaning and evidence:
       system they touch.
     - `lemat_bulk_fixed_fmax1_stress` uses it
       ([lemat_bulk_pipeline.md](lemat_bulk_pipeline.md)).
+  - **`lemat_bulk_fixed_pbe_mp_oqmd@bf8f0b31`**: the shallow subset of
+    `lemat_bulk_fixed_pbe@bf8f0b31`, built as `lemat_bulk_pbe_mp_oqmd` is
+    (`formula_energy_fixed`).
   - **`lemat_bulk_pbe_mp_oqmd`**: formula_energy's "shallow" subset, without
     Alexandria.
   - **`mp_gga_gga_u_2026.04.13`**: Materials Project's GGA/GGA+U hull at that

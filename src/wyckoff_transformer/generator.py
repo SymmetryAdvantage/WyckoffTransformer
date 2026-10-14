@@ -110,6 +110,10 @@ class WyckoffGenerator():
                             known_seq_len, known_cascade_len,
                             target_type=TargetClass.NextToken, multiclass_target=False,
                             return_chosen_indices=True)
+                    # The padded width can exceed every structure in this split (train's
+                    # longest is 61 sites, val's 60), and attention cannot take zero rows.
+                    if target.size(0) == 0:
+                        continue
                     iter_cond = None if cond_builder is None else cond_builder(dataset, chosen_indices)
                     model_output = self.model(start_tokens, masked_data, None, known_cascade_len, cond=iter_cond)
                     # Enought data for separate calibration
