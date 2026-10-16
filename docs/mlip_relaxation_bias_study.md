@@ -1,5 +1,60 @@
 # MLIP relaxation bias study
 
+## Decision, 2026-10-16: relax GenBench submissions with PET-OAM-XL
+
+**GenBench submissions are relaxed with PET-OAM-XL, not ORB.** ORB is one of
+GenBench's three scorers (ORB, MACE, UMA). Relaxing with it lowers its own
+hull distances, so its share of the ensemble score goes up by construction.
+That is a reward-hacking accusation we should not invite. PET-OAM-XL is
+independent of all three scorers, and it scores at least as well.
+
+The source is the final 2026-10-11 comparison, artifact
+`mlip-bias-genbench-comparison-1aaf8610d42b5413:v0` (`common_cohort_metrics.csv`),
+on 884 common genes in every arm and track:
+
+| Relaxation arm | MetaSUN free / fixed (%) | Ensemble metastable free / fixed (%) | Metastable by ORB / MACE / UMA, free (%) | ORB minus mean(MACE, UMA), free / fixed (pts) |
+| --- | ---: | ---: | ---: | ---: |
+| EquiformerV3+DeNS-OAM | 57.58 / 40.84 | 73.19 / 56.67 | 75.11 / 76.47 / 71.72 | +1.0 / -0.3 |
+| Prophet-OAME-MBD | 57.47 / 40.95 | 73.53 / 57.35 | 74.55 / 75.90 / 71.83 | +0.7 / +0.4 |
+| **PET-OAM-XL** | 57.35 / 41.40 | 73.87 / 57.58 | 75.34 / 76.47 / 72.17 | +1.0 / -0.8 |
+| TECE-OAM-RRA-1.0 | 57.01 / 40.95 | 73.08 / 57.01 | 75.00 / 75.00 / 71.61 | +1.7 / +0.5 |
+| TACE-OAM-L | 56.90 / 40.72 | 72.96 / 56.45 | 74.43 / 75.00 / 71.72 | +1.1 / -0.2 |
+| ORB (`orb_conserv_inf`) | 56.67 / 41.52 | 72.29 / 57.13 | 75.45 / 74.89 / 70.25 | +2.9 / +1.1 |
+| EquFlashV2 | 56.67 / 40.84 | 72.40 / 56.67 | 73.76 / 75.23 / 71.04 | +0.6 / -0.6 |
+| Nequip-OAM-XL | 56.22 / 40.27 | 72.74 / 56.00 | 74.43 / 75.11 / 71.38 | +1.2 / +0.0 |
+| eSEN-30M-OAM | 56.00 / 40.61 | 71.83 / 56.45 | 73.98 / 74.43 / 70.48 | +1.5 / +0.5 |
+
+- **The choice of relaxer barely moves MetaSUN.** The free-track spread is
+  1.6 points against a binomial standard error of about 1.7 at n = 884.
+- **ORB relaxation flatters ORB.** On the free track, ORB-relaxed structures
+  rank 1st by ORB's metastability, 8th by MACE's and 9th by UMA's. ORB's lead
+  over the other two scorers is +2.9 points; every other arm's is +0.6 to
+  +1.7. On the fixed-symmetry track ORB's lead is +1.1 points, against −0.8 to
+  +0.5. There, ORB's top ensemble MetaSUN (41.52%) comes from its own scorer.
+- **PET-OAM-XL is top or near it on everything the other scorers see.** It has
+  the best ensemble metastability on both tracks and ranks 1st by MACE on both.
+  By UMA it ranks 1st on free and 2nd on fixed. MetaSUN ranks 3rd free (0.23
+  points behind the leader) and 2nd fixed. It shows no ORB lead. Its relaxation
+  coverage is 2,696 of 2,698 trials.
+- **Runners-up.** Prophet is nearly tied but needed an out-of-memory recovery
+  pass. EquiformerV3 tops free MetaSUN by 0.23 points, but it had the worst
+  first-pass coverage (480 genes), and its mean UMA hull distance is 0.19
+  eV/atom against PET's 0.10.
+- **Rejected: relaxing with the scorer ensemble**, which the [ranking
+  protocol](de_novo_ranking_protocol.md) suggests. It optimises the submission
+  against the scorers outright, which is the same accusation, made stronger.
+
+Caveats:
+- **No paired significance test.** The artifact holds aggregates only, not
+  per-gene values. The ORB self-preference is consistent across both tracks,
+  but each gap is one to three points.
+- **Cost.** PET-OAM-XL is heavy: a 2.8 GiB checkpoint, it does not fit the
+  2 GiB iapetus card, and it ran under the 1,200-second zeus timeout. Its
+  environment is in [the zeus notes](platforms/zeus/mlip_bias.md).
+- **Scope.** This decision covers the geometries submitted to GenBench. It does
+  not change `DEFAULT_HULL_MLIP` (`orb_conserv_inf`), the in-loop screening
+  proxy.
+
 The additional failure pass completed relaxation on 2026-10-10: 64 of 67
 draws recovered, including all 19 Prophet and all 40 NequIP OOM failures.
 Prophet used the validated kernel backend with compilation disabled;

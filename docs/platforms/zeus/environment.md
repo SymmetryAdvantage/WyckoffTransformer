@@ -105,18 +105,28 @@ tracked and stayed). Everything tracked by git stayed in the checkout.
 
 ## The state of the current venv
 
-Updated 2026-10-05 for the [MLIP bias study](mlip_bias.md). The local lock
-was upgraded with `uv lock --upgrade-package torch`; the new wheel still
-requires Triton 3.8.0.
+Rebuilt 2026-10-16 on Python 3.14. The host's system `python3` moved from
+3.12.3 to 3.14, which left the old venv's `/usr/bin/python3` link pointing at
+an interpreter with no matching `site-packages`. `env_init.sh` now syncs with
+`--python 3.14`, while `pyproject.toml` still admits 3.12 for the iapetus and
+aspire2a containers. Two traps on the way:
+
+- `orb-models` 0.7.0 pins `dm-tree ==0.1.8`. That release has no cp314 wheel,
+  and its bundled abseil does not compile with GCC 15. `pyproject.toml`
+  overrides the pin to 0.1.9, which builds from source.
+- That build, and any other old pybind11 sdist, needs
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` under CMake 4. uv caches the resulting
+  wheel, so only the first build after a cache purge needs it:
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5 scripts/platforms/zeus/env_init.sh`.
 
 | | |
 | --- | --- |
-| Python | 3.12.3, the system interpreter (`home = /usr/bin` in `pyvenv.cfg`) |
+| Python | 3.14.3, uv-managed (`~/.local/share/uv/python/cpython-3.14-linux-x86_64-gnu`) |
 | `include-system-site-packages` | `false` — nothing is inherited from the host Python |
 | torch | 2.14.1+cu134, CUDA 13.4, locally built wheel |
-| triton | 3.8.0, from PyPI, via the `compile` extra |
+| triton | 3.8.0, from PyPI, required by the torch wheel's own METADATA |
 | NVIDIA CUDA runtime distributions | none — CUDA and MKL come from the host; `nvidia-ml-py` is the Python NVML interface |
-| Extras installed | `dev`, `relax`, `compile` |
+| Extras installed | `dev`, `relax`, `nep` (the `env_init.sh` default) |
 | Project | installed editable (`_editable_impl_wyckoff_transformer.pth`) |
 
 The Torch 2.14.1 wheel's NVSHMEM RUNPATH names a removed build directory.
@@ -126,7 +136,7 @@ directory, without installing a conflicting NVIDIA runtime wheel:
 
 ```bash
 ln -s /usr/lib/x86_64-linux-gnu/nvshmem/13/libnvshmem_host.so.3 \
-    .venv/lib/python3.12/site-packages/torch/lib/libnvshmem_host.so.3
+    .venv/lib/python3.14/site-packages/torch/lib/libnvshmem_host.so.3
 ```
 
 `env_init.sh` creates this link after a real sync (including scratch venvs),

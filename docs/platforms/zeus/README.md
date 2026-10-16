@@ -67,7 +67,7 @@ Two things to know before your first run:
 | --- | --- |
 | `/home/kna/WyckoffTransformer` | The main checkout |
 | `<repo>/.claude/worktrees/<name>` | Git worktrees made by Claude Code, each with its own `.venv` |
-| `<repo>/.venv` | The venv — a plain host venv, python 3.12.3. One per checkout, never shared |
+| `<repo>/.venv` | The venv — a plain host venv, python 3.14. One per checkout, never shared |
 | `/home/kna/.local/share/wyformer/` | The data store: untracked `data/`, `cache/`, `runs/` and `wandb/`, shared by all checkouts. Set in `~/.config/wyformer/paths.env`; see [data_store.md](../../data_store.md) |
 | `<repo>/uv.toml` | Declares the local wheel index. **Untracked**; copied from the file below |
 | `scripts/platforms/zeus/uv.toml` | Tracked source of truth for the above |
