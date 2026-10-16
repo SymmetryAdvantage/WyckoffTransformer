@@ -1,6 +1,6 @@
 # Platform-specific setup
 
-Read the directory for the host you are on, and only that one:
+Start with the directory for the host you are on:
 
 ```bash
 ls "docs/platforms/$(hostname -s)"
@@ -9,7 +9,9 @@ ls "docs/platforms/$(hostname -s)"
 If it exists, it is authoritative for this machine: follow it instead of
 improvising, and record anything host-specific you learn there rather than in
 the top-level `README.md` or `AGENTS.md`. Matching scripts live in
-`scripts/platforms/$(hostname -s)/`.
+`scripts/platforms/$(hostname -s)/`, unless that host's pages explicitly reuse
+another platform's scripts. [Hera](hera/README.md), for example, references
+the shared Zeus instructions and records its differences locally.
 
 On a **cluster**, the node name is not the platform name -- you get a different
 node every job. The directory is named after the cluster, and the mapping is:
@@ -57,8 +59,8 @@ update the brief in the same commit.
 
 ## Other hosts' pages
 
-Do not read a sibling host's pages for guidance on this one. Nothing there
-transfers: driver versions, container runtimes, filesystem layout, schedulers
-and local package indices all differ, and a session cannot move between hosts.
+Follow a sibling host's pages only when this host's documentation explicitly
+references them. Apply the local differences first: driver versions, container
+runtimes, filesystem layout, schedulers and local package indices can differ.
 
 Keep the documentation in platforms/ updated - if you encounter that something there is wrong, update the documentation as needed. WyFormer codebase and environment might also evolve - again, keep the platform-specific documentation up to date.
