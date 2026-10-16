@@ -41,7 +41,7 @@ Expected:
 
 ```text
 torch     2.14.1+cu134 / cuda 13.4
-file      /home/kna/WyckoffTransformer/.venv/lib/python3.12/site-packages/torch/__init__.py
+file      /home/kna/WyckoffTransformer/.venv/lib/python3.14/site-packages/torch/__init__.py
 available True 2
 magma     True
 triton    3.8.0
@@ -52,9 +52,9 @@ triton    3.8.0
 The wheel tag is the quickest way to tell the local build from a PyPI one:
 
 ```bash
-grep Tag .venv/lib/python3.12/site-packages/torch-*.dist-info/WHEEL
-# Tag: cp312-cp312-linux_x86_64   <- local build
-# Tag: cp312-cp312-manylinux_...  <- came from PyPI, wrong
+grep Tag .venv/lib/python3.14/site-packages/torch-*.dist-info/WHEEL
+# Tag: cp314-cp314-linux_x86_64   <- local build
+# Tag: cp314-cp314-manylinux_...  <- came from PyPI, wrong
 ```
 
 torch living inside the venv is correct here: there is no container, and

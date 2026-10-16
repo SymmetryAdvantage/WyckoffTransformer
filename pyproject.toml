@@ -4,7 +4,7 @@ version = "2.3.0"
 description = "Wyckoff Transformer is a machine learning model for generating crystal structures which are symmetric by design."
 authors = [{ name = "Nikita Kazeev", email = "kazeevn@gmail.com" }]
 readme = "README.md"
-requires-python = ">=3.12, <3.13"
+requires-python = ">=3.12, <3.15"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
@@ -106,6 +106,13 @@ include = [
 [tool.uv.sources]
 # Test oracle only; see the genbench-oracle dependency group.
 material-hasher = { git = "https://github.com/LeMaterial/material-hasher.git" }
+
+[tool.uv]
+# orb-models 0.7.0 pins dm-tree ==0.1.8, which has no cp314 wheel and whose
+# bundled abseil does not compile with GCC 15. 0.1.9 builds from source on 3.14
+# (it needs CMAKE_POLICY_VERSION_MINIMUM=3.5 under CMake 4) and keeps the API
+# orb uses.
+override-dependencies = ["dm-tree ==0.1.9"]
 
 [tool.pytest.ini_options]
 testpaths = ["src"]
