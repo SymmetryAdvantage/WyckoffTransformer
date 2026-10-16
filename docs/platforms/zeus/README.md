@@ -37,7 +37,7 @@ building its own venv with `env_init.sh` below — run its interpreter directly:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py \
-    yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
+    yamls/models/mp_20/der/uncond_adamw_wsd.yaml mp_20 cuda --pilot
 ```
 
 Agents: don't `source .venv/bin/activate` and don't `cd` to the main checkout
@@ -55,8 +55,8 @@ Two things to know before your first run:
 1. **Pick a GPU explicitly.** Both cards are shared and usually busy. See
    [usage.md](usage.md#choosing-a-gpu).
 2. **Sync through `env_init.sh`, not a bare `uv sync`.** A bare sync prunes the
-   venv down to the base dependencies, taking MACE, ORB, pytest, ruff and
-   triton with it. See
+   venv down to the base dependencies, taking MACE, ORB, pytest and ruff
+   with it. Triton is required by the local Torch wheel. See
    [environment.md](environment.md#syncing-the-environment).
 
 ---
@@ -100,8 +100,8 @@ had been pinning torch to 2.11.0 project-wide:
 | OpenMP | `libgomp.so.1` throughout; no `libiomp5.so` / `libomp.so.5` dependency anywhere in the wheel |
 | CUDA wheels in the venv | **none** — no `nvidia-*` distributions at all; CUDA and MKL come from the host |
 | `wyformer-generate --hf-model SymmetryAdvantage/WyFormer-Alex-MP20` | 1000 structures, ~5.3 s on a contended GPU |
-| `torch.compile` | works, via `triton==3.8.0` from the `compile` extra (torch 2.14.0+cu133's own METADATA now requires exactly this version) |
-| Installed extras | `dev`, `relax`, `compile`. Absent: `research`, `mp`, group `genbench-oracle` |
+| `torch.compile` | works, via `triton==3.8.0` required by Torch itself; the former `compile` extra is deprecated |
+| Installed extras | `dev`, `relax`, former `compile` (historical; now deprecated). Absent: `research`, `mp`, group `genbench-oracle` |
 | `uv lock --upgrade` | resolves cleanly to torch 2.14.0+cu133 / triton 3.8.0 with the `cdvae` pin gone; drops `torch-scatter`/`torch-sparse`, which nothing else needs |
 | Cached datasets | `lemat_bulk_fmax1` 13 G, `lemat_bulk_ehull` 5.2 G, `alex_mp_20` 3.5 G, `mp_20` 911 M, and others under `cache/` |
 

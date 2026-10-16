@@ -4,9 +4,9 @@ Symptoms seen on this machine, and what they mean.
 
 | Symptom | Cause |
 | --- | --- |
-| `TritonMissing: Cannot find a working triton installation` | triton is gone — the `compile` extra was not synced, or a bare `uv sync` pruned it. Re-run `scripts/platforms/zeus/env_init.sh`. Configs with `compile_model: true` need it. |
+| `TritonMissing: Cannot find a working triton installation` | The local Torch wheel requires Triton automatically. Check the installed Torch source and dependency state, then restore through `scripts/platforms/zeus/env_init.sh`. The former `compile` extra is deprecated and must not be requested. |
 | `triton not found; flop counting will not work for triton kernels` on every `import torch` | Same cause, and the cheapest signal that triton is missing: it is a warning from `torch/utils/flop_counter.py`, not a failure. |
-| MACE, ORB, triton, `pytest` or `ruff` suddenly missing | Something ran a bare `uv sync`, which prunes every extra. Restore with `scripts/platforms/zeus/env_init.sh`. |
+| MACE, ORB, `pytest` or `ruff` suddenly missing | Something ran a bare `uv sync`, which prunes every extra. Restore with `scripts/platforms/zeus/env_init.sh`. |
 | A resolver picking triton 3.7.x, or a version mismatch with torch | The `constraint-dependencies` pin is gone. The root `uv.toml` is untracked — re-copy it via `env_init.sh`. |
 | `uv pip list` shows `nvidia-cublas`, `nvidia-cudnn-cu13`, ... | A PyPI manylinux torch was installed over the locally built one. The count of `nvidia-*` distributions should be 0. Reinstall torch from the local index. |
 | Nothing resolves; uv cannot find torch 2.14.1+cu134 | `uv.toml` is missing, so the local flat index is not declared. It is untracked — recreate it with `cp scripts/platforms/zeus/uv.toml uv.toml`, or just rerun `env_init.sh`. |

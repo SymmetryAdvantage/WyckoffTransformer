@@ -14,9 +14,9 @@ dependency. For day-to-day running see [usage.md](usage.md).
 One command:
 
 ```bash
-scripts/platforms/zeus/env_init.sh              # dev + relax + compile
+scripts/platforms/zeus/env_init.sh              # dev + relax + nep
 scripts/platforms/zeus/env_init.sh --dry-run    # show the plan, change nothing
-WYFORMER_EXTRAS="dev relax compile research" scripts/platforms/zeus/env_init.sh
+WYFORMER_EXTRAS="dev relax nep research" scripts/platforms/zeus/env_init.sh
 ```
 
 It does two things: copies `scripts/platforms/zeus/uv.toml` to the repository
@@ -273,14 +273,14 @@ That is `uv sync` doing its job, not a bug. The extras therefore have to be
 named, which is what `env_init.sh` exists for:
 
 ```bash
-uv sync --extra dev --extra relax --extra compile
+uv sync --extra dev --extra relax --extra nep
 ```
 
 ### Why the extras are not in `uv.toml`
 
 They cannot be. `uv.toml` accepts an `extra = [...]` key, but it is honoured by
 the `uv pip` interface and **ignored by `uv sync`**. Verified: with
-`extra = ["dev", "relax", "compile"]` in `uv.toml`, `uv sync --dry-run` still
+`extra = ["dev", "relax", "nep"]` in `uv.toml`, `uv sync --dry-run` still
 plans to remove MACE, ORB, pytest, ruff and triton. `default-groups` in
 `uv.toml` is ignored by `uv sync` too, and
 `--extra` has no environment variable. The command line is the only channel, so
@@ -391,62 +391,19 @@ zeus invention.
 
 ## `torch.compile`, triton, and CPU-only installs
 
-`torch.compile` works on zeus. It needs `triton`, which is installed by the
-`compile` extra and pinned to `3.8.0` by `constraint-dependencies` in
-`scripts/platforms/zeus/uv.toml`.
+`torch.compile` requires Triton. The `compile` extra is deprecated and has
+been removed from `pyproject.toml`; do not request it in `uv sync` or
+`WYFORMER_EXTRAS`. Use the initializer's `dev relax nep` defaults.
 
-This used to fail with `TritonMissing`, which matters because
-`compile_model: true` appears across `yamls/models/lemat_62/*`,
-`lemat_14/*`, `matbench_discovery_mp_2022/*` and `mp_20/**`, and `Trainer`
-applies `torch.compile(self.model, fullgraph=False)` when it is set
-(`src/wyckoff_transformer/trainer.py:458`). `compile_perceptrons` in the
-cascade model uses the same machinery
-(`src/wyckoff_transformer/cascade/model.py:327`).
+The local Torch 2.14.1+cu134 wheel requires `triton==3.8.0` on Linux x86_64,
+so dependency resolution installs it automatically. The host's `uv.toml`
+also pins that version through `constraint-dependencies`. Update that pin
+when rebuilding Torch, checking the wheel's `Requires-Dist` metadata.
 
-### Why triton is an extra rather than a base dependency
-
-torch declares triton itself — but only in some of its wheels, and whether a
-zeus-built wheel does depends on the release process at build time, not
-something fixed once and for all:
-
-| torch wheel | triton |
-| --- | --- |
-| PyPI (GPU) `torch` | pinned for Linux (e.g. `triton==3.6.0; platform_system == "Linux"` on 2.11.0) |
-| `download.pytorch.org/whl/cpu` | no triton |
-| Built from source on zeus, torch 2.11.0 (previous) | no triton — the release process hadn't started adding the pin to source builds yet |
-| Built from source on zeus, torch 2.14.1+cu134 (current) | `triton==3.8.0; platform_system == "Linux" and platform_machine == "x86_64"` — now baked in, same as the official wheels |
-
-So the CPU-only story that kept triton out of the base dependencies is real and
-worth preserving: triton is a 640 MB Linux-only GPU compiler, and a CPU-only or
-non-Linux install has no use for it. Listing it in `[project.dependencies]`
-would inflict it on every such install, and there is no environment marker for
-"this machine has a GPU" to condition on.
-
-The two facts are reconciled by making it **opt-in**:
-
-- `pyproject.toml` gains `compile = ["triton >=3.6"]`;
-- environments that use a stock PyPI GPU torch, or the current zeus build,
-  never need the extra, because torch already pulls triton in;
-- environments on a CPU torch, macOS or Windows never get triton, exactly as
-  before — including CI, which syncs `dev research relax`;
-- zeus asks for the extra explicitly in `env_init.sh` anyway, so a future
-  torch rebuild that drops the pin again doesn't silently lose
-  `torch.compile`.
-
-The version pin is split for the same reason. The extra keeps a loose floor
-(`>=3.6`) because the right triton depends on which torch you have; the host
-`uv.toml` pins the exact series with
-
-```toml
-constraint-dependencies = ["triton ==3.8.0"]
-```
-
-because this host's torch is 2.14.1+cu134, and that wheel's own METADATA
-requires exactly triton 3.8.0. Without that constraint nothing stops a
-resolver taking whichever triton pairs with the next torch bump on its own
-schedule. **Bump both together when torch is rebuilt, and check the new
-wheel's `Requires-Dist` for triton rather than assuming the old
-"source builds carry no pin" behaviour still holds.**
+CPU-only Torch builds do not need Triton. Keeping it out of the project's
+base dependencies avoids installing a GPU compiler in CPU-only environments.
+An older source-built Torch wheel may not declare Triton; report a missing
+runtime dependency before changing that host's installation recipe.
 
 `cuequivariance`, `cuequivariance-torch`, `cuequivariance-ops-cu13` and
 `cuequivariance-ops-torch-cu13` 0.12.0 were installed on 2026-10-05 with

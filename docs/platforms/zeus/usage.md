@@ -175,12 +175,12 @@ MLIPs. Install these packages with `--no-deps`; the ops metadata declares
 
 ## Common tasks
 
-Pilot training run, end to end:
+Pilot training run, end to end, using the current DER tokeniser:
 
 ```bash
 .venv/bin/wyformer-cache-dataset mp_20
-.venv/bin/python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/mp_20_sg_multiplicity.yaml --new-tokenizer
-CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda --pilot
+.venv/bin/python scripts/tokenise_a_dataset.py mp_20 yamls/tokenisers/der_tokenizer_v1.yaml --new-tokenizer
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python scripts/train.py yamls/models/mp_20/der/uncond_adamw_wsd.yaml mp_20 cuda --pilot
 ```
 
 Much of this is already cached. The cache is shared by every checkout on the
@@ -200,9 +200,9 @@ CUDA_VISIBLE_DEVICES=1 .venv/bin/wyformer-generate out.json.gz \
 
 1000 structures took 5.25 s on a contended card.
 
-Configs that set `compile_model: true` work — triton is installed. A pilot run
-of `base_sg.yaml` with compiling forced on completed training and evaluation on
-one card without a `TritonMissing` error.
+The current MP20 DER config sets `compile_model: true`; Triton is supplied by
+the local Torch wheel dependency. The older `mp_20_sg_multiplicity` tokeniser
+is obsolete and must not be used for new pilots.
 
 Tests:
 
@@ -238,7 +238,7 @@ the session that started it:
 
 ```bash
 nohup env CUDA_VISIBLE_DEVICES=1 WANDB_ENTITY=symmetry-advantage \
-    .venv/bin/python scripts/train.py yamls/models/NextToken/v6/base_sg.yaml mp_20 cuda \
+    .venv/bin/python scripts/train.py yamls/models/mp_20/der/uncond_adamw_wsd.yaml mp_20 cuda \
     > train.log 2>&1 &
 ```
 
