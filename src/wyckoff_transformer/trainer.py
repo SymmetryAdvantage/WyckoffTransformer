@@ -854,7 +854,9 @@ class WyckoffTrainer():
                 {"config": {"lr": optimisation_config.optimiser.lr_per_sqrt_n_samples * samples_per_step**0.5}})
         optimizer_module_obj = importlib.import_module(optimisation_config.optimiser.get("module", "torch.optim"))
         self.optimizer = getattr(optimizer_module_obj, optimisation_config.optimiser.name)(
-            list(self.trainable_parameters()), **optimisation_config.optimiser.config)
+            self.optimiser_param_groups(
+                optimisation_config.optimiser.get("exclude_norm_and_bias_from_weight_decay", False)),
+            **optimisation_config.optimiser.config)
         # Generation-only mode has no training set, so a step-indexed schedule has no
         # horizon to size itself from -- and nothing ever steps it. Skipping it here is
         # what lets a run trained under such a schedule be sampled without its dataset.
@@ -1136,6 +1138,29 @@ class WyckoffTrainer():
         """
         yield from self.model.parameters()
         yield from self._criterion_parameters()
+
+    def optimiser_param_groups(self, exclude_norm_and_bias_from_weight_decay: bool = False):
+        """What the optimiser is built on: the trainable parameters, as one group or two.
+
+        By default one plain list, so every parameter takes the configured weight decay.
+        With `exclude_norm_and_bias_from_weight_decay`, every parameter of at most one
+        dimension -- LayerNorm gains and biases, attention and linear biases, a scalar
+        criterion parameter -- goes into a second group with `weight_decay` 0.
+
+        Decay on a LayerNorm gain has no gradient to answer to once the layer stops being
+        used, so it drives the gain to zero and the layer cannot come back:
+        unconditional_5x_ehull01_h3x_xl and min_energy_adamw_wsd_h7x_xl on
+        lemat_bulk_fixed_fmax1_stress ended with every encoder gain near 0 and a constant
+        prediction. The AdaLN models have no learned gain to lose.
+
+        The grouping is part of the optimiser state a checkpoint saves, so a run must keep
+        the setting it started with; the config is held to that on resume.
+        """
+        parameters = list(self.trainable_parameters())
+        if not exclude_norm_and_bias_from_weight_decay:
+            return parameters
+        return [{"params": [p for p in parameters if p.ndim > 1]},
+                {"params": [p for p in parameters if p.ndim <= 1], "weight_decay": 0.0}]
 
 
     def _criterion_parameters(self):
