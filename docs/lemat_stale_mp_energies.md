@@ -314,8 +314,10 @@ Pa, where the MLIPs are the weak side. They are kept.
    removed. Four unexplained ones are flagged, and the rest are MLIP noise.
 3. ~~**Rebuild the training caches**~~ Done: `lemat_bulk_fixed_fmax1_stress`, cached and
    tokenised with `der_tokenizer_v1`, on zeus, iapetus and aspire2a, with its `_ehull01`
-   slice, its `_icsd` variant and `formula_energy_fixed`. Still to do: **retrain** the
-   four models in `yamls/models/lemat_fixed/`, and rebuild the gene indices.
+   slice, its `_icsd` variant and `formula_energy_fixed`. The four models in
+   `yamls/models/lemat_fixed/` are training; the chemical-system model has finished and
+   been protocol-evaluated ([lemat_bulk_pipeline.md](lemat_bulk_pipeline.md#training-the-models)).
+   Still to do: rebuild the gene indices other than `gene_fingerprints.pkl.gz`.
 4. **Report upstream** to LeMat-Bulk. Reply in discussion #6 with the provenance finding
    and the `audit` table.
 5. **Interim fix for the kappagen campaign:** re-select against a hull without the

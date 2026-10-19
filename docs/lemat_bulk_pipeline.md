@@ -232,6 +232,68 @@ chemical-system model. Each file's header names the run it reproduces and what c
   and anneal as a single schedule.
 - **The chemical-system model's horizon is the unconditional backbone's.** The run it
   replaces had not converged.
+- **The xl unconditional model trains at half the peak learning rate**
+  (`unconditional_5x_ehull01_h3x_xl_lr7p5e-4.yaml`). See below.
+
+All four were trained on aspire2a as 4-GPU chains from the worktree `lemat-fixed-sota`.
+
+| model | config | W&B run | as of 2026-10-19 |
+| --- | --- | --- | --- |
+| CFG backbone | `ehull_adamw_wsd_5x_cfg_long` | `ehull_adamw_wsd_5x_cfg_long-20261015-021519` | training |
+| energy regressor | `min_energy_adamw_wsd_h7x_xl` | `min_energy_adamw_wsd_h7x_xl-20261015-185731` | training (the first run, `-20261015-031005`, collapsed) |
+| unconditional | `unconditional_5x_ehull01_h3x_xl_lr7p5e-4` | submitted 2026-10-18, PBS 25866146 | training |
+| chemical system | `chemsys_sg_uncond_adanmw_wsd_long` | `chemsys_sg_uncond_adanmw_wsd_long-20261015-044354` | finished, best val 11.24 |
+
+### The xl models can switch their encoder off
+
+The two models without conditioning, the xl unconditional backbone and the xl regressor,
+have learnable LayerNorm gains. At peak lr 1.5e-3 the gradient can drive the last encoder
+layer's output gain to zero. The encoder then passes nothing on, and the heads fit
+marginals: the collapsed regressor predicts the target mean (train MAE 0.6296, exactly
+that of a constant), and the unconditional model sits at val ~35.9. The AdaLN models, the
+CFG backbone and the chemical-system model, have no learnable gain to lose.
+
+- **It is not the data.** Token tensors of every structure the fix left unchanged are
+  bit-identical between the upstream and fixed slices. The unchanged xl unconditional config
+  collapsed on the upstream slice too, with current code (`-20261018-034428`). Its
+  2026-09-30 run at `5ecb25e` survived, but sat at val 27.4 at epoch 1645, against
+  19.1 at half the lr. Whether that run was lucky or the code has changed is not settled.
+- **It is not weight decay.** With LayerNorm gains and biases exempt
+  (`optimisation.optimiser.exclude_norm_and_bias_from_weight_decay`, kept as an opt-in)
+  the run collapsed the same way. Decay only makes a collapse permanent, by driving the
+  unused gains of the other layers to zero.
+- **Half the lr avoids it.** The unconditional backbone reached val 19.12 at epoch 1645
+  at 7.5e-4. The regressor recovered on a plain `--fresh` restart at 1.5e-3, so it keeps
+  its config, but is exposed to the same failure.
+- **It shows within one validation period**, and a run in it never recovers. Check
+  val at the first validation point of any new xl run: about 35.9 (unconditional) or
+  0.63 (regressor) means collapsed.
+
+### Protocol evaluation
+
+Run with `scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh`, protocol defaults
+(1,000 genes, `orb_conserv_inf`), and the fixed dataset as the novelty reference:
+
+```bash
+bash scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh <run-id> \
+    --lemat-cif-csv data/lemat_bulk_fixed_fmax1_stress -- --reference-cache cache/lemat_bulk_fixed_fmax1_stress
+```
+
+The reference's `gene_fingerprints.pkl.gz` (4,823,711 fingerprints) was built on zeus
+in 8 min and synced to all three machines; jobs cannot write the read-only aspire2a store.
+
+| per sampled gene | `chemsys_sg_uncond_adanmw_wsd_long-20261015-044354` | upstream `chemsys_sg_uncond_adanmw_wsd-20260925-030937` |
+| --- | ---: | ---: |
+| free: MetaSUN | 0.363 | 0.353 |
+| free: metastable | 0.472 | 0.456 |
+| free: SUN | 0.007 | 0.005 |
+| fixed symmetry: MetaSUN | 0.235 | 0.220 |
+| gene novelty | 0.801 | 0.806 |
+| valid and unique structures | 0.925 | 0.931 |
+
+Every difference is within about one binomial standard error (0.015 at 1,000 genes), so
+the 15x longer horizon bought no measurable protocol gain. The two are judged against
+different novelty references: the fixed dataset and the upstream one, 512 rows apart.
 
 ## What is on disk
 
