@@ -1,15 +1,21 @@
-# DIAGNOSTIC. unconditional_5x_ehull01_h3x_xl.yaml (this directory) at half the peak
-# learning rate, 7.5e-4 instead of 1.5e-3, and nothing else changed.
+# SOTA unconditional backbone for LeMat-Bulk-fixed: unconditional_5x_ehull01_h3x_xl.yaml
+# (this directory) at half the peak learning rate, 7.5e-4 instead of 1.5e-3, and nothing
+# else changed. Train on lemat_bulk_fixed_fmax1_stress_ehull01.
 #
-# Three runs of the xl unconditional config on lemat_bulk_fixed_fmax1_stress_ehull01
-# collapsed in their first validation period: val flat at ~35.9 against the healthy
-# upstream run's 27.4 at epoch 1645. The last encoder layer's output LayerNorm gain is
-# driven to ~0 by the gradient (see unconditional_5x_ehull01_h3x_xl_nodecay_norm.yaml).
-# This run checks whether the collapse is a peak-lr instability. Run it as a 2 h aidev job:
-# the collapse shows by epoch 1645.
+# Why. At 1.5e-3 the xl unconditional model collapses during its first validation period
+# and stays collapsed: val ~35.9 at epoch 1645. The healthy upstream run had 27.4 there.
+#   - Three runs on the fixed slice collapsed: -20261015-035323, -20261015-185740, and
+#     _nodecay_norm-20261016-222732 with LayerNorm gains and biases exempt from decay.
+#   - The unchanged config also collapsed on the upstream slice with current code
+#     (-20261018-034428), so the data is not the cause. The 2026-09-30 run at 5ecb25e
+#     survived it, slowly. Whether that was luck or a code change is not settled.
+#   - The mechanism: the last encoder layer's output LayerNorm gain is driven to ~0 by the
+#     gradient (0.005 with decay off), so the encoder passes nothing to the heads.
+#   - At 7.5e-4 the 2 h check _lr7p5e-4-20261017-175133 reached val 19.12 at epoch 1645,
+#     better than the healthy upstream run managed in its first ~150k epochs.
 #
-# SOTA unconditional backbone for LeMat-Bulk-fixed. Train on
-# lemat_bulk_fixed_fmax1_stress_ehull01.
+# This file was first committed as that 2 h check; the production run is the same file,
+# submitted with --fresh on 2026-10-18 (PBS 25866146). The source file's header follows.
 #
 # ../lemat/der/unconditional_5x_ehull01_h3x_xl.yaml, the config of
 # unconditional_5x_ehull01_h3x_xl-20260930-033512 (val 18.14). That run was already one

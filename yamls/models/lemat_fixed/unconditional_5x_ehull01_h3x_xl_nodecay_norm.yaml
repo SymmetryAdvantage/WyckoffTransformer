@@ -1,3 +1,9 @@
+# RESULT 2026-10-17: it did not help. unconditional_5x_ehull01_h3x_xl_nodecay_norm-20261016-222732
+# collapsed to the same val ~35.9; layers 0-2 kept their gains near 1, but the last layer's
+# output gain still went to 0.005 by gradient. The collapse is a learning-rate instability,
+# not a weight-decay one; unconditional_5x_ehull01_h3x_xl_lr7p5e-4.yaml is the fix. Kept
+# as the record of the experiment.
+#
 # unconditional_5x_ehull01_h3x_xl.yaml (this directory) with LayerNorm gains and biases
 # excluded from weight decay, and nothing else changed. Train on
 # lemat_bulk_fixed_fmax1_stress_ehull01.
