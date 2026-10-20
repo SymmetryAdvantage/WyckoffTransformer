@@ -7,10 +7,18 @@ fall below the hull at its composition.
 
     wyformer-gene-screen genes.json.gz --regressor-path runs/gene_energy \\
         --reference data/lemat-bulk/lemat_pbe_ehull.csv.gz --out screened.csv
+
+Without a checkout's data store, both the regressor and the hull come from the Hub,
+and ``--out-genes`` writes the kept genes for ``wyformer-cryspr``:
+
+    wyformer-gene-screen genes.json.gz --regressor-hf-model SymmetryAdvantage/WyFormer-LeMat-Energy \\
+        --hf-reference kazeevn/LeMat-Bulk-fixed --top 100 --out-genes top.json.gz
 """
 from __future__ import annotations
 
 import argparse
+import gzip
+import json
 import logging
 from pathlib import Path
 from typing import Sequence
@@ -23,6 +31,7 @@ from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT
 from wyckoff_transformer.cascade.dataset import TargetClass
 from wyckoff_transformer.cli.csp import load_trainer
 from wyckoff_transformer.evaluation.protocol import GeneFingerprinter, load_genes
+from wyckoff_transformer.formula_energy import hf_reference
 from wyckoff_transformer.formula_energy.screen import HullLookup
 from wyckoff_transformer.gene_energy import (
     GENE_MIN_FORMATION_ENERGY_COLUMN,
@@ -92,11 +101,43 @@ def check_regressor_reference(regressor, reference_path: Path,
     Returns:
         The differences, when ``allow_incompatible_energy`` let them through.
     """
+    return check_regressor_field(
+        regressor, file_formation_energy_field(reference_path),
+        f"hull reference {reference_path}", allow_incompatible_energy)
+
+
+def check_regressor_field(regressor, reference_field, reference_label: str,
+                          allow_incompatible_energy: bool = False) -> list[str]:
+    """:func:`check_regressor_reference` for a hull whose field is already known."""
     return check_compatible(
-        file_formation_energy_field(reference_path),
+        reference_field,
         target_field(getattr(regressor, "field_provenance", None) or {}),
-        f"hull reference {reference_path} vs the regressor's target",
+        f"{reference_label} vs the regressor's target",
         allow=allow_incompatible_energy)
+
+
+def drop_repeated_genes(scored: pd.DataFrame, genes: Sequence[dict]) -> pd.DataFrame:
+    """Keep the first row of every gene, by the augmentation-invariant fingerprint.
+
+    *scored* is in score order, so the first row is the best-scored copy.  A gene
+    that cannot be fingerprinted is kept: it has no score and sorts last anyway.
+    """
+    fingerprinter = GeneFingerprinter()
+    keys = []
+    for index in scored.index:
+        try:
+            keys.append(fingerprinter.fingerprint(genes[index]))
+        except (KeyError, TypeError, ValueError):
+            keys.append(("unfingerprintable", index))
+    return scored[~pd.Series(keys, index=scored.index).duplicated().to_numpy()]
+
+
+def write_genes(genes: Sequence[dict], path: Path) -> None:
+    """Write *genes* as the JSON list ``wyformer-cryspr`` reads, gzipped for ``.gz``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    opener = gzip.open if path.suffix == ".gz" else open
+    with opener(path, "wt", encoding="utf-8") as handle:
+        json.dump(list(genes), handle)
 
 
 def validate_regressor(regressor) -> None:
@@ -220,14 +261,27 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--regressor-path", type=Path, help="Directory holding the trained critic.")
     source.add_argument("--regressor-wandb-run", type=str, help="W&B run holding the critic.")
+    source.add_argument("--regressor-hf-model", type=str,
+                        help="HuggingFace repo ID of the critic.")
     parser.add_argument("--wandb-entity", type=str, default=WANDB_ENTITY)
     parser.add_argument("--wandb-project", type=str, default=WANDB_PROJECT)
-    parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE,
-                        help="LeMat-Bulk PBE CSV defining the formation-energy hull.")
+    hull = parser.add_mutually_exclusive_group()
+    hull.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE,
+                      help="LeMat-Bulk PBE CSV defining the formation-energy hull.")
+    hull.add_argument("--hf-reference", type=str, default=None, metavar="REPO[@REVISION]",
+                      help="Build the hull from a LeMat-Bulk dataset on the HuggingFace Hub "
+                           f"instead, e.g. {hf_reference.DEFAULT_REPO}. The table is cached "
+                           f"in {hf_reference.DEFAULT_CACHE_DIR}.")
     parser.add_argument("--out", type=Path, default=Path("gene_screen.csv"))
+    parser.add_argument("--out-genes", type=Path, default=None,
+                        help="Also write the genes of the rows in --out, in its order, as "
+                             "a JSON(.gz) list wyformer-cryspr reads.")
     parser.add_argument("--top", type=int, default=None, help="Keep this many best scores.")
     parser.add_argument("--below-hull-only", action="store_true",
                         help="Write only genes whose predicted energy is below the hull.")
+    parser.add_argument("--unique", action="store_true",
+                        help="Write each gene once, before --top: a generator repeats its "
+                             "likeliest genes, and a repeat is a wasted relaxation.")
     parser.add_argument("--augmentation-samples", type=int, default=1)
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"))
     parser.add_argument("--allow-incompatible-energy", action="store_true",
@@ -238,26 +292,42 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO)
+    # Building a Hub reference makes hundreds of range requests, each logged at INFO.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     regressor = load_trainer(
         device=args.device,
         model_path=args.regressor_path,
         wandb_run=args.regressor_wandb_run,
+        hf_model=args.regressor_hf_model,
         wandb_entity=args.wandb_entity,
         wandb_project=args.wandb_project,
     )
-    check_regressor_reference(regressor, args.reference, args.allow_incompatible_energy)
+    if args.hf_reference is not None:
+        repo, revision = hf_reference.parse_spec(args.hf_reference)
+        reference = hf_reference.load_hf_reference(repo, revision)
+        check_regressor_field(
+            regressor, hf_reference.reference_field(repo, revision),
+            f"hull reference {repo}@{revision}", args.allow_incompatible_energy)
+    else:
+        check_regressor_reference(regressor, args.reference, args.allow_incompatible_energy)
+        reference = load_reference(args.reference)
+    genes = load_genes(args.genes)
     scored = score_genes(
-        load_genes(args.genes),
+        genes,
         regressor,
-        load_reference(args.reference),
+        reference,
         augmentation_samples=args.augmentation_samples,
     )
     if args.below_hull_only:
         scored = scored[scored["predicted_below_hull"].eq(True)]
+    if args.unique:
+        scored = drop_repeated_genes(scored, genes)
     if args.top is not None:
         scored = scored.head(args.top)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     scored.to_csv(args.out)
+    if args.out_genes is not None:
+        write_genes([genes[index] for index in scored.index], args.out_genes)
     predicted = scored["predicted_below_hull"].eq(True).sum()
     print(f"{predicted} of {len(scored)} written genes are predicted below the hull: {args.out}")
 
