@@ -43,6 +43,7 @@ scarce resource shared between the elements.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import re
 from collections import Counter
@@ -71,6 +72,9 @@ DEFAULT_MAX_Z = 8
 #: and reports "feasible". Erring towards feasible only lets a doomed sequence run to
 #: the end, where it is dropped; erring the other way would forbid legal structures.
 FEASIBILITY_NODE_BUDGET = 4096
+#: Entries a `SpaceGroupCombinatorics` remembers of its fixed-position search before it
+#: starts over; a decoder kept for a whole training run must not grow without bound.
+SEARCH_CACHE_SIZE = 200_000
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,9 @@ class SpaceGroupCombinatorics:
         # on fixed positions is dropped, so failing this prunes soundly.
         all_mults = sorted({p.multiplicity for p in positions})
         self.reachable_any, self.min_sites_any = _unbounded_reachability(all_mults, max_atoms)
+        # The fixed-position search answers the same question many times over while a
+        # decoder runs; its answer depends only on the key, so it is remembered.
+        self._search_cache: Dict[tuple, bool] = {}
 
     @property
     def smallest_multiplicity(self) -> int:
@@ -199,8 +206,13 @@ class SpaceGroupCombinatorics:
             return True
 
         # Otherwise at least one element needs a fixed position, and they are scarce.
-        available = [p for p in self.fixed if (p.ss_token, p.enum_token) not in used_fixed]
-        return self._search_fixed(tuple(outstanding), available, slots_left)
+        key = (tuple(outstanding), used_fixed, slots_left)
+        if key not in self._search_cache:
+            if len(self._search_cache) >= SEARCH_CACHE_SIZE:
+                self._search_cache.clear()
+            available = [p for p in self.fixed if (p.ss_token, p.enum_token) not in used_fixed]
+            self._search_cache[key] = self._search_fixed(tuple(outstanding), available, slots_left)
+        return self._search_cache[key]
 
     def feasible_z(
         self,
@@ -731,9 +743,10 @@ class ConstrainedDecoder:
         Slots beyond a state's placed sites stay at MASK, which is how the model
         is told which position it is being asked to predict.
         """
+        # Filled on the CPU and moved once: element-wise writes into a device tensor
+        # cost one tiny kernel each, which dominated decoding on a GPU.
         tensors = [
-            torch.full((len(states), width), int(self.masks[name]),
-                       dtype=torch.int64, device=self.device)
+            torch.full((len(states), width), int(self.masks[name]), dtype=torch.int64)
             for name in self.cascade_order]
         element_index = self.field_index["elements"]
         ss_index = self.field_index["site_symmetries"]
@@ -747,7 +760,7 @@ class ConstrainedDecoder:
                 if multiplicity_index is not None:
                     tensors[multiplicity_index][row, site] = \
                         combinatorics.by_key[(ss, enum)].multiplicity
-        return tensors
+        return [tensor.to(self.device) for tensor in tensors]
 
     @torch.no_grad()
     def _log_probs(
@@ -1151,6 +1164,15 @@ def rank_by_predicted_minimum(
     return ranked
 
 
+@functools.cache
+def _wp_index() -> Dict:
+    """`tokenization.get_wp_index`, built once: it constructs all 230 space groups, which
+    cost more than the decoding when it ran on every call."""
+    from wyckoff_transformer.tokenization import get_wp_index  # noqa: PLC0415
+
+    return get_wp_index()
+
+
 def candidates_to_pyxtal(
     candidates: Sequence[CSPCandidate],
     trainer,
@@ -1167,7 +1189,7 @@ def candidates_to_pyxtal(
     """
     from functools import partial  # noqa: PLC0415
 
-    from wyckoff_transformer.tokenization import get_wp_index, load_wyckoff_mappings  # noqa: PLC0415
+    from wyckoff_transformer.tokenization import load_wyckoff_mappings  # noqa: PLC0415
 
     if not candidates:
         return []
@@ -1182,6 +1204,6 @@ def candidates_to_pyxtal(
         letter_from_ss_enum_idx=trainer.tokenisers["sites_enumeration"].get_letter_from_ss_enum_idx(
             trainer.run_path),
         ss_from_letter=load_wyckoff_mappings(trainer.run_path).ss_from_letter,
-        wp_index=get_wp_index())
+        wp_index=_wp_index())
     starts = data["start"].cpu()
     return [to_pyxtal(starts[row], stacked[row]) for row in range(len(candidates))]
