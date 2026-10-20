@@ -11,16 +11,22 @@ the stoichiometry -- see
 
 Three pieces:
 
-1. a backbone conditioned on the composition and on how far the structure sits
-   above the best polymorph of that composition,
+1. a backbone conditioned on the formula, optionally also on an energy field
+   whose meaning is recorded in the dataset manifest,
 2. a regressor that predicts `min(E | gene)` from a Wyckoff gene, fitted with a
    censored likelihood,
 3. decoding that respects the target composition exactly, ranked by (2).
 
 Piece (2) is `wyckoff_transformer.censored`, (3) is `wyckoff_transformer.csp`
-and the `wyformer-csp` CLI. Piece (1) needs a conditioned backbone to be
-trained; the label it should be trained on is computed by
-`censored.gene_level_polymorph_delta`, and nothing has been trained yet.
+and the `wyformer-csp` CLI. Formula-conditioned backbone training was launched
+on Hera on 2026-10-16: formula only, row formation energy conditioned, and CFG
+variants on MP-20 and LeMat-Bulk-fixed. The configurations, W&B reference runs
+and execution order are in `yamls/campaigns/csp_formula_hera_20261016.yaml`;
+see [Hera's campaign notes](platforms/hera/environment.md#formula-csp-campaign-2026-10-16).
+All six training runs finished on 2026-10-20. A completed CSP reconstruction
+quality comparison is still needed.
+`censored.gene_level_polymorph_delta` supplies an alternative polymorph-relative
+energy label, which this formation-energy campaign does not use.
 
 ## Constraint and conditioning are different things
 
@@ -41,18 +47,20 @@ the unconditional prior pulls hardest against the constraint.
 over the element vocabulary, which joins whatever scalar the model is already
 conditioned on and reaches every encoder layer through the same AdaLN path
 `energy_above_hull` takes. `wyformer-csp` builds the same vector from
-`--formula` and `--z`, so training and sampling see one representation, and it
-says on startup which of the two regimes the backbone is in.
+`--formula` (and `--z` when cell size is an input), so training and sampling see
+one representation. It says on startup which of the two regimes the backbone is in.
 
 The vector separates two things worth separating. **What** the compound is made
 of, as fractions summing to one: this is z-invariant, so BaTiO3 and Ba2Ti2O6
 give the same chemistry and the model does not have to learn them as unrelated
-inputs. And **how much** of it is in the cell, as `log1p` of the total atom
-count -- not chemistry, but it bounds how many Wyckoff positions the gene needs,
-and on a log scale a 4-atom cell and a 200-atom one are a few units apart rather
-than two orders of magnitude. Together they are a bijection with the raw counts,
-so nothing is lost, and both channels land where an `nn.Linear` into AdaLN can
-use them.
+inputs. Optionally, **how much** of it is in the cell, as `log1p` of the total atom
+count. This is enabled by `condition_on_cell_size: true`; it bounds how many
+Wyckoff positions the gene needs, and on a log scale a 4-atom cell and a
+200-atom one are a few units apart rather than two orders of magnitude.
+Together they are a bijection with the raw counts, so nothing is lost, and
+both channels land where an `nn.Linear` into AdaLN can use them. For CSP, use
+`condition_on_cell_size: false` so decoding chooses the number of formula
+units; the element fractions still identify the reduced formula.
 
 `yamls/models/lemat_bulk_ehull/ehull_composition.yaml` is
 `ehull_schedule_free.yaml` plus `composition_conditioning: true`, and minus its

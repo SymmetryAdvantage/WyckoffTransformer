@@ -85,3 +85,107 @@ Inspect the resolved locations from the checkout root:
 ```bash
 .venv/bin/python -m wyckoff_transformer.paths
 ```
+
+## Formula CSP campaign (2026-10-16)
+
+The campaign at commit `b25687e9a1512891ef7192dd5e6a5f48aaafaa7c`, with
+the new configurations and launcher archived in its W&B selection artifact, is
+[csp-formula-hera-20261016](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016).
+Its manifest is `yamls/campaigns/csp_formula_hera_20261016.yaml`. It queues three
+independent MP-20 models, then three independent LeMat-Bulk-fixed models:
+formula only, formula plus row formation energy, and the latter with CFG
+(`condition_dropout: 0.1`). Both GPUs participate in each run through DDP.
+All six finished by 2026-10-20. Their best model artifacts and resume checkpoints
+were verified in W&B. CSP reconstruction accuracy has not yet been measured.
+
+The recipes were selected from 328 W&B generator runs. None of those runs used
+formula conditioning, so this campaign adapts compatible recipes rather than
+reproducing a prior CSP result. The manifest records the source runs, their
+commits and the changes. All models use embeddings 16/16/8, three encoder
+layers, a 128-wide feed-forward layer, AdamW at peak learning rate 0.003 and
+warmup-stable-decay. MP-20 retains dropout 0.2; LeMat uses 0. The global training
+batches are 27,136 for MP-20 and 50,000 for LeMat. The MP-20 horizon is one million
+epochs (one optimiser step each); LeMat runs for 20,000 epochs with multiple
+steps per epoch.
+
+All six use `composition_conditioning: true`,
+`condition_on_cell_size: false`, `predict_start: true`, and corrected paired
+Wyckoff augmentation. The energy models use `formation_energy_per_atom` with
+an identity transform. MP-20 and LeMat retain their separate manifest energy
+definitions. The formula-only LeMat model uses
+`lemat_bulk_fixed_fmax1_stress_ehull01`; the energy models use its unsliced
+parent. Train/validation/test splits stay separate. Each model starts from
+random weights.
+
+MP-20 formation energies include MaterialsProject2020Compatibility corrections;
+LeMat uses its own uncorrected PBE reference. Those definitions are recorded in
+each model's `field_provenance.json`. CFG drops the entire formula-plus-energy
+conditioning vector on 10% of training examples and adds a null indicator.
+
+`scripts/platforms/hera/train_csp_campaign.py` owns the sequential queue and
+resumes failed jobs from local or W&B checkpoints. It refuses to restart an
+existing run without accessible resume state. Its W&B summary records each
+job's state, and its files include the training logs. Start it from this
+checkout with `.venv/bin/python`, supplying `--evidence` with the W&B run
+snapshot archived as `wandb_runs.json` in the campaign's selection artifact.
+The launcher takes a file lock under the resolved runs store to prevent two
+copies from owning the queue.
+
+On 2026-10-18, all three MP-20 runs had completed their one-million-epoch
+horizons at the commit above. Their best validation NLLs, as recorded in W&B,
+were:
+
+| MP-20 variant | W&B run | Best validation NLL | Final validation NLL | Best epoch | Artifact version |
+| --- | --- | ---: | ---: | ---: | --- |
+| Formula only | [mp20_unconditional](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-mp20_unconditional) | 13.541571 | 21.421669 | 8000 | v6 |
+| Formula + formation energy | [mp20_formation_energy](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-mp20_formation_energy) | 13.377284 | 24.592396 | 12000 | v8 |
+| Formula + formation energy, CFG | [mp20_formation_energy_cfg](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-mp20_formation_energy_cfg) | 13.114642 | 22.639149 | 767000 | v7 |
+
+The final MP-20 validation losses are substantially worse than the selected
+losses. The formula-only and formation-energy models reached their best
+checkpoints early; CFG's best checkpoint came much later. Use the selected
+best weights for inference. `last_checkpoint.pt` contains the final resume state
+and does not identify the best validation weights.
+
+The first LeMat attempt failed before training: its configured 50,000-row
+validation batch exceeded the ehull01 split's 31,099 rows. The test split has
+31,327 rows. On 2026-10-18 those two batch sizes were corrected, the failed
+run and directory were preserved, and the campaign restarted that job as
+[lemat_fixed_unconditional-r1](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-lemat_fixed_unconditional-r1).
+The manifest records the replacement run explicitly; the launcher now checks
+every configured batch against its cached split length before starting the
+queue. The repair and updated configurations are archived in the campaign's
+next selection-artifact version.
+
+On 2026-10-20 the campaign and all six successful training runs finished.
+Each LeMat run completed 20,000 epochs at the commit above, with the archived
+configurations and the evaluation-batch repair described here. The final LeMat
+best validation NLLs were:
+
+| LeMat variant | W&B run | Best validation NLL | Best epoch | Artifact version |
+| --- | --- | ---: | ---: | --- |
+| Formula only, ehull01 | [lemat_fixed_unconditional-r1](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-lemat_fixed_unconditional-r1) | 8.729337 | 19999 | v26 |
+| Formula + formation energy | [lemat_fixed_formation_energy](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-lemat_fixed_formation_energy) | 7.300169 | 19999 | v24 |
+| Formula + formation energy, CFG | [lemat_fixed_formation_energy_cfg](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/csp-formula-hera-20261016-lemat_fixed_formation_energy_cfg) | 7.378689 | 19999 | v22 |
+
+Epochs in both tables use the zero-based W&B labels. Each selected checkpoint
+is `symmetry-advantage/WyckoffTransformer/best_model_<run-id>:<version>`;
+the run links above give the full run ids. All three LeMat models achieved
+their best validation loss at the final epoch. The formula-only model and
+the energy models use different dataset populations, so their NLL difference
+does not isolate the effect of energy conditioning.
+
+Training completion does not establish CSP reconstruction accuracy; that
+evaluation has not been run. The finished campaign's summary was reconciled
+against the child runs because some job labels retained their pre-restart
+states. The original failed LeMat attempt remains recorded separately.
+
+The caches copied from Zeus already contain the row formation energies.
+`scripts/prepare_formation_energy_token_cache.py <dataset>` builds the sibling
+`der_tokenizer_v1_formation_energy` tensors without changing the parent cache
+or token ids. It checks row alignment against space groups, hull distances and
+gene-minimum energies, records `provenance(...)`, and refuses overwrites.
+Both MP-20 and the unsliced LeMat cache were prepared on 2026-10-16; every parent
+tensor was checked for exact preservation. The MP-20 tokeniser/tensor
+directories arrived without owner write permission; it was enabled to add the
+sibling and restored afterward.

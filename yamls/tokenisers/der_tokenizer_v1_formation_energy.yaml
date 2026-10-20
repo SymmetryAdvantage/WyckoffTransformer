@@ -1,0 +1,40 @@
+# der_tokenizer_v1 plus the row formation energy, in eV/atom.
+# The field is defined separately for every dataset in yamls/datasets/.
+# Keep the existing tokeniser immutable; this sibling preserves its token ids.
+name: der_tokenizer_v1_formation_energy
+dtype: int16
+token_fields:
+  pure_categorical:
+  - site_symmetries
+  - elements
+  - sites_enumeration
+  engineered:
+    multiplicity:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+      - sites_enumeration
+    site_symmetry_ops_id:
+      type: map
+      inputs:
+      - spacegroup_number
+      - site_symmetries
+  augmented_engineered:
+    site_symmetry_ops_id:
+      augmented_input: site_symmetries
+augmented_token_fields:
+- sites_enumeration
+- site_symmetries
+sequence_fields:
+  space_group:
+  - spacegroup_number
+  no_processing:
+  - energy_above_hull
+  - delta_e_polymorph
+  - max_force
+  - gene_min_formation_energy_per_atom
+  - band_gap
+  - formation_energy_per_atom
+  counters:
+    composition: elements

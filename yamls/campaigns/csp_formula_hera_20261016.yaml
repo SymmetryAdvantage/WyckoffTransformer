@@ -1,0 +1,66 @@
+campaign_id: csp-formula-hera-20261016
+date: '2026-10-16'
+code_commit: b25687e9a1512891ef7192dd5e6a5f48aaafaa7c
+gpu_ids: 0,1
+world_size: 2
+repairs:
+- date: '2026-10-18'
+  reason: The ehull01 validation/test splits have 31099/31327 rows, below the
+    originally configured 50000. Set their batch sizes to the actual split lengths.
+  failed_run: csp-formula-hera-20261016-lemat_fixed_unconditional
+  replacement_run: csp-formula-hera-20261016-lemat_fixed_unconditional-r1
+selection:
+  queried_generator_runs: 328
+  formula_conditioned_precedents: 0
+  criterion: Best compatible corrected-augmentation generator recipes within dataset
+    and conditioning family; validation losses across different objectives, historical
+    normalisations and datasets are not ranked together. LeMat energy reference used
+    gene-minimum labels and obsolete augmentation; only its architecture and optimisation
+    are reused.
+  adaptations:
+  - composition_conditioning=true, condition_on_cell_size=false
+  - predict_start=true
+  - row formation_energy_per_atom, identity transform
+  - all splits preserved; independent models from random initialisation
+  - standard repository CFG drops the full conditioning vector at probability 0.1
+  - CSP models skip de novo post-training generation; use wyformer-csp for formula-constrained
+    evaluation
+jobs:
+- name: mp20_unconditional
+  dataset: mp_20
+  config: yamls/models/csp/mp20/unconditional_adamw_wsd.yaml
+  reference_run: uncond_adamw_wsd-20260925-035205
+  reference_commit: ca83957948daceb7e6e91ca9078cf979bafcaeb3
+  reference_best_val_nll: 17.313743591308594
+- name: mp20_formation_energy
+  dataset: mp_20
+  config: yamls/models/csp/mp20/formation_energy_adamw_wsd.yaml
+  reference_run: uncond_adamw_wsd-20260925-035205
+  reference_commit: ca83957948daceb7e6e91ca9078cf979bafcaeb3
+  reference_best_val_nll: 17.313743591308594
+- name: mp20_formation_energy_cfg
+  dataset: mp_20
+  config: yamls/models/csp/mp20/formation_energy_cfg_adamw_wsd.yaml
+  reference_run: ehull_adamw_wsd_cfg-20260925-035702
+  reference_commit: ca83957948daceb7e6e91ca9078cf979bafcaeb3
+  reference_best_val_nll: 17.183263778686523
+- name: lemat_fixed_unconditional
+  run_id: csp-formula-hera-20261016-lemat_fixed_unconditional-r1
+  supersedes_run: csp-formula-hera-20261016-lemat_fixed_unconditional
+  dataset: lemat_bulk_fixed_fmax1_stress_ehull01
+  config: yamls/models/csp/lemat_fixed/unconditional_adamw_wsd.yaml
+  reference_run: chemsys_sg_uncond_adanmw_wsd-20260925-030937
+  reference_commit: 5b07aef44cba6b76d43358bfd3845c90a80ef9f4
+  reference_best_val_nll: 11.264391899108888
+- name: lemat_fixed_formation_energy
+  dataset: lemat_bulk_fixed_fmax1_stress
+  config: yamls/models/csp/lemat_fixed/formation_energy_adamw_wsd.yaml
+  reference_run: chemsys_e_form_sg_adamw_wsd-20260921-220630
+  reference_commit: df3a43e67fc24909b40c9f0143e1d69c14c00d69
+  reference_best_val_nll: 8.956690788269043
+- name: lemat_fixed_formation_energy_cfg
+  dataset: lemat_bulk_fixed_fmax1_stress
+  config: yamls/models/csp/lemat_fixed/formation_energy_cfg_adamw_wsd.yaml
+  reference_run: chemsys_e_hull_sg_adamw_wsd_cfg-20260925-014657
+  reference_commit: 99437f53321b9b0af6d1388c5aef7bb572a8a515
+  reference_best_val_nll: 9.565709114074709
