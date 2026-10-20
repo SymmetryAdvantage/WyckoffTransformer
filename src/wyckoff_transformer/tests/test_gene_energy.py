@@ -156,3 +156,30 @@ class TestGeneScreen(unittest.TestCase):
         self.assertTrue(scored.loc[0, "predicted_below_hull"])
         self.assertAlmostEqual(scored.loc[1, "score"], 0.2)
         self.assertFalse(scored.loc[1, "predicted_below_hull"])
+
+    def test_repeated_genes_keep_their_best_scored_row(self):
+        # Two orders of the same sites are one gene; the screen's score order decides
+        # which row survives, so the input order of the gene list must not.
+        nacl = {"group": 225, "species": ["Na", "Cl"], "numIons": [4, 4],
+                "sites": [["4a"], ["4b"]]}
+        clna = {"group": 225, "species": ["Cl", "Na"], "numIons": [4, 4],
+                "sites": [["4b"], ["4a"]]}
+        kcl = {"group": 225, "species": ["K", "Cl"], "numIons": [4, 4],
+               "sites": [["4a"], ["4b"]]}
+        scored = pd.DataFrame({"score": [-0.3, -0.2, 0.1]}, index=[2, 0, 1])
+        kept = gene_screen.drop_repeated_genes(scored, [nacl, kcl, clna])
+        self.assertEqual(list(kept.index), [2, 1])
+
+    def test_written_genes_round_trip(self):
+        import gzip
+        import json
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+
+        genes = [{"group": 225, "species": ["Na"], "numIons": [4], "sites": [["4a"]]}]
+        with TemporaryDirectory() as tmp:
+            for name, opener in (("genes.json", open), ("genes.json.gz", gzip.open)):
+                path = Path(tmp) / "out" / name
+                gene_screen.write_genes(genes, path)
+                with opener(path, "rt", encoding="utf-8") as handle:
+                    self.assertEqual(json.load(handle), genes)

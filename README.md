@@ -20,6 +20,40 @@ Using a local model directory (must contain `best_model_params.pt`, `config.yaml
 wyformer-generate <output-file.json.gz> --model-path runs/<run-id>
 ```
 
+### MLIP-relaxed structures in a chemical system
+This pipeline turns a chemical system into relaxed 3D structures in three steps:
+1. [WyFormer-LeMat-Chemsys](https://huggingface.co/SymmetryAdvantage/WyFormer-LeMat-Chemsys)
+   generates Wyckoff genes that contain only the requested elements.
+2. [WyFormer-LeMat-Energy](https://huggingface.co/SymmetryAdvantage/WyFormer-LeMat-Energy)
+   predicts each gene's formation energy. The genes are ranked by their distance to the PBE
+   convex hull of [LeMat-Bulk-fixed](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed).
+3. The best distinct genes are relaxed with a MACE potential.
+
+```bash
+pip install "wyckoff-transformer[relax]"
+wyformer-generate batio_genes.json.gz --hf-model SymmetryAdvantage/WyFormer-LeMat-Chemsys \
+    --chemical-system Ba-Ti-O --initial-n-samples 1100 --firm-n-samples 1000
+wyformer-gene-screen batio_genes.json.gz --regressor-hf-model SymmetryAdvantage/WyFormer-LeMat-Energy \
+    --hf-reference kazeevn/LeMat-Bulk-fixed --allow-incompatible-energy \
+    --unique --top 100 --out batio_screen.csv --out-genes batio_top100.json.gz
+wyformer-cryspr batio_top100.json.gz --mlip MACE-MPA-0-medium --output-dir batio_relaxed --workers 8
+```
+- **Devices:** `--device cuda` speeds up the first two steps. They take about a minute on a
+  GPU for 1,000 genes.
+- **Hull reference:** the first `--hf-reference` run builds the hull from about 170 MB of
+  the dataset. That takes about two minutes, and the result is cached in
+  `~/.cache/wyckoff_transformer/hull_references/`.
+- **Why `--allow-incompatible-energy`:** the regressor was trained on upstream LeMat-Bulk
+  energies, and the hull comes from the fixed release. Without the flag,
+  `wyformer-gene-screen` refuses to compare them. A retrain on LeMat-Bulk-fixed will replace
+  it, and the flag will no longer be needed.
+- **Outputs:** `batio_screen.csv` holds the predicted formation energy, the hull energy and
+  their difference (`score`) for each kept gene. The relaxed structures and the energy of
+  each are under `batio_relaxed/`, laid out as in [CrySPR + MACE](#cryspr--mace).
+- **Chemical system:** `--chemical-system` asks for compounds that contain every listed
+  element. See [chemical-system mode](docs/chemical_system_mode.md) for what that means
+  for subsystems such as TiO2.
+
 See this [repository](https://github.com/SymmetryAdvantage/WyFormer-inference-demo) for a demo of standalone inference using the PyPI package as a library.
 
 ## WyFormer Generated Datasets

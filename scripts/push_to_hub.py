@@ -26,6 +26,8 @@ PROVENANCE_FILE = "field_provenance.json"
 # The engineers and frozen tables the model was trained with. Runs that predate models
 # carrying them have none, and load against the package's.
 ENGINEERS_DIRNAME = "engineers"
+# The model card, if the directory has one; Hub repos show it as their front page.
+CARD_FILE = "README.md"
 
 
 def download_wandb_artifacts(run_path: str, target_dir: Path) -> None:
@@ -95,7 +97,8 @@ def push_model_dir_to_hub(model_dir: Path, repo_id: str) -> None:
         folder_path=str(model_dir),
         repo_id=repo_id,
         repo_type="model",
-        allow_patterns=REQUIRED_FILES + [PROVENANCE_FILE, f"{ENGINEERS_DIRNAME}/*.json"],
+        allow_patterns=REQUIRED_FILES + [
+            PROVENANCE_FILE, f"{ENGINEERS_DIRNAME}/*.json", CARD_FILE],
     )
     print(f"Model pushed to https://huggingface.co/{repo_id}")
 
