@@ -12,7 +12,12 @@ from typing import Optional
 import pandas as pd
 
 from wyckoff_transformer.cryspr.generator import func_run
-from wyckoff_transformer.cryspr.mlips import MLIP_REGISTRY, build_calculator
+from wyckoff_transformer.cryspr.mlips import (
+    MLIP_REGISTRY,
+    _resolve_device,
+    build_calculator,
+    prerelax_mlip_names,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +30,15 @@ _SINGLE_THREAD_ENV_VARS = {
 
 def _build(mlip: Optional[str], model: Optional[str], device: str):
     """Construct the relaxation calculator from either --mlip or --model."""
-    if mlip is not None:
+    if mlip in MLIP_REGISTRY:
         return build_calculator(mlip=mlip, device=device, checkpoint=model)
+    if mlip is not None:
+        # A potential LeMat-Bulk publishes a convex hull for, e.g. ORB v3. Its
+        # checkpoint is pinned to that hull, so the relaxed energies score
+        # against it directly.
+        from wyckoff_transformer.evaluation.hull_mlips import build_hull_calculator
+
+        return build_hull_calculator(mlip, device=_resolve_device(device))
     # Imported lazily: the MACE builder pulls in torch, which is absent from
     # backend environments that do not need it (GRACE runs on TensorFlow).
     from wyckoff_transformer.cryspr.calculator import build_mace_calculator
@@ -117,11 +129,13 @@ def main() -> None:
         "--mlip",
         type=str,
         default=None,
-        choices=sorted(MLIP_REGISTRY),
+        choices=prerelax_mlip_names(),
         help=(
             "Registered foundation MLIP to relax with. Each backend needs its own "
-            "dependency set (see wyckoff_transformer.cryspr.mlips). When omitted, "
-            "--model is interpreted as a MACE model, preserving the original behaviour."
+            "dependency set (see wyckoff_transformer.cryspr.mlips). orb_conserv_inf "
+            "and the other LeMat-Bulk hull names load the checkpoint that hull was "
+            "built with. When omitted, --model is interpreted as a MACE model, "
+            "preserving the original behaviour."
         ),
     )
     parser.add_argument(
@@ -225,6 +239,8 @@ def main() -> None:
 
     if args.mlip is None and args.model is None:
         parser.error("one of --mlip or --model is required")
+    if args.mlip is not None and args.mlip not in MLIP_REGISTRY and args.model is not None:
+        parser.error(f"--mlip {args.mlip} is pinned to its LeMat-Bulk hull; --model cannot override it")
 
     end = args.end if args.end is not None else len(data)
     selected = data[args.start:end]
