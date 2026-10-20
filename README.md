@@ -49,7 +49,8 @@ wyformer-cryspr batio_top100.json.gz --mlip MACE-MPA-0-medium --output-dir batio
   it, and the flag will no longer be needed.
 - **Outputs:** `batio_screen.csv` holds the predicted formation energy, the hull energy and
   their difference (`score`) for each kept gene. The relaxed structures and the energy of
-  each are under `batio_relaxed/`, laid out as in [CrySPR + MACE](#cryspr--mace).
+  each are under `batio_relaxed/`, laid out as in [CrySPR + MACE](#cryspr--mace). A gene
+  that PyXtal cannot place in any trial, usually a large cell, gets an empty row.
 - **Chemical system:** `--chemical-system` asks for compounds that contain every listed
   element. See [chemical-system mode](docs/chemical_system_mode.md) for what that means
   for subsystems such as TiO2.
