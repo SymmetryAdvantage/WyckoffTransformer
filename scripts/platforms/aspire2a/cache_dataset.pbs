@@ -43,8 +43,7 @@ if [ -e "$CACHE_DIR/$DATASET" ]; then
     exit 1
 fi
 
-type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-command -v singularity >/dev/null 2>&1 || module load singularity
+source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
 export SINGULARITYENV_OMP_NUM_THREADS=1
 
 echo "job ${PBS_JOBID:-<manual>} on $(hostname), $(date -Is)"

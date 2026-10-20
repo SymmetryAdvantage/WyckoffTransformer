@@ -197,7 +197,7 @@ submit_mode() {
 
 
     # --- defaults ----------------------------------------------------------
-    local SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
+    local SIF=${SIF:-/home/project/11001786/WyFormer/images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif}
     local QUEUE=ai PROJECT=11001786
     local WALLTIME=23:59:59 NGPUS=1 NCPUS=16 MEM=64gb
     local MAX_ATTEMPTS=8 JOB_BUDGET=
@@ -663,11 +663,8 @@ job_mode() {
     nvidia-smi || true
 
     # --- environment for the container -------------------------------------
-    # The module system is not always initialised in a batch shell, so source it first.
-    if ! command -v singularity >/dev/null 2>&1; then
-        type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-        module load singularity
-    fi
+    # Singularity 4.3.1, the default image and, on old drivers, CUDA forward compatibility.
+    source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
     singularity --version
 
     export REPO_DIR="$REPO" SIF

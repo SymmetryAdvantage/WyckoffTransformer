@@ -1,0 +1,44 @@
+#!/bin/bash
+# ---------------------------------------------------------------------------
+# Pull a Docker image into a SIF, on CPU. Docker Hub gives ASPIRE 2A about 2 MB/s, so a
+# 14 GB PyTorch devel image takes about 2 h, longer than a dev session has left.
+#
+#     qsub -q normal@pbs101 -v REPO=$PWD scripts/platforms/aspire2a/pull_image.pbs
+#     qsub -q normal@pbs101 -v REPO=$PWD,IMAGE=docker://pytorch/pytorch:<tag>,SIF=/path/to/out.sif \
+#          scripts/platforms/aspire2a/pull_image.pbs
+#
+# `normal` is a pbs101 queue. From a login node `-q normal` is enough; a compute
+# node talks to pbs102 by default, which answers `qsub: Unknown queue`.
+#
+# The layer cache is on scratch, so a job killed partway resumes from the layers it
+# finished. It refuses to overwrite an existing SIF. The image goes on project storage
+# by default: the home quota does not have room for a second one.
+#
+# Variables: REPO (required, for singularity_env.sh); IMAGE and SIF (default: the
+# image singularity_env.sh names, from its docker:// source).
+# ---------------------------------------------------------------------------
+#PBS -N wyf_pull
+#PBS -q normal
+#PBS -P 11001786
+#PBS -l select=1:ncpus=4:mem=16gb
+#PBS -l walltime=08:00:00
+#PBS -j oe
+#PBS -o /scratch/users/nus/kna/WyFormer/logs/
+
+set -euo pipefail
+: "${REPO:?qsub -v REPO=<checkout>}"
+source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
+IMAGE=${IMAGE:-docker://pytorch/pytorch:2.14.1-cuda13.2-cudnn9-devel}
+
+[ -e "$SIF" ] && { echo "error: $SIF exists; remove it first" >&2; exit 1; }
+export SINGULARITY_CACHEDIR=/scratch/users/nus/kna/WyFormer/singularity-cache
+export SINGULARITY_TMPDIR=/scratch/users/nus/kna/WyFormer/singularity-tmp
+mkdir -p "$SINGULARITY_CACHEDIR" "$SINGULARITY_TMPDIR" "$(dirname "$SIF")"
+
+echo "job ${PBS_JOBID:-<manual>} on $(hostname), $(date -Is): $IMAGE -> $SIF"
+singularity --version
+# Build to a temporary name and rename, so a half-written SIF is never at $SIF.
+singularity build "$SIF.partial" "$IMAGE"
+mv "$SIF.partial" "$SIF"
+ls -la "$SIF"
+echo "done $(date -Is)"

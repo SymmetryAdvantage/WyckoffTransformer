@@ -81,10 +81,7 @@ run_job_payload() {
     nvidia-smi || true
 
     # Singularity setup
-    if ! command -v singularity >/dev/null 2>&1; then
-        type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-        module load singularity
-    fi
+    source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
 
     # Verify container
     [ -f "$SIF" ] || die "Singularity image not found at $SIF"
@@ -197,7 +194,7 @@ QSUB=/opt/pbs/bin/qsub
 [ -x "$QSUB" ] || QSUB=$(command -v qsub || echo "qsub")
 
 # Default values
-SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
+SIF=${SIF:-/home/project/11001786/WyFormer/images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif}
 QUEUE="ai"
 PROJECT="11001786"
 WALLTIME="23:59:59"

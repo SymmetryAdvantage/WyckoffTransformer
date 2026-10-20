@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_DIR=${REPO_DIR:-$(cd "$SCRIPT_DIR/../../.." && pwd)}
 MAIN_REPO="/home/project/11001786/WyFormer/WyckoffTransformer"
-SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
+SIF=${SIF:-/home/project/11001786/WyFormer/images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif}
 
 # Determine which venv to use: if REPO_DIR has a .venv (directory or symlink), use it;
 # otherwise fall back to the shared venv in the main repository.
@@ -36,11 +36,8 @@ fi
 # through a shell (it otherwise chokes on parentheses in -c snippets).
 export SINGULARITY_NO_EVAL=1
 
-# The module system is not always initialised in a batch shell, so source it first.
-if ! command -v singularity >/dev/null 2>&1; then
-    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-    module load singularity
-fi
+# Singularity 4.3.1, the default image and, on old drivers, CUDA forward compatibility.
+source "$SCRIPT_DIR/singularity_env.sh"
 
 # /scratch and $HOME are bound automatically by ASPIRE 2A Singularity config.
 # /home/project and /data/projects are NOT bound automatically and MUST be explicitly bound

@@ -50,7 +50,6 @@ To run something by hand on a GPU, take a dev node first:
 ```bash
 qsub -I -q ai -P 11001786 -l select=1:ngpus=1:ncpus=16:mem=110gb -l walltime=02:00:00
 cd /home/project/11001786/WyFormer/WyckoffTransformer
-module load singularity
 bash scripts/platforms/aspire2a/run_in_singularity.sh python -c "import torch; print(torch.cuda.is_available())"
 ```
 
@@ -100,7 +99,8 @@ regardless of what the node holds. The AI queues default to
 | `/scratch/users/nus/kna/WyFormer/runs` | Run working outputs (`WYFORMER_RUNS`) |
 | `/scratch/users/nus/kna/WyFormer` | W&B local working directory (`WANDB_DIR`) |
 | `/scratch/users/nus/kna/WyFormer/logs` | PBS output of every launcher |
-| `~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif` | The base image, 12 GB |
+| `/home/project/11001786/WyFormer/images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif` | The base image, on project storage (home has no room for it) |
+| `~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif` | The previous image, 12 GB on the home quota; remove once nothing runs on it |
 | `~/.cache/cached_path/` | ORB checkpoints — on the **home** quota, see below |
 | `/raid` | Node-local NVMe, 14 TB, per-job dir `/raid/pbs.<jobid>` |
 

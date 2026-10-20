@@ -71,11 +71,8 @@ echo "start     : $(date -Is)"
 echo "=========================================================="
 nvidia-smi || true
 
-# The module system is not always initialised in a batch shell, so source it first.
-if ! command -v singularity >/dev/null 2>&1; then
-    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-    module load singularity
-fi
+# Singularity 4.3.1, the default image and, on old drivers, CUDA forward compatibility.
+source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
 singularity --version
 
 # orb-models is in the `relax` extra, which scripts/build_singularity_venv.sh does not

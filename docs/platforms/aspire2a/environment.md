@@ -25,20 +25,48 @@ The node driver is 570.124.06 (CUDA 12.8), which runs the cu126 build fine.
 
 ### Getting singularity
 
-`module load singularity` gives 3.10.0; `singularity/4.3.1` is also available.
-Batch scripts should not rely on the module system being initialised, so they
-source it first when `module` is undefined, as
-`scripts/platforms/aspire2a/run_in_singularity.sh` does:
+WyFormer uses `singularity/4.3.1`. A plain `module load singularity` gives 3.10.0.
+The modules also include `apptainer/1.2.2` and `apptainer/1.5.0`, but Apptainer
+cannot `run` these images: its stricter shell parser rejects the empty `then`
+block in the runscript the Docker conversion generates
+(`/.singularity.d/runscript:26:19: 'then' must be followed by a statement list`).
+`exec` works, but the launchers use `run`.
+
+Every launcher sources one helper rather than loading the module itself:
 
 ```bash
-if ! command -v singularity >/dev/null 2>&1; then
-    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-    module load singularity
-fi
+source scripts/platforms/aspire2a/singularity_env.sh
 ```
+
+It initialises the module system if a batch shell has not, unloads any loaded
+`singularity` or `apptainer`, loads `singularity/4.3.1` and fails if
+`singularity --version` does not then report 4.3.1. The unload is needed
+because the Environment Modules 3.2 here returns 0 from a `module load` that it
+refused with a `conflict` error. The helper also sets the default `SIF` and,
+below driver 580, the forward-compatibility path described next.
+`WYFORMER_SINGULARITY_MODULE` and `SIF` override the two defaults.
 
 Do not put `/app/apps/singularity/...` on `PATH` by hand instead; the module is the
 interface, and the paths behind it change with the installed version.
+
+### CUDA 13 on a 570 driver
+
+CUDA 13 needs driver 580 or newer. The A100 nodes run 570.124.06, a CUDA 12.8
+driver, so a CUDA 13.2 runtime on its own fails with
+`cudaGetDeviceCount` error 35, `CUDA driver version is insufficient for CUDA
+runtime version`. NVIDIA's
+[forward compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/forward-compatibility.html)
+package supplies a newer user-mode `libcuda` that runs on the older kernel
+driver, on data-centre GPUs only. With `cuda-compat-13-2` 595.91.07 first on
+`LD_LIBRARY_PATH`, the same probe on `asp2a-gpu007` on 2026-10-20 reported
+driver 13.2 and found the GPU.
+
+The image ships that package in `/usr/local/cuda/compat`. When
+`/proc/driver/nvidia/version` reports a driver below 580, `singularity_env.sh`
+exports `SINGULARITYENV_LD_LIBRARY_PATH` with that directory first. Singularity
+appends the host driver that `--nv` binds (`/.singularity.d/libs`) after it.
+Nodes with driver 580 or newer, or without a GPU, do not get the path: a compat
+`libcuda` older than the host driver fails instead of helping.
 
 ---
 

@@ -45,9 +45,7 @@ else
         echo "Virtual environment present at: $repo_root/.venv"
     else
         echo "note: .venv not yet built in main repository."
-        echo "      Build it inside Singularity via:"
-        echo "        singularity run --nv ~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif \\"
-        echo "            env WYFORMER_PLATFORM=aspire2a bash scripts/build_singularity_venv.sh"
+        echo "      Build it with: bash scripts/platforms/aspire2a/build_venv.sh"
     fi
 fi
 

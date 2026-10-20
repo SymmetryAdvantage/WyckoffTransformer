@@ -221,7 +221,6 @@ hours. Two such jobs at a time. Then, on the node:
 
 ```bash
 cd /home/project/11001786/WyFormer/WyckoffTransformer
-module load singularity                      # or singularity/4.3.1
 bash scripts/platforms/aspire2a/run_in_singularity.sh python scripts/train.py \
     yamls/models/lemat_bulk_fmax1/gene_min_energy_adamw_wsd.yaml lemat_bulk_fmax1_stress cuda --pilot
 ```

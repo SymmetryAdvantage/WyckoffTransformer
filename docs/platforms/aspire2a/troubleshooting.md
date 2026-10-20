@@ -18,18 +18,21 @@ through `scripts/platforms/aspire2a/run_in_singularity.sh`.
 
 ## `singularity: command not found`
 
-It is not on the default `PATH`: `module load singularity`. It prints nothing,
-and puts `singularity` on `PATH` of the shell it runs in — so not inside `( ... )`
-or a pipeline such as `module load singularity 2>&1 | tail`, where the change is
-lost with the subshell. In a batch shell the module system may not be initialised
-either; `scripts/platforms/aspire2a/run_in_singularity.sh` handles both:
+It is not on the default `PATH`. Source
+`scripts/platforms/aspire2a/singularity_env.sh`, which every launcher here does:
 
 ```bash
-if ! command -v singularity >/dev/null 2>&1; then
-    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-    module load singularity
-fi
+source scripts/platforms/aspire2a/singularity_env.sh
 ```
+
+It loads `singularity/4.3.1` and checks that it got that version. It also sets
+the default `SIF` and the CUDA forward-compatibility path described in
+[environment.md](environment.md#cuda-13-on-a-570-driver). A plain
+`module load singularity` gives 3.10.0. Loading a second version over a loaded
+one fails with a `conflict` error but still returns 0, so the helper unloads
+first. `module` changes the `PATH` of the shell it runs in, so not inside
+`( ... )` or a pipeline such as `module load singularity 2>&1 | tail`, where the
+change is lost with the subshell.
 
 ---
 

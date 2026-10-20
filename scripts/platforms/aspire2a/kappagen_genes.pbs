@@ -26,8 +26,7 @@ SHARD=${SHARD:-0}
 NSHARDS=${NSHARDS:-1}
 
 cd "$REPO"
-type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-module load singularity 2>/dev/null || true
+source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
 module load git/2.39.2 2>/dev/null || true
 echo "$(date) commit $(git rev-parse HEAD 2>/dev/null) stage $STAGE shard $SHARD/$NSHARDS out $OUT"
 R="bash scripts/platforms/aspire2a/run_in_singularity.sh"

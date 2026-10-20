@@ -66,10 +66,7 @@ run_job_payload() {
     echo "=========================================================="
     nvidia-smi || true
 
-    if ! command -v singularity >/dev/null 2>&1; then
-        type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-        module load singularity
-    fi
+    source "$REPO/scripts/platforms/aspire2a/singularity_env.sh"
     local RUN=(bash "$REPO/scripts/platforms/aspire2a/run_in_singularity.sh")
     "${RUN[@]}" python -c "import orb_models" \
         || die "orb_models is not importable in the venv (docs/platforms/aspire2a/environment.md)"

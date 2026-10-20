@@ -5,16 +5,18 @@ Linked as `CLAUDE.local.md` by `scripts/platforms/link_agent_brief.sh aspire2a` 
 `docs/platforms/aspire2a/`.
 
 - **Environment:** a Singularity image
-  (`~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif`) with one shared venv at
+  (`/home/project/11001786/WyFormer/images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif`,
+  CUDA 13.2 on the nodes' 570 driver through forward compatibility) with one shared venv at
   `/home/project/11001786/WyFormer/WyckoffTransformer/.venv`, linked as `.venv` from every
   worktree, rebuilt only with `scripts/platforms/aspire2a/build_venv.sh`.
   The host has no `python` or `uv`. **Never run `python`, `uv` or `pytest`
   from a host shell** -- `uv sync`/`uv run` there deletes `.venv`, which running
   jobs share.
 - **Run inside the image:** `bash scripts/platforms/aspire2a/run_in_singularity.sh python ...`,
-  after `module load singularity`. It binds `/home/project`, uses the shared venv, and puts
-  the invoking checkout's `src` first on `PYTHONPATH` -- the venv's editable install points
-  at the main checkout, so in a worktree nothing run outside it imports the worktree's code.
+  which loads `singularity/4.3.1` itself (`singularity_env.sh`; not Apptainer). It binds
+  `/home/project`, uses the shared venv, and puts the invoking checkout's `src` first on
+  `PYTHONPATH` -- the venv's editable install points at the main checkout, so in a worktree
+  nothing run outside it imports the worktree's code.
 - **Experiments are branches in worktrees** at `/home/users/nus/kna/scratch/WyFormer/worktrees/<name>`,
   made with `bash scripts/platforms/aspire2a/create_worktree.sh <name> [start-point]`, with
   `claude` started inside. Not `claude --worktree`: Claude Code deletes its own worktrees

@@ -30,7 +30,7 @@
 set -euo pipefail
 
 MAIN_REPO=/home/project/11001786/WyFormer/WyckoffTransformer
-SIF=${SIF:-/home/users/nus/kna/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif}
+SIF=${SIF:-/home/project/11001786/WyFormer/images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif}
 UV_CACHE=${UV_CACHE_DIR:-/scratch/users/nus/kna/WyFormer/uv-cache}   # regenerable, so scratch
 EXTRAS=${VENV_EXTRAS:-relax dev}
 
@@ -42,10 +42,7 @@ case "${1:-}" in
     *) echo "error: unknown argument $1" >&2; exit 2 ;;
 esac
 
-if ! command -v singularity >/dev/null 2>&1; then
-    type module >/dev/null 2>&1 || source /etc/profile.d/modules.sh
-    module load singularity
-fi
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/singularity_env.sh"
 
 STAMP=$(date +%Y%m%d-%H%M%S)
 NEW=".venv.build-$STAMP"
