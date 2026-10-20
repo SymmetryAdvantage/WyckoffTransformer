@@ -28,7 +28,7 @@ pre-trained models are in the [HuggingFace collection](https://huggingface.co/co
 ```bash
 wyformer-cryspr genes.json.gz --mlip orb_conserv_inf --output-dir relaxed --workers 8
 ```
-Alternatively, the structures can be obtained with [GeoCSP](https://github.com/kazeevn/GeoCSP), our difusion model based on DiffCSP++.
+Alternatively, the structures can be obtained with [GeoCSP](https://github.com/kazeevn/GeoCSP), our diffusion model based on DiffCSP++.
 ### Advanced generation, chemical system conditioning
 Generate genes that contain only the given elements, rank them by predicted distance to the
 PBE hull of [LeMat-Bulk-fixed](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed), and
