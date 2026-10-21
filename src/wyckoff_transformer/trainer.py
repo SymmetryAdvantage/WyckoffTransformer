@@ -496,6 +496,10 @@ class WyckoffTrainer():
     #: default for the same reason as the two above; see `condition_dropout` in __init__.
     condition_dropout = 0.0
 
+    #: `WyckoffTrainer_args.csp_evaluation`: the CSP match rate train() logs on a held-out split,
+    #: or None. A class default for the same reason as the ones above; see csp_validation.py.
+    csp_evaluation = None
+
     #: The dataset the run trains on, as `from_config` read it off `config.dataset`. Kept
     #: because a `chemical_system_conditioning` run has to be able to name the tensor cache
     #: its system prior comes from; see `save_system_prior`. None when a trainer was built
@@ -577,6 +581,7 @@ class WyckoffTrainer():
         chemical_system_conditioning: bool = False,
         condition_on_cell_size: bool = True,
         condition_dropout: float = 0.0,
+        csp_evaluation: Optional[dict] = None,
         resume: bool = False,
         reschedule: bool = False,
         distributed: DistributedContext = SINGLE_PROCESS,
@@ -679,6 +684,9 @@ class WyckoffTrainer():
                 trained without dropout; train() additionally logs the unconditional one.
                 `generate_structures(guidance_scale=...)` is what uses the result.
                 See docs/classifier_free_guidance.md.
+            csp_evaluation: Log a gene-level CSP match rate on a held-out split while
+                training: the keys of `csp_validation.CSPValidationConfig`, of which
+                `period` is required. Off when None. See csp_validation.py.
             resume: Continue an interrupted run: train() restores weights, optimiser, schedule,
                 RNG and loader position from `last_checkpoint.pt` in `run_path` and starts at
                 the epoch after the one the checkpoint recorded. Mutually exclusive with
@@ -750,6 +758,7 @@ class WyckoffTrainer():
         guidance_conditioning_width(
             condition_dropout, len(self.condition_features) + formula_width)
         self.condition_dropout = float(condition_dropout or 0.0)
+        self.csp_evaluation = dict(csp_evaluation) if csp_evaluation else None
         if self.formula_conditioning_field is not None:
             # Densify before the datasets are built: they keep only cascade_order and
             # extra_fields, and the ragged counters the tokeniser stores are neither.
@@ -2644,6 +2653,11 @@ class WyckoffTrainer():
         if self.distributed.is_main:
             self.save_start_token_distribution()
             self.save_system_prior()
+        csp_validation = None
+        if self.csp_evaluation is not None and not self.production_training:
+            from wyckoff_transformer.csp_validation import CSPValidation, CSPValidationConfig  # noqa: PLC0415
+            csp_validation = CSPValidation(self, CSPValidationConfig(**self.csp_evaluation))
+            wandb.define_metric("csp.*", step_metric="epoch")
 
         wandb.define_metric("loss.epoch.val.total", step_metric="epoch", summary="min")
         wandb.define_metric("loss.epoch.train.total", step_metric="epoch", summary="min")
@@ -2703,6 +2717,10 @@ class WyckoffTrainer():
                 lag_metrics = self.schedule_free_lag()
                 if lag_metrics:
                     logged["schedule_free"] = lag_metrics
+                if csp_validation is not None and (epoch % csp_validation.config.period == 0
+                                                   or epoch == self.epochs - 1):
+                    # Every rank evaluates its share of the subset; the counts are summed.
+                    logged["csp"] = {csp_validation.config.split: csp_validation.evaluate()}
                 wandb.log(logged, commit=False)
                 if total_val_loss < best_val_loss:
                     # A float, not the 0-dim tensor: this is what the checkpoint carries

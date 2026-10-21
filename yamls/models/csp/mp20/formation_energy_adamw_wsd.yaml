@@ -32,6 +32,12 @@ model:
     condition_on_cell_size: false
     train_batch_size: 27136
     augmented_storage_dtype: int16
+    # Gene-level CSP match rate on MP-20 val, logged as csp.val.* (added 2026-10-21; the
+    # 2026-10-16 campaign runs trained without it). See src/wyckoff_transformer/csp_validation.py.
+    csp_evaluation:
+      period: 10000
+      n_structures: 256
+      samples: 20
     condition_feature: formation_energy_per_atom
     condition_transform: null
   CascadeTransformer_args:
