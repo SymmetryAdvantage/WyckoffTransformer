@@ -4,6 +4,24 @@ Ordered roughly by how often each one bites.
 
 ---
 
+## `RuntimeError: The NVIDIA driver on your system is too old (found version 12080)`
+
+The job ran in `images/pytorch_2.14.1-cuda13.2-cudnn9-devel.sif`, the default since
+`dd52349`. CUDA 13.2 needs driver 580 or newer, and the A100 nodes run 570 (CUDA 12.8).
+`singularity_env.sh` puts the image's `/usr/local/cuda/compat` on
+`SINGULARITYENV_LD_LIBRARY_PATH` for that case, but on 2026-10-21 both protocol jobs
+submitted from `main` still failed on `torch._C._cuda_init()`.
+
+Setting `SIF` at submission does not help. The launchers write `SIF=` into the job spec
+without exporting it, so `run_in_singularity.sh`, a child process, falls back to its own
+default, the new image.
+
+Until the image works on the nodes, submit from a checkout whose launchers still default
+to `~/pytorch_2.14.0-cuda12.6-cudnn9-devel.sif`. The worktree `lemat-fixed-sota`
+(`5969444`) is one; the LeMat-Bulk-fixed training chains run from it. Do not move that
+worktree to current `main` while its chains run: their next links would start on the new
+image and fail the same way.
+
 ## `.venv` vanished / is suddenly empty
 
 You ran `uv run` or `uv sync` from a **host** shell. The host has no `python`,

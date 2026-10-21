@@ -237,11 +237,11 @@ chemical-system model. Each file's header names the run it reproduces and what c
 
 All four were trained on aspire2a as 4-GPU chains from the worktree `lemat-fixed-sota`.
 
-| model | config | W&B run | as of 2026-10-19 |
+| model | config | W&B run | as of 2026-10-21 |
 | --- | --- | --- | --- |
-| CFG backbone | `ehull_adamw_wsd_5x_cfg_long` | `ehull_adamw_wsd_5x_cfg_long-20261015-021519` | training |
-| energy regressor | `min_energy_adamw_wsd_h7x_xl` | `min_energy_adamw_wsd_h7x_xl-20261015-185731` | training (the first run, `-20261015-031005`, collapsed) |
-| unconditional | `unconditional_5x_ehull01_h3x_xl_lr7p5e-4` | submitted 2026-10-18, PBS 25866146 | training |
+| CFG backbone | `ehull_adamw_wsd_5x_cfg_long` | `ehull_adamw_wsd_5x_cfg_long-20261015-021519` | finished, best val 17.23 (the two-run backbone it replaces: 17.33) |
+| energy regressor | `min_energy_adamw_wsd_h7x_xl` | `min_energy_adamw_wsd_h7x_xl-20261015-185731` | training, 74%, best val MAE 0.0321 (the first run, `-20261015-031005`, collapsed) |
+| unconditional | `unconditional_5x_ehull01_h3x_xl_lr7p5e-4` | `unconditional_5x_ehull01_h3x_xl_lr7p5e-4-20261018-202012` | training, 31%, best val 18.81 |
 | chemical system | `chemsys_sg_uncond_adanmw_wsd_long` | `chemsys_sg_uncond_adanmw_wsd_long-20261015-044354` | finished, best val 11.24 |
 
 ### The xl models can switch their encoder off
@@ -294,6 +294,42 @@ in 8 min and synced to all three machines; jobs cannot write the read-only aspir
 Every difference is within about one binomial standard error (0.015 at 1,000 genes), so
 the 15x longer horizon bought no measurable protocol gain. The two are judged against
 different novelty references: the fixed dataset and the upstream one, 512 rows apart.
+
+The CFG backbone was evaluated as two arms of the previous backbone's guidance grid, at
+`energy_above_hull = 0.05`. Guidance lowers formal validity (61% of draws at w = 5,
+86% at w = 3), so the default 1.15x oversampling cannot reach 1,000 valid genes; pass
+`--oversample 2.0`. The protocol keeps the first 1,000 valid genes, so this does not
+change the per-gene rates.
+
+```bash
+bash scripts/platforms/aspire2a/protocol_wandb_in_pbs.sh ehull_adamw_wsd_5x_cfg_long-20261015-021519 \
+    --output-dir generated/ehull_adamw_wsd_5x_cfg_long-20261015-021519/protocol_cfg-grid-e0p05-w5 \
+    --condition energy_above_hull=0.05 --lemat-cif-csv data/lemat_bulk_fixed_fmax1_stress -- \
+    --guidance-scale 5 --oversample 2.0 --arm cfg-grid-e0p05-w5 \
+    --reference-cache cache/lemat_bulk_fixed_fmax1_stress
+```
+
+| per sampled gene | w = 5 | upstream w = 5 | w = 3 | upstream w = 3 |
+| --- | ---: | ---: | ---: | ---: |
+| free: MetaSUN | 0.525 | 0.534 | 0.465 | 0.433 |
+| free: metastable | 0.723 | 0.676 | 0.718 | 0.704 |
+| free: stable | 0.029 | 0.026 | 0.035 | 0.052 |
+| free: SUN | 0.005 | 0.012 | 0.007 | 0.016 |
+| fixed symmetry: MetaSUN | 0.390 | 0.376 | 0.345 | 0.315 |
+| gene novelty | 0.699 | 0.750 | 0.619 | 0.619 |
+| valid and unique structures | 0.939 | 0.891 | 0.945 | 0.920 |
+
+The upstream columns are `ehull_adamw_wsd_5x_cfg-20260924-223159`, the first of the two
+runs behind the previous backbone; its continuation `_cont` was never protocol-evaluated.
+
+- **MetaSUN is level at w = 5** (−0.009) and ahead at w = 3 (+0.032, about 2 SE). w = 5
+  remains the better setting.
+- **More of the cohort survives relaxation:** valid and unique structures +5 points and
+  metastable +5 points at w = 5. Gene novelty is 5 points lower at w = 5.
+- **SUN is lower in both arms**, 12 genes against 28 (p ≈ 0.04). The stable counts are
+  similar, so the loss is in novelty among stable genes. The fixed hull sits higher in the
+  corrected oxide systems, so the same `energy_above_hull` target may point the sampler at
+  structures nearer known entries. That is a hypothesis; a target sweep would test it.
 
 ## What is on disk
 
