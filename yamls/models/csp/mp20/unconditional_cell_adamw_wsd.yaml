@@ -2,10 +2,12 @@
 # Selected 2026-10-16 from W&B recipe uncond_adamw_wsd-20260925-035205:
 # https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/uncond_adamw_wsd-20260925-035205
 # Variant (2026-10-21): the cell size is a conditioning input, otherwise identical to
-# unconditional_adamw_wsd.yaml. For the CSP protocol where the atom count is given (DiffCSP):
-# the decoder then runs one z at a time with z known. On MP-20 a frequency lookup of space
-# groups gains 21 points top-1 from the atom count, which the formula-only model never sees
-# (DiffCSPNew docs/archive/csp-benchmark-results.md).
+# unconditional_adamw_wsd.yaml; trained as csp-cell-hera-20261021-mp20_unconditional_cell.
+# The channel holds the *conventional* cell's atom count, which also reveals the lattice
+# centring: more than the DiffCSP CSP protocol gives, which is the stored (primitive) cell.
+# A frequency lookup of MP-20 space groups gains 11.5 points top-1 from the primitive atom
+# count and more from the conventional one (DiffCSPNew docs/ideas/csp-atom-count-leakage-paper.md).
+# Read results from this model as "conventional cell given", an upper bound.
 # Formation energy is the row label, not a gene minimum; no log1p on signed energies.
 # Global batch is split over two GPUs. Preserve train/val/test splits.
 model:
