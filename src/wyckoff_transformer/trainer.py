@@ -496,6 +496,10 @@ class WyckoffTrainer():
     #: default for the same reason as the two above; see `condition_dropout` in __init__.
     condition_dropout = 0.0
 
+    #: `WyckoffTrainer_args.csp_evaluation`: the CSP match rate train() logs on a held-out split,
+    #: or None. A class default for the same reason as the ones above; see csp_validation.py.
+    csp_evaluation = None
+
     #: The dataset the run trains on, as `from_config` read it off `config.dataset`. Kept
     #: because a `chemical_system_conditioning` run has to be able to name the tensor cache
     #: its system prior comes from; see `save_system_prior`. None when a trainer was built
