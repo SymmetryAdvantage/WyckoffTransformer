@@ -1,0 +1,86 @@
+# Gene-level GGA/GGA+U band-gap regressor on mp_2026_gga_gap: the architecture of
+# yamls/models/mp_20/der/min_energy_adamw_wsd.yaml (der_tokenizer_v1, both augmented fields,
+# d_model 96, FFN 320, 3 layers, dropout 0.1) with the target swapped for band_gap.
+#
+# Purpose: the band-gap screen of the solid-electrolyte campaign
+# (docs/solid_electrolyte_campaign.md), which drops generated genes predicted below 0.5 eV
+# before they are relaxed -- the paper pipeline's WyFormer band-gap module
+# (docs/archive/101_Generative_Pipeline_for_Di.pdf, MAE 0.23 eV on MP-20).
+#
+# Why not yamls/models/band_gap_adamw_wsd.yaml: it names lemat_bulk_fmax1_sg_multiplicity,
+# an obsolete tokeniser, and its three runs on this dataset (2026-09-11) failed with
+# KeyError: 'band_gap' because the tensors were built before that tokeniser carried the field.
+#
+# What differs from the MP-20 energy file:
+#   target_name gene_min_formation_energy_per_atom -> band_gap (eV, >= 0, 41.5% of train > 0.5).
+#   epochs 20000 -> 4000: 113,339 training rows (4.2x MP-20's 27,136) at batch 1000 are 114
+#     steps per epoch, so 4000 epochs are ~454k steps, against the MP-20 run's ~543k.
+model:
+  start_token: spacegroup_number
+  cascade:
+    order:
+      - elements
+      - site_symmetries
+      - sites_enumeration
+      - multiplicity
+    augmented:
+      - site_symmetries
+      - sites_enumeration
+    embedding_size:
+      elements: 40
+      site_symmetries: 40
+      sites_enumeration: 16
+      multiplicity: 0
+  WyckoffTrainer_args:
+    multiclass_next_token_with_order_permutation: false
+    target: Scalar
+    target_name: band_gap
+    scalar_loss: mse
+    evaluation_samples: 1
+    train_batch_size: 1000
+    compile_model: true
+  CascadeTransformer_args:
+    start_type: one_hot
+    perceptron_shape: pyramid
+    concat_token_counts: false
+    concat_token_presence: false
+    aggregate_after_encoder: true
+    mixer_layers: 1
+    token_aggregation: weighted_mean
+    aggregation_weight: 3
+    include_start_in_aggregation: false
+    aggregation_inclsion: aggr
+    outputs: 1
+    num_fully_connected_layers: 3
+    learned_positional_encoding_max_size: 0
+    learned_positional_encoding_only_masked: true
+    TransformerEncoderLayer_args:
+      nhead: 4
+      dim_feedforward: 320
+      dropout: 0.1
+    TransformerEncoder_args:
+      num_layers: 3
+      enable_nested_tensor: false
+optimisation:
+  optimiser:
+    name: AdamW
+    config:
+      lr: 0.001
+      weight_decay: 0.01
+      betas: [0.9, 0.999]
+  scheduler:
+    module: wyckoff_transformer.schedules
+    name: warmup_stable_decay
+    config:
+      warmup_fraction: 0.002
+      decay_fraction: 0.2
+      final_lr_fraction: 0.0
+      decay_shape: 1-sqrt
+  validation_period: 50
+  early_stopping_patience_epochs: 1000000
+  clip_grad_norm: 10.0
+  epochs: 4000
+tokeniser:
+  name: der_tokenizer_v1
+evaluation:
+  n_structures_to_generate: 10000

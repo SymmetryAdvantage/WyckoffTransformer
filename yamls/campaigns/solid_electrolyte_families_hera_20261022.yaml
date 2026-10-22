@@ -1,0 +1,160 @@
+# Generative search for new Li solid electrolytes in the known SE families, run on hera.
+# Read by scripts/solid_electrolyte_campaign.py; write-up in docs/solid_electrolyte_campaign.md.
+#
+# Pipeline (docs/archive/101_Generative_Pipeline_for_Di.pdf, minus electrochemistry,
+# PES descriptors and MD): chemical-system generation -> gene-level novelty vs LeMat-Bulk,
+# exclusion of OBELiX's known SE compositions, single-valence charge balance,
+# predicted band gap >= 0.5 eV -> energy-ranked
+# top-K per system -> the protocol's wide NEP89 -> ORB arm
+# (docs/de_novo_ranking_protocol_nep89_variants.md#variant-2--wide-then-narrow) ->
+# e_above_hull against the LeMat-Bulk-MLIP-Hull orb_conserv_inf split.
+campaign_id: se-families-hera-20261022
+date: '2026-10-22'
+mobile_ion: Li
+
+# Every system is asked for exactly: the chemsys model is conditioned on the element set,
+# and genes whose own element set differs from the request are dropped. A template slot is
+# one element or a list of alternatives; a family's systems are the product of its slots.
+# `split_by` puts a family's systems into one protocol run per listed element.
+families:
+  - name: halide
+    label: Chloride/bromide/iodide halides
+    prototypes: [Li3YCl6, Li3InCl6, Li2ZrCl6, Li3ScCl6, LiAlCl4]
+    templates:
+      - [Li, [Y, Sc, La, Er, Lu, In, Ga, Al, Zr, Hf, Ta, Nb, Mg, Bi], [Cl, Br, I]]
+    split_by: [Cl, Br, I]
+  - name: oxyhalide
+    label: Oxyhalides
+    prototypes: [LiNbOCl4, LiTaOCl4, Li2ZrOCl4]
+    templates:
+      - [Li, [Nb, Ta, Zr, Hf, Al], O, [Cl, Br]]
+  - name: argyrodite
+    label: Argyrodite and sulfide-halides
+    prototypes: [Li6PS5Cl, Li7Si2S7I]
+    templates:
+      - [Li, [P, Si, Ge], S, [Cl, Br, I]]
+  - name: thio
+    label: Thio-LISICON, thiophosphates and thioborates
+    prototypes: [Li3PS4, Li4GeS4, Li4SnS4, Li3SbS4, Li5B7S13]
+    templates:
+      - [Li, [P, Ge, Si, Sn, Sb, As, Al, Ga, B], S]
+  - name: lgps
+    label: LGPS-type
+    prototypes: [Li10GeP2S12, Li10SiP2S12, Li10SnP2S12]
+    templates:
+      - [Li, [Ge, Si, Sn], P, S]
+  - name: antiperovskite
+    label: Antiperovskites and chalcohalides
+    prototypes: [Li3OCl, Li3OBr, Li2OHCl]
+    templates:
+      - [Li, [O, S], [Cl, Br, I]]
+  - name: fluoride
+    label: Fluorides (coating-type)
+    prototypes: [Li3AlF6, Li2ZrF6, Li3GaF6]
+    templates:
+      - [Li, [Al, Ga, Sc, Y, Zr, Hf, Nb, Ta, Mg, In], F]
+  - name: phosphide
+    label: Phosphides
+    prototypes: [Li9AlP4, Li9GaP4, Li8SiP4, Li14SiP6]
+    templates:
+      - [Li, [Al, Ga, Si, Ge, Sn, In], P]
+  - name: nitride
+    label: Nitrides and nitride halides
+    prototypes: [Li3N, Li7PN4, Li5NCl2, Li6NBr3]
+    templates:
+      - [Li, [P, Si, B, Al, Ga, Ge], N]
+      - [Li, N, [Cl, Br, I]]
+  - name: garnet_perovskite
+    label: La oxides (garnet, perovskite)
+    prototypes: [Li7La3Zr2O12, Li5La3Ta2O12, Li0.33La0.56TiO3]
+    templates:
+      - [Li, La, [Zr, Hf, Ta, Nb, Ti, Sn], O]
+  - name: nasicon
+    label: NASICON phosphates
+    prototypes: [LiTi2(PO4)3, LiGe2(PO4)3, LiZr2(PO4)3]
+    templates:
+      - [Li, [Ti, Ge, Zr, Hf, Sn], P, O]
+  - name: lisicon_oxide
+    label: LISICON and Li oxides
+    prototypes: [Li4SiO4, Li3PO4, Li3BO3, Li7TaO6]
+    templates:
+      - [Li, [Si, Ge, P, B, Ta, Nb, Zr, Al], O]
+  - name: hydride
+    label: Complex hydrides
+    prototypes: [LiBH4, Li2B12H12, Li4BN3H10]
+    templates:
+      - [Li, B, H]
+      - [Li, Al, H]
+      - [Li, B, N, H]
+
+generation:
+  hf_model: SymmetryAdvantage/WyFormer-LeMat-Chemsys
+  # W&B chemsys_sg_uncond_adanmw_wsd_long-20261015-044354; predict_start, no energy channel.
+  hf_revision: 5ebcbaf6eddf0f039b792eaafccef622297a7396
+  n_draws: 20000
+  batch: 10000
+  seed: 20261022
+
+screens:
+  # Gene novelty: exact augmented-fingerprint match, as gene_key, against every split of
+  # this cache -- the protocol's default reference, so the structure-level novelty its
+  # score stage judges uses the same one.
+  novelty_reference_cache: lemat_bulk_fmax1_stress
+  novelty_key_table: gene_keys.npz
+  obelix:
+    path: obelix/all.csv
+    sha256: 54f6265ef84d16a919d08c6815f14b0fd7465fa00090bee2511c16c042e57f3c
+  # A composition must admit one pymatgen common oxidation state per element summing to
+  # zero, with every anion more electronegative than every cation. Every family prototype
+  # passes except mixed-valence-H closo-borates and amide-borohydrides (Li2B12H12,
+  # Li4BN3H10).
+  charge_balance: common_oxidation_states_single_valence
+  band_gap:
+    # yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml on mp_2026_gga_gap.
+    wandb_run: ksvnn3oj
+    min_ev: 0.5
+    augmentation_samples: 8
+  energy:
+    hf_model: SymmetryAdvantage/WyFormer-LeMat-Energy
+    hf_revision: 378e042a0e036f2a092e73e4e148314b16ddee2c
+    hull_reference: kazeevn/LeMat-Bulk-fixed@bf8f0b3112a0c522ccd7f90da9748e9240ee80a5
+    # The regressor was trained on upstream LeMat-Bulk energies; the hull is the fixed
+    # release (README, docs/generation.md#the-chemical-system-pipeline).
+    allow_incompatible_energy: true
+    augmentation_samples: 8
+
+selection:
+  top_k_per_system: 400
+  max_per_formula: 40
+  # Added after the pilot (docs/solid_electrolyte_campaign.md#the-pilot): the wide arm
+  # costs ~1.5 CPU-s and ~1 ORB worker-s per atom of the gene's conventional cell, so a
+  # system's budget is in atoms. 12,000 is ~400 genes of 30 atoms or ~70 of 170; over
+  # 126 systems it is at most ~1.2M atoms, about two days on hera plus iapetus.
+  atom_budget_per_system: 12000
+  # PyXtal and relaxation timeouts are per trial; one generated gene had 1,216 atoms.
+  max_atoms_per_gene: 300
+
+protocol:
+  mlip: orb_conserv_inf
+  trial_multiplier: 10
+  pyxtal_cores: 16
+  pyxtal_timeout: 60
+  prescreen_cores: 16
+  devices: cuda:0,cuda:1
+  workers_per_device: 4
+  # Hosts that take whole runs' relax stage; their outputs sync back and are scored on
+  # hera. iapetus (docs/platforms/iapetus/): 2x K20c + GTX 750 Ti, two workers on each
+  # K20c and one on the 750 Ti, ~17 ORB trials/min on the baseline protocol. It runs
+  # the main checkout's code, which must match this campaign's protocol.py.
+  remote_relax:
+    - host: iapetus
+      checkout: /home/kna/WyckoffTransformer
+      launcher: scripts/platforms/iapetus/run.sh
+      runs_root: /mnt/hdd/kna/wyformer/runs
+      devices: cuda:0,cuda:0,cuda:1,cuda:1,cuda:2
+      workers_per_device: 1
+      max_genes: 2500
+
+report:
+  e_hull_tiers: [0.0, 0.1, 0.2]
+  headline_e_hull: 0.1

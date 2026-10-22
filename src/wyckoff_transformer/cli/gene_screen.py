@@ -21,7 +21,7 @@ import gzip
 import json
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -157,34 +157,32 @@ def validate_regressor(regressor) -> None:
     build_clean_relaxation_condition(regressor, 1, device=regressor.device)
 
 
-def score_genes(
+def predict_gene_scalars(
     genes: Sequence[dict],
     regressor,
-    reference: "pd.DataFrame | None",
     augmentation_samples: int = 1,
-    hull_lookup: "HullLookup | None" = None,
+    condition: Callable[[int], torch.Tensor | None] | None = None,
 ) -> pd.DataFrame:
-    """Predict clean formation energies and compare every usable gene to its hull.
+    """Predict a Scalar regressor's target for every gene it can read.
 
-    A regressor of :data:`GENE_MIN_E_HULL_COLUMN` predicts the distance to the hull
-    itself: its prediction is the score, *reference* is not used and may be ``None``,
-    and ``predicted_formation_energy`` and ``hull_energy`` stay empty.
+    The target-agnostic half of :func:`score_genes`, for regressors of anything --
+    a band gap, say -- that has no hull to be compared with.
 
     Args:
-        hull_lookup: A :class:`~wyckoff_transformer.formula_energy.screen.HullLookup`
-            to reuse.  Building one scans the whole PBE reference to index it by
-            element, which costs far more than scoring a batch of genes; a caller
-            that scores several batches -- a screening loop topping a cohort up
-            to a budget -- should build one and pass it in.  Omitted, one is
-            built here and thrown away, which is right for a single call.
+        condition: Called with the number of readable genes, returns the ``cond``
+            rows ``predict_scalars`` takes; omitted, the regressor is unconditioned.
+
+    Returns:
+        One row per gene, indexed by its position in *genes*: ``formula`` (the
+        conventional-cell formula, set where there is a prediction), ``prediction``
+        (the mean over *augmentation_samples* equivalent descriptions),
+        ``prediction_std`` (their spread, NaN for a single sample) and ``reason``,
+        why a gene has no prediction.
     """
-    validate_regressor(regressor)
     output = pd.DataFrame(index=pd.RangeIndex(len(genes), name="index"))
     output["formula"] = pd.NA
-    output["predicted_formation_energy"] = np.nan
-    output["hull_energy"] = np.nan
-    output["score"] = np.nan
-    output["predicted_below_hull"] = pd.Series(pd.NA, index=output.index, dtype="boolean")
+    output["prediction"] = np.nan
+    output["prediction_std"] = np.nan
     output["reason"] = pd.NA
 
     fingerprinter = GeneFingerprinter()
@@ -221,13 +219,59 @@ def score_genes(
 
     output.loc[supported.index, "formula"] = supported["formula"]
     tensors = build_tokenised_prediction_tensors(supported, regressor)
-    cond = build_clean_relaxation_condition(regressor, len(supported), device=regressor.device)
-    prediction, _ = regressor.predict_scalars(
+    cond = condition(len(supported)) if condition is not None else None
+    prediction, samples = regressor.predict_scalars(
         tensors,
         augmentation_samples=augmentation_samples,
         cond=cond,
     )
-    prediction = prediction.detach().cpu().numpy()
+    output.loc[supported.index, "prediction"] = prediction.detach().cpu().numpy()
+    if augmentation_samples > 1:
+        output.loc[supported.index, "prediction_std"] = (
+            samples.detach().float().std(dim=0).cpu().numpy())
+    return output
+
+
+def score_genes(
+    genes: Sequence[dict],
+    regressor,
+    reference: "pd.DataFrame | None",
+    augmentation_samples: int = 1,
+    hull_lookup: "HullLookup | None" = None,
+) -> pd.DataFrame:
+    """Predict clean formation energies and compare every usable gene to its hull.
+
+    A regressor of :data:`GENE_MIN_E_HULL_COLUMN` predicts the distance to the hull
+    itself: its prediction is the score, *reference* is not used and may be ``None``,
+    and ``predicted_formation_energy`` and ``hull_energy`` stay empty.
+
+    Args:
+        hull_lookup: A :class:`~wyckoff_transformer.formula_energy.screen.HullLookup`
+            to reuse.  Building one scans the whole PBE reference to index it by
+            element, which costs far more than scoring a batch of genes; a caller
+            that scores several batches -- a screening loop topping a cohort up
+            to a budget -- should build one and pass it in.  Omitted, one is
+            built here and thrown away, which is right for a single call.
+    """
+    validate_regressor(regressor)
+    output = pd.DataFrame(index=pd.RangeIndex(len(genes), name="index"))
+    output["formula"] = pd.NA
+    output["predicted_formation_energy"] = np.nan
+    output["hull_energy"] = np.nan
+    output["score"] = np.nan
+    output["predicted_below_hull"] = pd.Series(pd.NA, index=output.index, dtype="boolean")
+    output["reason"] = pd.NA
+
+    predicted = predict_gene_scalars(
+        genes, regressor, augmentation_samples=augmentation_samples,
+        condition=lambda n_rows: build_clean_relaxation_condition(
+            regressor, n_rows, device=regressor.device))
+    output["formula"] = predicted["formula"]
+    output["reason"] = predicted["reason"]
+    supported = predicted[predicted["prediction"].notna()]
+    if supported.empty:
+        return output
+    prediction = supported["prediction"].to_numpy()
     if predicts_e_hull(regressor):
         output.loc[supported.index, "score"] = prediction
         output.loc[supported.index, "predicted_below_hull"] = prediction < 0

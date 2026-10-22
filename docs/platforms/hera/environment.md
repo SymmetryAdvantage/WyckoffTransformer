@@ -189,3 +189,29 @@ Both MP-20 and the unsliced LeMat cache were prepared on 2026-10-16; every paren
 tensor was checked for exact preservation. The MP-20 tokeniser/tensor
 directories arrived without owner write permission; it was enabled to add the
 sibling and restored afterward.
+
+## NVIDIA driver upgrade (2026-10-22)
+
+At 12:54 on 2026-10-22 the NVIDIA userspace was upgraded to 615.71.10 while the
+loaded kernel module stayed at 615.71.09. `nvidia-smi` and NVML then failed with
+`Failed to initialize NVML: Driver/library version mismatch`, although Torch CUDA
+still ran a matmul on both cards. The user rebooted hera; afterwards the module and
+userspace both reported 615.71.10 and `nvidia-smi` worked. After an unattended driver
+upgrade, reboot before starting a long GPU job rather than relying on the mismatched
+state.
+
+## Solid-electrolyte campaign (2026-10-22)
+
+[`se-families-hera-20261022`](../../solid_electrolyte_campaign.md) runs from the
+worktree `/home/kna/WyckoffTransformer-se` (branch `se-families-campaign`, its own
+venv). It needed two inputs hera did not have:
+
+- `data/lemat-bulk/lemat_pbe.csv.gz` (1.06 GB), the geometry the protocol's `score`
+  stage matches novelty against, copied from zeus. `scripts/store_sync.sh` syncs
+  directories only: given this file as a subpath, rsync failed with `Not a directory`
+  and left an empty directory of that name behind. Copy a single file with plain
+  `rsync -a zeus:<store>/data/lemat-bulk/lemat_pbe.csv.gz <store>/data/lemat-bulk/`.
+- `data/obelix/all.csv`, OBELiX at commit `4eaac88`, downloaded from GitHub.
+
+`mp_2026_gga_gap` was re-tokenised with `der_tokenizer_v1` in 54 s; the
+gene-level band-gap regressor then trained at about 82 steps/s on one RTX 6000 Ada.
