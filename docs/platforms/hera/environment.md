@@ -220,6 +220,22 @@ The main checkout's venv, `/home/kna/WyckoffTransformer/.venv`, still fails to i
 Torch. Fix it the same way, reinstall `libcudss0-cuda-13` next to 1.0 (if the packages
 coexist), or rebuild Torch against cuDSS 1.0.
 
+At 12:57 the user rebuilt the wheel against cuDSS 1.0:
+`/mnt/hdd/torch_wheels/torch-2.14.1+cu134-cp314-cp314-linux_x86_64.whl`.
+Its sha256 is `d003b007…9ff2`. It comes from the same source as the installed wheel, tag
+v2.14.1 at commit `5c48869`. Its `libtorch_cuda.so` needs `libcudss.so.1`, which
+resolves to the system cuDSS 1.0, and no library is missing.
+
+It was checked unpacked on `PYTHONPATH`, ahead of the worktree venv:
+- Matmuls ran on both GPUs.
+- A CUDA `torch.sparse.spsolve`, which goes through cuDSS, gave the same 4e-16 residual
+  as the old build.
+- `torch.compile` worked.
+- ORB `orb_conserv_inf` was run on six relaxed campaign structures (24–288 atoms). Its
+  energies and forces differed from the old build by at most 4e-4 eV and 9e-4 eV/Å. Two
+  runs of the old build differ from each other by up to 1e-3 eV and 8e-4 eV/Å, so the
+  new build is equivalent within float32 GPU noise.
+
 The same session purged `snapd`, which also removed `/snap/bin/uv`. `uv` is not on
 `PATH` until it is reinstalled.
 
