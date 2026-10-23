@@ -8,16 +8,16 @@ following local observations and setup results were recorded on 2026-10-16.
 | --- | --- |
 | OS / kernel | Ubuntu 26.04.1 LTS / `7.0.0-38-generic` (Zeus's page records Ubuntu 24.04.4) |
 | RAM | 499 GiB (Zeus's page records 1,007 GiB) |
-| NVIDIA driver | `615.71.09` |
+| NVIDIA driver | `615.71.10` (since the reboot on 2026-10-22) |
 | Checkout | `/home/kna/WyckoffTransformer` |
 | Local wheel index | `/mnt/hdd/torch_wheels/`; includes Torch `2.14.1+cu134` for CPython 3.12 and 3.14 |
-| Project environment | `uv` at `/snap/bin/uv`; Python 3.14.4 `.venv` installed with `dev relax nep`; Torch import and CUDA tensor computation pass |
+| Project environment | `uv` 0.13.5 at `~/.local/bin/uv` (since 2026-10-23); Python 3.14.4 `.venv` installed with `dev relax nep`; Torch import and CUDA tensor computation pass |
 | Data store config | `~/.config/wyformer/paths.env` copied from Zeus over SSH on 2026-10-16 |
 
 ## Setup and worktrees
 
 Use Python 3.14, following Zeus and the user's explicit instruction. `uv` is
-available at `/snap/bin/uv` as of the follow-up inspection on 2026-10-16. Reuse
+at `~/.local/bin/uv` (0.13.5, reinstalled on 2026-10-23 after `snapd` was purged). Reuse
 [`scripts/platforms/zeus/env_init.sh`](../../../scripts/platforms/zeus/env_init.sh)
 and its tracked `uv.toml`; after each invocation, select Hera's agent brief
 because the shared initializer links Zeus's:
@@ -236,8 +236,26 @@ It was checked unpacked on `PYTHONPATH`, ahead of the worktree venv:
   runs of the old build differ from each other by up to 1e-3 eV and 8e-4 eV/Å, so the
   new build is equivalent within float32 GPU noise.
 
-The same session purged `snapd`, which also removed `/snap/bin/uv`. `uv` is not on
-`PATH` until it is reinstalled.
+The same session purged `snapd`, which also removed `/snap/bin/uv`. The user reinstalled
+it as `~/.local/bin/uv` (0.13.5).
+
+The rebuilt wheel then went into the main checkout's venv. `uv.lock` records the local
+wheel by path, with no hash, and its version is unchanged, so `uv sync` would keep the
+old build. Replace it explicitly:
+
+```bash
+uv pip install --python .venv/bin/python --no-deps --reinstall-package torch \
+    /mnt/hdd/torch_wheels/torch-2.14.1+cu134-cp314-cp314-linux_x86_64.whl
+```
+
+The `libnvshmem_host.so.3` link survived the reinstall. Afterwards:
+- The smoke test and ORB numbers above matched again.
+- `CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest src/wyckoff_transformer` gave
+  1592 passed and 53 skipped.
+
+The worktree venv keeps the old build and its copied `libcudss.so.0` until the
+solid-electrolyte relax run ends. Replacing Torch under a driver that keeps starting new
+stages could let one of them import a half-installed package.
 
 ## Solid-electrolyte campaign (2026-10-22)
 

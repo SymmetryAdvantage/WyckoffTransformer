@@ -6,7 +6,7 @@ Hera's notes take precedence over Zeus's host facts.
 
 - The CPU and GPUs match Zeus; Hera has 499 GiB RAM. Check local GPU load.
 - On 2026-10-16, NVSHMEM was installed and Zeus's storage config copied.
-  `uv` is at `/snap/bin/uv`; Hera follows Zeus on Python 3.14.
+  `uv` is at `~/.local/bin/uv`; Hera follows Zeus on Python 3.14.
   The `compile` extra is deprecated; Torch supplies Triton.
   Python dependencies and host runtime libraries are installed; Torch import
   and a CUDA tensor calculation passed on 2026-10-16. The current MP20 DER
