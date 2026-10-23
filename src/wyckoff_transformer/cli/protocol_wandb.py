@@ -79,6 +79,7 @@ from wyckoff_transformer.evaluation.protocol import (
     DEFAULT_REFERENCE_SPLITS,
     DEFAULT_TRIAL_SCHEDULE,
 )
+from wyckoff_transformer.evaluation.template_novelty import GENE_TEMPLATES_FILE, template_summary
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ SUMMARY_PREFIX = "protocol/"
 
 #: What of a protocol output directory is worth keeping, besides its gene file.
 PROTOCOL_ARTIFACT_FILES = (
+    GENE_TEMPLATES_FILE,
     protocol_cli.SCREEN_FILE,
     # The draws themselves, not just their outcome: with these a single
     # trial's relaxation can be repeated exactly, which the kept CIF
@@ -620,6 +622,7 @@ def upload(args, gene_file: Path, funnel: dict) -> None:
         resume="must",
     )
     summary = flatten_funnel(funnel, prefix=prefix)
+    summary.update(template_summary(funnel, prefix))
     try:
         run.summary.update(summary)
 

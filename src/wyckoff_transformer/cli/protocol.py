@@ -2878,6 +2878,16 @@ def stage_score(args) -> None:
     )
     from wyckoff_transformer.evaluation.structure_novelty import build_novelty_reference
     from wyckoff_transformer.evaluation.structure_validity import is_valid
+    from wyckoff_transformer.evaluation.template_novelty import (
+        GENE_TEMPLATES_FILE,
+        attach_labels,
+        label_genes,
+        label_structures,
+        load_template_reference,
+        measurement_provenance,
+        template_id_from_augmented,
+        template_metrics,
+    )
 
     # Before anything is loaded: a funnel with holes in it would be published
     # as the model's numbers.
@@ -2922,6 +2932,11 @@ def stage_score(args) -> None:
     genes = load_genes(args.input)
     # Not persisted by write_screen -- large, and cheap to recompute.
     fingerprinter = GeneFingerprinter()
+    template_reference, template_reference_provenance = load_template_reference(
+        args.reference_cache, splits,
+    )
+    gene_templates = label_genes(genes, template_reference, fingerprinter)
+    gene_templates.to_csv(args.output_dir / GENE_TEMPLATES_FILE)
     phase.done("load genes and screen")
     hull = HullEnergyCalculator(args.mlip)
     phase.done("load the hull")
@@ -3023,8 +3038,20 @@ def stage_score(args) -> None:
             ("fixed_symmetry", frame_fixed, args.output_dir / CIF_FIXED_DIR, fixed_file)
         )
     scored = {}
+    template_reports = {}
     for label, target, directory, _ in readouts:
-        scored[label] = attach(target, read_variant(target, directory))
+        variant = read_variant(target, directory)
+        scored[label] = attach(target, variant)
+        template_ids = {
+            index: template_id_from_augmented(fp) for index, fp in variant["relaxed"].items()
+        }
+        errors = {
+            index: "relaxed symmetry unresolved" for index in variant["structures"]
+            if index not in variant["relaxed"]
+        }
+        labels = label_structures(target, template_ids, template_reference, errors)
+        attach_labels(target, labels, gene_templates)
+        template_reports[label] = template_metrics(labels, target)
     phase.done("read CIFs, validity, fingerprints and e_above_hull")
 
     for label, target, _, _ in readouts:
@@ -3101,9 +3128,13 @@ def stage_score(args) -> None:
     _update_manifest(
         args.output_dir / MANIFEST_FILE,
         {"hull": hull.provenance, "novelty": "sampled+relaxed fingerprint",
+         "template_novelty": measurement_provenance(template_reference_provenance),
          **novelty_reference},
     )
     report = funnel(screen, frame, frame_fixed)
+    report["gene"]["template_novelty"] = template_metrics(gene_templates)
+    for label, metrics in template_reports.items():
+        report[label]["template_novelty"] = metrics
     (args.output_dir / FUNNEL_FILE).write_text(
         json.dumps(report, indent=2) + "\n", encoding="utf-8"
     )

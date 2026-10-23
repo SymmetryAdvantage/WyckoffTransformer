@@ -275,7 +275,7 @@ and the `metasun` / `sun` rates add novelty back. So `metastable ≥
 metastable_among_novel`, and MetaSUN is the novel-only slice of the metastable
 count.
 
-**Uniqueness deduplicates but keeps counts.** Every rate stays per sampled gene;
+**Uniqueness deduplicates but keeps counts.** Headline cascade rates stay per sampled gene;
 a duplicate belongs once in the numerator and once per sample in the
 denominator. Reporting over the deduplicated set instead would make uniqueness
 ≈1.0 by construction.
@@ -330,6 +330,99 @@ and a structure whose only candidates were such entries would be scored novel.
 `build_novelty_reference` therefore raises `UnresolvedReferenceError` rather than
 scoring around the hole. No such entry exists today: every one of the 5,327,342
 `immutable_id`s of `lemat_bulk_fmax1_stress` is in the 5,335,299-row export (checked 2026-09-15).
+
+### Template novelty across evaluated runs
+
+Check **every sampled gene and every evaluated structure for template novelty**,
+separately for the fixed-symmetry and free tracks. Use the anonymous Wyckoff
+fingerprint (space group and occupied orbits, with elements dropped; see
+[template-matched starts](cryspr_template_starts.md#what-it-does)) to identify a
+template, and judge novelty against the protocol's recorded novelty reference.
+For structures, recompute the template after relaxation; record unresolved
+symmetry detection separately rather than treating it as evidence of novelty.
+
+For each track, deduplicate by template and report:
+
+- the number of structures with novel unique templates;
+- the number of those structures that are metastable
+  (`e_above_hull ≤ 0.1` eV/atom), and the number that are stable
+  (`e_above_hull ≤ 0.0` eV/atom);
+- the corresponding fractions: each of those two counts divided by the total
+  number of structures with novel unique templates. This denominator includes
+  structures without a resolved hull energy; report their count separately,
+  and report the fractions as undefined when the denominator is zero.
+
+The representative is the first valid structure in ascending sampled gene-index
+order, chosen independently of hull energy; use the same representatives for
+both stability thresholds. Invalid structures cannot represent a template.
+These fractions are conditional on novel unique templates, unlike the headline
+rates per sampled gene. Template novelty is a separate readout from gene novelty
+and `StructureMatcher` novelty.
+
+Apply this analysis retrospectively to **all W&B runs for which protocol
+evaluation data are available**, including named evaluation arms. Reuse their
+saved cohorts and relaxed structures. Log the per-gene and per-structure labels
+and aggregate counts and fractions back to W&B, recording the analysis date,
+git commit, run and artifact versions, and reference provenance. Identify runs
+with insufficient data explicitly; compare results only under compatible
+references and energy definitions.
+
+The `score` stage writes every sampled gene's labels to `gene_templates.csv`,
+and adds `template_id`, `template_resolved`, `template_novel`,
+`template_error`, `template_representative_index`, `unique_template`, and
+`novel_unique_template` to each `structures*.csv`. The structure tables also
+carry the sampled gene's `gene_template_*` labels. IDs are SHA256 digests of
+canonical anonymous fingerprints, invariant to element substitution and
+equivalent Wyckoff enumerations. `manifest.json` records the definition,
+representative rule, reference build records, symmetry tolerances, thresholds,
+date and code revision. The derived reference index lives separately from the
+dataset, under `cache/template_novelty/`.
+
+Metrics appear under `protocol/gene/template_novelty/`,
+`protocol/fixed_symmetry/template_novelty/`, and
+`protocol/free/template_novelty/` (or the corresponding named-arm prefix).
+`novel_unique` is the denominator; `metastable_novel_unique` and
+`stable_novel_unique` are the counts, and `metastable_fraction_novel_unique`
+and `stable_fraction_novel_unique` the fractions. These counts are unweighted:
+each template contributes once. `no_hull_energy_novel_unique` includes missing
+and nonfinite energies; `no_structure`, `invalid_structure`, and
+`unresolved_valid_structure` expose the other exclusions.
+
+Backfill saved evaluations without generating or relaxing anything:
+
+```bash
+uv run python -m wyckoff_transformer.cli.template_novelty --workers 8
+```
+
+This selects the **`latest` alias of every `protocol_eval` collection** in the
+configured W&B project, including named arms and the historical `_ehull005`
+collection, and records each concrete artifact version. It reuses the saved
+validity and hull energies, checks cohort lineage where recorded, and re-detects
+symmetry from each saved CIF. Local CIF reuse requires an exact W&B file digest
+match. `--collection NAME` restricts the selection and is repeatable;
+`--wandb-entity` / `--wandb-project` select another project. `--no-upload` is a
+local dry run.
+
+Backfills log labelled tables and provenance as `protocol_template_novelty`
+artifacts in a new analysis run, with source-artifact lineage. Only the new
+template-novelty keys are updated on each source run; training runs are not
+resumed. A `protocol_template_novelty_report` artifact holds `summary.csv` and
+`inventory.json`, including partial and failed evaluations. Older artifact
+versions remain available as historical records; they are not independently
+included in this backfill.
+
+**Backfill on 2026-10-23:** [W&B analysis run `vgorei0e`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/vgorei0e)
+processed all 63 available evaluation collections across 24 source runs: 63,000
+sampled genes and 123,708 structure rows across the two tracks. All evaluations
+completed, and every recorded count and fraction was checked against the saved
+tables and the source runs' W&B summaries. No valid structure had an unresolved
+template, and no novel unique representative lacked a finite hull energy.
+Sixty evaluations use `lemat_bulk_fmax1_stress` and three use
+`lemat_bulk_fixed_fmax1_stress`; their reference provenance remains separate.
+The baseline git revision was `57df35bfd1dcf99ccbcd25740a7446e02c3d5538`, with
+uncommitted measurement code preserved in the report artifact
+`template_novelty_backfill_vgorei0e:v0` alongside `summary.csv` and
+`inventory.json`. Per-evaluation artifacts contain all gene and structure labels.
 
 ### The novelty reference
 
