@@ -110,10 +110,17 @@ screens:
   # Li4BN3H10).
   charge_balance: common_oxidation_states_single_valence
   band_gap:
-    # yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml on mp_2026_gga_gap.
-    wandb_run: ksvnn3oj
+    # yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml trained on MP 2026.09.28's
+    # GGA/GGA+U gaps (mp_20260928_gga_gap; HF SymmetryAdvantage/WyFormer-MP-BandGap-PBE).
+    # The paper's 0.5 eV threshold is a PBE one, so a PBE model screens. ksvnn3oj, the
+    # same architecture on mp_2026_gga_gap, saw the same labels under MP's old ids.
+    wandb_run: 3t16iys0
     min_ev: 0.5
     augmentation_samples: 8
+    # Recorded and reported, not screened on.
+    also_predict:
+      - name: r2scan   # mp_20260928_r2scan_gap; HF WyFormer-MP-BandGap-r2SCAN, CC BY-NC
+        wandb_run: xy2dr9us
   energy:
     hf_model: SymmetryAdvantage/WyFormer-LeMat-Energy
     hf_revision: 378e042a0e036f2a092e73e4e148314b16ddee2c

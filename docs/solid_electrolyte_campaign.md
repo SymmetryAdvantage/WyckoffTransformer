@@ -19,7 +19,7 @@ and MD are not part of it.
 | gene novelty | augmented-fingerprint key against every split of `lemat_bulk_fmax1_stress` (4.82M keys) | SWORD vs LeMat-Bulk and ICSD |
 | known SEs | reduced formula not in [OBELiX](https://github.com/NRC-Mila/OBELiX) (599 measured Li SEs) | — |
 | validity | single-valence charge balance from pymatgen's common oxidation states | d_min > 0.7 Å after reconstruction |
-| band gap | gene-level regressor on `mp_2026_gga_gap`, ≥ 0.5 eV | gene-level regressor on MP, ≥ 0.5 eV |
+| band gap | gene-level regressor on MP 2026.09.28's GGA/GGA+U gaps (`mp_20260928_gga_gap`), ≥ 0.5 eV | gene-level regressor on MP, ≥ 0.5 eV |
 | selection | top 400 per system by WyFormer-LeMat-Energy predicted hull distance, ≤ 40 per formula | random 50,000 of 101,789 |
 | Wyckoff → structure | the protocol's [wide NEP89 → ORB arm](de_novo_ranking_protocol_nep89_variants.md#variant-2--wide-then-narrow) | PyXtal + MACE-MPA-0 |
 | stability | `e_above_hull` against the `orb_conserv_inf` split of LeMat-Bulk-MLIP-Hull | MACE-MPA-0 vs re-relaxed MP |
@@ -94,9 +94,44 @@ on Li13P6S39Cl8 and admits Zintl-type states such as Y⁺ and S⁻.
 (W&B `i705onzv`, `l2tpl829`, MAE 0.23 eV) logged no weights, and the three
 `band_gap_adamw_wsd` runs on `mp_2026_gga_gap` (2026-09-11) failed with
 `KeyError: 'band_gap'` because their tensors predated the tokeniser carrying that field.
-A new regressor was trained:
-[`yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml`](../yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml),
-W&B [`ksvnn3oj`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ksvnn3oj).
+[`yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml`](../yamls/models/mp_2026_gga_gap/der/band_gap_adamw_wsd.yaml)
+was trained first on `mp_2026_gga_gap` (W&B
+[`ksvnn3oj`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/ksvnn3oj)). By
+then MP release 2026.09.28 was live, so the same config was retrained on its GGA/GGA+U
+gaps ([`mp_20260928_gga_gap`](../data/mp_20260928_gga_gap/README.md), W&B
+[`3t16iys0`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/3t16iys0)) and
+on its r2SCAN gaps ([`mp_20260928_r2scan_gap`](../data/mp_20260928_r2scan_gap/README.md),
+W&B [`xy2dr9us`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/xy2dr9us)),
+both 2026-10-23 from commit `110ba09`. The screen uses `3t16iys0`: the paper's 0.5 eV
+threshold is a PBE one, and the r2SCAN set is 95% GNoME intermetallics (19.8% with a gap)
+under CC BY-NC. `xy2dr9us` is predicted for every gene and reported, not screened on.
+
+Test-split scores through the screening path (`predict_gene_scalars`, 8 equivalent
+descriptions per gene), from
+[`scripts/evaluate_band_gap.py`](../scripts/evaluate_band_gap.py); the JSONs are in the
+campaign's `band_gap_eval/`:
+
+| model | test split | n | MAE (eV) | MAE, gap > 0 | P / R @ 0.5 eV |
+|---|---|---|---|---|---|
+| `ksvnn3oj` | `mp_2026_gga_gap` | 14,180 | 0.345 | 0.526 | 0.838 / 0.866 |
+| `3t16iys0` | `mp_20260928_gga_gap` | 14,206 | 0.356 | 0.539 | 0.837 / 0.862 |
+| `3t16iys0` | `mp_20260928_r2scan_gap` | 11,680 | 0.183 | 0.782 | 0.853 / 0.682 |
+| `xy2dr9us` | `mp_20260928_r2scan_gap` | 12,276 | 0.069 | 0.295 | 0.917 / 0.909 |
+| `xy2dr9us` | `mp_20260928_gga_gap` | 14,167 | 0.789 | 1.051 | 0.657 / 0.838 |
+
+The two 2026.09.28 sets share no material (each material has one blessed gap), so the
+cross rows are transfer checks across both chemistry and functional. `ksvnn3oj` must not be
+scored on `mp_20260928_gga_gap`: the labels are the April ones under MP's new ids, so most
+of that test split is in its training set (it scores a meaningless 0.153 eV there). The
+paper's 0.23 eV was measured on MP-20 and is not comparable. A gene carries no bond
+lengths, so single-element genes are weak: `3t16iys0` puts diamond Si, a training example
+with a 0.61 eV PBE gap, at 0.01 eV. It gives LiCl 6.24 eV (MP 6.25) and Li2O 5.09 eV
+(MP 4.90). The r2SCAN model puts Li2O, which its data lack, at 1.4 eV.
+
+Both models are staged for the Hub with model cards
+(`SymmetryAdvantage/WyFormer-MP-BandGap-PBE`, CC BY 4.0, and
+`SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN`, CC BY-NC 4.0) in the campaign's
+`hf_stage/`. They are not uploaded yet: hera's Hugging Face token is read-only.
 
 **Selection.** At ~1 CPU-minute and ~8 ORB GPU-seconds per gene, the wide arm can relax
 roughly 50,000 genes in two days. The genes passing all screens are ranked by

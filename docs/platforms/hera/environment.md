@@ -215,3 +215,19 @@ venv). It needed two inputs hera did not have:
 
 `mp_2026_gga_gap` was re-tokenised with `der_tokenizer_v1` in 54 s; the
 gene-level band-gap regressor then trained at about 82 steps/s on one RTX 6000 Ada.
+
+### SSH from hera to iapetus
+
+hera reached zeus and iapetus only through an agent forwarded by the user's login, so
+an ORB lane on iapetus died whenever that session ended (2026-10-23). hera now has its
+own key, `~/.ssh/id_ed25519` (`kna@hera`, SHA256:s818UQKx…), authorised on iapetus and
+zeus on 2026-10-23. `ssh-copy-id` copies the keys of the machine it runs on, so it has to
+be run *on hera*; run from a laptop it authorises the laptop. Long jobs that ssh to
+another host should run with `SSH_AUTH_SOCK=` so they never depend on a session's agent.
+
+### Hugging Face token
+
+The `HF_TOKEN` in hera's `.env` (`hera-wyformer`) is a fine-grained token with only
+`repo.content.read` on the user's namespace. It downloads models but cannot create or push
+to `SymmetryAdvantage` repos (`403 Forbidden` from `api/repos/create`, 2026-10-23).
+Push from a machine with a write token, or give hera one.
