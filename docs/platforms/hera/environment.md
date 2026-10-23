@@ -200,6 +200,29 @@ userspace both reported 615.71.10 and `nvidia-smi` worked. After an unattended d
 upgrade, reboot before starting a long GPU job rather than relying on the mismatched
 state.
 
+## cuDSS 1.0 upgrade (2026-10-23)
+
+At 12:17 UTC on 2026-10-23, `apt install cudss-cuda-13` upgraded cuDSS from 0.8.0.10 to
+1.0.0.35 and removed `libcudss0-cuda-13`, so `libcudss.so.0` was gone. The Torch
+2.14.1+cu134 wheel's `libtorch_cuda.so` needs that soname. From then on, every new Python
+process failed at `import torch` with `ImportError: libcudss.so.0: cannot open shared
+object file`. Processes already running kept the library they had mapped. The
+solid-electrolyte campaign lost one stage this way (phosphide `score`).
+
+In the worktree venv `/home/kna/WyckoffTransformer-se/.venv`, the old library now ships
+with Torch. `apt download libcudss0-cuda-13=0.8.0.10-1` fetched the package from the
+host's local repo (`/var/cudss-local-repo-ubuntu2404-0.8.0`) without installing it.
+`dpkg-deb -x` then extracted `libcudss.so.0.8.0`, which was copied with its
+`libcudss.so.0` link into `site-packages/torch/lib/`. That directory is on the library's
+`$ORIGIN` RUNPATH, so no environment variable or restart is needed.
+
+The main checkout's venv, `/home/kna/WyckoffTransformer/.venv`, still fails to import
+Torch. Fix it the same way, reinstall `libcudss0-cuda-13` next to 1.0 (if the packages
+coexist), or rebuild Torch against cuDSS 1.0.
+
+The same session purged `snapd`, which also removed `/snap/bin/uv`. `uv` is not on
+`PATH` until it is reinstalled.
+
 ## Solid-electrolyte campaign (2026-10-22)
 
 [`se-families-hera-20261022`](../../solid_electrolyte_campaign.md) runs from the
