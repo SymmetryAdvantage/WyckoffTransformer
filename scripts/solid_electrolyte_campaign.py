@@ -528,24 +528,34 @@ def remote_relax(run_dir: Path, config: dict, remote: dict, limit: int | None) -
     return True
 
 
+def fits(size: tuple[int, int], remote: dict) -> bool:
+    """Whether a run of *size* (genes, atoms) is within a remote host's caps."""
+    n_genes, n_atoms = size
+    return (n_genes <= remote.get("max_genes", n_genes)
+            and n_atoms <= remote.get("max_atoms", n_atoms))
+
+
 class RelaxQueue:
     """Runs whose CPU stages are done, for whichever relax lane is free first.
 
-    A remote lane takes only runs up to its ``max_genes`` and gives back a run it
-    could not relax (the host down, the SSH agent gone with the session that
-    forwarded it), which then goes to the local lane only. The local lane therefore
-    stays until no remote run is in flight, since one may yet come back.
+    A remote lane takes only runs that fit its caps and gives back a run it could
+    not relax (the host down, the SSH agent gone with the session that forwarded
+    it), which then goes to the local lane only. The local lane therefore stays
+    until no remote run is in flight, since one may yet come back. It takes the
+    runs no remote may have first, and never one an idle remote lane is waiting for.
     """
 
-    def __init__(self):
-        self._runs: list[tuple[str, int, bool]] = []
+    def __init__(self, remotes: list[dict] = ()):
+        self._runs: list[tuple[str, tuple[int, int], bool]] = []
+        self._remotes = list(remotes)
+        self._idle_remotes: list[dict] = []
         self._closed = False
         self._remote_in_flight = 0
         self._cond = threading.Condition()
 
-    def put(self, run: str, n_genes: int, remote_ok: bool = True) -> None:
+    def put(self, run: str, size: tuple[int, int], remote_ok: bool = True) -> None:
         with self._cond:
-            self._runs.append((run, n_genes, remote_ok))
+            self._runs.append((run, size, remote_ok))
             self._cond.notify_all()
 
     def close(self) -> None:
@@ -553,32 +563,77 @@ class RelaxQueue:
             self._closed = True
             self._cond.notify_all()
 
-    def take(self, max_genes: int | None = None, remote: bool = False) -> str | None:
-        """The first run this lane may take, waiting for one; None when there will be none."""
+    def take(self, remote: dict | None = None) -> str | None:
+        """The first run this lane may take, waiting for one; None when there will be none.
+
+        *remote* is the remote host this lane relaxes on, or None for the local lane.
+        """
+        def wanted_by(remotes):
+            return [remote_ok and any(fits(size, r) for r in remotes)
+                    for _, size, remote_ok in self._runs]
+
         with self._cond:
             while True:
-                for position, (run, n_genes, remote_ok) in enumerate(self._runs):
-                    if not remote or (remote_ok and (max_genes is None or n_genes <= max_genes)):
-                        del self._runs[position]
-                        self._remote_in_flight += remote
-                        return run
-                if self._closed and (remote or not self._remote_in_flight):
+                if remote is not None:
+                    allowed = wanted_by([remote])
+                else:
+                    allowed = [not wanted for wanted in wanted_by(self._remotes)]
+                    if not any(allowed):
+                        allowed = [not wanted for wanted in wanted_by(self._idle_remotes)]
+                if any(allowed):
+                    run = self._runs.pop(allowed.index(True))[0]
+                    self._remote_in_flight += remote is not None
+                    self._cond.notify_all()
+                    return run
+                if self._closed and (remote is not None
+                                     or not (self._runs or self._remote_in_flight)):
                     return None
+                if remote is not None:
+                    self._idle_remotes.append(remote)
                 self._cond.wait()
+                if remote is not None:
+                    self._idle_remotes.remove(remote)
 
-    def remote_done(self, run: str, n_genes: int, succeeded: bool) -> None:
+    def remote_done(self, run: str, size: tuple[int, int], succeeded: bool) -> None:
         """A remote lane's verdict on *run*; a failed one goes to the local lane."""
         with self._cond:
             self._remote_in_flight -= 1
             if not succeeded:
-                self._runs.append((run, n_genes, False))
+                self._runs.append((run, size, False))
             self._cond.notify_all()
 
 
-def count_genes(run_dir: Path, limit: int | None) -> int:
+class CpuQueue:
+    """Protocol runs waiting for their CPU stages, shared by the CPU lanes.
+
+    The first lane takes them in campaign order. Any other lane takes the smallest
+    run a remote host may relax first, so that host has work from the start rather
+    than once the first lane reaches the small runs.
+    """
+
+    def __init__(self, runs: list[tuple[str, tuple[int, int]]], remotes: list[dict] = ()):
+        self._runs = list(runs)
+        self._remotes = list(remotes)
+        self._lock = threading.Lock()
+
+    def take(self, lane: int) -> tuple[str, tuple[int, int]] | None:
+        with self._lock:
+            if not self._runs:
+                return None
+            position = 0
+            if lane > 0:
+                for_remote = [(size[1], i) for i, (_, size) in enumerate(self._runs)
+                              if any(fits(size, remote) for remote in self._remotes)]
+                if for_remote:
+                    position = min(for_remote)[1]
+            return self._runs.pop(position)
+
+
+def run_size(run_dir: Path, limit: int | None) -> tuple[int, int]:
+    """Genes and conventional-cell atoms of one protocol run."""
     with gzip.open(run_dir / "wyckoff_genes.json.gz", "rt", encoding="utf-8") as handle:
-        n_genes = len(json.load(handle))
-    return n_genes if limit is None else min(n_genes, limit)
+        genes = json.load(handle)[:limit]
+    return len(genes), sum(sum(gene["numIons"]) for gene in genes)
 
 
 def run_relax(args, config: dict) -> None:
@@ -586,31 +641,42 @@ def run_relax(args, config: dict) -> None:
 
     The CPU stages of run i+1 overlap the relaxations of run i, and scoring -- CPU
     and memory, no GPU -- has a lane of its own so it never holds a GPU idle. A
-    remote host takes only runs up to its ``max_genes``, so that a slow one is not
-    left finishing a large run alone at the end.
+    remote host takes only runs within its ``max_genes`` and ``max_atoms``, so that a
+    slow one is not left finishing a large run alone at the end.
+
+    ``--cpu-lanes``, ``--cpu-cores`` and ``--remote-max-atoms`` change where and how
+    fast the stages run, not what they compute: every trial's seed is fixed by the
+    trial itself.
     """
     root = campaign_dir(config, args.out)
     runs = run_order(config)
     if args.runs:
         wanted = args.runs.split(",")
         runs = [run for run in runs if run in wanted]
+    if args.cpu_cores is not None:
+        config["protocol"]["pyxtal_cores"] = config["protocol"]["prescreen_cores"] = args.cpu_cores
     remotes = [] if args.no_remote else config["protocol"].get("remote_relax", [])
-    relax_queue = RelaxQueue()
-    score_queue: queue.Queue = queue.Queue()
+    if args.remote_max_atoms is not None:
+        remotes = [{**remote, "max_atoms": args.remote_max_atoms} for remote in remotes]
     failed = []
+    ready = []
+    for run in runs:
+        if (root / "protocol" / run / "wyckoff_genes.json.gz").exists():
+            ready.append((run, run_size(root / "protocol" / run, args.limit)))
+        else:
+            logger.error("[%s] no gene file; run the select stage first", run)
+            failed.append(run)
+    cpu_queue = CpuQueue(ready, remotes)
+    relax_queue = RelaxQueue(remotes)
+    score_queue: queue.Queue = queue.Queue()
 
-    def cpu_lane():
-        for run in runs:
-            run_dir = root / "protocol" / run
-            if not (run_dir / "wyckoff_genes.json.gz").exists():
-                logger.error("[%s] no gene file; run the select stage first", run)
-                failed.append(run)
-                continue
-            if run_stages(run_dir, CPU_STAGES, config, args.limit):
-                relax_queue.put(run, count_genes(run_dir, args.limit))
+    def cpu_lane(lane: int):
+        while (item := cpu_queue.take(lane)) is not None:
+            run, size = item
+            if run_stages(root / "protocol" / run, CPU_STAGES, config, args.limit):
+                relax_queue.put(run, size)
             else:
                 failed.append(run)
-        relax_queue.close()
 
     def local_relax_lane():
         while (run := relax_queue.take()) is not None:
@@ -620,14 +686,14 @@ def run_relax(args, config: dict) -> None:
                 failed.append(run)
 
     def remote_relax_lane(remote: dict):
-        while (run := relax_queue.take(remote.get("max_genes"), remote=True)) is not None:
+        while (run := relax_queue.take(remote)) is not None:
             run_dir = root / "protocol" / run
             succeeded = remote_relax(run_dir, config, remote, args.limit)
             if succeeded:
                 score_queue.put(run)
             else:
                 logger.warning("[%s] handing the run to the local relax lane", run)
-            relax_queue.remote_done(run, count_genes(run_dir, args.limit), succeeded)
+            relax_queue.remote_done(run, run_size(run_dir, args.limit), succeeded)
 
     def score_lane():
         while (run := score_queue.get()) is not None:
@@ -636,10 +702,14 @@ def run_relax(args, config: dict) -> None:
 
     relax_lanes = [threading.Thread(target=local_relax_lane)] + [
         threading.Thread(target=remote_relax_lane, args=(remote,)) for remote in remotes]
-    cpu, scorer = threading.Thread(target=cpu_lane), threading.Thread(target=score_lane)
-    for lane in [cpu, scorer, *relax_lanes]:
+    cpu_lanes = [threading.Thread(target=cpu_lane, args=(lane,))
+                 for lane in range(args.cpu_lanes)]
+    scorer = threading.Thread(target=score_lane)
+    for lane in [*cpu_lanes, scorer, *relax_lanes]:
         lane.start()
-    cpu.join()
+    for lane in cpu_lanes:
+        lane.join()
+    relax_queue.close()
     for lane in relax_lanes:
         lane.join()
     score_queue.put(None)
@@ -795,6 +865,13 @@ def main() -> None:
                         help="relax: pass --limit to the protocol, for a smoke test.")
     parser.add_argument("--no-remote", action="store_true",
                         help="relax: ignore protocol.remote_relax and relax on this host only.")
+    parser.add_argument("--cpu-lanes", type=int, default=1,
+                        help="relax: protocol runs whose CPU stages run at once.")
+    parser.add_argument("--cpu-cores", type=int, default=None,
+                        help="relax: cores per CPU lane, in place of the config's "
+                             "pyxtal_cores and prescreen_cores.")
+    parser.add_argument("--remote-max-atoms", type=int, default=None,
+                        help="relax: the largest run, in atoms, a remote host may take.")
     parser.add_argument("--wandb", action="store_true", help="report: log to W&B.")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO,

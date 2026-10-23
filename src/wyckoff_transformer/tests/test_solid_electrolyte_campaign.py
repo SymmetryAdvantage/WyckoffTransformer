@@ -11,6 +11,7 @@ if str(scripts_dir) not in sys.path:
     sys.path.insert(0, str(scripts_dir))
 from solid_electrolyte_campaign import (
     DEFAULT_CONFIG,
+    CpuQueue,
     RelaxQueue,
     expand_systems,
     load_config,
@@ -106,41 +107,99 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(counts["selected_atoms"], 42)
 
 
+IAPETUS = {"host": "iapetus", "max_genes": 2500, "max_atoms": 60000}
+
+
 class TestRelaxQueue(unittest.TestCase):
     def test_a_capped_lane_skips_large_runs_and_stops_when_closed(self):
-        lanes = RelaxQueue()
-        lanes.put("big", 5000)
-        lanes.put("small", 100)
-        self.assertEqual(lanes.take(max_genes=2500, remote=True), "small")
-        lanes.remote_done("small", 100, succeeded=True)
+        lanes = RelaxQueue([IAPETUS])
+        lanes.put("many_genes", (5000, 1000))
+        lanes.put("many_atoms", (100, 90000))
+        lanes.put("small", (100, 1000))
+        self.assertEqual(lanes.take(IAPETUS), "small")
+        lanes.remote_done("small", (100, 1000), succeeded=True)
         lanes.close()
-        self.assertIsNone(lanes.take(max_genes=2500, remote=True))
-        self.assertEqual(lanes.take(), "big")
+        self.assertIsNone(lanes.take(IAPETUS))
+        self.assertEqual(lanes.take(), "many_genes")
+        self.assertEqual(lanes.take(), "many_atoms")
         self.assertIsNone(lanes.take())
 
+    def test_the_local_lane_takes_what_no_remote_may_first(self):
+        lanes = RelaxQueue([IAPETUS])
+        lanes.put("small", (100, 1000))
+        lanes.put("big", (5000, 1000))
+        self.assertEqual(lanes.take(), "big")
+        self.assertEqual(lanes.take(), "small")   # no remote lane is waiting for it
+
+    def test_the_local_lane_leaves_a_run_to_an_idle_remote_lane(self):
+        lanes, remote_took = RelaxQueue([IAPETUS]), []
+        remote = threading.Thread(target=lambda: remote_took.append(lanes.take(IAPETUS)))
+        remote.start()
+        while not lanes._idle_remotes:      # the remote lane is waiting
+            threading.Event().wait(0.01)
+        with lanes._cond:                    # both runs land before either lane looks
+            lanes._runs += [("small", (100, 1000), True), ("big", (5000, 1000), True)]
+            self.assertEqual(lanes.take(), "big")
+            lanes._cond.notify_all()
+        remote.join(timeout=5)
+        self.assertEqual(remote_took, ["small"])
+
     def test_a_failed_remote_run_comes_back_for_the_local_lane_only(self):
-        lanes = RelaxQueue()
-        lanes.put("run", 100)
-        self.assertEqual(lanes.take(max_genes=2500, remote=True), "run")
+        lanes = RelaxQueue([IAPETUS])
+        lanes.put("run", (100, 1000))
+        self.assertEqual(lanes.take(IAPETUS), "run")
         lanes.close()
         taken = []
         local = threading.Thread(target=lambda: taken.append(lanes.take()))
         local.start()               # must wait: the remote run may come back
         local.join(timeout=0.2)
         self.assertTrue(local.is_alive())
-        lanes.remote_done("run", 100, succeeded=False)
+        lanes.remote_done("run", (100, 1000), succeeded=False)
         local.join(timeout=5)
         self.assertEqual(taken, ["run"])
-        self.assertIsNone(lanes.take(max_genes=2500, remote=True))
+        self.assertIsNone(lanes.take(IAPETUS))
         self.assertIsNone(lanes.take())
+
+    def test_a_closed_queue_keeps_the_local_lane_while_runs_wait_for_a_remote(self):
+        lanes, taken = RelaxQueue([IAPETUS]), []
+        with lanes._cond:
+            lanes._idle_remotes.append(IAPETUS)          # a remote lane, idle
+            lanes._runs.append(("small", (100, 1000), True))
+            lanes._closed = True
+        local = threading.Thread(target=lambda: taken.append(lanes.take()))
+        local.start()
+        local.join(timeout=0.2)
+        self.assertTrue(local.is_alive())                # not None: "small" is queued
+        with lanes._cond:
+            lanes._idle_remotes.remove(IAPETUS)          # the remote lane went away
+            lanes._cond.notify_all()
+        local.join(timeout=5)
+        self.assertEqual(taken, ["small"])
 
     def test_a_waiting_lane_wakes_for_a_new_run(self):
         lanes, taken = RelaxQueue(), []
         waiter = threading.Thread(target=lambda: taken.append(lanes.take()))
         waiter.start()
-        lanes.put("run", 10)
+        lanes.put("run", (10, 100))
         waiter.join(timeout=5)
         self.assertEqual(taken, ["run"])
+
+
+class TestCpuQueue(unittest.TestCase):
+    def test_the_first_lane_keeps_order_and_the_others_feed_the_remote(self):
+        runs = [("halide", (3000, 100000)), ("thio", (2000, 100000)),
+                ("lgps", (800, 36000)), ("phosphide", (500, 20000))]
+        lanes = CpuQueue(runs, [IAPETUS])
+        self.assertEqual(lanes.take(0)[0], "halide")
+        self.assertEqual(lanes.take(1)[0], "phosphide")   # smallest a remote may take
+        self.assertEqual(lanes.take(1)[0], "lgps")
+        self.assertEqual(lanes.take(1)[0], "thio")        # none left for the remote
+        self.assertIsNone(lanes.take(0))
+
+    def test_without_remotes_every_lane_keeps_order(self):
+        lanes = CpuQueue([("a", (1, 1)), ("b", (1, 1))])
+        self.assertEqual(lanes.take(1)[0], "a")
+        self.assertEqual(lanes.take(0)[0], "b")
 
 
 if __name__ == "__main__":

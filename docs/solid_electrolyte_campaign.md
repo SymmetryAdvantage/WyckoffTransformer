@@ -145,10 +145,27 @@ one 168-atom garnet gene costs as much as five 32-atom halides.
 Each family is one run of `wyformer-protocol`; halides are split by anion. The run
 uses `generate --trial-multiplier 10 --pyxtal-timeout 60`, then `prescreen` (NEP89,
 fixed symmetry, dedup), then `relax --relax-from prescreen` (`orb_conserv_inf`, four
-stages), then `score`. CPU stages of the next run overlap the relaxation of the current
-one. iapetus relaxes runs of up to 2,500 genes through its own launcher, and the outputs
-sync back to hera for scoring. Scoring reads only the aggregated `structures*.csv` and
-`cifs*/`, so the round trip does not affect it.
+stages), then `score`. The CPU stages of later runs overlap the relaxations of earlier
+ones. iapetus relaxes runs of up to 2,500 genes and 60,000 atoms through its own
+launcher, and the outputs sync back to hera for scoring. Scoring reads only the
+aggregated `structures*.csv` and `cifs*/`, so the round trip does not affect it.
+
+The run was launched as
+
+```bash
+SSH_AUTH_SOCK= .venv/bin/python scripts/solid_electrolyte_campaign.py relax \
+    --cpu-lanes 2 --cpu-cores 12 --remote-max-atoms 60000
+```
+
+These flags change where and how fast the stages run, not what they compute: each
+trial's seed is fixed by the trial itself. They were added an hour into the run. A
+single CPU lane took the runs in family order, and the first five are all too big for
+iapetus, so iapetus would have sat idle for about 11 h. At its pilot rate of ~4.6k
+atoms/h, thio's 105k atoms (2,158 genes, within the gene cap) would then have kept it
+busy for ~23 h, past the end of hera's share. Now one lane takes the runs in campaign
+order and the other takes the smallest run iapetus may relax first (phosphide, hydride,
+lgps, nasicon), each with 12 of hera's 24 cores. hera's relax lane takes the runs
+iapetus may not have first. The 60,000-atom cap is about 13 h of iapetus time.
 
 ## The pilot
 
@@ -214,5 +231,6 @@ lacks one of the requested elements.
 
 ### Relaxation and hull
 
-Running since 2026-10-23 06:57 on hera, with iapetus taking the runs of up to 2,500 genes.
-At the pilot's rates the whole run takes about two days.
+Started 2026-10-23 06:57 and restarted at 08:12 with two CPU lanes; halide_Cl's
+prescreen resumed from its 40,484 finished trials. hera's GPUs do ~31k atoms/h and
+iapetus ~4.6k, so the 1.19M atoms take about 35 h.
