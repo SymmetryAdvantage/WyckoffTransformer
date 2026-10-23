@@ -80,15 +80,15 @@ question is new electrolytes, not new polymorphs of known ones. OBELiX's doped,
 fractional compositions only ever match at exactly that stoichiometry. The data are in
 the store at `data/obelix/` (commit `4eaac88`, sha256 pinned in the campaign yaml).
 
-**Charge balance** was added after the pilot. Ranking by predicted hull distance put
-impossible stoichiometries at the top (Li46P4S7Cl4, LiY2Cl8, LiLa10Zr4O19): the energy
-regressor is optimistic exactly where it has no data. The check asks for one common
-oxidation state per element (pymatgen `common_oxidation_states`) summing to zero, with
-every anion more electronegative than every cation. Every prototype in the table
-passes except the mixed-valence-hydrogen closo-borates and amide-borohydrides
-(Li2B12H12, Li4BN3H10). The ICSD-prior guess the evaluation code uses
-(`coordination_motifs.guess_oxidation_states`) was tried first and dropped: it took 27 s
-on Li13P6S39Cl8 and admits Zintl-type states such as Y⁺ and S⁻.
+**Charge balance** was added after a first generation pilot on the same three systems.
+Ranking by predicted hull distance put impossible stoichiometries at the top
+(Li46P4S7Cl4, LiY2Cl8, LiLa10Zr4O19): the energy regressor is optimistic exactly where
+it has no data. The check asks for one common oxidation state per element (pymatgen
+`common_oxidation_states`) summing to zero, with every anion more electronegative than
+every cation. Every prototype in the table passes except the mixed-valence-hydrogen
+closo-borates and amide-borohydrides (Li2B12H12, Li4BN3H10). The ICSD-prior guess the
+evaluation code uses (`coordination_motifs.guess_oxidation_states`) was tried first and
+dropped: it took 27 s on Li13P6S39Cl8 and admits Zintl-type states such as Y⁺ and S⁻.
 
 **Band gap.** No gene-level band-gap checkpoint existed: the paper's MP-20 regressors
 (W&B `i705onzv`, `l2tpl829`, MAE 0.23 eV) logged no weights, and the three
@@ -133,10 +133,12 @@ Both models are staged for the Hub with model cards
 `SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN`, CC BY-NC 4.0) in the campaign's
 `hf_stage/`. They are not uploaded yet: hera's Hugging Face token is read-only.
 
-**Selection.** At ~1 CPU-minute and ~8 ORB GPU-seconds per gene, the wide arm can relax
-roughly 50,000 genes in two days. The genes passing all screens are ranked by
-WyFormer-LeMat-Energy's predicted distance to the LeMat-Bulk-fixed PBE hull; each
-system keeps its best 400, at most 40 per reduced formula.
+**Selection.** The genes passing all screens are ranked by WyFormer-LeMat-Energy's
+predicted distance to the LeMat-Bulk-fixed PBE hull. Each system keeps its best genes, at
+most 40 per reduced formula, up to 400 genes or 12,000 conventional-cell atoms, whichever
+comes first; genes over 300 atoms are dropped. The [pilot](#the-pilot) priced the wide arm
+at ~1.7 CPU-s and ~1 ORB-s on hera per atom, so the budget is in atoms rather than genes:
+one 168-atom garnet gene costs as much as five 32-atom halides.
 
 ## Wyckoff → structure → hull
 
@@ -148,6 +150,69 @@ one. iapetus relaxes runs of up to 2,500 genes through its own launcher, and the
 sync back to hera for scoring. Scoring reads only the aggregated `structures*.csv` and
 `cifs*/`, so the round trip does not affect it.
 
+## The pilot
+
+2026-10-22/23, runs store `se-families-hera-20261022-pilot/`. It ran the 20
+best-ranked genes from each of three runs (Li-Y-Cl, Li-P-S-Cl, Li-La-Zr-O), plus two
+known LeMat genes as controls in each of the first two. All 1,910 PyXtal trials were
+answered (3 timed out) and no relaxation failed. The Li-P-S-Cl relaxation went through
+the iapetus lane and its outputs were scored on hera.
+
+| system | genes | e_hull ≤ 0 | ≤ 0.1 | ≤ 0.2 | median e_hull | CPU-s / atom | ORB-s / atom |
+|---|---|---|---|---|---|---|---|
+| Li-Y-Cl | 20 | 0 | 19 | 20 | 0.055 | 1.61 | 0.93 |
+| Li-P-S-Cl | 20 | 0 | 6 | 19 | 0.136 | 1.69 | 3.91 (partly iapetus) |
+| Li-La-Zr-O | 20 | 0 | 1 | 19 | 0.155 | 1.74 | 1.20 |
+
+e_hull is in eV/atom, the lower of the free and fixed-symmetry relaxations per gene. All
+60 came out as novel structures.
+
+The controls do not return to the hull. LiYCl4 lands at 0.040, Li3YCl6 at 0.045,
+Li5P(S2Cl)2 at 0.028 and Li6PS5Cl at 0.033 eV/atom, so a known phase relaxed from its own
+gene sits a few hundredths of an eV/atom above the ORB hull in these chemistries. That
+makes the 0.1 eV/atom tier the meaningful one. Only Li5P(S2Cl)2 was matched to its LeMat
+entry; the other three were scored as novel structures. Structure-level novelty therefore
+misses known compounds after this relaxation, and the gene-level novelty and OBELiX screens
+are what exclude known materials. The report applies both, and re-checks OBELiX on the
+relaxed formula.
+
 ## Results
 
-Pending.
+### Selection funnel
+
+Generated 2026-10-22, screened and selected 2026-10-23 (commit `ffcee91`); per-system
+counts are in the campaign's `selected/funnel_by_system.csv`. Each column counts unique
+genes passing every screen to its left. "unique, exact system" drops draws whose gene
+lacks one of the requested elements.
+
+| family | systems | draws | unique, exact system | gene novel | not in OBELiX | charge balanced | gap ≥ 0.5 eV | selected | atoms |
+|---|---|---|---|---|---|---|---|---|---|
+| halide | 42 | 840,000 | 145,961 | 145,083 | 143,878 | 18,236 | 15,337 | 8,985 | 274,172 |
+| oxyhalide | 10 | 200,000 | 112,552 | 112,549 | 112,549 | 18,686 | 13,455 | 2,610 | 119,616 |
+| argyrodite | 9 | 180,000 | 44,447 | 44,439 | 44,397 | 6,768 | 6,488 | 3,050 | 93,035 |
+| thio | 9 | 180,000 | 59,815 | 59,507 | 58,060 | 6,688 | 5,686 | 2,158 | 104,537 |
+| lgps | 3 | 60,000 | 29,949 | 29,948 | 29,890 | 4,826 | 4,722 | 878 | 35,870 |
+| antiperovskite | 6 | 120,000 | 60,115 | 59,938 | 59,619 | 8,832 | 7,595 | 2,241 | 70,671 |
+| fluoride | 10 | 200,000 | 54,678 | 54,433 | 54,283 | 7,803 | 7,422 | 2,429 | 111,813 |
+| phosphide | 6 | 120,000 | 37,198 | 36,965 | 36,914 | 2,555 | 620 | 570 | 20,803 |
+| nitride | 9 | 180,000 | 65,757 | 65,590 | 65,255 | 6,000 | 5,274 | 2,350 | 105,769 |
+| garnet_perovskite | 6 | 120,000 | 50,038 | 50,016 | 49,647 | 6,231 | 4,621 | 807 | 71,770 |
+| nasicon | 5 | 100,000 | 45,080 | 44,979 | 44,844 | 8,388 | 5,625 | 754 | 59,663 |
+| lisicon_oxide | 8 | 160,000 | 78,753 | 78,489 | 77,292 | 9,419 | 7,946 | 1,446 | 95,361 |
+| hydride | 3 | 60,000 | 34,305 | 34,227 | 33,897 | 1,601 | 1,530 | 573 | 31,694 |
+| **total** | 126 | 2,520,000 | 818,648 | 816,163 | 810,525 | 106,033 | 86,321 | 28,851 | 1,194,774 |
+
+- Novelty removes few unique genes but many draws: the known genes are the ones the model
+  draws often, so 14% of all draws (339,149 of 2,456,396) are of genes already in LeMat-Bulk.
+- Charge balance is the main cut: 13% of the unique novel genes pass it.
+- The band-gap screen passes 81% of the charge-balanced genes overall, but only 24% of
+  the phosphides.
+- Of the 126 systems, 67 stop at the 12,000-atom budget and 6 at 400 genes. The other 53
+  run out of eligible genes first, mostly through the 40-per-formula cap: 40 of the 42 halide
+  systems, the phosphides, and a few sulfides, fluorides and hydrides. In all, 28,851
+  genes and 1.19M atoms go to 15 protocol runs.
+
+### Relaxation and hull
+
+Running since 2026-10-23 06:57 on hera, with iapetus taking the runs of up to 2,500 genes.
+At the pilot's rates the whole run takes about two days.
