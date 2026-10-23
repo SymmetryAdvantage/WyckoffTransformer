@@ -1,0 +1,51 @@
+name: mp_20260928_r2scan_gap
+status: current
+description: >-
+  Materials Project release 2026.09.28: every material whose blessed band gap is r2SCAN,
+  with the structure of that same task and energies from MP's R2SCAN thermo documents
+  (scripts/build_mp_gga_band_gap.py --functional r2scan,
+  data/mp_20260928_r2scan_gap/README.md). 95% of the rows are GNoME materials that MP
+  serves under CC BY-NC 4.0, so anything trained on this dataset is non-commercial.
+built_by: scripts/build_mp_gga_band_gap.py
+defaults:
+  # MP's R2SCAN thermo energies carry no correction (energy_per_atom equals
+  # uncorrected_energy_per_atom on every row).
+  source: {method: dft, dft_settings: R2SCAN_MP, correction: none}
+  reference: mp_r2scan_2026.09.28
+fields:
+  energy_per_atom:
+    column: mp_dft_energy_per_atom
+    primary: true
+    energy: {quantity: energy, extent: per_atom}
+    description: MP's r2SCAN energy per atom, the scale its R2SCAN hull is built on.
+  energy_per_atom_uncorrected:
+    column: mp_dft_uncorrected_energy_per_atom
+    qualifier: uncorrected
+    energy: {quantity: energy, extent: per_atom}
+    description: Identical to energy_per_atom; kept for parity with the GGA dataset.
+  formation_energy_per_atom:
+    column: mp_dft_formation_energy_per_atom
+    energy: {quantity: formation_energy, extent: per_atom}
+  energy_above_hull:
+    column: mp_dft_energy_above_hull
+    energy: {quantity: energy_above_hull, extent: per_atom}
+  band_gap:
+    quantity: band_gap
+    description: r2SCAN band gap, eV.
+  dft_run_type:
+    quantity: dft_run_type
+    description: Run type of the band-gap task; r2SCAN on every row.
+  license:
+    quantity: license
+    description: MP's data licence for the material; BY-NC (GNoME) on 95% of rows.
+  max_force:
+    quantity: max_force
+  max_force_missing:
+    quantity: max_force_missing
+  stress:
+    quantity: stress
+  stress_missing:
+    quantity: stress_missing
+duplicates:
+  formation_energy_per_atom: mp_dft_formation_energy_per_atom
+  energy_above_hull: mp_dft_energy_above_hull

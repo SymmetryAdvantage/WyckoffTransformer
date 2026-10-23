@@ -257,48 +257,61 @@ def run_generate(args, config: dict) -> None:
 # --------------------------------------------------------------------------- #
 # bandgap
 # --------------------------------------------------------------------------- #
-def run_bandgap(args, config: dict) -> None:
-    root = campaign_dir(config, args.out)
-    spec = config["screens"]["band_gap"]
-    systems = expand_systems(config)["system"]
-    todo = []
-    for system in systems:
-        path = system_file(root, system)
-        if not path.exists():
-            raise SystemExit(f"{system} has not been generated yet")
-        if "band_gap_pred" not in pq.read_schema(path).names:
-            todo.append(system)
-    logger.info("%d systems left to predict band gaps for", len(todo))
-    if not todo:
-        return
-    regressor = load_trainer(device=args.device, wandb_run=spec["wandb_run"],
+def load_band_gap_regressor(wandb_run: str, device: torch.device):
+    regressor = load_trainer(device=device, wandb_run=wandb_run,
                              wandb_entity=WANDB_ENTITY, wandb_project=WANDB_PROJECT)
     if regressor.target_name != "band_gap":
-        raise ValueError(f"{spec['wandb_run']} predicts {regressor.target_name}, not band_gap")
+        raise ValueError(f"{wandb_run} predicts {regressor.target_name}, not band_gap")
     if hasattr(regressor.model, "_orig_mod"):
         regressor.model = regressor.model._orig_mod
     regressor.model.eval()
-    for system in todo:
-        path = system_file(root, system)
-        pool = pd.read_parquet(path)
-        pool["band_gap_pred"] = float("nan")
-        pool["band_gap_std"] = float("nan")
-        pool["band_gap_reason"] = None
-        exact = pool[pool["exact_system"]]
-        for start in range(0, len(exact), args.score_batch):
-            part = exact.iloc[start:start + args.score_batch]
-            with torch.no_grad():
-                predicted = predict_gene_scalars(
-                    [json.loads(gene) for gene in part["gene"]], regressor,
-                    augmentation_samples=spec["augmentation_samples"])
-            predicted.index = part.index
-            pool.loc[part.index, "band_gap_pred"] = predicted["prediction"]
-            pool.loc[part.index, "band_gap_std"] = predicted["prediction_std"]
-            pool.loc[part.index, "band_gap_reason"] = predicted["reason"]
-        write_parquet(pool, path)
-        gapped = (pool["band_gap_pred"] >= spec["min_ev"]).sum()
-        logger.info("%s: %d of %d exact-system genes predicted >= %.2f eV", system, gapped,
-                    len(exact), spec["min_ev"])
+    return regressor
+
+
+def run_bandgap(args, config: dict) -> None:
+    """Predicted band gaps of every exact-system gene, one column set per model.
+
+    ``screens.band_gap.wandb_run`` writes ``band_gap_pred``, the one the screen reads;
+    each ``also_predict`` entry writes ``band_gap_pred_<name>``, recorded and reported
+    but not screened on.
+    """
+    root = campaign_dir(config, args.out)
+    spec = config["screens"]["band_gap"]
+    models = [("", spec["wandb_run"])] + [
+        (f"_{extra['name']}", extra["wandb_run"]) for extra in spec.get("also_predict", [])]
+    systems = list(expand_systems(config)["system"])
+    for path in (system_file(root, system) for system in systems):
+        if not path.exists():
+            raise SystemExit(f"{path.stem} has not been generated yet")
+    for suffix, wandb_run in models:
+        column = f"band_gap_pred{suffix}"
+        todo = [system for system in systems
+                if column not in pq.read_schema(system_file(root, system)).names]
+        logger.info("%s (%s): %d systems left", column, wandb_run, len(todo))
+        if not todo:
+            continue
+        regressor = load_band_gap_regressor(wandb_run, args.device)
+        for system in todo:
+            path = system_file(root, system)
+            pool = pd.read_parquet(path)
+            pool[column] = float("nan")
+            pool[f"band_gap_std{suffix}"] = float("nan")
+            pool[f"band_gap_reason{suffix}"] = None
+            exact = pool[pool["exact_system"]]
+            for start in range(0, len(exact), args.score_batch):
+                part = exact.iloc[start:start + args.score_batch]
+                with torch.no_grad():
+                    predicted = predict_gene_scalars(
+                        [json.loads(gene) for gene in part["gene"]], regressor,
+                        augmentation_samples=spec["augmentation_samples"])
+                predicted.index = part.index
+                pool.loc[part.index, column] = predicted["prediction"]
+                pool.loc[part.index, f"band_gap_std{suffix}"] = predicted["prediction_std"]
+                pool.loc[part.index, f"band_gap_reason{suffix}"] = predicted["reason"]
+            write_parquet(pool, path)
+            gapped = (pool[column] >= spec["min_ev"]).sum()
+            logger.info("%s %s: %d of %d exact-system genes predicted >= %.2f eV", column,
+                        system, gapped, len(exact), spec["min_ev"])
 
 
 # --------------------------------------------------------------------------- #
@@ -516,16 +529,23 @@ def remote_relax(run_dir: Path, config: dict, remote: dict, limit: int | None) -
 
 
 class RelaxQueue:
-    """Runs whose CPU stages are done, for whichever relax lane is free first."""
+    """Runs whose CPU stages are done, for whichever relax lane is free first.
+
+    A remote lane takes only runs up to its ``max_genes`` and gives back a run it
+    could not relax (the host down, the SSH agent gone with the session that
+    forwarded it), which then goes to the local lane only. The local lane therefore
+    stays until no remote run is in flight, since one may yet come back.
+    """
 
     def __init__(self):
-        self._runs: list[tuple[str, int]] = []
+        self._runs: list[tuple[str, int, bool]] = []
         self._closed = False
+        self._remote_in_flight = 0
         self._cond = threading.Condition()
 
-    def put(self, run: str, n_genes: int) -> None:
+    def put(self, run: str, n_genes: int, remote_ok: bool = True) -> None:
         with self._cond:
-            self._runs.append((run, n_genes))
+            self._runs.append((run, n_genes, remote_ok))
             self._cond.notify_all()
 
     def close(self) -> None:
@@ -533,16 +553,26 @@ class RelaxQueue:
             self._closed = True
             self._cond.notify_all()
 
-    def take(self, max_genes: int | None = None) -> str | None:
+    def take(self, max_genes: int | None = None, remote: bool = False) -> str | None:
         """The first run this lane may take, waiting for one; None when there will be none."""
         with self._cond:
             while True:
-                for position, (run, n_genes) in enumerate(self._runs):
-                    if max_genes is None or n_genes <= max_genes:
-                        return self._runs.pop(position)[0]
-                if self._closed:
+                for position, (run, n_genes, remote_ok) in enumerate(self._runs):
+                    if not remote or (remote_ok and (max_genes is None or n_genes <= max_genes)):
+                        del self._runs[position]
+                        self._remote_in_flight += remote
+                        return run
+                if self._closed and (remote or not self._remote_in_flight):
                     return None
                 self._cond.wait()
+
+    def remote_done(self, run: str, n_genes: int, succeeded: bool) -> None:
+        """A remote lane's verdict on *run*; a failed one goes to the local lane."""
+        with self._cond:
+            self._remote_in_flight -= 1
+            if not succeeded:
+                self._runs.append((run, n_genes, False))
+            self._cond.notify_all()
 
 
 def count_genes(run_dir: Path, limit: int | None) -> int:
@@ -590,11 +620,14 @@ def run_relax(args, config: dict) -> None:
                 failed.append(run)
 
     def remote_relax_lane(remote: dict):
-        while (run := relax_queue.take(remote.get("max_genes"))) is not None:
-            if remote_relax(root / "protocol" / run, config, remote, args.limit):
+        while (run := relax_queue.take(remote.get("max_genes"), remote=True)) is not None:
+            run_dir = root / "protocol" / run
+            succeeded = remote_relax(run_dir, config, remote, args.limit)
+            if succeeded:
                 score_queue.put(run)
             else:
-                failed.append(run)
+                logger.warning("[%s] handing the run to the local relax lane", run)
+            relax_queue.remote_done(run, count_genes(run_dir, args.limit), succeeded)
 
     def score_lane():
         while (run := score_queue.get()) is not None:
@@ -653,9 +686,11 @@ def run_report(args, config: dict) -> None:
                                   ("fixed_symmetry", "structures_fixed_symmetry.csv",
                                    "cifs_fixed_symmetry")):
             frame = pd.read_csv(run_dir / name, index_col="index")
+            gaps = [column for column in genes.columns if column.startswith("band_gap_pred")]
             frame = frame.join(genes[["family", "requested_system", "reduced_formula",
-                                      "spacegroup_number", "n_atoms", "band_gap_pred",
-                                      "predicted_e_hull", "count", "gene"]],
+                                      "spacegroup_number", "n_atoms", *gaps,
+                                      "predicted_e_hull", "oxidation_states", "count",
+                                      "gene"]],
                                rsuffix="_gene")
             frame["run"], frame["track"] = run, track
             frame["cif_path"] = [str(run_dir / cifs / f"{index}.cif") for index in frame.index]

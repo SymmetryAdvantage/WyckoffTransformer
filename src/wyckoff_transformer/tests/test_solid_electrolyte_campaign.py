@@ -111,10 +111,27 @@ class TestRelaxQueue(unittest.TestCase):
         lanes = RelaxQueue()
         lanes.put("big", 5000)
         lanes.put("small", 100)
-        self.assertEqual(lanes.take(max_genes=2500), "small")
+        self.assertEqual(lanes.take(max_genes=2500, remote=True), "small")
+        lanes.remote_done("small", 100, succeeded=True)
         lanes.close()
-        self.assertIsNone(lanes.take(max_genes=2500))
+        self.assertIsNone(lanes.take(max_genes=2500, remote=True))
         self.assertEqual(lanes.take(), "big")
+        self.assertIsNone(lanes.take())
+
+    def test_a_failed_remote_run_comes_back_for_the_local_lane_only(self):
+        lanes = RelaxQueue()
+        lanes.put("run", 100)
+        self.assertEqual(lanes.take(max_genes=2500, remote=True), "run")
+        lanes.close()
+        taken = []
+        local = threading.Thread(target=lambda: taken.append(lanes.take()))
+        local.start()               # must wait: the remote run may come back
+        local.join(timeout=0.2)
+        self.assertTrue(local.is_alive())
+        lanes.remote_done("run", 100, succeeded=False)
+        local.join(timeout=5)
+        self.assertEqual(taken, ["run"])
+        self.assertIsNone(lanes.take(max_genes=2500, remote=True))
         self.assertIsNone(lanes.take())
 
     def test_a_waiting_lane_wakes_for_a_new_run(self):
