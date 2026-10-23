@@ -4,7 +4,9 @@ Whether a dataset may be used, and what each of its fields means, lives in
 `lemat_bulk_fixed_fmax1_stress` (LeMat-Bulk-fixed, with its `_ehull01` slice and
 `_icsd` variant, and `formula_energy_fixed`; use these for new LeMat work),
 `lemat_bulk_fmax1_stress` (upstream LeMat-Bulk, with the same children and
-`formula_energy`), `mp_20` and `mp_2026_gga_gap`; `lemat-bulk-fixed` and `lemat-bulk` are
+`formula_energy`), `mp_20`, `mp_2026_gga_gap`, and the MP 2026.09.28 band-gap sets
+`mp_20260928_gga_gap` and `mp_20260928_r2scan_gap` (the latter is 95% CC BY-NC GNoME
+data; see its README); `lemat-bulk-fixed` and `lemat-bulk` are
 the sources they are built from. Every other dataset,
 and any without a manifest, is obsolete: use it **only** to analyse runs already
 trained on it. Training, caching and tokenising refuse it unless
