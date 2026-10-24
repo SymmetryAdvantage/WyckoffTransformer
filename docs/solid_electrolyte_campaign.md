@@ -6,7 +6,11 @@
 > hera (and iapetus for part of the ORB relaxation) from 2026-10-22, branch
 > `se-families-campaign`.
 >
-> **Status:** in progress; results are added below as stages finish.
+> **Status:** run through to the hull on 2026-10-24. After the report's checks,
+> 2,852 compositions have a free-relaxed ORB structure within 0.1 eV/atom of the hull,
+> and 2,556 of them are new to LeMat-Bulk. See [Relaxation and hull](#relaxation-and-hull).
+> Nothing here has been checked against ICSD or by DFT. The two band-gap regressors are
+> not yet on Hugging Face.
 
 The pipeline is the one of the ICML 2026 AI4Science paper
 ([archive/101_Generative_Pipeline_for_Di.pdf](archive/101_Generative_Pipeline_for_Di.pdf)),
@@ -231,6 +235,156 @@ lacks one of the requested elements.
 
 ### Relaxation and hull
 
-Started 2026-10-23 06:57 and restarted at 08:12 with two CPU lanes; halide_Cl's
-prescreen resumed from its 40,484 finished trials. hera's GPUs do ~31k atoms/h and
-iapetus ~4.6k, so the 1.19M atoms take about 35 h.
+The run started on 2026-10-23 at 06:57. It was restarted at 08:12 with two CPU lanes, and
+halide_Cl's prescreen resumed from its 40,484 finished trials. The last score finished on
+2026-10-24 at 14:03, about 30 h after the restart.
+
+All 15 runs completed every stage:
+- No PyXtal, prescreen or relax trial went unanswered. 16 of the 86,022 ORB relaxations
+  failed: 11 in lgps, 4 in phosphide and 1 in hydride.
+- iapetus relaxed phosphide (3.8 h) and lgps. hera took nasicon while iapetus was busy.
+- Measured in relaxed atoms, ORB ran at ~15k atoms/h on iapetus. On hera it ran at 72k
+  (hydride) to ~157k atoms/h (halide_Cl), so the cost per atom differs ~2× by chemistry.
+- Phosphide's `score` failed once, at 12:48 on 2026-10-23. A host cuDSS upgrade had removed
+  the library Torch links against (see the
+  [hera notes](platforms/hera/environment.md#cudss-10-upgrade-2026-10-23)). It was re-run
+  by hand at 13:03, so the driver's closing `Protocol runs with a failed stage:
+  ['phosphide']` is stale.
+
+The report ran on 2026-10-24 (`report --wandb`, commit `e69b91d`). Everything it read
+and wrote is on the W&B run
+[se-families-hera-20261022](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/se-families-hera-20261022):
+- `se-families-hera-20261022-screens:v0`: the per-system screens and the selection;
+- `-protocol:v0`: each run's protocol outputs and CIFs;
+- `-candidates:v0`: `candidates.csv`, `excluded.csv`, `shortlist.csv`,
+  `tiers_by_family.csv`, `scored.parquet` and the free-track candidate CIFs, filed by
+  family and system.
+
+It adds three checks to the novelty and OBELiX screens. Each one turned out to be needed once the relaxed structures were in hand.
+
+- **Family anion roles.** The selection's charge balance only asks that every anion be
+  more electronegative than every cation. That admits N+3 and S+2 next to a halide, and
+  halogen oxoanions in Li-O-X. LiN2Cl11, LiNCl4 and LiSI3 were the three lowest e_hull
+  structures, followed by iodates and periodates (LiIO3, Li5IO6). These are molecular
+  N-Cl and S-I solids and oxidisers, not the family's chemistry. The report now requires
+  the family's anions to be negative and every other element positive
+  (`FAMILY_ANIONS`). Amide-borohydrides are the exception: H next to N takes either sign.
+- **Prototypes by name.** OBELiX lacks several of the families' own prototypes, including
+  Li9AlP4, Li2ZrCl6, Li3GaF6 and Li2ZrF6. Their new polymorphs were reaching the
+  candidate list.
+- **Composition novelty.** Gene novelty and structure novelty say nothing about the
+  formula. Each candidate is flagged as either a new polymorph of a composition the
+  novelty reference has, or a new composition. Such a composition is new to LeMat-Bulk,
+  not necessarily to the literature: Li9AlP4 is a published SE that is absent from LeMat.
+
+On the free track, these checks removed 1,011 structures at e_hull ≤ 0.1: 752 not ionic
+in their family and 259 prototype polymorphs. Structures that pass are valid, unique,
+novel, not in OBELiX, not a prototype and ionic. Here is the free-relaxation track (the
+fixed-symmetry track is in `report/tiers_by_family.csv`):
+
+| family | relaxed | valid, unique, novel | e_hull ≤ 0 | ≤ 0.1 | ≤ 0.2 | compositions ≤ 0.1 | new compositions ≤ 0.1 |
+|---|---|---|---|---|---|---|---|
+| halide | 8,984 | 8,966 | 106 | 8,368 | 8,821 | 780 | 685 |
+| oxyhalide | 2,609 | 2,608 | 5 | 1,250 | 2,336 | 346 | 344 |
+| argyrodite | 3,050 | 3,050 | 1 | 986 | 2,429 | 405 | 397 |
+| thio | 2,158 | 2,120 | 8 | 1,525 | 2,039 | 244 | 214 |
+| lgps | 877 | 877 | 0 | 187 | 731 | 101 | 100 |
+| antiperovskite | 2,240 | 2,223 | 0 | 1,030 | 1,273 | 128 | 108 |
+| fluoride | 2,429 | 2,392 | 16 | 2,209 | 2,313 | 270 | 234 |
+| phosphide | 569 | 569 | 49 | 291 | 503 | 43 | 28 |
+| nitride | 2,349 | 2,311 | 35 | 697 | 1,126 | 95 | 71 |
+| garnet_perovskite | 804 | 802 | 0 | 266 | 772 | 88 | 80 |
+| nasicon | 754 | 754 | 4 | 391 | 697 | 151 | 135 |
+| lisicon_oxide | 1,446 | 1,420 | 23 | 896 | 1,348 | 148 | 110 |
+| hydride | 573 | 573 | 0 | 257 | 419 | 53 | 50 |
+| **total** | 28,842 | 28,665 | 247 | 18,353 | 24,807 | 2,852 | 2,556 |
+
+e_hull is in eV/atom against the LeMat-Bulk ORB hull. "Relaxed" counts genes with a
+structure, so 9 of the 28,851 selected genes gave none.
+
+**Reading the tiers.**
+- **≤ 0.1 is 64% of the relaxed genes.** The selection had already ranked them by
+  predicted hull distance. In a ternary family, single-valence charge balance puts every
+  composition on the join of two binaries (LiCl–YCl3, Li2S–GeS2), where ordered
+  arrangements of the two end members are often only slightly above the hull.
+- **≤ 0 is mostly polymorphs of known compositions.** Of the 247 such structures, 54 (23
+  compositions) are new compositions. The other 193 claim a polymorph below LeMat's own
+  phase at the same composition. In the pilot, known phases relaxed from their own genes
+  sat 0.03–0.045 eV/atom *above* this hull. If that holds beyond the pilot's chemistries,
+  a known composition below the hull is at least that far under the ORB-relaxed known
+  phase, which is more likely an ORB or reference artefact than a new ground state. The
+  phosphides point the same way. LeMat's own DFT hull puts its entries for these
+  compositions 0.1–0.3 eV/atom above it (Li3AlP2, Li3GaP2, Li3Al2P3), although Li3AlP2
+  and Li3GaP2 are known compounds, so the Li–M–P reference itself looks poorly
+  converged.
+
+**Li sites.** `report/shortlist.csv` keeps one structure per composition: the lowest free
+relaxation at ≤ 0.1, 2,852 in all. Each has the CrystalNN coordination of every
+symmetry-distinct Li site, under its ionic oxidation states with `cation_anion=True`.
+- 891 of the 2,852 (31%) have a Li site with CN ≤ 3. That is normal for nitrides (Li3N
+  has 2- and 3-coordinated Li), and 80 of the 95 nitride compositions are among them.
+  Halides, oxides and sulfides rarely have Li this low, yet 75 of 128 antiperovskite and
+  80 of 151 NASICON compositions do.
+- 1,714 compositions are new and have every Li site at CN ≥ 4. 872 of these are within
+  0.05 eV/atom and 19 are at or below the hull.
+- 1,247 of the 2,852 free relaxations come out P1 at `symprec=0.1`. The free relaxation
+  broke the gene's symmetry, so the gene-level band gap describes the structure it
+  started from.
+
+**Best new compositions per family.** Each family's three lowest free-relaxation
+structures that are new compositions with every Li site at CN ≥ 4:
+
+| family | formula | e_hull free | e_hull fixed-sym | SG gene → relaxed | atoms | gap GGA / r2SCAN (eV) | Li CN |
+|---|---|---|---|---|---|---|---|
+| halide | LiIn2I7 | −0.038 | −0.018 | 12 → P1 | 20 | 1.9 / 2.4 | 4 |
+| halide | Li2TaI7 | −0.024 | −0.024 | 5 → C2 | 20 | 0.6 / 1.8 | 6 |
+| halide | LiGa2Br7 | −0.008 | +0.166 | 12 → P1 | 20 | 2.9 / 3.8 | 4,5 |
+| oxyhalide | LiZrBr3O | −0.012 | −0.012 | 62 → Imma | 24 | 2.8 / 3.4 | 6 |
+| oxyhalide | LiZrCl3O | −0.009 | −0.005 | 15 → P2₁/c | 48 | 4.2 / 4.3 | 6 |
+| oxyhalide | Li8TaClO6 | +0.001 | +0.001 | 148 → R-3 | 48 | 4.5 / 4.6 | 4,6 |
+| argyrodite | Li6Si(S2Cl)2 | −0.004 | −0.004 | 38 → Amm2 | 26 | 3.0 / 4.3 | 4,5 |
+| argyrodite | Li5Ge2S6Cl | +0.001 | +0.001 | 1 → P1 | 14 | 2.2 / 3.2 | 4 |
+| argyrodite | Li5SiS4I | +0.004 | +0.004 | 36 → Cmc2₁ | 44 | 2.7 / 4.1 | 4,5 |
+| thio | Li4Sb2S5 | −0.009 | −0.003 | 33 → Pbam | 44 | 1.9 / 2.5 | 4 |
+| thio | Li6SiS5 | +0.002 | +0.002 | 2 → P-1 | 24 | 2.8 / 3.4 | 4,5 |
+| thio | Li5GaS4 | +0.004 | +0.004 | 60 → Cmcm | 40 | 2.7 / 3.6 | 4 |
+| lgps | Li2GeP2S7 | +0.024 | +0.080 | 5 → P1 | 24 | 2.3 / 2.8 | 4,5 |
+| lgps | Li3GePS6 | +0.029 | +0.062 | 40 → Cc | 44 | 2.4 / 2.9 | 4 |
+| lgps | Li7Si2PS10 | +0.037 | +0.042 | 105 → P1 | 40 | 2.4 / — | 4,6 |
+| antiperovskite | Li8S3Cl2 | +0.016 | +0.016 | 12 → P-3m1 | 26 | 2.4 / 4.5 | 4 |
+| antiperovskite | Li7S3Cl | +0.018 | +0.026 | 63 → Pnma | 44 | 2.2 / 5.2 | 4 |
+| antiperovskite | Li8S3Br2 | +0.019 | +0.019 | 166 → R-3m | 39 | 2.0 / 3.9 | 4 |
+| fluoride | Li4InF7 | −0.020 | −0.020 | 146 → F-43m | 36 | 4.7 / 5.8 | 4 |
+| fluoride | LiHf2F9 | −0.016 | +0.145 | 165 → P-1 | 24 | 2.7 / 8.0 | 6 |
+| fluoride | Li5InF8 | −0.005 | −0.005 | 164 → P-3m1 | 14 | 5.4 / 7.2 | 4,6 |
+| phosphide | Li6GaP3 | −0.010 | +0.045 | 9 → Cm | 40 | 1.3 / 1.7 | 4,6 |
+| phosphide | Li3Al4P5 | +0.045 | +0.045 | 12 → R-3m | 24 | 0.6 / 1.4 | 4,6 |
+| phosphide | Li6InP3 | +0.079 | +0.079 | 166 → R-3m | 30 | 0.6 / 0.5 | 4,6 |
+| nitride | Li8Br5N | +0.013 | +0.013 | 15 → C2/c | 56 | 2.3 / 0.5 | 4 |
+| nitride | Li3B2N3 | +0.027 | +0.128 | 62 → Cmcm | 32 | 3.8 / 2.8 | 4 |
+| nitride | Li3Al3N4 | +0.031 | +0.031 | 205 → Pa-3 | 80 | 3.3 / 3.0 | 4 |
+| garnet_perovskite | LiLaTi3O8 | +0.017 | +0.019 | 15 → P2₁/c | 52 | 2.7 / 2.7 | 4 |
+| garnet_perovskite | LiLaTi4O10 | +0.018 | +0.017 | 15 → C2/c | 64 | 3.0 / 3.5 | 4 |
+| garnet_perovskite | LiLaTa4O12 | +0.027 | +0.027 | 5 → C2 | 36 | 1.7 / 3.8 | 4 |
+| nasicon | Li2Hf(PO4)2 | −0.004 | +0.129 | 15 → C2/c | 52 | 5.0 / 5.9 | 4 |
+| nasicon | Li2Ge(PO4)2 | −0.001 | −0.001 | 2 → C2/m | 13 | 3.4 / 5.0 | 4 |
+| nasicon | Li2Ge(PO3)4 | −0.000 | +0.014 | 41 → Cc | 76 | 5.0 / 4.2 | 4 |
+| lisicon_oxide | Li2P4O11 | −0.022 | −0.022 | 15 → C2/c | 68 | 5.6 / 6.3 | 4 |
+| lisicon_oxide | LiP3O8 | −0.019 | −0.019 | 4 → P2₁ | 24 | 5.6 / 6.3 | 4 |
+| lisicon_oxide | Li4Ta2O7 | −0.005 | −0.006 | 7 → C2/m | 26 | 3.9 / 4.2 | 5,6 |
+| hydride | Li5AlH8 | +0.010 | +0.088 | 12 → P1 | 28 | 3.5 / 5.6 | 4,6 |
+| hydride | LiB(H2N)4 | +0.010 | +0.011 | 88 → P2 | 56 | 5.1 / 5.1 | 4 |
+| hydride | Li4AlH7 | +0.018 | +0.062 | 8 → P1 | 24 | 3.6 / 5.3 | 5,6 |
+
+"Gap" is the gene-level prediction of the GGA (`3t16iys0`) and r2SCAN (`xy2dr9us`)
+regressors; "—" means the gene is outside the r2SCAN regressor's vocabulary.
+
+When the free and fixed-symmetry e_hull agree, the gene's own symmetry is the
+low-energy structure. When the free one is much lower (LiGa2Br7, LiHf2F9,
+Li2Hf(PO4)2), the gene was only a starting point.
+
+None of this has been checked against ICSD or DFT. The table is a shortlist for that
+work, not a set of discoveries. In order, the next steps would be:
+1. a literature/ICSD check of the formulas;
+2. r2SCAN or PBE relaxations of the shortlist;
+3. electrochemical windows and Li-migration barriers for the survivors.

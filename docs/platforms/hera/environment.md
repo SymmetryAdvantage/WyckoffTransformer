@@ -253,9 +253,11 @@ The `libnvshmem_host.so.3` link survived the reinstall. Afterwards:
 - `CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest src/wyckoff_transformer` gave
   1592 passed and 53 skipped.
 
-The worktree venv keeps the old build and its copied `libcudss.so.0` until the
-solid-electrolyte relax run ends. Replacing Torch under a driver that keeps starting new
-stages could let one of them import a half-installed package.
+The worktree venv kept the old build and its copied `libcudss.so.0` until the
+solid-electrolyte relax run ended. Replacing Torch under a driver that keeps starting new
+stages could have let one of them import a half-installed package. On 2026-10-24 at
+14:05 it got the rebuilt wheel the same way, and the copied library was deleted. Every
+stage of that campaign up to `report` ran on the old build.
 
 ## Solid-electrolyte campaign (2026-10-22)
 
