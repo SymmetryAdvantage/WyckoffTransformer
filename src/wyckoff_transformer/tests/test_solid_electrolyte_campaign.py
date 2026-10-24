@@ -11,11 +11,14 @@ if str(scripts_dir) not in sys.path:
     sys.path.insert(0, str(scripts_dir))
 from solid_electrolyte_campaign import (
     DEFAULT_CONFIG,
+    FAMILY_ANIONS,
     CpuQueue,
     RelaxQueue,
     expand_systems,
+    ionic_oxidation_states,
     load_config,
     oxidation_states,
+    prototype_formulas,
     select_system,
 )
 
@@ -57,6 +60,35 @@ class TestChargeBalance(unittest.TestCase):
         for formula in ("Li46P4S7Cl4", "LiY2Cl8", "Li10P3S21Cl4", "LiLa10Zr4O19"):
             self.assertIsNone(oxidation_states(formula), formula)
         self.assertIsNone(oxidation_states(None))
+
+
+class TestIonicRoles(unittest.TestCase):
+    def test_every_prototype_is_ionic_in_its_family(self):
+        config = load_config(DEFAULT_CONFIG)
+        self.assertEqual({family["name"] for family in config["families"]},
+                         set(FAMILY_ANIONS))
+        # Not single-valence: the selection's charge balance rejects these too.
+        mixed_valence = {"Li2OHCl", "Li2B12H12", "Li4BN3H10", "Li0.33La0.56TiO3"}
+        for family in config["families"]:
+            for prototype in family["prototypes"]:
+                if prototype not in mixed_valence:
+                    self.assertIsNotNone(ionic_oxidation_states(prototype, family["name"]),
+                                         prototype)
+        self.assertEqual(ionic_oxidation_states("LiNH2", "hydride"), "H+1 Li+1 N-3")
+        self.assertEqual(ionic_oxidation_states("LiBH4", "hydride"), "B+3 H-1 Li+1")
+
+    def test_halogen_and_pnictogen_cations_are_not(self):
+        # Each passes the selection's electronegativity-ordered charge balance.
+        for formula, family in (("LiNCl4", "nitride"), ("LiSI3", "antiperovskite"),
+                                ("LiIO3", "antiperovskite"), ("Li5IO6", "antiperovskite")):
+            self.assertIsNotNone(oxidation_states(formula), formula)
+            self.assertIsNone(ionic_oxidation_states(formula, family), formula)
+        self.assertEqual(ionic_oxidation_states("Li7PN4", "nitride"), "Li+1 N-3 P+5")
+
+    def test_prototypes_are_known_by_reduced_formula(self):
+        prototypes = prototype_formulas(load_config(DEFAULT_CONFIG))
+        self.assertEqual(prototypes["Li9AlP4"], "phosphide")
+        self.assertEqual(prototypes["LiTi2(PO4)3"], "nasicon")
 
 
 def _pool(rows):

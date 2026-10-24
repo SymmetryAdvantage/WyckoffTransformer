@@ -30,6 +30,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ProcessPoolExecutor
 from functools import cache
 from itertools import product
 from pathlib import Path
@@ -161,6 +162,38 @@ def load_obelix(config: dict) -> tuple[dict[str, list[str]], set[str]]:
     logger.info("OBELiX: %d entries, %d distinct reduced formulas, %d systems",
                 len(table), len(formulas), len(systems))
     return formulas, systems
+
+
+def prototype_formulas(config: dict) -> dict[str, str]:
+    """Reduced formula -> family of the prototypes the campaign lists, all known SEs.
+
+    OBELiX misses some of them (Li9AlP4, Li2ZrCl6, Li3GaF6), so the report excludes them
+    by name as well.
+    """
+    return {reduced_formula(prototype): family["name"]
+            for family in config["families"] for prototype in family["prototypes"]}
+
+
+def reference_formulas(config: dict, systems) -> dict[str, tuple[int, float]]:
+    """The novelty reference's reduced formulas in *systems*: entries, lowest e_hull.
+
+    A candidate whose formula is here is a new polymorph of a composition the reference
+    already has; one whose formula is not is a new composition -- new to LeMat, which
+    still misses some published compounds (Li9AlP4).
+    """
+    from pymatgen.core import Composition
+
+    wanted = {frozenset(system.split("-")) for system in systems}
+    cache = cache_root() / config["screens"]["novelty_reference_cache"]
+    found: dict[str, list[float]] = {}
+    for split in ("train", "val", "test"):
+        table = pq.read_table(cache / f"{split}.parquet",
+                              columns=["composition", "energy_above_hull"]).to_pandas()
+        for composition, e_hull in zip(table["composition"], table["energy_above_hull"]):
+            if frozenset(element for element, _ in composition) in wanted:
+                found.setdefault(Composition(dict(composition)).reduced_formula,
+                                 []).append(e_hull)
+    return {formula: (len(e_hulls), min(e_hulls)) for formula, e_hulls in found.items()}
 
 
 # --------------------------------------------------------------------------- #
@@ -721,6 +754,86 @@ def run_relax(args, config: dict) -> None:
 # --------------------------------------------------------------------------- #
 # report
 # --------------------------------------------------------------------------- #
+#: The anions of each family's templates. The selection's charge balance only asks
+#: that anions be more electronegative than cations, which admits N+3 and S+2 under a
+#: halide (LiNCl4, LiSI3: molecular N-Cl and S-I solids) and halogen oxoanions in
+#: Li-O-X (LiIO3, Li5IO6). Those are not the family's chemistry, and they top the hull
+#: ranking.
+FAMILY_ANIONS = {
+    "halide": {"Cl", "Br", "I"}, "oxyhalide": {"O", "Cl", "Br"},
+    "argyrodite": {"S", "Cl", "Br", "I"}, "thio": {"S"}, "lgps": {"S"},
+    "antiperovskite": {"O", "S", "Cl", "Br", "I"}, "fluoride": {"F"}, "phosphide": {"P"},
+    "nitride": {"N", "Cl", "Br", "I"}, "garnet_perovskite": {"O"}, "nasicon": {"O"},
+    "lisicon_oxide": {"O"}, "hydride": {"H", "N"},
+}
+
+
+@cache
+def ionic_oxidation_states(formula: str, family: str) -> str | None:
+    """Common oxidation states summing to zero with the family's anions negative.
+
+    Every other element is a cation, except that hydrogen next to nitrogen takes either
+    sign: protic in an amide (LiNH2), hydridic in a borohydride. It is one sign per
+    formula, so a mixed amide-borohydride (Li4BN3H10) fails here as in the selection.
+    """
+    from pymatgen.core import Composition
+
+    composition = Composition(formula).reduced_composition
+    elements = list(composition.elements)
+    anions = FAMILY_ANIONS[family]
+    choices = []
+    for element in elements:
+        states = [state for state in element.common_oxidation_states if state != 0]
+        if element.symbol == "H" and "N" in composition:
+            states = [-1, 1]
+        elif element.symbol in anions:
+            states = [state for state in states if state < 0]
+        else:
+            states = [state for state in states if state > 0]
+        choices.append(states)
+    for states in product(*choices):
+        if abs(sum(composition[e] * s for e, s in zip(elements, states))) < 1e-6:
+            return " ".join(f"{e}{s:+d}" for e, s in sorted(zip(elements, states),
+                                                             key=lambda pair: pair[0].symbol))
+    return None
+
+
+def li_environment(task: tuple[str, str]) -> dict:
+    """CrystalNN coordination of each symmetry-distinct Li site, and the shortest Li-anion
+    distance, of one relaxed CIF under its ionic oxidation states."""
+    import warnings
+
+    from pymatgen.analysis.local_env import CrystalNN
+    from pymatgen.core import Structure
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+    cif, states = task
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            structure = Structure.from_file(cif)
+            structure.add_oxidation_state_by_element(
+                {token.rstrip("+-0123456789"): int(token[len(token.rstrip("+-0123456789")):])
+                 for token in states.split()})
+            sites = SpacegroupAnalyzer(structure, symprec=0.1).get_symmetrized_structure()
+            neighbours = CrystalNN(cation_anion=True)
+            cns, shortest = [], float("inf")
+            for group in sites.equivalent_indices:
+                index = group[0]
+                if structure[index].specie.symbol != "Li":
+                    continue
+                shell = neighbours.get_nn_info(structure, index)
+                cns.append(len(shell))
+                shortest = min([shortest, *(structure.get_distance(index, n["site_index"],
+                                                                   jimage=n["image"])
+                                            for n in shell)])
+    except Exception as error:  # noqa: BLE001 -- a bad structure is reported, not fatal
+        return {"li_cn": None, "li_cn_min": None, "li_anion_min_distance": None,
+                "li_environment_error": f"{type(error).__name__}: {error}"[:200]}
+    return {"li_cn": ",".join(map(str, sorted(cns))), "li_cn_min": min(cns, default=None),
+            "li_anion_min_distance": shortest if cns else None, "li_environment_error": ""}
+
+
 def relaxed_symmetry(cif: Path) -> tuple[str | None, int | None, str | None]:
     """The relaxed structure's reduced formula and space group, from its CIF."""
     from pymatgen.core import Structure
@@ -740,6 +853,11 @@ def run_report(args, config: dict) -> None:
     root = campaign_dir(config, args.out)
     selected = pd.read_parquet(root / "selected" / "selected.parquet")
     obelix_formulas, _ = load_obelix(config)
+    prototypes = prototype_formulas(config)
+    reference = reference_formulas(config, selected["requested_system"].unique())
+    missing_anions = {family["name"] for family in config["families"]} - set(FAMILY_ANIONS)
+    if missing_anions:
+        raise ValueError(f"FAMILY_ANIONS has no entry for {sorted(missing_anions)}")
     tiers = config["report"]["e_hull_tiers"]
     headline = config["report"]["headline_e_hull"]
     report_dir = root / "report"
@@ -783,9 +901,37 @@ def run_report(args, config: dict) -> None:
     candidates["relaxed_spacegroup"] = symmetry.map(lambda s: s[2])
     candidates["obelix_ids_relaxed"] = candidates["relaxed_formula"].map(
         lambda f: ",".join(obelix_formulas.get(f, [])) if f else "")
-    candidates = candidates[candidates["obelix_ids_relaxed"] == ""]
-    candidates = candidates.sort_values(["track", "e_above_hull"])
+    formula = candidates["relaxed_formula"].fillna(candidates["reduced_formula"])
+    candidates["prototype_of"] = formula.map(prototypes).fillna("")
+    candidates["ionic_oxidation_states"] = [
+        ionic_oxidation_states(f, family) for f, family in zip(formula, candidates["family"])]
+    candidates["reference_entries"] = [reference.get(f, (0, None))[0] for f in formula]
+    candidates["reference_min_e_hull"] = [reference.get(f, (0, None))[1] for f in formula]
+    candidates["new_composition"] = candidates["reference_entries"] == 0
+    reasons = pd.DataFrame({
+        "known_se_obelix": candidates["obelix_ids_relaxed"] != "",
+        "known_se_prototype": candidates["prototype_of"] != "",
+        "not_ionic_in_family": candidates["ionic_oxidation_states"].isna()})
+    excluded = candidates[reasons.any(axis=1)].assign(
+        excluded_because=reasons[reasons.any(axis=1)].apply(
+            lambda row: ",".join(row.index[row]), axis=1))
+    excluded.to_csv(report_dir / "excluded.csv", index=False)
+    logger.info("Excluded at e_above_hull <= %s: %s", max(tiers),
+                reasons.sum().to_dict())
+    candidates = candidates[~reasons.any(axis=1)].sort_values(["track", "e_above_hull"])
     candidates.to_csv(report_dir / "candidates.csv", index=False)
+
+    # One structure per composition, the free relaxation's lowest, with its Li sites.
+    shortlist = (candidates[(candidates["track"] == "free")
+                            & (candidates["e_above_hull"] <= headline)]
+                 .sort_values("e_above_hull").drop_duplicates("relaxed_formula").copy())
+    with ProcessPoolExecutor(args.report_workers) as pool:
+        environments = list(pool.map(
+            li_environment, zip(shortlist["cif_path"], shortlist["ionic_oxidation_states"]),
+            chunksize=8))
+    shortlist = pd.concat([shortlist.reset_index(drop=True), pd.DataFrame(environments)],
+                          axis=1)
+    shortlist.to_csv(report_dir / "shortlist.csv", index=False)
     cif_dir = report_dir / "cifs"
     if cif_dir.exists():
         shutil.rmtree(cif_dir)
@@ -804,12 +950,18 @@ def run_report(args, config: dict) -> None:
             "valid_unique_novel": len(part)}
         for tier in tiers:
             row[f"e_hull<={tier}"] = int((known["e_above_hull"] <= tier).sum())
+        at_headline = known[known["e_above_hull"] <= headline]
+        row[f"compositions<={headline}"] = at_headline["relaxed_formula"].nunique()
+        row[f"new_compositions<={headline}"] = at_headline.loc[
+            at_headline["new_composition"], "relaxed_formula"].nunique()
         summary.append(row)
     summary = pd.DataFrame(summary)
     summary.to_csv(report_dir / "tiers_by_family.csv", index=False)
     print(summary.to_string(index=False))
     free = candidates[(candidates["track"] == "free") & (candidates["e_above_hull"] <= headline)]
-    print(f"{len(free)} novel, not-known-SE structures at e_above_hull <= {headline} (free track)")
+    print(f"{len(free)} novel, not-known-SE structures at e_above_hull <= {headline} (free "
+          f"track): {len(shortlist)} compositions, "
+          f"{int(shortlist['new_composition'].sum())} of them new to the reference")
     if args.wandb:
         upload(root, config, summary, len(free))
 
@@ -873,6 +1025,8 @@ def main() -> None:
     parser.add_argument("--remote-max-atoms", type=int, default=None,
                         help="relax: the largest run, in atoms, a remote host may take.")
     parser.add_argument("--wandb", action="store_true", help="report: log to W&B.")
+    parser.add_argument("--report-workers", type=int, default=32,
+                        help="report: processes for the shortlist's Li coordination.")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
