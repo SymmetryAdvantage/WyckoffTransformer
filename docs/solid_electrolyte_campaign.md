@@ -10,7 +10,7 @@
 > 2,852 compositions have a free-relaxed ORB structure within 0.1 eV/atom of the hull,
 > and 2,556 of them are new to LeMat-Bulk. See [Relaxation and hull](#relaxation-and-hull).
 > Nothing here has been checked against ICSD or by DFT. The two band-gap regressors are
-> not yet on Hugging Face.
+> on Hugging Face (2026-10-25); see [Screens](#screens-and-why-each-is-there).
 
 The pipeline is the one of the ICML 2026 AI4Science paper
 ([archive/101_Generative_Pipeline_for_Di.pdf](archive/101_Generative_Pipeline_for_Di.pdf)),
@@ -132,10 +132,15 @@ lengths, so single-element genes are weak: `3t16iys0` puts diamond Si, a trainin
 with a 0.61 eV PBE gap, at 0.01 eV. It gives LiCl 6.24 eV (MP 6.25) and Li2O 5.09 eV
 (MP 4.90). The r2SCAN model puts Li2O, which its data lack, at 1.4 eV.
 
-Both models are staged for the Hub with model cards
-(`SymmetryAdvantage/WyFormer-MP-BandGap-PBE`, CC BY 4.0, and
-`SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN`, CC BY-NC 4.0) in the campaign's
-`hf_stage/`. They are not uploaded yet: hera's Hugging Face token is read-only.
+Both models are on the Hub with model cards, uploaded 2026-10-25 from the campaign's
+`hf_stage/` with `scripts/push_to_hub.py`:
+[`SymmetryAdvantage/WyFormer-MP-BandGap-PBE`](https://huggingface.co/SymmetryAdvantage/WyFormer-MP-BandGap-PBE)
+(`3t16iys0`, CC BY 4.0, Hub revision `4f087059a03d`) and
+[`SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN`](https://huggingface.co/SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN)
+(`xy2dr9us`, CC BY-NC 4.0, revision `ae44293e3a69`). Each Hub checkpoint is
+byte-identical to the local one, and `WyckoffTrainer.from_huggingface` reproduces
+the LiCl and Li2O gaps above. The cards say `predict_gene_scalars` is not yet in the
+public repository, which stays true until this branch is pushed.
 
 **Selection.** The genes passing all screens are ranked by WyFormer-LeMat-Energy's
 predicted distance to the LeMat-Bulk-fixed PBE hull. Each system keeps its best genes, at

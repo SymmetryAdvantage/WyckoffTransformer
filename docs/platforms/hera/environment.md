@@ -289,4 +289,6 @@ another host should run with `SSH_AUTH_SOCK=` so they never depend on a session'
 The `HF_TOKEN` in hera's `.env` (`hera-wyformer`) is a fine-grained token with only
 `repo.content.read` on the user's namespace. It downloads models but cannot create or push
 to `SymmetryAdvantage` repos (`403 Forbidden` from `api/repos/create`, 2026-10-23).
-Push from a machine with a write token, or give hera one.
+On 2026-10-25 the user added `repo.write` and `repo.contribute.write` on
+`SymmetryAdvantage`; hera then created and pushed the two band-gap model repos.
+The user's own namespace is still read-only.
