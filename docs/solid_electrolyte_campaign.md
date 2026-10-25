@@ -139,8 +139,8 @@ Both models are on the Hub with model cards, uploaded 2026-10-25 from the campai
 [`SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN`](https://huggingface.co/SymmetryAdvantage/WyFormer-MP-BandGap-r2SCAN)
 (`xy2dr9us`, CC BY-NC 4.0, revision `ae44293e3a69`). Each Hub checkpoint is
 byte-identical to the local one, and `WyckoffTrainer.from_huggingface` reproduces
-the LiCl and Li2O gaps above. The cards say `predict_gene_scalars` is not yet in the
-public repository, which stays true until this branch is pushed.
+the LiCl and Li2O gaps above. `predict_gene_scalars` reached the public `main` when
+this branch was merged on 2026-10-25, and the cards were updated to say so.
 
 **Selection.** The genes passing all screens are ranked by WyFormer-LeMat-Energy's
 predicted distance to the LeMat-Bulk-fixed PBE hull. Each system keeps its best genes, at
