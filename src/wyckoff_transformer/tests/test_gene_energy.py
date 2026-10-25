@@ -157,6 +157,50 @@ class TestGeneScreen(unittest.TestCase):
         self.assertAlmostEqual(scored.loc[1, "score"], 0.2)
         self.assertFalse(scored.loc[1, "predicted_below_hull"])
 
+    def test_any_scalar_target_is_predicted_without_a_hull(self):
+        # A band-gap regressor: unconditioned, not a screen target, so score_genes
+        # would refuse it; predict_gene_scalars reports the mean and spread of the
+        # augmentation draws and why an unreadable gene has none.
+        class _BandGap:
+            target = TargetClass.Scalar
+            target_name = "band_gap"
+
+            def predict_scalars(self, tensors, augmentation_samples, cond):
+                self.cond = cond
+                return (torch.tensor([2.0]),
+                        torch.tensor([[1.0], [3.0]])[:augmentation_samples])
+
+        record = {
+            "elements": ["Li", "Cl"],
+            "multiplicity": [4, 4],
+            "site_symmetries": ["m-3m", "m-3m"],
+            "sites_enumeration": [0, 1],
+            "spacegroup_number": 225,
+        }
+        regressor = _BandGap()
+        with (
+            patch("wyckoff_transformer.cli.gene_screen.GeneFingerprinter") as fingerprinter,
+            patch(
+                "wyckoff_transformer.cli.gene_screen.filter_supported_tokens",
+                side_effect=lambda frame, _: (frame, []),
+            ),
+            patch(
+                "wyckoff_transformer.cli.gene_screen.build_tokenised_prediction_tensors",
+                return_value={},
+            ),
+        ):
+            fingerprinter.return_value.record.side_effect = [KeyError("4z"), record]
+            predicted = gene_screen.predict_gene_scalars(
+                [{"gene": 0}, {"gene": 1}], regressor, augmentation_samples=2)
+
+        self.assertIsNone(regressor.cond)
+        self.assertTrue(pd.isna(predicted.loc[0, "prediction"]))
+        self.assertIn("KeyError", predicted.loc[0, "reason"])
+        self.assertEqual(predicted.loc[1, "formula"], "Cl4Li4")
+        self.assertAlmostEqual(predicted.loc[1, "prediction"], 2.0)
+        self.assertAlmostEqual(predicted.loc[1, "prediction_std"], 2 ** 0.5)
+        self.assertTrue(pd.isna(predicted.loc[1, "reason"]))
+
     def test_repeated_genes_keep_their_best_scored_row(self):
         # Two orders of the same sites are one gene; the screen's score order decides
         # which row survives, so the input order of the gene list must not.

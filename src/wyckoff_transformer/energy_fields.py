@@ -67,6 +67,11 @@ DFT_SETTINGS = {
         "MACE-MP-0b3 (trained on MPtrj) sits at median +0.003 (MP rows), -0.010 "
         "(Alexandria) and -0.035 eV/atom (OQMD) from LeMat's DFT.  The OQMD offset "
         "cannot be told apart from the model extrapolating to OQMD's prototypes."),
+    "R2SCAN_MP": (
+        "Materials Project r2SCAN settings (MPScanRelaxSet: the r2SCAN meta-GGA, PBE_54 "
+        "PAW pseudopotentials, no Hubbard U).  MP's R2SCAN thermo documents carry these "
+        "energies uncorrected (energy_per_atom equals uncorrected_energy_per_atom on "
+        "every row of release 2026.09.28).  A different scale from PBE_MP; never mix."),
     "PBE_OMat24": (
         "OMat24's settings.  Not the MP scale: ORB-v3-omat, UMA-omat and MACE-OMAT-0, "
         "three architectures, all sit +0.05 to +0.07 eV/atom above LeMat-Bulk's DFT on "
@@ -175,6 +180,13 @@ REFERENCES = {
     "mp_gga_gga_u_2026.04.13": (
         "Materials Project release 2026.04.13, GGA_GGA+U thermo documents: MP's own "
         "phase diagram over its GGA/GGA+U entries, MP2020-corrected."),
+    "mp_gga_gga_u_2026.09.28": (
+        "Materials Project release 2026.09.28, GGA_GGA+U thermo documents, as "
+        "mp_gga_gga_u_2026.04.13.  Every label of mp_2026_gga_gap recurs unchanged in "
+        "mp_20260928_gga_gap (checked 2026-10-23), under MP's new material ids."),
+    "mp_r2scan_2026.09.28": (
+        "Materials Project release 2026.09.28, R2SCAN thermo documents: MP's own phase "
+        "diagram over its r2SCAN entries, uncorrected.  Mostly GNoME materials."),
     "mp_cdvae_2021": (
         "The Materials Project hull at the time CDVAE pulled MP-20 (snapshot date "
         "unknown, about 2021), MP2020-corrected.  Not reproducible from anything here."),

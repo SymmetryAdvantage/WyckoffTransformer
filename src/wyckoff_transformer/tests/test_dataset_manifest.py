@@ -10,7 +10,8 @@ from wyckoff_transformer import dataset_manifest as dm
 from wyckoff_transformer.energy_fields import check_compatible
 
 CURRENT = {"lemat_bulk_fmax1_stress", "lemat_bulk_fmax1_stress_ehull01", "mp_20",
-           "mp_2026_gga_gap", "formula_energy", "alex_mp_20_labelled",
+           "mp_2026_gga_gap", "mp_20260928_gga_gap", "mp_20260928_r2scan_gap",
+           "formula_energy", "alex_mp_20_labelled",
            "alex_mp_20_labelled_per_split", "lemat_bulk_fmax1_stress_icsd",
            "lemat_bulk_fixed_fmax1_stress", "lemat_bulk_fixed_fmax1_stress_ehull01",
            "lemat_bulk_fixed_fmax1_stress_icsd", "formula_energy_fixed"}

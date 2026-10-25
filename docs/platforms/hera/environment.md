@@ -8,16 +8,16 @@ following local observations and setup results were recorded on 2026-10-16.
 | --- | --- |
 | OS / kernel | Ubuntu 26.04.1 LTS / `7.0.0-38-generic` (Zeus's page records Ubuntu 24.04.4) |
 | RAM | 499 GiB (Zeus's page records 1,007 GiB) |
-| NVIDIA driver | `615.71.09` |
+| NVIDIA driver | `615.71.10` (since the reboot on 2026-10-22) |
 | Checkout | `/home/kna/WyckoffTransformer` |
 | Local wheel index | `/mnt/hdd/torch_wheels/`; includes Torch `2.14.1+cu134` for CPython 3.12 and 3.14 |
-| Project environment | `uv` at `/snap/bin/uv`; Python 3.14.4 `.venv` installed with `dev relax nep`; Torch import and CUDA tensor computation pass |
+| Project environment | `uv` 0.13.5 at `~/.local/bin/uv` (since 2026-10-23); Python 3.14.4 `.venv` installed with `dev relax nep`; Torch import and CUDA tensor computation pass |
 | Data store config | `~/.config/wyformer/paths.env` copied from Zeus over SSH on 2026-10-16 |
 
 ## Setup and worktrees
 
 Use Python 3.14, following Zeus and the user's explicit instruction. `uv` is
-available at `/snap/bin/uv` as of the follow-up inspection on 2026-10-16. Reuse
+at `~/.local/bin/uv` (0.13.5, reinstalled on 2026-10-23 after `snapd` was purged). Reuse
 [`scripts/platforms/zeus/env_init.sh`](../../../scripts/platforms/zeus/env_init.sh)
 and its tracked `uv.toml`; after each invocation, select Hera's agent brief
 because the shared initializer links Zeus's:
@@ -189,3 +189,106 @@ Both MP-20 and the unsliced LeMat cache were prepared on 2026-10-16; every paren
 tensor was checked for exact preservation. The MP-20 tokeniser/tensor
 directories arrived without owner write permission; it was enabled to add the
 sibling and restored afterward.
+
+## NVIDIA driver upgrade (2026-10-22)
+
+At 12:54 on 2026-10-22 the NVIDIA userspace was upgraded to 615.71.10 while the
+loaded kernel module stayed at 615.71.09. `nvidia-smi` and NVML then failed with
+`Failed to initialize NVML: Driver/library version mismatch`, although Torch CUDA
+still ran a matmul on both cards. The user rebooted hera; afterwards the module and
+userspace both reported 615.71.10 and `nvidia-smi` worked. After an unattended driver
+upgrade, reboot before starting a long GPU job rather than relying on the mismatched
+state.
+
+## cuDSS 1.0 upgrade (2026-10-23)
+
+At 12:17 UTC on 2026-10-23, `apt install cudss-cuda-13` upgraded cuDSS from 0.8.0.10 to
+1.0.0.35 and removed `libcudss0-cuda-13`, so `libcudss.so.0` was gone. The Torch
+2.14.1+cu134 wheel's `libtorch_cuda.so` needs that soname. From then on, every new Python
+process failed at `import torch` with `ImportError: libcudss.so.0: cannot open shared
+object file`. Processes already running kept the library they had mapped. The
+solid-electrolyte campaign lost one stage this way (phosphide `score`).
+
+In the worktree venv `/home/kna/WyckoffTransformer-se/.venv`, the old library now ships
+with Torch. `apt download libcudss0-cuda-13=0.8.0.10-1` fetched the package from the
+host's local repo (`/var/cudss-local-repo-ubuntu2404-0.8.0`) without installing it.
+`dpkg-deb -x` then extracted `libcudss.so.0.8.0`, which was copied with its
+`libcudss.so.0` link into `site-packages/torch/lib/`. That directory is on the library's
+`$ORIGIN` RUNPATH, so no environment variable or restart is needed.
+
+The main checkout's venv, `/home/kna/WyckoffTransformer/.venv`, still fails to import
+Torch. Fix it the same way, reinstall `libcudss0-cuda-13` next to 1.0 (if the packages
+coexist), or rebuild Torch against cuDSS 1.0.
+
+At 12:57 the user rebuilt the wheel against cuDSS 1.0:
+`/mnt/hdd/torch_wheels/torch-2.14.1+cu134-cp314-cp314-linux_x86_64.whl`.
+Its sha256 is `d003b007…9ff2`. It comes from the same source as the installed wheel, tag
+v2.14.1 at commit `5c48869`. Its `libtorch_cuda.so` needs `libcudss.so.1`, which
+resolves to the system cuDSS 1.0, and no library is missing.
+
+It was checked unpacked on `PYTHONPATH`, ahead of the worktree venv:
+- Matmuls ran on both GPUs.
+- A CUDA `torch.sparse.spsolve`, which goes through cuDSS, gave the same 4e-16 residual
+  as the old build.
+- `torch.compile` worked.
+- ORB `orb_conserv_inf` was run on six relaxed campaign structures (24–288 atoms). Its
+  energies and forces differed from the old build by at most 4e-4 eV and 9e-4 eV/Å. Two
+  runs of the old build differ from each other by up to 1e-3 eV and 8e-4 eV/Å, so the
+  new build is equivalent within float32 GPU noise.
+
+The same session purged `snapd`, which also removed `/snap/bin/uv`. The user reinstalled
+it as `~/.local/bin/uv` (0.13.5).
+
+The rebuilt wheel then went into the main checkout's venv. `uv.lock` records the local
+wheel by path, with no hash, and its version is unchanged, so `uv sync` would keep the
+old build. Replace it explicitly:
+
+```bash
+uv pip install --python .venv/bin/python --no-deps --reinstall-package torch \
+    /mnt/hdd/torch_wheels/torch-2.14.1+cu134-cp314-cp314-linux_x86_64.whl
+```
+
+The `libnvshmem_host.so.3` link survived the reinstall. Afterwards:
+- The smoke test and ORB numbers above matched again.
+- `CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest src/wyckoff_transformer` gave
+  1592 passed and 53 skipped.
+
+The worktree venv kept the old build and its copied `libcudss.so.0` until the
+solid-electrolyte relax run ended. Replacing Torch under a driver that keeps starting new
+stages could have let one of them import a half-installed package. On 2026-10-24 at
+14:05 it got the rebuilt wheel the same way, and the copied library was deleted. Every
+stage of that campaign up to `report` ran on the old build.
+
+## Solid-electrolyte campaign (2026-10-22)
+
+[`se-families-hera-20261022`](../../solid_electrolyte_campaign.md) runs from the
+worktree `/home/kna/WyckoffTransformer-se` (branch `se-families-campaign`, its own
+venv). It needed two inputs hera did not have:
+
+- `data/lemat-bulk/lemat_pbe.csv.gz` (1.06 GB), the geometry the protocol's `score`
+  stage matches novelty against, copied from zeus. `scripts/store_sync.sh` syncs
+  directories only: given this file as a subpath, rsync failed with `Not a directory`
+  and left an empty directory of that name behind. Copy a single file with plain
+  `rsync -a zeus:<store>/data/lemat-bulk/lemat_pbe.csv.gz <store>/data/lemat-bulk/`.
+- `data/obelix/all.csv`, OBELiX at commit `4eaac88`, downloaded from GitHub.
+
+`mp_2026_gga_gap` was re-tokenised with `der_tokenizer_v1` in 54 s; the
+gene-level band-gap regressor then trained at about 82 steps/s on one RTX 6000 Ada.
+
+### SSH from hera to iapetus
+
+hera reached zeus and iapetus only through an agent forwarded by the user's login, so
+an ORB lane on iapetus died whenever that session ended (2026-10-23). hera now has its
+own key, `~/.ssh/id_ed25519` (`kna@hera`, SHA256:s818UQKx…), authorised on iapetus and
+zeus on 2026-10-23. `ssh-copy-id` copies the keys of the machine it runs on, so it has to
+be run *on hera*; run from a laptop it authorises the laptop. Long jobs that ssh to
+another host should run with `SSH_AUTH_SOCK=` so they never depend on a session's agent.
+
+### Hugging Face token
+
+The `HF_TOKEN` in hera's `.env` (`hera-wyformer`) is a fine-grained token with only
+`repo.content.read` on the user's namespace. It downloads models but cannot create or push
+to `SymmetryAdvantage` repos (`403 Forbidden` from `api/repos/create`, 2026-10-23).
+On 2026-10-25 the user added `repo.write` and `repo.contribute.write` on
+`SymmetryAdvantage`; hera then created and pushed the two band-gap model repos.
+The user's own namespace is still read-only.
