@@ -20,9 +20,8 @@ import signal
 import sys
 import time
 import warnings
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy")
 
@@ -49,7 +48,6 @@ from pyxtal.tolerance import Tol_matrix
 from run_cryspr_reconstruction_study import (
     apply_runtime_patches,
     build_patched_orb_calculator,
-    get_crystal_system_and_lattice_dof,
 )
 
 logging.basicConfig(

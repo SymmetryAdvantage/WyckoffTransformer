@@ -15,7 +15,6 @@ new cache has no tensors; tokenise it with a tokeniser that carries the column
 (``yamls/tokenisers/der_tokenizer_v1_icsd.yaml``).
 """
 import argparse
-import json
 import logging
 import shutil
 from pathlib import Path

@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Multi-core Empirical evaluation of the Oracle Coordination Number hypothesis."""
 import multiprocessing as mp
-import pickle
-import sys
 import warnings
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pymatgen.analysis.local_env import CrystalNN, MinimumDistanceNN
+from pymatgen.analysis.local_env import CrystalNN
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core import Structure
 

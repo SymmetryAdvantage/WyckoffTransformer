@@ -1,4 +1,4 @@
-import sys, json, pandas as pd
+import sys, json
 from mpclient import Rest
 W=sys.argv[1]; r=Rest(W+"/api_cache")
 def pull(endpoint, params, name):

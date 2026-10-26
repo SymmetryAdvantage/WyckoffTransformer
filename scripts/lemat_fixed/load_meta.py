@@ -1,4 +1,4 @@
-import pyarrow.parquet as pq, pyarrow.compute as pc, glob, os, numpy as np, pandas as pd, sys
+import pyarrow.parquet as pq, glob, os, numpy as np, pandas as pd, sys
 W=sys.argv[1]
 S=os.path.expanduser("~/.cache/huggingface/hub/datasets--LeMaterial--LeMat-Bulk/snapshots/0dc17eea904b860ad7288141e9870f67f8e6bb2c/compatible_pbe")
 dfs=[]

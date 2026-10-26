@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT
+from wyckoff_transformer import WANDB_ENTITY, WANDB_PROJECT, wandb_run_path
 from wyckoff_transformer.dataset_cache import as_cache_dir, dataset_cache_dir
 from wyckoff_transformer.evaluation.protocol import (
     GeneFingerprinter,
@@ -218,7 +218,8 @@ def publish_result(run, api, artifact, out, report, record, run_ids, project):
     logged.wait()
     run_id, prefix = source_destination(collection, run_ids)
     if run_id is not None:
-        source_run = api.run(f"{project}/{run_id}")
+        entity, project_name = project.split("/", 1)
+        source_run = api.run(wandb_run_path(run_id, entity, project_name))
         values = flatten_funnel(report, prefix)
         # Preserve explicit undefined fractions, and remove stale measurements
         # for tracks no longer present. All unrelated summary keys are retained.

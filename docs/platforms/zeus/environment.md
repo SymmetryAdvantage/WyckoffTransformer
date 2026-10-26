@@ -39,6 +39,22 @@ UV_PROJECT_ENVIRONMENT=/tmp/venv-test scripts/platforms/zeus/env_init.sh
 Note that `uv pip list` does **not** honour `UV_PROJECT_ENVIRONMENT`; to
 inspect a scratch venv, pass `--python /tmp/venv-test/bin/python`.
 
+### Refreshing a rebuilt wheel with the same version
+
+Local wheel filenames can stay the same after a rebuild. A normal sync then
+leaves the old binary installed. Force a reinstall from the wheel itself:
+
+```bash
+uv pip install --python .venv/bin/python --reinstall --no-deps \
+  '/mnt/hdd/torch_wheels/torch-2.14.1+cu134-cp314-cp314-linux_x86_64.whl'
+```
+
+The Python 3.14 wheel rebuilt on 2026-10-23 links to `libcudss.so.1`, supplied
+by the current host cuDSS. The older build needs the removed `libcudss.so.0`.
+Do not symlink across those ABI versions. Only install wheels compatible with
+the venv's Python and platform; older `cp312` builds in the directory are for
+Python 3.12.
+
 ---
 
 ## Git worktrees: one venv each

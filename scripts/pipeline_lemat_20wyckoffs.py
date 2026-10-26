@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-import os
 import subprocess
-from datasets import load_dataset
 import pandas as pd
 from pymatgen.core import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
-import numpy as np
-from pandarallel import pandarallel
 
 from wyckoff_transformer.paths import data_path
 

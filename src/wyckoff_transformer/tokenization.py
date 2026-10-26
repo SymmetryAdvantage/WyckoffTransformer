@@ -12,9 +12,9 @@ from pandas import DataFrame
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file as save_safetensors_file
-from pandarallel import pandarallel
 from pyxtal.symmetry import Group
 from omegaconf import OmegaConf, DictConfig
+from pandarallel import pandarallel as pandarallel
 
 from wyckoff_transformer.dataset_cache import load_cache
 from wyckoff_transformer.dataset_manifest import warn_if_obsolete_dataset
@@ -26,8 +26,8 @@ from wyckoff_transformer.wyckoff_processor import (
     PackedNestedList,
     PackedTensorList,
     WyckoffProcessor,
-    argsort_multiple,
 )
+from wyckoff_transformer.wyckoff_processor import argsort_multiple as argsort_multiple
 
 #: Key a tokeniser config sets to say it must not be used for new work.
 #:

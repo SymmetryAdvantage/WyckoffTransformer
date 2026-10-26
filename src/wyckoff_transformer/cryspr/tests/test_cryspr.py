@@ -40,7 +40,7 @@ class TestResolveModelPath(unittest.TestCase):
         self.assertEqual(resolve_model_path(p), p)
 
     def test_http_url_triggers_download(self):
-        from wyckoff_transformer.cryspr.calculator import resolve_model_path, _download_and_cache
+        from wyckoff_transformer.cryspr.calculator import resolve_model_path
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)
             with patch("urllib.request.urlretrieve") as mock_dl:

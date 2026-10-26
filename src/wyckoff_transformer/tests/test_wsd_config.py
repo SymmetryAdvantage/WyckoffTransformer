@@ -89,8 +89,7 @@ class TestAdamWWsdConfig(unittest.TestCase):
             opt, total_steps=total_steps, **self.config.optimisation.scheduler.config)
         # Sampling the schedule rather than stepping 6.8M times.
         def lr_at(step):
-            sched.last_epoch = step - 1
-            return sched.get_lr()[0]
+            return peak * sched.lr_lambdas[0](step - 1)
         self.assertLess(lr_at(1), peak)                      # warming up
         self.assertAlmostEqual(lr_at(total_steps // 2), peak, places=12)   # stable
         self.assertLess(lr_at(total_steps - 1), peak * 0.02)  # annealed by the end

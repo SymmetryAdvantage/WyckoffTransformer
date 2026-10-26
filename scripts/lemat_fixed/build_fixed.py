@@ -2,7 +2,7 @@
 
 usage: build_fixed.py WORK OUT
 """
-import sys, json, glob, os, collections, numpy as np, pandas as pd, pyarrow as pa, pyarrow.parquet as pq
+import sys, json, os, collections, numpy as np, pandas as pd, pyarrow as pa, pyarrow.parquet as pq
 from pathlib import Path
 
 W, OUT = Path(sys.argv[1]), Path(sys.argv[2])

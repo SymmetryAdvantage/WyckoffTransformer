@@ -276,13 +276,20 @@ def test_publish_only_updates_template_keys_and_retains_undefined_rates(tmp_path
             return self
     monkeypatch.setattr(wandb, "Artifact", Artifact)
     source = SimpleNamespace(summary=summary)
-    api = SimpleNamespace(run=lambda path: source)
+    lookups = []
+
+    def get_run(path):
+        lookups.append(path)
+        return source
+
+    api = SimpleNamespace(run=get_run)
     analysis = SimpleNamespace(use_artifact=lambda path: None, log_artifact=lambda artifact: artifact)
     report = {"free": {"template_novelty": {"novel_unique": 0,
                                            "stable_fraction_novel_unique": None}}}
     run_id, result = publish_result(analysis, api, SimpleNamespace(name="protocol_run:v0"),
                                     tmp_path, report, {"source_artifact": "e/p/protocol_run:v0"}, {"run"}, "e/p")
     assert run_id == "run"
+    assert lookups == ["e/p/run"]
     assert result == "e/p/template_novelty_protocol_run:v3"
     assert summary.data["training/loss"] == 1.0
     assert summary.data["protocol/free/metasun_per_sampled_gene"] == 0.2

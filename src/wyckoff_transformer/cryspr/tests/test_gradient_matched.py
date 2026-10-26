@@ -9,10 +9,11 @@ from ase import Atoms
 from ase.build import bulk
 from ase.calculators.calculator import Calculator, all_changes
 from ase.calculators.emt import EMT
+from ase.calculators.fd import FiniteDifferenceCalculator
 from ase.constraints import FixSymmetry
 from ase.filters import FrechetCellFilter
 from ase.optimize import BFGS
-from ase.stress import full_3x3_to_voigt_6_stress, voigt_6_to_full_3x3_stress
+from ase.stress import full_3x3_to_voigt_6_stress
 
 from wyckoff_transformer.cryspr.gradient_matched import (
     GeneralizedCoordinates,
@@ -102,8 +103,10 @@ def test_forces_and_stress_are_derivatives_of_energy(strained):
         deformation = np.eye(3) + np.array([[0.02, 0.01, -0.004], [0.003, -0.015, 0.006], [0.0, 0.008, 0.01]])
         probe.set_cell(probe.cell.array @ deformation, scale_atoms=True)
     probe.calc = calc
-    np.testing.assert_allclose(probe.get_forces(), calc.calculate_numerical_forces(probe, d=1e-5), atol=1e-7)
-    np.testing.assert_allclose(probe.get_stress(), calc.calculate_numerical_stress(probe, d=1e-6), atol=1e-8)
+    numerical = probe.copy()
+    numerical.calc = FiniteDifferenceCalculator(calc, eps_disp=1e-5, eps_strain=1e-6)
+    np.testing.assert_allclose(probe.get_forces(), numerical.get_forces(), atol=1e-7)
+    np.testing.assert_allclose(probe.get_stress(), numerical.get_stress(), atol=1e-8)
 
 
 def test_translation_and_rotation_invariance_of_the_correction():

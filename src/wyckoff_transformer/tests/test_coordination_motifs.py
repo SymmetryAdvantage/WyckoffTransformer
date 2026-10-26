@@ -50,12 +50,14 @@ def test_corundum_face_sharing_and_off_centring():
     assert row["face_sharing_d0_oct_dim"] == -1    # Al3+ is not a d0 z >= 4 cation
 
 
+@pytest.mark.filterwarnings("error::RuntimeWarning")
 def test_square_planar_pt():
-    _, sites, _ = analyse("t-4", _p1_cif("P4_2/mmc", Lattice.tetragonal(3.47, 6.11), ["Pt", "S"],
+    row, sites, _ = analyse("t-4", _p1_cif("P4_2/mmc", Lattice.tetragonal(3.47, 6.11), ["Pt", "S"],
                                          [[0, .5, 0], [0, 0, .25]]))
     pt = _site(sites, "Pt")
     assert (pt["d_count"], pt["cn"], pt["geometry"]) == (8, 4, "square_planar")
     assert pt["pg_allows_square_planar"] and not pt["pg_allows_tetrahedron"]
+    assert np.isnan(row["gii"]) and np.isnan(row["max_anion_bvs_dev"])
 
 
 def test_intermetallic_out_of_scope():

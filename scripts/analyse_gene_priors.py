@@ -28,12 +28,11 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import json
 import os
 import pickle
 import time
 import warnings
-from collections import Counter, defaultdict
+from collections import defaultdict
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Iterable, Optional

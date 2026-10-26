@@ -19,9 +19,8 @@ import signal
 import sys
 import time
 import warnings
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy")
 
@@ -33,7 +32,6 @@ if str(_repo_root / "scripts") not in sys.path:
 
 import numpy as np
 import pandas as pd
-from ase import Atoms
 from ase.constraints import FixSymmetry
 from ase.io import write as ase_write
 from ase.optimize import BFGS
@@ -46,7 +44,6 @@ from pyxtal.tolerance import Tol_matrix
 from run_cryspr_reconstruction_study import (
     apply_runtime_patches,
     build_patched_orb_calculator,
-    get_crystal_system_and_lattice_dof,
 )
 
 # Setup logging

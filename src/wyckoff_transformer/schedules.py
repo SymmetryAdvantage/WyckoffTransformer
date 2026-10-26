@@ -5,7 +5,6 @@ notion of how long the run is, but it also cannot anneal to zero on a deadline. 
 fixed compute budget wants the opposite -- a schedule that knows its own horizon.
 """
 import math
-from typing import Callable
 
 import torch
 

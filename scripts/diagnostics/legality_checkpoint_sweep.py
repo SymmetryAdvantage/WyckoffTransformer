@@ -1,5 +1,5 @@
 """Frequency-weighted p(illegal site symmetry) at site 0, across every local checkpoint."""
-import sys, logging, warnings
+import logging, warnings
 from pathlib import Path
 from collections import Counter
 import numpy as np, torch

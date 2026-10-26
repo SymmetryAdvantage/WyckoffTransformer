@@ -5,6 +5,7 @@ worker can unpickle them however pytest imported the test module.
 """
 import os
 import time
+from threading import Event
 from pathlib import Path
 
 from wyckoff_transformer.cli import worker_pool
@@ -52,7 +53,9 @@ def task(index, mode, flag_dir=None):
         time.sleep(0.05)  # long enough for the other workers to be busy too
         os._exit(1)
     elif mode == "hang_once" and _first_time(flag_dir, index):
-        time.sleep(120)
+        # Only the supervisor can end this trial; a slow test run must not
+        # let it finish before the timeout is observed.
+        Event().wait()
     elif mode == "hang_always":
-        time.sleep(120)
+        Event().wait()
     return row, index

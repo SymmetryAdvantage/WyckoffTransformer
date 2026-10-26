@@ -77,7 +77,7 @@ def scan(key, needed):
                             wanted.discard(t)
                             if not wanted: break
             return key, got, sorted(wanted), True
-        except Exception as e:
+        except Exception:
             time.sleep(5*(a+1))
     return key, got, sorted(wanted), False
 

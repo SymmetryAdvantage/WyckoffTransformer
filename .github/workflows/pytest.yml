@@ -28,6 +28,8 @@ jobs:
         curl -LsSf https://astral.sh/uv/install.sh | sh
         cp scripts/platforms/cpu/uv.toml uv.toml
         uv sync --extra dev --extra research --extra relax
+    - name: Lint Python sources and scripts
+      run: uv run ruff check .
     - name: Test wyckoff-transformer with pytest
       run: |
         uv run pytest --run-relax

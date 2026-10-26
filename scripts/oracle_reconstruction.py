@@ -1070,7 +1070,7 @@ def report(root: Path) -> None:
     A("")
     A("## Space group change under the reference relaxation")
     A("")
-    A(f"Gene extracted from the DFT geometry vs from the ORB-relaxed geometry: the spglib")
+    A("Gene extracted from the DFT geometry vs from the ORB-relaxed geometry: the spglib")
     A(f"space group differs for **{sg_changed} of {len(references)}** selected references")
     A(f"({sg_changed / max(len(references), 1):.2%}), and for {n_raw_changed} of {n_raw} over every")
     A("reference candidate relaxed. The relaxed gene is the one used everywhere.")

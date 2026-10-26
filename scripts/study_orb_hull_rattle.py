@@ -19,7 +19,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -28,10 +28,8 @@ import pyarrow.parquet as pq
 import spglib
 from ase import Atoms
 from ase.filters import FrechetCellFilter as CellFilter
-from ase.io import write as ase_write
 from huggingface_hub import hf_hub_download
 from pymatgen.analysis.structure_matcher import StructureMatcher
-from pymatgen.core import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
 # Ensure local project imports work
@@ -43,7 +41,6 @@ from scripts.run_cryspr_reconstruction_study import (
     build_patched_orb_calculator,
 )
 from wyckoff_transformer.cryspr.relaxer import (
-    RATTLE_ACCEPT_EV_PER_ATOM,
     RATTLE_STDEV,
     RATTLE_STRAIN_STDEV,
     _get_spacegroup_info,
@@ -262,7 +259,6 @@ def _worker_loop(
             # 1. Initial Atoms
             atoms_init = Atoms(symbols=species, positions=coords, cell=lat, pbc=True)
             spg_init_sym, spg_init_num = _get_spacegroup_info(atoms_init, symprec=1e-3)
-            vol_init = atoms_init.get_volume()
 
             # 2. Step (a): Symmetry-preserved relaxation
             # Warm-up (fix cell)
@@ -557,7 +553,6 @@ def compute_and_save_analysis(output_dir: Path):
 
     # 1. Energy Analysis
     dE = valid["delta_e_rattle_mev"]
-    dE_ev = valid["delta_e_rattle_ev"]
     
     n_lower_any = int((valid["delta_e_rattle_ev"] < 0.0).sum())
     n_lower_1mev = int((valid["delta_e_rattle_ev"] <= -0.001).sum())
@@ -595,7 +590,6 @@ def compute_and_save_analysis(output_dir: Path):
 
     # 3. Structural Divergence
     struct_matched_count = int(valid["struct_matched"].sum())
-    struct_unmatched_count = n_valid - struct_matched_count
     distinct_polymorphs = int(valid["distinct_polymorph_1mev"].sum())
 
     summary = {

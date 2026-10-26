@@ -115,7 +115,7 @@ def run_ase_relaxer(
         f"[{now()}] CrySPR Info: Relax cell? {'Yes' if cell_filter is not None else 'No'}",
         f"[{now()}] CrySPR Info: Relax atomic postions? {'Yes' if not fix_fractional else 'No'}",
         f"#{'-' * 60}#",
-        f"\n",
+        "\n",
     ])
     if logfile == "-":
         print(logcontent1)
@@ -151,7 +151,7 @@ def run_ase_relaxer(
         f"Optimized Cell: {atoms.cell.cellpar()}",
         f"Cell diff (%): {cell_diff}",
         # f"Scaled positions:\n{atoms.get_scaled_positions()}", # comment out to minimize the file size
-        f"\n",
+        "\n",
     ]
     )
     if logfile == "-":
@@ -259,7 +259,7 @@ def single_run(
             f"[{now()}] CrySPR Info: Use ML-IAP = {relax_calculator.__class__.__name__}",
             f"[{now()}] CrySPR Info: Use local optimization algorithm = {optimizer.__name__}",
             f"[{now()}] CrySPR Info: Use fmax = {fmax}",
-            f"\n",
+            "\n",
         ]
     )
     if verbose:
@@ -285,7 +285,7 @@ def single_run(
         [
             f"[{now()}] CrySPR Info: Done structure relaxation.",
             f"#{'-' * 60}#",
-            f"\n",
+            "\n",
         ]
     )
     if verbose:
@@ -314,7 +314,6 @@ import sys
 import json
 import pandas as pd
 import numpy as np
-import os
 import warnings
 import glob
 

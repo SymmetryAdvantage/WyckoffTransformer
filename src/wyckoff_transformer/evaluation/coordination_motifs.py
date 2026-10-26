@@ -588,9 +588,11 @@ def analyse(material_id: str, cif: str):
         anion_dev_ebs.append((ebs_sum[a] - v) / v)
     cation_dev = [(bv_sum[c] - oxi[species[c]]) for c in polyhedra]
     all_dev = cation_dev + [bv_sum[a] - abs(oxi[species[a]]) for a in anion_idx if a in anion_bonds]
-    row["gii"] = float(np.sqrt(np.nanmean(np.square(all_dev)))) if all_dev else np.nan
+    known_dev = np.asarray(all_dev)[~np.isnan(all_dev)]
+    known_anion_bvs = np.asarray(anion_dev_bvs)[~np.isnan(anion_dev_bvs)]
+    row["gii"] = float(np.sqrt(np.mean(np.square(known_dev)))) if known_dev.size else np.nan
     row["max_anion_ebs_dev"] = float(np.max(np.abs(anion_dev_ebs))) if anion_dev_ebs else np.nan
-    row["max_anion_bvs_dev"] = float(np.nanmax(np.abs(anion_dev_bvs))) if anion_dev_bvs else np.nan
+    row["max_anion_bvs_dev"] = float(np.max(np.abs(known_anion_bvs))) if known_anion_bvs.size else np.nan
     row["unbonded_anions"] = int(len(anion_idx) - len(anion_bonds))
 
     # --- Section 3: HSAB inversion ---

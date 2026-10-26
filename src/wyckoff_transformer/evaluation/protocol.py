@@ -607,7 +607,7 @@ def funnel_structure_metrics(screen: GeneScreen, structures: pd.DataFrame) -> di
             result[label] = None
             result[f"{label}_per_sampled_gene"] = None
             continue
-        mask = structures[column].fillna(False).astype(bool)
+        mask = structures[column].astype("boolean").fillna(False).astype(bool)
         if surviving is not None:
             mask = mask & surviving
         surviving = mask
@@ -656,7 +656,7 @@ def funnel_structure_metrics(screen: GeneScreen, structures: pd.DataFrame) -> di
     # sampled gene's novelty, over representatives that produced a unique
     # structure.
     if "novel_structure" in structures.columns and pre_novelty is not None:
-        novel_structure = structures["novel_structure"].fillna(False).astype(bool)
+        novel_structure = structures["novel_structure"].astype("boolean").fillna(False).astype(bool)
         gene_index = structures.index.to_series()
         known_gene = gene_index.isin(set(screen.known))
         novel_gene = gene_index.isin(set(screen.novel))
@@ -680,7 +680,7 @@ def funnel_structure_metrics(screen: GeneScreen, structures: pd.DataFrame) -> di
 
     for column in ("relaxed_fingerprint_resolved", "relaxed_fingerprint_changed"):
         result[column] = (
-            int(structures[column].fillna(False).astype(bool).sum())
+            int(structures[column].astype("boolean").fillna(False).astype(bool).sum())
             if not empty and column in structures.columns
             else None
         )

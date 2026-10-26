@@ -1,6 +1,5 @@
 """How often do the three cascade heads disagree about where the sequence ends?"""
 import sys, logging
-from collections import Counter
 from pathlib import Path
 import numpy as np, torch
 from omegaconf import OmegaConf

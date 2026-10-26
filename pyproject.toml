@@ -126,7 +126,20 @@ markers = [
 ]
 filterwarnings = [
   "ignore:`torch\\.jit\\.script` is deprecated\\..*:DeprecationWarning:torch\\.jit\\._script",
+  # Third-party APIs awaiting upstream updates for NumPy 2.5 / Python 3.14.
+  "ignore:Setting the shape on a NumPy array has been deprecated.*:DeprecationWarning:ase\\.atoms",
+  "ignore:`torch\\.jit\\.script` is not supported in Python 3\\.14.*:FutureWarning:torch\\.jit\\._script",
+  "ignore:Environment variable TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD detected.*:UserWarning:e3nn\\.o3\\._wigner",
 ]
+
+[tool.ruff]
+# Keep the baseline stable across Ruff releases. Research notebooks are not
+# standalone programs; lint the runnable Python sources and scripts.
+include = ["*.py", "*.pyi", "**/pyproject.toml"]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E9", "F"]
 
 [dependency-groups]
 # Oracles for tests/test_genbench_equivalence.py, which diffs our validity and

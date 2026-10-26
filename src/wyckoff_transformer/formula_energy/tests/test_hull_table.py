@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from wyckoff_transformer.formula_energy import hull_table as ht
 
@@ -96,6 +97,9 @@ class TestHullEnergies(unittest.TestCase):
             f"the failure was not reported: {logs.output}",
         )
 
+    # The CLI deliberately forks a read-only index to avoid copying millions
+    # of entries; pytest may already have unrelated library threads running.
+    @pytest.mark.filterwarnings("ignore:.*multi-threaded, use of fork.*:DeprecationWarning")
     def test_workers_do_not_change_the_answer(self):
         one = ht.hull_energies(_archive(), workers=1)
         many = ht.hull_energies(_archive(), workers=2)

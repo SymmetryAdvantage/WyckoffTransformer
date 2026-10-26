@@ -1,5 +1,5 @@
 """Classify why WyFormer-generated Wyckoff genes get rejected, by site index."""
-import sys, json, logging
+import sys, logging
 from collections import Counter, defaultdict
 from copy import deepcopy
 import torch

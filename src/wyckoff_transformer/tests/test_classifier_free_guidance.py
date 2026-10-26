@@ -19,7 +19,6 @@ What can go wrong silently, and is therefore pinned here:
 import math
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -465,7 +464,7 @@ class TestGenerateStructuresForwardsGuidance(unittest.TestCase):
         trainer = self._trainer(0.1)
         trainer.predict_start = True
         trainer.start_classes_to_tokens = lambda c: c
-        call = self._call(trainer, cond=torch.full((4, 1), 0.1), guidance_scale=2.5)
+        self._call(trainer, cond=torch.full((4, 1), 0.1), guidance_scale=2.5)
         self.assertEqual(len(_RecordingGenerator.start_calls), 1)
         start_args, start_kwargs = _RecordingGenerator.start_calls[0]
         self.assertEqual(start_args[0], 4)

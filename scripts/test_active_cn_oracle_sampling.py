@@ -65,10 +65,8 @@ def main():
     matcher = StructureMatcher(ltol=0.2, stol=0.3, angle_tol=5, primitive_cell=True, scale=True)
     
     df_targets = pd.read_parquet(_repo_root / "generated/cryspr_oracle_relaxed_cell_study/data/sampled_400_targets.parquet")
-    df_results = pd.read_csv(_repo_root / "generated/cryspr_oracle_relaxed_cell_study/tables/results_per_structure.csv")
     
     # Pick 5 missed structures with varying degrees of freedom and crystal systems
-    missed = df_results[(df_results["oracle_verdict"] == "missed") & (df_results["base5_verdict"] == "missed")]
     test_indices = [6, 17, 24, 30, 42]  # Variety of spacegroups and stoichiometries
     
     print("\n" + "="*70, flush=True)
@@ -79,7 +77,6 @@ def main():
     
     for s_idx in test_indices:
         row = df_targets[df_targets["struct_idx"] == s_idx].iloc[0]
-        imm_id = row["immutable_id"]
         tgt_struct = Structure.from_file(_repo_root / row["cif_path"])
         tgt_e = row["orb_e_target_per_atom"]
         gene = row["wyckoff_gene"]

@@ -1,4 +1,3 @@
-import json
 import unittest
 from pathlib import Path
 import tempfile
@@ -41,7 +40,7 @@ class TestSliceDatasetByEhull(unittest.TestCase):
         }
         save_tensor_cache(tensors, source_path)
 
-        masks = slice_safetensors(source_path, target_path, ehull_cutoff=0.1)
+        slice_safetensors(source_path, target_path, ehull_cutoff=0.1)
 
         self.assertTrue(target_path.exists())
         sliced = load_tensor_cache(target_path)

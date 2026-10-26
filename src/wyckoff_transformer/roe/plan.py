@@ -324,6 +324,7 @@ class Engagement:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         genes: list[dict] = []
+        cohort = None
         plan_record = None
         source_seconds = 0.0
         rounds = 0
@@ -332,7 +333,7 @@ class Engagement:
 
         while True:
             rounds += 1
-            want = n_structures if rounds == 1 else self._top_up_size(
+            want = n_structures if cohort is None else self._top_up_size(
                 cohort, target_engaged, n_structures)
             batch, batch_plan, batch_seconds = self._draw(want)
             source_seconds += batch_seconds

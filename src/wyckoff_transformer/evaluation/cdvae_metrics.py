@@ -19,7 +19,8 @@ from pymatgen.core import Composition, Structure
 from matminer.featurizers.site.fingerprint import CrystalNNFingerprint
 from matminer.featurizers.composition.composite import ElementProperty
 
-from .core import smact_validity_optimised, timed_smact_validity_from_record
+from .core import smact_validity_optimised
+from .core import timed_smact_validity_from_record as timed_smact_validity_from_record
 
 
 # ---------------------------------------------------------------------------

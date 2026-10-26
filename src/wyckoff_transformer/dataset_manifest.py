@@ -347,8 +347,8 @@ def obsolete_reason(dataset: str | Path) -> Optional[str]:
     try:
         manifest = load_manifest(dataset)
     except ManifestNotFound:
-        return (f"it has no manifest in yamls/datasets/, so nothing records what its "
-                f"fields mean or that it is current")
+        return ("it has no manifest in yamls/datasets/, so nothing records what its "
+                "fields mean or that it is current")
     return manifest.obsolete_reason
 
 

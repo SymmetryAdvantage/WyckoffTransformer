@@ -153,7 +153,7 @@ def main():
     target_safetensors = target_dir / "tensors" / f"{args.tokeniser_name}.safetensors"
     if not source_safetensors.exists():
         raise FileNotFoundError(f"Source safetensors not found at {source_safetensors}")
-    masks = slice_safetensors(source_safetensors, target_safetensors, args.ehull_cutoff)
+    slice_safetensors(source_safetensors, target_safetensors, args.ehull_cutoff)
 
     # 2. Tokeniser JSON
     source_tokeniser_json = source_dir / "tokenisers" / f"{args.tokeniser_name}.json"

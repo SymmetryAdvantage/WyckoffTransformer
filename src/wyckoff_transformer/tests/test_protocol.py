@@ -1584,7 +1584,6 @@ class TestFunnel(unittest.TestCase):
 
 class TestStageWorkerFailure(unittest.TestCase):
     def setUp(self):
-        import json
         self._tmp = tempfile.TemporaryDirectory()
         self.out = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)

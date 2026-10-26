@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import torch
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
-from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset, TargetClass
+from wyckoff_transformer.cascade.dataset import AugmentedCascadeDataset
 from wyckoff_transformer.cascade.model import (
     AdaLNTransformerEncoder,
     AdaLNTransformerEncoderLayer,

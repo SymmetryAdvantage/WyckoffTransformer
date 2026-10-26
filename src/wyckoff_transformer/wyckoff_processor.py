@@ -7,7 +7,7 @@ runtime dependencies such as torch, pandarallel, or omegaconf.
 Heavy imports (torch, omegaconf, pandarallel, tokenizer classes) are done
 lazily inside the methods that need them.
 """
-from typing import Dict, Optional, List, Tuple
+from typing import TYPE_CHECKING, Dict, Optional, List, Tuple
 from copy import deepcopy
 from collections import defaultdict
 from functools import partial
@@ -20,6 +20,9 @@ from pathlib import Path
 import numpy as np
 from pandas import Series, MultiIndex, DataFrame
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    import torch
 
 
 logger = logging.getLogger(__name__)

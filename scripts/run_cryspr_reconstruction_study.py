@@ -538,6 +538,8 @@ def _reconstruct_single_trial(
     steps_limit: int = 500,
 ) -> Optional[Dict]:
     """Execute 4-stage reconstruction for one trial of a gene."""
+    import torch
+
     trial_dir.mkdir(parents=True, exist_ok=True)
     tol_mat = Tol_matrix(prototype="atomic", factor=1.3)
 
@@ -669,7 +671,6 @@ def _reconstruct_single_trial(
             gene_id,
             trial_idx,
         )
-        import torch
         torch.cuda.empty_cache()
         return None
     except Exception as exc:
@@ -1105,7 +1106,7 @@ def step5_score_and_report(
     )
 
     # n_wyckoff_sites
-    n_wyckoff_df = create_binned_breakdown(
+    create_binned_breakdown(
         "n_wyckoff_sites",
         bins=[0, 1.5, 3.5, 6.5, 1000],
         labels=["1", "2–3", "4–6", ">6"],
@@ -1155,9 +1156,9 @@ def step5_score_and_report(
         "# CrySPR Reconstruction Fidelity Study Report",
         "",
         f"**Date:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}  ",
-        f"**Dataset:** LeMat-Bulk MLIP Hull (`e_above_hull <= 0.1 eV/atom`, seed=42)  ",
+        "**Dataset:** LeMat-Bulk MLIP Hull (`e_above_hull <= 0.1 eV/atom`, seed=42)  ",
         f"**Evaluated Unique Genes:** {total_genes}  ",
-        f"**Trials per Gene:** 10 (4 stages: lattice-only, fixed-cell, full-unconstrained, rattle+strain)  ",
+        "**Trials per Gene:** 10 (4 stages: lattice-only, fixed-cell, full-unconstrained, rattle+strain)  ",
         "",
         "---",
         "",

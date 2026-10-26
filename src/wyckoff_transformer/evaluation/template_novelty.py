@@ -120,7 +120,7 @@ def label_templates(indices, ids: dict, reference: set[str], eligible=None, erro
     frame.loc[resolved, "template_novel"] = ~frame.loc[resolved, "template_id"].isin(reference)
     frame["template_error"] = pd.Series(errors or {}, dtype="string")
     eligible = (pd.Series(True, index=frame.index) if eligible is None
-                else eligible.reindex(frame.index).fillna(False).astype(bool))
+                else eligible.reindex(frame.index).astype("boolean").fillna(False).astype(bool))
     selected = frame.loc[resolved & eligible].sort_index()
     representatives = selected.drop_duplicates("template_id").index
     first = selected.drop_duplicates("template_id").reset_index().set_index("template_id")["index"]
@@ -141,8 +141,8 @@ def template_metrics(labels: pd.DataFrame, structures: pd.DataFrame | None = Non
         "unique": int(labels.unique_template.sum()), "novel_unique": n,
     }
     if structures is not None:
-        present = structures.has_structure.fillna(False).astype(bool)
-        valid = present & structures.valid_structure.fillna(False).astype(bool)
+        present = structures.has_structure.astype("boolean").fillna(False).astype(bool)
+        valid = present & structures.valid_structure.astype("boolean").fillna(False).astype(bool)
         result["no_structure"] = int((~present).sum())
         result["invalid_structure"] = int((present & ~valid).sum())
         result["unresolved_valid_structure"] = int((valid & ~labels.template_resolved).sum())
@@ -169,7 +169,10 @@ def label_genes(genes, reference, fingerprinter):
 
 def label_structures(structures, ids, reference, errors=None):
     """Judge all structures, but count only valid structures as representatives."""
-    eligible = structures.has_structure.fillna(False).astype(bool) & structures.valid_structure.fillna(False).astype(bool)
+    eligible = (
+        structures.has_structure.astype("boolean").fillna(False).astype(bool)
+        & structures.valid_structure.astype("boolean").fillna(False).astype(bool)
+    )
     return label_templates(structures.index, ids, reference, eligible, errors)
 
 

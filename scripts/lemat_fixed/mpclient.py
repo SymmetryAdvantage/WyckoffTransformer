@@ -1,4 +1,4 @@
-import hashlib, json, time, os, requests
+import hashlib, json, time, requests
 from pathlib import Path
 API="https://api.materialsproject.org"
 class Rest:
@@ -15,7 +15,7 @@ class Rest:
         for a in range(8):
             try:
                 r=self.s.get(API+endpoint, params=params, timeout=600)
-            except requests.RequestException as e:
+            except requests.RequestException:
                 time.sleep(2**a); continue
             if r.status_code==429 or r.status_code>=500: time.sleep(2**a); continue
             if r.status_code>=400: raise RuntimeError(f"{r.status_code} {r.text[:500]}")

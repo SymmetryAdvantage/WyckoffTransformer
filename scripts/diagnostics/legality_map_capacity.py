@@ -5,12 +5,10 @@ multi-hot indicator of which site symmetries exist in the group. If linear suffi
 140k-parameter transformer cannot be blamed on capacity for getting this wrong.
 """
 import sys
-import numpy as np, torch, json
+import numpy as np, torch
 from pathlib import Path
 from wyckoff_transformer.paths import runs_root
 from wyckoff_transformer.tokenization import SpaceGroupEncoder, load_wyckoff_mappings
-from pyxtal.symmetry import Group
-from collections import Counter
 
 # Any run directory works: only its `wyckoffs_enumerated_by_ss.json` is read.
 RUN = Path(sys.argv[1]) if len(sys.argv) > 1 else runs_root() / "upi73i4k"

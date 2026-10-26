@@ -22,7 +22,6 @@ Protocol:
    - cn_oracle5 (dense initialized-cell oracle with CN guidance, 5 trials, 16.2%)
 """
 import argparse
-import gzip
 import hashlib
 import json
 import logging
@@ -35,7 +34,7 @@ import time
 import warnings
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 warnings.filterwarnings("ignore", category=RuntimeWarning, module="scipy")
 
@@ -220,7 +219,6 @@ def _reconstruct_single_trial(
     n_atoms = len(atoms)
 
     try:
-        import torch
 
         # Stage 1: Fixed cell warm-up, symmetry constrained
         atoms_s1 = atoms.copy()

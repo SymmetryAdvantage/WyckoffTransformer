@@ -1,4 +1,4 @@
-import pandas as pd, glob, os, sys, numpy as np
+import pandas as pd, glob, os, sys
 W=sys.argv[1]
 H=os.path.expanduser("~/.cache/huggingface/hub/datasets--LeMaterial--LeMat-Bulk-MLIP-Hull-All/snapshots/b7bfc3c6ddfdef49bd03875fb5d3d6e1b5f80d53/data")
 h=pd.concat([pd.read_parquet(f,columns=[c for c in ["immutable_id","nsites","dft_hull","true_energy","orb_direct_20_energy","orb_conserv_inf_energy","uma_energy","mace_mp_energy","mace_omat_energy"]]) for f in sorted(glob.glob(H+"/*.parquet"))])

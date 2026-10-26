@@ -3,7 +3,7 @@
 At site 0 there is no occupancy confound and no dead-sequence confound: the only thing the
 model has to know is which site symmetries exist in the group it was handed.
 """
-import sys, logging, json
+import sys, logging
 import numpy as np, torch
 from omegaconf import OmegaConf
 from wyckoff_transformer.dataset_cache import dataset_cache_dir, load_cache
