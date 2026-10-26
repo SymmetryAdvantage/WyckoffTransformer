@@ -88,6 +88,14 @@ trial -- 1800 s before commit 86935ef, which is what every protocol artifact up
 to 2026-09-12 was relaxed with, so pass `--relax-timeout 1800` to extend one of
 those runs -- and an abandoned one is recorded as such rather than silently missing.
 
+**An optimiser step limit is not convergence.** Cell-relaxation stages must
+meet `fmax` before their structures can enter energy ranking. Exhausting the
+step budget raises `RelaxationNotConverged`, with the stage, final force and
+log path; the stage CIF and optimiser log remain available. The fixed-cell
+warm-up may exhaust its budget because cell relaxation follows it. If only
+the rattle fails to converge, the converged baseline is kept and `rattle.json`
+records `accepted: false`, `converged: false` and the failure reason.
+
 **The unit of work is a trial, not a gene.** Trial budgets differ by a factor
 of three, so a pool keyed by gene leaves workers idle at the end; both stages
 therefore queue `(gene, trial)` pairs, and both append a row per pair as it

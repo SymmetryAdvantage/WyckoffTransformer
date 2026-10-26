@@ -204,8 +204,7 @@ class TestPermissiveFactorDrawsCloserContacts(unittest.TestCase):
     """The factor has to change the draws, not just the manifest.
 
     Real PyXtal draws rather than a mock, because what is being asserted is a
-    property of PyXtal's rejection sampling. `from_random` draws from its own
-    RNG, which `single_pyxtal` does not expose a seed for, so the test is
+    property of PyXtal's rejection sampling. These draws are unseeded, so the test is
     statistical: over 20 draws of a 12-DoF gene the permissive arm's closest
     contact is lower than the strict arm's in 3000 of 3000 bootstrap resamples
     of a 200-draw-per-arm measurement (strict: min 0.94, 10% below 1.0;

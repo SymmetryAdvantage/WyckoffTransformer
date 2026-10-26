@@ -180,7 +180,8 @@ def _relax_raw(atoms, fmax=_FMAX, steps=500):
     a = atoms.copy()
     a.calc = _get_calculator()
     a.set_constraint([FixSymmetry(a, symprec=1e-3)])
-    BFGS(FrechetCellFilter(a), logfile=None).run(fmax=fmax, steps=steps)
+    if not BFGS(FrechetCellFilter(a), logfile=None).run(fmax=fmax, steps=steps):
+        raise AssertionError("Raw ASE reference failed to converge")
     return a
 
 
@@ -299,9 +300,10 @@ class TestForcesAndStrainConvergence(_MP20TestBase):
             output_dir=self.tmp_path,
             n_trials=3,
             fmax=_FMAX,
+            seed=0,
         )
         if atoms is None:
-            self.skipTest(f"{mid}: all trials failed to generate/relax a structure")
+            self.fail(f"{mid}: all trials failed to generate/relax a structure")
 
         max_f = _cf_max_force(atoms)
         threshold = _FMAX * 2.0
@@ -353,6 +355,7 @@ class TestRelaxRecovery(_MP20TestBase):
             calculator=_get_calculator(),
             fmax=_FMAX,
             wdir=self.tmp_path / mid,
+            seed=seed,
         )
         rec_epa = recovered.get_potential_energy() / len(recovered)
         formula = ref_atoms.get_chemical_formula(mode="metal")
@@ -405,6 +408,7 @@ class TestWyckoffRecreation(_MP20TestBase):
             output_dir=self.tmp_path,
             n_trials=3,
             fmax=_FMAX,
+            seed=0,
         )
         if energy is None:
             self.fail(f"{mid}: func_run returned no structure after 3 trials")

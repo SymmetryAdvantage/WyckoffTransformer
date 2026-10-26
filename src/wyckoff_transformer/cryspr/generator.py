@@ -389,6 +389,7 @@ def single_pyxtal(
         iadm: Tol_matrix = _DEFAULT_IADM,
         nlimit: int = 20,
         wdir: Path = Path("."),
+        seed: Optional[int] = None,
 ) -> Optional[Atoms]:
     """Generate a random crystal from a Wyckoff gene using PyXtal.
 
@@ -398,6 +399,7 @@ def single_pyxtal(
         iadm: PyXtal tolerance matrix controlling minimum inter-atomic distances.
         nlimit: Maximum number of PyXtal generation attempts.
         wdir: Directory in which to save the raw generated CIF.
+        seed: Seed for PyXtal's random generator; ``None`` draws fresh entropy.
 
     Returns:
         An :class:`~ase.Atoms` object, or ``None`` if generation failed.
@@ -417,6 +419,7 @@ def single_pyxtal(
             sites=sites,
             tm=iadm,
             max_count=nlimit,
+            random_state=np.random.default_rng(seed),
         )
         atoms: Atoms = candidate.to_ase()
         formula = atoms.get_chemical_formula(mode="metal")
@@ -612,6 +615,7 @@ def func_run(
         clash_guard: Optional[bool] = None,
         fmax: float = 0.01,
         optimizer: type[Optimizer] = BFGS,
+        seed: Optional[int] = None,
 ) -> tuple[Optional[Atoms], Optional[str], Optional[float], Optional[float], Optional[str]]:
     """Generate and relax crystal structures for one Wyckoff gene.
 
@@ -641,6 +645,8 @@ def func_run(
             collapse comes from; ``True`` or ``False`` forces it either way.
         fmax: Force convergence criterion in eV/Å.
         optimizer: ASE local optimisation algorithm class.
+        seed: Optional seed for reproducible PyXtal draws, independently derived
+            for each gene and trial. Rattle seeds remain tied to gene and trial.
 
     Returns:
         Tuple ``(atoms, formula, energy, energy_per_atom, cif)`` for the
@@ -672,7 +678,10 @@ def func_run(
         trial_dir = gene_dir / trial_key
         trial_dir.mkdir(parents=True, exist_ok=True)
 
-        atoms_in = single_pyxtal(wyckoffgene=wyckoffgene, nlimit=30, wdir=trial_dir)
+        atoms_in = single_pyxtal(
+            wyckoffgene=wyckoffgene, nlimit=30, wdir=trial_dir,
+            seed=None if seed is None else _trial_seed(f"{seed}_{id_gene}", i_trial),
+        )
         if atoms_in is None:
             continue
 

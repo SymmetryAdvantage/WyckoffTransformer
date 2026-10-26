@@ -346,6 +346,7 @@ def _relax_symmetric(
             atoms = run_ase_relaxer(
                 atoms_in=atoms, fix_symmetry=True, cell_filter=None,
                 label=WARMUP_CIF_LABEL, logfile=wdir / "basinhop_fix-cell.log",
+                require_convergence=False,
                 **shared,
             )
         return run_ase_relaxer(

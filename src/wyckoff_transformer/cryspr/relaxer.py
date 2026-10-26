@@ -22,6 +22,10 @@ from ase.optimize.optimize import Optimizer
 logger = logging.getLogger(__name__)
 
 
+class RelaxationNotConverged(RuntimeError):
+    """An optimisation exhausted its step budget without meeting ``fmax``."""
+
+
 def _print_logm_warning_once() -> None:
     """Show SciPy's varying-residual logm warning once per worker process.
 
@@ -95,9 +99,11 @@ class RelaxStages:
             ``2_sym_cell+pos`` stage, or the fix-cell warm-up when
             *fix_symmetry* is off.  A copy, so later stages cannot move it.
         fixed_symmetry_energy: Its potential energy, eV, on the same calculator.
-        rattled: The rattle stage's own output, or ``None`` if it did not run.
+        rattled: The converged rattle output, or ``None`` if it did not run or
+            failed to converge. An unfinished rattle keeps the baseline.
         rattle_accepted: Whether it won its margin.  ``None`` if it did not run.
-        rattle_delta_ev_per_atom: Its energy change, eV/atom.  Negative is a win.
+        rattle_delta_ev_per_atom: Its energy change, eV/atom, or ``None`` if no
+            converged rattle output exists. Negative is a win.
     """
 
     kept: Atoms
@@ -152,6 +158,7 @@ def run_ase_relaxer(
         wdir: Path = Path("."),
         label: Optional[str] = None,
         logfile: Optional[Path] = None,
+        require_convergence: bool = True,
 ) -> Atoms:
     """Run a single ASE relaxation pass on *atoms_in*.
 
@@ -172,9 +179,15 @@ def run_ase_relaxer(
         label: Stage name used in the output CIF filename.  Defaults to
             ``"fix-cell"`` or ``"cell+pos"`` depending on *cell_filter*.
         logfile: Path to append optimiser output; ``None`` writes to *stderr*.
+        require_convergence: Reject an unfinished optimisation. Disabled only
+            for the fixed-cell warm-up that precedes cell relaxation.
 
     Returns:
         Relaxed :class:`~ase.Atoms` object.
+
+    Raises:
+        RelaxationNotConverged: The step budget was exhausted and
+            *require_convergence* is true. The stage CIF and log are retained.
     """
     atoms = atoms_in.copy()
     full_formula = atoms.get_chemical_formula(mode="metal")
@@ -200,12 +213,23 @@ def run_ase_relaxer(
 
     log_arg = str(logfile) if logfile is not None else "-"
     opt = optimizer(atoms=target, logfile=log_arg)
-    opt.run(fmax=fmax, steps=steps_limit)
+    converged = opt.run(fmax=fmax, steps=steps_limit)
 
     if label is None:
         label = "fix-cell" if cell_filter is None else "cell+pos"
     cif_path = wdir / f"{reduced_formula}_{full_formula}_{label}.cif"
     write(filename=str(cif_path), images=atoms, format="cif")
+
+    if not converged:
+        max_force = float(np.linalg.norm(target.get_forces(), axis=1).max())
+        message = (
+            f"{label}: relaxation did not converge after {opt.nsteps} steps "
+            f"(max force {max_force:.6f} eV/Å, fmax {fmax:.6f} eV/Å; "
+            f"log: {logfile})"
+        )
+        if require_convergence:
+            raise RelaxationNotConverged(message)
+        logger.warning("%s; continuing to cell relaxation", message)
 
     E1 = atoms.get_potential_energy()
     spg1_symbol, spg1_number = _get_spacegroup_info(atoms, symprec=symprec)
@@ -455,6 +479,7 @@ def stepwise_relax_stages(
             cell_filter=None,
             label=WARMUP_CIF_LABEL,
             logfile=logfile_for("fix-cell"),
+            require_convergence=False,
             **shared,
         )
     if fix_symmetry:
@@ -502,6 +527,7 @@ def stepwise_relax_stages(
         rattle_accept=rattle_accept,
         seed=seed,
         logfile=logfile_for("rattle_no-sym"),
+        baseline_converged=fix_symmetry or release_symmetry,
         **shared,
     )
     stages.fixed_symmetry = fixed_symmetry
@@ -526,6 +552,7 @@ def _rattle_stage(
         rattle_accept: float,
         seed: Optional[int],
         logfile: Path,
+        baseline_converged: bool = True,
         **shared,
 ) -> RelaxStages:
     """Perturb, re-relax, and report the kept structure with the verdict.
@@ -540,25 +567,36 @@ def _rattle_stage(
     atoms.calc = shared["calculator"]
     energy_before = atoms.get_potential_energy()
 
-    rattled = run_ase_relaxer(
-        atoms_in=perturb(
-            atoms,
-            rattle_stdev=rattle_stdev,
-            strain_stdev=strain_stdev,
-            seed=seed,
-        ),
-        fix_symmetry=False,
-        cell_filter=CellFilter,
-        label=RATTLE_CIF_LABEL,
-        logfile=logfile,
-        **shared,
-    )
-    delta = float(rattled.get_potential_energy() - energy_before) / len(atoms)
-    accepted = bool(delta < -rattle_accept)
-    logger.info(
-        "Rattle stage: dE = %+.6f eV/atom, %s",
-        delta, "accepted" if accepted else "rejected",
-    )
+    failure = None
+    try:
+        rattled = run_ase_relaxer(
+            atoms_in=perturb(
+                atoms,
+                rattle_stdev=rattle_stdev,
+                strain_stdev=strain_stdev,
+                seed=seed,
+            ),
+            fix_symmetry=False,
+            cell_filter=CellFilter,
+            label=RATTLE_CIF_LABEL,
+            logfile=logfile,
+            **shared,
+        )
+    except RelaxationNotConverged as exc:
+        if not baseline_converged:
+            raise
+        # An unfinished candidate cannot displace the converged baseline,
+        # even if its energy is lower.
+        rattled, delta, accepted = None, None, False
+        failure = str(exc)
+        logger.warning("Rattle rejected: %s", failure)
+    else:
+        delta = float(rattled.get_potential_energy() - energy_before) / len(atoms)
+        accepted = not baseline_converged or bool(delta < -rattle_accept)
+        logger.info(
+            "Rattle stage: dE = %+.6f eV/atom, %s",
+            delta, "accepted" if accepted else "rejected",
+        )
     # Recorded per trial, not just logged: pool workers do not configure
     # logging, and how often the rattle wins -- and by how much -- is the
     # measurement that sets the trial schedule and justifies the stage.
@@ -570,8 +608,11 @@ def _rattle_stage(
     (shared["wdir"] / RATTLE_VERDICT_FILE).write_text(
         json.dumps(
             {
-                "delta_ev_per_atom": float(delta),
+                "delta_ev_per_atom": delta,
                 "accepted": bool(accepted),
+                "converged": failure is None,
+                "baseline_converged": bool(baseline_converged),
+                "failure": failure,
                 "accept_threshold_ev_per_atom": float(rattle_accept),
                 "rattle_stdev": float(rattle_stdev),
                 "strain_stdev": float(strain_stdev),
