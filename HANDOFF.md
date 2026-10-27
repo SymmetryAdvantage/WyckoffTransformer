@@ -118,8 +118,18 @@ The plan's Phase 8 was written for generated structures. For mined ones:
      `InterfacialReactivity` (`pymatgen.analysis.interface_reactions`, installed)
      against Li metal and a cathode.
    - **Decisions for the user:**
-     - (a) Which electrodes are "intended". Richards used Li metal and LiCoO2; Co is
-       outside the palette, but LeMat has Co entries.
+     - (a) **Electrodes, decided 2026-10-27: flexible.** No electrode is fixed in
+       advance, so the outcome for each candidate is which electrodes it pairs with.
+       Proposed panel, each against LeMat's ordered entries:
+       - anodes: Li metal (0 V), LiC6 (about 0.1 V), Li4Ti5O12 (1.55 V);
+       - cathodes: LiFePO4 (3.45 V), LiCoO2 (about 3.9 V), LiMn2O4 (about 4.0 V),
+         LiNi0.5Mn1.5O4 (4.7 V).
+
+       Compare the window with each electrode's potential first, then run
+       `InterfacialReactivity` for the pairs inside or near the window. C, Ti, Fe, Co,
+       Mn and Ni are outside the palette, but LeMat has their entries. Each one widens
+       the chemical system to load, and the oxides of Co, Fe, Mn and Ni are GGA+U
+       entries for MP2020.
      - (b) **Energy corrections, decided 2026-10-27: apply MP2020.**
        `energy_corrected` is raw PBE(+U), with no MP2020 anion or +U correction
        (`docs/e_hull_definitions.md`). Richards' windows used MP-compatible energies.
