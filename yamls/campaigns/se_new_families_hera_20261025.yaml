@@ -1,0 +1,167 @@
+# Family-blind generative search for new Li solid-electrolyte families, run on hera.
+# Plan: docs/se_new_families_campaign_plan.md. Read by scripts/se_new_families_campaign.py.
+#
+# Phase 1 benchmarks a transport screen on known compounds before anything is generated:
+# the palette's ionic Li compounds in LeMat-Bulk-fixed are relaxed with ORB like the
+# generated candidates will be, described, and scored against OBELiX (framework-level
+# experimental labels) and Kahle 2020 (AIMD labels).  Thresholds marked "gate" are fixed
+# in the plan before any result exists; do not edit them after a result is seen.
+campaign_id: se-new-families-hera-20261025
+date: '2026-10-25'
+mobile_ion: Li
+
+# The ICML paper's 42 elements plus Er and Lu.
+palette: [H, Li, Be, B, C, N, O, F, Mg, Al, Si, P, S, Cl, Ca, Sc, Ti, Cu, Zn, Ga, Ge, As,
+          Se, Br, Sr, Y, Zr, Nb, Ag, Cd, In, Sn, Sb, Te, I, Ba, La, Hf, Ta, W, Pb, Bi, Er, Lu]
+# An "ionic" Li compound contains Li and at least one of these.
+ionic_anions: [O, S, Se, Te, F, Cl, Br, I, N]
+# The families campaign's 126 systems, excluded from generation and from mining.
+families_campaign: yamls/campaigns/solid_electrolyte_families_hera_20261022.yaml
+
+data:
+  lemat:
+    cache: lemat_bulk_fixed_fmax1_stress
+    icsd_cache: lemat_bulk_fixed_fmax1_stress_icsd
+    max_e_hull: 0.1
+    # Upstream LeMat-Bulk CIFs, joined on immutable_id.  LeMat-Bulk-fixed replaced the
+    # structure of 74 ids (docs/lemat_bulk_pipeline.md); a row whose CIF composition
+    # differs from the cache's is dropped, not silently relaxed.
+    structures: lemat-bulk/lemat_pbe.csv.gz
+  obelix:
+    # NRC-Mila/OBELiX @4eaac889809dd489e3bae468c45d5c0e02b9147a (data/downloads/).
+    table: obelix/all.csv
+    table_sha256: 54f6265ef84d16a919d08c6815f14b0fd7465fa00090bee2511c16c042e57f3c
+    cifs: obelix/all_cifs.tar.gz
+    cifs_sha256: bfa2a3c92e3b8ca1b9859992e686c9e19f98924e7ff369c05db7006548217d49
+  kahle2020:
+    # data.json of screening.aiida, Materials Cloud doi:10.24435/materialscloud:vg-ya
+    # (record 4da2r-xag86), fetched by a range request: it is the zip's first member.
+    data_json: kahle2020/data.json
+    data_json_sha256: 18a1c0e46701cecebb7f4a7ebb176a3f1d6b681dddfd0edeb3510de1efc83cc1
+  bvel13k:
+    # LiTraj BVEL13k (litraj 0.1), Dembitskiy et al., npj Comput. Mater. (2025).
+    zip: litraj/BVEL13k.zip
+    zip_sha256: 3d89f921c47101bd3c9050e92829813e57f05b8178ef5bc3ce16dfb58b845c22
+
+benchmark:
+  # The same ORB arm as the generated candidates: orb_conserv_inf, BFGS, fmax 0.05 eV/A,
+  # 500 steps per stage, symmetric stage then free stage then rattle.  No fix-cell
+  # warm-up: these starts are DFT structures, not PyXtal draws.
+  relax:
+    mlip: orb_conserv_inf
+    fmax: 0.05
+    steps: 500
+    devices: cuda:0,cuda:1
+    workers_per_device: 4
+    timeout_s: 3600
+    # LeMat cells are reduced to their primitive cell first: the PES scans cost grows
+    # with the square of the cell.
+    primitive: true
+  # Frameworks are matched with pymatgen's defaults until gate G1b says otherwise.
+  framework_matcher: {ltol: 0.2, stol: 0.3, angle_tol: 5.0}
+  matcher_calibration:
+    # The first attempt (g1b/, 2026-10-25) picked controls by e_hull alone: three had P1
+    # or near-P1 genes, from which no relaxation can rebuild the compound.  The second
+    # (g1b_v2/) takes genes with symmetry and few free coordinates.
+    run: g1b_v2
+    n_controls: 20
+    max_atoms: 120
+    min_spacegroup: 3
+    max_free_coordinates: 12
+    tolerances: [[0.2, 0.3, 5.0], [0.3, 0.5, 10.0], [0.4, 0.6, 15.0]]
+  labels:
+    # OBELiX framework groups: fast if any member >= fast, poor if every member <= poor.
+    obelix_fast_s_cm: 1.0e-4
+    obelix_poor_s_cm: 1.0e-7
+    # Kahle 2020 at 1000 K, Maevskiy et al.'s thresholds.
+    kahle_temperature_k: 1000
+    kahle_fast_s_cm: 0.1
+    kahle_poor_s_cm: 0.01
+  metrics:
+    pauc_max_fpr: 0.1
+    bootstrap: 1000
+    rediscovery_min_members: 5
+    rediscovery_top_fraction: 0.1
+  xi:
+    # Maevskiy et al. 2025: grid step <= 0.25 A, points closer than 1.2 A to another atom
+    # skipped, free volumes below 0.5 eV, sigmoid thresholds -2.00 and -1.15.
+    grid_step: 0.25
+    r_min: 1.2
+    fv_threshold_ev: 0.5
+    connected_log10_threshold: -2.00
+    disconnected_log10_threshold: -1.15
+    sigmoid_slope: 10.0
+    n_top_bvse: 3000
+    n_random_control: 500
+    # Atoms per ORB batch of probe configurations; 16k ran out of memory on 125-atom
+    # cells with two workers on a 46 GB card.
+    max_atoms_per_batch: 8000
+    # Li orbits scanned at most per structure (a seeded subset beyond that; the free
+    # volumes are then lower bounds).  One P1 cell would otherwise take 11 GPU-hours.
+    max_orbits: 12
+    # Labelled palette compounds scanned per OBELiX framework group (seeded sample).
+    max_labelled_per_group: 40
+    seed: 20261025
+
+# Phase 2: mining the palette compounds outside the families campaign's systems.
+mining:
+  band_gap:
+    # MP's GGA/GGA+U gap where the entry has one, the gene-level regressor otherwise.
+    mp_dataset: mp_20260928_gga_gap
+    wandb_run: 3t16iys0
+    augmentation_samples: 8
+    min_ev: 0.5
+  # Added 2026-10-26, after G1 and before any Phase 2 screen ran.
+  coordination:
+    # LeMat's cation-environment table (scripts/screen_coordination_motifs.py), rebuilt
+    # on hera from the cache: the aspire2a copy is not here.
+    reference_max_e_hull: 0.1
+    # The rarity cutoff removes at most this fraction of the Phase 2 known compounds.
+    max_removed_fraction: 0.01
+  rank:
+    # Survivors whose G1 descriptor is within the random control's top fraction are
+    # clustered by framework (the rediscovery criterion's line).
+    top_fraction: 0.1
+
+# Phase 7 MD (ICML 2026 sec. 3.4) and its G1c calibration on reference compounds.
+md:
+  min_atoms: 100
+  min_width: 10.0           # A; the supercell holds a 10 A sphere
+  thermalise_ps: 10
+  production_ps: 100
+  sample_fs: 20
+  temperatures: [500, 1000]
+  seed: 20261025
+  activation_ev: 0.5        # the pessimistic Ea for the 500 K -> 300 K extrapolation
+  framework_msd_max: 2.0    # A^2 over the 100 ps at 1000 K, slowest non-Li species
+  li_msd_min: 4.0           # A^2, max over the 500 K run
+
+# The families campaign's protocol arm (wide NEP89 prescreen, then ORB), used for the G1b
+# controls here and for the generated candidates in Phase 5.
+protocol:
+  mlip: orb_conserv_inf
+  trial_multiplier: 10
+  pyxtal_cores: 16
+  pyxtal_timeout: 60
+  prescreen_cores: 16
+  devices: cuda:0,cuda:1
+  workers_per_device: 4
+
+gates:
+  # G1: a descriptor enters the post-relaxation screen only if its pAUC interval excludes
+  # random on both label sets AND the median fast member is in the top 10% for at least
+  # half of the eligible families.
+  g1_top_fraction: 0.1
+  g1_min_family_fraction: 0.5
+  # G1b: at least 18 of 20 relaxed controls matched to their family.
+  g1b_min_matched: 18
+  g1b_controls: 20
+  # G1c: ORB MD separates fast and poor references with AUROC >= 0.8.
+  g1c_min_auroc: 0.8
+  # G2: system-grouped AUROC >= 0.80 (binary) or Spearman >= 0.6 (continuous), and
+  # >= 80% recall of fast-framework members at the threshold.
+  g2_min_auroc: 0.80
+  g2_min_spearman: 0.6
+  g2_min_recall: 0.8
+  # G4: >= 15% of the pilot's relaxed genes within 0.1 eV/atom of the hull.
+  g4_min_fraction: 0.15
