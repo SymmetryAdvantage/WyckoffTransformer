@@ -120,10 +120,13 @@ The plan's Phase 8 was written for generated structures. For mined ones:
    - **Decisions for the user:**
      - (a) Which electrodes are "intended". Richards used Li metal and LiCoO2; Co is
        outside the palette, but LeMat has Co entries.
-     - (b) **Energy corrections.** `energy_corrected` is raw PBE(+U), with no MP2020
-       anion or +U correction (`docs/e_hull_definitions.md`). Richards' windows used
-       MP-compatible energies, and oxidation limits for O, S and N compounds are
-       sensitive to this.
+     - (b) **Energy corrections, decided 2026-10-27: apply MP2020.**
+       `energy_corrected` is raw PBE(+U), with no MP2020 anion or +U correction
+       (`docs/e_hull_definitions.md`). Richards' windows used MP-compatible energies.
+       Apply `MaterialsProject2020Compatibility`, and report the raw windows beside the
+       corrected ones as a sensitivity check. MP2020 needs to know which entries are
+       GGA+U (W is in the palette, and LiCoO2 is a +U entry), so establish that from
+       LeMat's metadata, not by guessing.
    - Implement it as a driver stage (e.g. `phase8-window`) in the existing style. Put
      new config keys under a new `phase8:` block with a dated comment.
 3. **DFT, only where it is really needed.** The user (2026-10-27): *"If you really
