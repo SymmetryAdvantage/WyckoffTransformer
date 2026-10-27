@@ -286,10 +286,11 @@ another host should run with `SSH_AUTH_SOCK=` so they never depend on a session'
 
 ### ASPIRE2A
 
-hera cannot reach ASPIRE2A. It is reachable only from zeus (`Host aspire2a` in zeus's
-`~/.ssh/config`, `aspire2a.nus.edu.sg`, user `kna`), and it accepts passwords only, not
-keys (the user, 2026-10-27). An agent therefore cannot log in or submit there. Stage the
-files on zeus and let the user run the `scp` and `ssh aspire2a` steps.
+ASPIRE2A accepts passwords only, not keys (the user, 2026-10-27). zeus has a host entry
+for it (`Host aspire2a`: `aspire2a.nus.edu.sg`, user `kna`); hera has none, though the
+user says hera can technically reach it as well. An agent cannot log in with a key, and
+on 2026-10-27 the user asked that no agent connect to it until told otherwise. Stage the
+files and let the user run the `scp` and `ssh` steps.
 
 ### Hugging Face token
 

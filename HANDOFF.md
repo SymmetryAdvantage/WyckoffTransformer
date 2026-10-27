@@ -141,15 +141,19 @@ The plan's Phase 8 was written for generated structures. For mined ones:
        uncorrected; never mix them with PBE).
 
      Anything beyond that (coating-tier families, gaps) needs a stated reason.
-   - **Access (the user, 2026-10-27):** ASPIRE2A is reachable only from zeus, and it
-     accepts passwords only, not keys. zeus's `~/.ssh/config` has `Host aspire2a`
-     (`aspire2a.nus.edu.sg`, user `kna`). An agent cannot log in, copy files or submit
-     there. The workflow:
+   - **Access (the user, 2026-10-27):**
+     - ASPIRE2A accepts passwords only, not keys.
+     - zeus's `~/.ssh/config` has `Host aspire2a` (`aspire2a.nus.edu.sg`, user `kna`).
+     - It is technically reachable from hera too, but the user said **not to access it
+       for now**.
+     - Hera has no host entry for it. The failed lookup of `asp2a-login-nus02` showed
+       only that; it is not proof that hera has no route.
+
+     **Do not connect to ASPIRE2A from any host until the user says so.** Until then:
      - build a self-contained bundle (structures, the list of calculations, settings and a
-       submit script) and copy it to zeus over hera's key (`SSH_AUTH_SOCK= ssh zeus`);
-     - give the user the exact `scp`/`ssh aspire2a` commands to run on zeus themselves;
-     - have them bring the results back the same way, to a path on zeus that this
-       session then reads.
+       submit script);
+     - give the user the exact `scp` and `ssh` commands, and ask which host to stage on;
+     - have the user bring the results back to a path this session then reads.
 
      Do not assume an allocation or a queue; ask.
 4. **AIMD, by the co-authors.** Do not run it here. Prepare a package for the best ~10
