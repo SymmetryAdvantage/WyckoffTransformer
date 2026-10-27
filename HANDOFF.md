@@ -141,11 +141,17 @@ The plan's Phase 8 was written for generated structures. For mined ones:
        uncorrected; never mix them with PBE).
 
      Anything beyond that (coating-tier families, gaps) needs a stated reason.
-   - **Access:** hera cannot reach ASPIRE2A. There is no SSH host entry, and
-     `asp2a-login-nus02` does not resolve. Prepare a self-contained bundle on hera: the
-     structures, the list of calculations and the settings. Then ask the user how it
-     gets there and who submits. Do not assume an allocation or submit anything without
-     asking.
+   - **Access (the user, 2026-10-27):** ASPIRE2A is reachable only from zeus, and it
+     accepts passwords only, not keys. zeus's `~/.ssh/config` has `Host aspire2a`
+     (`aspire2a.nus.edu.sg`, user `kna`). An agent cannot log in, copy files or submit
+     there. The workflow:
+     - build a self-contained bundle (structures, the list of calculations, settings and a
+       submit script) and copy it to zeus over hera's key (`SSH_AUTH_SOCK= ssh zeus`);
+     - give the user the exact `scp`/`ssh aspire2a` commands to run on zeus themselves;
+     - have them bring the results back the same way, to a path on zeus that this
+       session then reads.
+
+     Do not assume an allocation or a queue; ask.
 4. **AIMD, by the co-authors.** Do not run it here. Prepare a package for the best ~10
    members: LeMat CIF, ORB-relaxed CIF, the MD supercell matrix (in `md.jsonl`), the ORB MD
    numbers, and the trajectories (W&B `-mining` artifact).

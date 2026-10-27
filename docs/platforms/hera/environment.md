@@ -284,6 +284,13 @@ zeus on 2026-10-23. `ssh-copy-id` copies the keys of the machine it runs on, so 
 be run *on hera*; run from a laptop it authorises the laptop. Long jobs that ssh to
 another host should run with `SSH_AUTH_SOCK=` so they never depend on a session's agent.
 
+### ASPIRE2A
+
+hera cannot reach ASPIRE2A. It is reachable only from zeus (`Host aspire2a` in zeus's
+`~/.ssh/config`, `aspire2a.nus.edu.sg`, user `kna`), and it accepts passwords only, not
+keys (the user, 2026-10-27). An agent therefore cannot log in or submit there. Stage the
+files on zeus and let the user run the `scp` and `ssh aspire2a` steps.
+
 ### Hugging Face token
 
 The `HF_TOKEN` in hera's `.env` (`hera-wyformer`) is a fine-grained token with only
