@@ -90,6 +90,8 @@ which Claude Code and Gemini CLI / Antigravity (via `.gemini/settings.json`) loa
 into every session. If a session starts without it, run
 `scripts/platforms/link_agent_brief.sh <platform>`. See `docs/platforms/README.md`.
 
+For accessing HuggingFace use `HF_TOKEN` in `.env` if it's available there.
+
 ## Shell commands in agent worktrees
 A Claude Code session isolated in a git worktree refuses any shell command it cannot
 statically show stays out of another checkout's git. It does not run the command at
