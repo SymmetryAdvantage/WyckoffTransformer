@@ -122,6 +122,19 @@ mining:
     # Survivors whose G1 descriptor is within the random control's top fraction are
     # clustered by framework (the rediscovery criterion's line).
     top_fraction: 0.1
+  # Added 2026-10-28, before mine-md-control ran; the user asked for it after Phase 8.
+  # A random control for mine-md: does E_2D's line enrich the MD tiers among frameworks
+  # with cations? mine-md ran the best member of the 20 best such clusters (7 tiered).
+  # The control draws Phase 2 survivors outside the line (best percentile above
+  # rank.top_fraction) that have a descriptor value, a framework with cations and at
+  # most as many atoms as the largest mine-md structure, one per framework
+  # (benchmark.framework_matcher), and runs the same MD (md:).
+  md_control:
+    n: 40
+    seed: 20261028
+    # One-sided Fisher exact test of the tier rate (either tier), mine-md against the
+    # control. A diagnostic for the authors' G1 decision, not a gate.
+    alpha: 0.05
 
 # Phase 7 MD (ICML 2026 sec. 3.4) and its G1c calibration on reference compounds.
 md:
@@ -177,6 +190,12 @@ phase8:
   aimd_members: 10
   # 2026-10-28, the user: the DFT and AIMD inputs are not prepared. The stage that read
   # r2scan_clusters and aimd_members (phase8-bundle) was removed; no stage reads them.
+  # Added 2026-10-28, before phase8-md-polymorphs ran: the same MD on the Pnma polymorphs
+  # of cluster 3's compositions. Li4SnSe4 mp-1194700 is the measured one (ICSD 193768;
+  # Kaib et al. 2013, about 2e-5 S/cm at 20 C). Li4TiS4 mp-766540 is LeMat's lowest
+  # Li4TiS4 (no ICSD entry). Alexandria's agm003244253 and agm003244254 are the same
+  # structures.
+  md_polymorphs: [mp-1194700, mp-766540]
 
 # The families campaign's protocol arm (wide NEP89 prescreen, then ORB), used for the G1b
 # controls here and for the generated candidates in Phase 5.

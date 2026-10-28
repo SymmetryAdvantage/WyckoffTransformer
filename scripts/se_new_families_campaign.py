@@ -27,6 +27,7 @@ Phase 2 mines the palette compounds outside the families campaign's systems:
     $PY $S mine-rank                # survivors in the control's top 10%, by framework
     $PY $S mine-md                  # Phase 7 MD on the top clusters' best members
     $PY $S mine-dimension           # framework dimension: what E_2D's line selects
+    $PY $S mine-md-control          # the same MD on random survivors outside the line
 
 Phase 8 takes the clusters whose MD reached a tier:
 
@@ -35,6 +36,7 @@ Phase 8 takes the clusters whose MD reached a tier:
     $PY $S phase8-window            # windows, interface reactions, join flags (CPU)
     $PY $S phase8-check             # ORB structure vs DFT structure, polymorphs, ICSD
     $PY $S phase8-prototypes        # structure types among LeMat's ICSD-backed rows
+    $PY $S phase8-md-polymorphs     # the same MD on other polymorphs of a composition
     $PY $S phase8-report            # the plan's Phase 8 fields per member
     $PY $S upload                   # the benchmark and the gate runs as W&B artifacts
 
@@ -1450,23 +1452,13 @@ def descriptor_values(root: Path) -> pd.DataFrame:
     return values
 
 
-def run_mine_rank(args, config: dict) -> None:
-    """Phase 2 ranking: the survivors within a G1 descriptor's line, clustered by framework.
+def survivor_percentiles(root: Path, config: dict) -> tuple[pd.DataFrame, dict[str, int]]:
+    """The Phase 2 survivors with each G1 descriptor's percentile in the random control.
 
-    A descriptor's line is the random control's top ``rank.top_fraction``, the line a
-    family's median fast member had to reach to count as rediscovered at G1. With
-    several G1 descriptors a survivor is a hit if it is within any line (Phase 6's OR).
-    Clusters are ranked by their best member's percentile.
+    ``best_percentile`` is the best over the G1 descriptors, NaN without any value;
+    ``hit`` is within the line (``mining.rank.top_fraction``). Also returns the G1
+    descriptors with their orientations.
     """
-    from pymatgen.core import Structure
-
-    from wyckoff_transformer.transport.frameworks import (
-        ANION_LABEL,
-        default_matcher,
-        group_frameworks,
-    )
-
-    root = campaign_dir(config, args.out)
     top = config["mining"]["rank"]["top_fraction"]
     report = pd.read_csv(root / "bench" / "evaluation" / "descriptors.csv")
     passing = dict(zip(report.loc[report["g1"], "descriptor"],
@@ -1490,10 +1482,31 @@ def run_mine_rank(args, config: dict) -> None:
         table[f"{name}_percentile"] = np.where(
             np.isfinite(score), (reference[None, :] > filled[:, None]).mean(axis=1)
             + (reference[None, :] == filled[:, None]).mean(axis=1) / 2, np.nan)
-    percentiles = table[[f"{name}_percentile" for name in passing]]
-    table["best_percentile"] = percentiles.min(axis=1)
+    table["best_percentile"] = table[[f"{name}_percentile" for name in passing]].min(axis=1)
     table["hit"] = table["best_percentile"] <= top
-    missing = int(percentiles.isna().all(axis=1).sum())
+    return table, passing
+
+
+def run_mine_rank(args, config: dict) -> None:
+    """Phase 2 ranking: the survivors within a G1 descriptor's line, clustered by framework.
+
+    A descriptor's line is the random control's top ``rank.top_fraction``, the line a
+    family's median fast member had to reach to count as rediscovered at G1. With
+    several G1 descriptors a survivor is a hit if it is within any line (Phase 6's OR).
+    Clusters are ranked by their best member's percentile.
+    """
+    from pymatgen.core import Structure
+
+    from wyckoff_transformer.transport.frameworks import (
+        ANION_LABEL,
+        default_matcher,
+        group_frameworks,
+    )
+
+    root = campaign_dir(config, args.out)
+    top = config["mining"]["rank"]["top_fraction"]
+    table, passing = survivor_percentiles(root, config)
+    missing = int(table["best_percentile"].isna().sum())
     hits = table[table["hit"]].copy()
 
     frames = pd.read_parquet(root / "bench" / "frameworks.parquet").set_index("index")
@@ -1636,6 +1649,117 @@ def run_mine_md_members(args, config: dict) -> None:
     table.to_csv(out_dir / "candidates.csv")
     chosen.drop(columns=["environments"], errors="ignore").to_csv(out_dir / "members.csv",
                                                                   index=False)
+    with pd.option_context("display.width", 250):
+        print(table.round(5).to_string())
+
+
+def run_md_set(out_dir: Path, structures: dict[str, str], args, config: dict) -> pd.DataFrame:
+    """Phase 7's MD on ``key -> relaxed CIF`` at each temperature, into *out_dir*;
+    returns ``md_summary`` by key."""
+    import multiprocessing
+
+    spec = config["md"]
+    (out_dir / "trajectories").mkdir(parents=True, exist_ok=True)
+    tasks = [(f"{key}_{temperature}", path, temperature, spec, str(out_dir / "trajectories"))
+             for temperature in spec["temperatures"] for key, path in structures.items()]
+    devices = (args.devices or config["benchmark"]["relax"]["devices"]).split(",")
+    slots = [d for d in devices for _ in range(args.workers_per_device or 3)]
+    counter = multiprocessing.get_context("spawn").Value("i", 0)
+    run_pool(tasks, _md_one, out_dir / "md.jsonl", len(slots), initializer=_md_init,
+             initargs=(slots, counter), label="MD runs", every=1)
+    return md_summary(md_runs(out_dir), spec)
+
+
+def run_mine_md_control(args, config: dict) -> None:
+    """A random control for ``mine-md``: survivors outside the line (``mine/md_control/``).
+
+    Does E_2D's line enrich the MD tiers among frameworks with cations? The draw
+    (``mining.md_control``) takes survivors outside the line that have a descriptor
+    value, a framework with cations and no more atoms than the largest ``mine-md``
+    structure, in a seeded random order, one per framework. The arms' tier rates are
+    compared by a one-sided Fisher exact test (``comparison.csv``).
+    """
+    from pymatgen.core import Structure
+    from scipy.stats import fisher_exact
+
+    from wyckoff_transformer.transport.frameworks import ANION_LABEL, default_matcher
+
+    root = campaign_dir(config, args.out)
+    spec = config["mining"]["md_control"]
+    table, _ = survivor_percentiles(root, config)
+    screened = pd.read_csv(root / "mine" / "md" / "candidates.csv", index_col=0)
+    best = pd.read_csv(root / "mine" / "clusters.csv").set_index("rank").loc[
+        screened["rank"], "best_index"]
+    max_atoms = int(table.set_index("index").loc[best, "n_atoms"].max())
+    pool = table[~table["hit"] & table["best_percentile"].notna()
+                 & ~table["framework_formula"].fillna("").str.fullmatch(rf"{ANION_LABEL}\d*")
+                 & (table["n_atoms"] <= max_atoms)]
+    pool = pool.iloc[np.random.default_rng(spec["seed"]).permutation(len(pool))]
+    frames = pd.read_parquet(root / "bench" / "frameworks.parquet")["framework_cif"]
+    matcher = default_matcher(**config["benchmark"]["framework_matcher"])
+    drawn, seen = [], {}
+    for row in pool.itertuples():
+        if len(drawn) == spec["n"]:
+            break
+        if not isinstance(frames.get(row.index), str):
+            continue
+        frame = Structure.from_str(frames[row.index], fmt="cif")
+        same = seen.setdefault(row.framework_formula, [])
+        if any(matcher.fit(other, frame) for other in same):
+            continue
+        same.append(frame)
+        drawn.append(row)
+    drawn = pd.DataFrame(drawn).drop(columns="Index")
+    drawn["key"] = [f"r{k:03d}-{i}" for k, i in enumerate(drawn["immutable_id"], start=1)]
+    out_dir = root / "mine" / "md_control"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    drawn.drop(columns=["environments"], errors="ignore").to_csv(out_dir / "sample.csv",
+                                                                 index=False)
+    logger.info("control: %d of %d eligible survivors drawn (at most %d atoms)",
+                len(drawn), len(pool), max_atoms)
+    relaxed = relaxed_structures(root).set_index("index")
+    summary = run_md_set(out_dir, {row.key: relaxed.loc[row.index, "relaxed_cif"]
+                                   for row in drawn.itertuples()}, args, config)
+    candidates = drawn.set_index("key")[
+        ["index", "immutable_id", "reduced_formula", "framework_formula", "energy_above_hull",
+         "icsd_backed", "n_atoms", "best_percentile"]].join(summary)
+    candidates.to_csv(out_dir / "candidates.csv")
+
+    warm, hot = min(config["md"]["temperatures"]), max(config["md"]["temperatures"])
+    rows = []
+    for arm, frame in (("mine-md", screened), ("control", candidates)):
+        done = frame[frame[f"sigma_{warm}K"].notna() & frame[f"sigma_{hot}K"].notna()]
+        tier = done["tier"].fillna("")
+        rows.append({"arm": arm, "n": len(done), "tiered": int((tier != "").sum()),
+                     "electrolyte": int((tier == "electrolyte").sum())})
+    comparison = pd.DataFrame(rows)
+    for column in ("tiered", "electrolyte"):
+        a, b = rows
+        comparison[f"p_{column}"] = fisher_exact(
+            [[a[column], a["n"] - a[column]], [b[column], b["n"] - b[column]]],
+            alternative="greater").pvalue
+    comparison["alpha"] = spec["alpha"]
+    comparison.to_csv(out_dir / "comparison.csv", index=False)
+    with pd.option_context("display.width", 250):
+        print(candidates.drop(columns=["index"]).round(5).to_string())
+        print(comparison.to_string(index=False))
+
+
+def run_phase8_md_polymorphs(args, config: dict) -> None:
+    """Phase 7's MD on other polymorphs of the tiered compositions
+    (``phase8.md_polymorphs``, ``phase8/md_polymorphs/``)."""
+    root = campaign_dir(config, args.out)
+    relaxed = relaxed_structures(root)
+    relaxed = relaxed[relaxed["source"] == "lemat"].set_index("immutable_id")
+    ids = config["phase8"]["md_polymorphs"]
+    keys = {f"p-{i}": i for i in ids}
+    summary = run_md_set(root / "phase8" / "md_polymorphs",
+                         {key: relaxed.loc[i, "relaxed_cif"] for key, i in keys.items()},
+                         args, config)
+    info = relaxed.loc[ids, ["index", "reduced_formula", "spacegroup_number",
+                             "energy_above_hull"]].set_axis(list(keys))
+    table = info.join(summary)
+    table.to_csv(root / "phase8" / "md_polymorphs" / "candidates.csv")
     with pd.option_context("display.width", 250):
         print(table.round(5).to_string())
 
@@ -2449,7 +2573,7 @@ UPLOADS = {
                "mine/clusters.csv", "mine/framework_dimension.jsonl",
                "mine/framework_dimension.parquet", "mine/coordination/environment_frequency.csv",
                "mine/coordination/sharing_frequency.csv", "mine/coordination/report.md",
-               "mine/coordination/results", "mine/md"],
+               "mine/coordination/results", "mine/md", "mine/md_control"],
     "gates": ["g1b/controls.parquet", "g1b/matches.csv", "g1b_v2/controls.parquet",
               "g1b_v2/matches.csv", "g1c/references.parquet", "g1c/references.csv",
               "g1c/md.jsonl", "g1c/md_analysis.csv", "g1c/trajectories", "checks"],
@@ -2457,7 +2581,7 @@ UPLOADS = {
     "phase8": ["phase8/mp2020.jsonl", "phase8/u_scheme_check.csv", "phase8/window.jsonl",
                "phase8/windows.csv", "phase8/interfaces.csv", "phase8/e_hull.csv",
                "phase8/joins.csv", "phase8/structures.csv", "phase8/prototypes.csv",
-               "phase8/report.csv", "phase8/md"],
+               "phase8/report.csv", "phase8/md", "phase8/md_polymorphs"],
 }
 
 
@@ -2503,9 +2627,17 @@ def run_upload(args, config: dict) -> None:
             run.summary[f"phase2_{tier}_tier"] = candidates.loc[candidates["tier"] == tier,
                                                                 "formula"].tolist()
     for table_name, relative in (("phase8_report", "phase8/report.csv"),
-                                 ("phase8_interfaces", "phase8/interfaces.csv")):
+                                 ("phase8_interfaces", "phase8/interfaces.csv"),
+                                 ("phase2_md_control", "mine/md_control/candidates.csv"),
+                                 ("phase2_md_control_comparison",
+                                  "mine/md_control/comparison.csv"),
+                                 ("phase8_md_polymorphs", "phase8/md_polymorphs/candidates.csv")):
         if (root / relative).is_file():
             run.log({table_name: wandb.Table(dataframe=pd.read_csv(root / relative))})
+    comparison_path = root / "mine" / "md_control" / "comparison.csv"
+    if comparison_path.is_file():
+        run.summary["phase2_md_control_p_tiered"] = float(
+            pd.read_csv(comparison_path)["p_tiered"].iloc[0])
     for name, paths in UPLOADS.items():
         artifact = wandb.Artifact(f"{config['campaign_id']}-{name}", type=f"se_{name}")
         for relative in paths:
@@ -2529,9 +2661,9 @@ def main() -> None:
                                           "matcher-calibrate", "md-calibrate", "bvse-check",
                                           "mine-gap", "coordination-reference", "mine-screen",
                                           "mine-pes", "mine-rank", "mine-md", "mine-dimension",
-                                          "mine-md-members", "phase8-entries", "phase8-window",
-                                          "phase8-check", "phase8-prototypes",
-                                          "phase8-report", "upload"))
+                                          "mine-md-members", "mine-md-control", "phase8-entries",
+                                          "phase8-window", "phase8-check", "phase8-prototypes",
+                                          "phase8-md-polymorphs", "phase8-report", "upload"))
     parser.add_argument("--workers", type=int, default=16,
                         help="CPU stages: worker processes (hera has 24 physical cores).")
     parser.add_argument("--pes-kinds", type=str, default="frozen",
@@ -2563,9 +2695,11 @@ def main() -> None:
      "mine-gap": run_mine_gap, "coordination-reference": run_coordination_reference,
      "mine-screen": run_mine_screen, "mine-pes": run_mine_pes, "mine-rank": run_mine_rank,
      "mine-md": run_mine_md, "mine-dimension": run_mine_dimension,
-     "mine-md-members": run_mine_md_members, "phase8-entries": run_phase8_entries,
+     "mine-md-members": run_mine_md_members, "mine-md-control": run_mine_md_control,
+     "phase8-entries": run_phase8_entries,
      "phase8-window": run_phase8_window, "phase8-check": run_phase8_check,
-     "phase8-prototypes": run_phase8_prototypes, "phase8-report": run_phase8_report,
+     "phase8-prototypes": run_phase8_prototypes,
+     "phase8-md-polymorphs": run_phase8_md_polymorphs, "phase8-report": run_phase8_report,
      "upload": run_upload}[args.stage](args, config)
 
 

@@ -1,6 +1,9 @@
 # Plan: generative search for new Li solid-electrolyte families
 
-> **Status: plan, 2026-10-25. Nothing here has been run.** It follows
+> **Status, 2026-10-28: Phases 0–2 and 8 have run; Phase 4 (generation) waits for the
+> authors' decision on G1.** Results: [se_new_families_results.md](se_new_families_results.md)
+> (summary) and [se_new_families_campaign.md](se_new_families_campaign.md) (record). The
+> plan below is as written on 2026-10-25, before any result. It follows
 > [the families campaign](solid_electrolyte_campaign.md), which only searched systems where
 > Li solid electrolytes (SEs) are already known. Every count below that describes data
 > was measured on hera on 2026-10-25 from the `lemat_bulk_fixed_fmax1_stress` cache. Cost

@@ -1,6 +1,9 @@
-# Generative search for new Li SE families: Phases 0–2
+# Generative search for new Li SE families: the record
 
-> **Status, 2026-10-27:** Phases 1 and 2 are complete.
+> **For a self-contained summary, read [se_new_families_results.md](se_new_families_results.md)
+> first.** This page is the full record: methods, every table, commands and data paths.
+>
+> **Status, 2026-10-28:** Phases 1, 2 and 8 are complete.
 > - G1b passes (18/20) and G1c passes (MD AUROC 0.957).
 > - G1 passes formally for one descriptor, the empty-framework E_2D barrier, at the
 >   margin. The pass rests on anion-only frameworks; on frameworks with cations no
@@ -9,6 +12,11 @@
 >   ([Phase 2](#phase-2-mining-lemat-mine-)). Of the 20 best clusters, 7 reach an MD tier
 >   ([Results](#results)). The two in the electrolyte tier are Li4B4Sb2SO16, a computed MP
 >   structure, and Li2HN, a known conductor that OBELiX lacks.
+> - **A random control (2026-10-28) shows that E_2D's line enriches the MD tiers on
+>   frameworks with cations.** 7 of 20 picks are tiered, against 2 of 40 random survivors
+>   outside the line (one-sided Fisher p = 0.0044, fixed before the draw). The electrolyte
+>   tier alone does not differ, 2/20 against 1/40
+>   ([control](#random-control-for-the-md-tiers-mine-md-control)).
 > - Phase 8's checks on those 7 clusters ran on hera without DFT
 >   ([Phase 8](#phase-8-the-mined-candidates-phase8-)): literature and ICSD, structure
 >   types, windows and interface reactions (Richards 2016, MP2020), joins, a structure
@@ -18,7 +26,9 @@
 >     2.1 V up. It is a high-voltage material, not an electrolyte against Li or
 >     graphite. MD on the Sn member reached only the coating tier.
 >   - MD on further members put a third structure in the electrolyte tier: Cmcm
->     Li4TiS4, in the Li4GeO4-type chalcogenide cluster (window 1.7–2.1 V).
+>     Li4TiS4, in the Li4GeO4-type chalcogenide cluster (window 1.7–2.1 V). In its
+>     lower Pnma polymorph Li does not move. Pnma Li4SnSe4, the measured polymorph,
+>     lands near its measured 2e-5 S/cm.
 >   - The other clusters are known compounds, known structure types or compositions in
 >     unreported polymorphs, with narrow windows.
 >   - No DFT or AIMD inputs are prepared (the user, 2026-10-28). The energies are
@@ -37,7 +47,10 @@
 > (uploaded 2026-10-27), as artifacts `se-new-families-hera-20261025-benchmark`, `-gates`
 > and `-mining` (all v0). Everything up to that upload ran on uncommitted code on base `b31fb2d`;
 > the run's config records `code_dirty: true`. Phase 8 is artifact `-phase8:v0`
-> (uploaded 2026-10-27 13:19 UTC, uncommitted code on `8c0e0a3`).
+> (uploaded 2026-10-27 13:19 UTC, uncommitted code on `8c0e0a3`). The random control
+> and the Pnma polymorphs are `-mining:v1` and `-phase8:v1` (uploaded 2026-10-28
+> 17:43 UTC, uncommitted code on `1fb5a24`); `-phase8:v1` no longer holds the withdrawn
+> DFT and AIMD inputs.
 
 ```bash
 PY=.venv/bin/python S=scripts/se_new_families_campaign.py
@@ -49,6 +62,7 @@ $PY $S bench-evaluate
 $PY $S mine-gap && $PY $S coordination-reference && $PY $S mine-screen
 $PY $S mine-pes --devices cuda:0,cuda:1 --workers-per-device 1
 $PY $S mine-rank && $PY $S mine-md && $PY $S mine-dimension && $PY $S upload
+$PY $S mine-md-control    # 2026-10-28
 ```
 
 ## Phase 0: data
@@ -415,7 +429,10 @@ one cation:
 
 For new framework families, which by definition have cations, **no descriptor passes
 G1**. The formal pass stands under the plan's rule. Whether it justifies generation
-(Phase 4) is a decision for the authors, not something the gate settles.
+(Phase 4) is a decision for the authors, not something the gate settles. A random
+control on Phase 2's MD, run on 2026-10-28, bears on that decision
+([below](#random-control-for-the-md-tiers-mine-md-control)): on frameworks with cations,
+the line's picks reach an MD tier at 7/20 against 2/40.
 
 **What E_2D sees.** The oxide frameworks are missed: LLZO's own E_2D is 0.95 eV, the
 control's median, though BVSE puts it at 0.52 eV. The line at the control's top 10%
@@ -605,6 +622,61 @@ The novelty checks were single web searches, not the Phase 8 literature check. A
 plan says, MD ranks; it does not predict σ. Each run is one ordered cell, ORB softens the
 PES (Deng 2025), and σ_300K is extrapolated from 500 K with E_a = 0.5 eV.
 
+### Random control for the MD tiers (`mine-md-control`)
+
+**Question.** Does E_2D's line enrich the MD tiers among frameworks with cations? Without
+a control, 7 of 20 says nothing. The user asked for the control after Phase 8. It was
+fixed in the config (`mining.md_control`) on 2026-10-28, before the draw.
+
+**Draw.** From the 4,648 eligible survivors, 40 were taken in a seeded random order (seed
+20261028), one per framework (G1b's matcher). Eligible survivors:
+- lie outside the line (best percentile above 0.1) and have a descriptor value;
+- have a framework with cations;
+- have at most 54 atoms, the largest `mine-md` structure.
+
+They ran the same MD (2026-10-28 03:32–17:35, both GPUs, 3 runs per card;
+`mine/md_control/`; W&B `-mining:v1` and tables `phase2_md_control` and
+`phase2_md_control_comparison`).
+
+| arm | structures | tiered | electrolyte tier | Li moves at 500 K | framework moves at 1000 K |
+|---|---|---|---|---|---|
+| `mine-md`: best member of the line's 20 best clusters | 20 | 7 (35%) | 2 | 9 | 6 |
+| control: random survivors outside the line | 40 | 2 (5%) | 1 | 6 | 11 |
+
+**The pre-registered test passes:** one-sided Fisher exact test on the tier rate,
+p = 0.0044 (α = 0.05; `comparison.csv`). The electrolyte tier alone does not differ
+(2/20 against 1/40, p = 0.26).
+
+The control's two tiered structures:
+- **Li2HN** `mp-699284`, another ordering of lithium imide (percentile 0.26), at
+  1.9e-4 S/cm, in the electrolyte tier;
+- **Li2Ti(BO3)2** `mp-770749` (0.080 eV/atom), at 1.9e-5, in the coating tier.
+
+Three more have mobile Li but fail the framework filter: Li2BF5, LiHBrCl and Li2MgSnCl6.
+
+**Not pre-registered.** The line favours soft anions: 15 of the 20 `mine-md` structures
+have only S, Se, Te, Cl, Br or I as anions, against 15 of the 40 controls. The
+enrichment holds on both sides of that split, though the strata are small:
+
+| stratum | `mine-md` tiered | control tiered | one-sided p |
+|---|---|---|---|
+| only S, Se, Te, Cl, Br or I anions | 4 / 15 | 0 / 15 | 0.050 |
+| the rest | 3 / 5 | 2 / 25 | 0.022 |
+
+The arms also differ in cell size (median 8 against 18 atoms); this was not tested.
+
+**What it says.**
+- Among real compounds with cation frameworks, the structures Phase 2 picked by E_2D's
+  line reach an ORB-MD tier seven times as often as random survivors outside the line.
+  This is the first evidence that the screen ranks frameworks with cations. G1's
+  labelled sets did not show it.
+- It does not say that the hits are new: Phase 8 found mostly known compounds and
+  types.
+- It does not show enrichment in the electrolyte tier.
+- The label is ORB MD, which G1c validated on 20 references (AUROC 0.957). ORB MD also
+  lands near the measurement for Pnma Li4SnSe4
+  ([Phase 8](#md-on-the-pnma-polymorphs-phase8-md-polymorphs)).
+
 Nothing has been generated. Phase 3 has no target (no gene-level descriptor passed G1),
 and Phase 4 waits for the authors' decision on G1.
 
@@ -619,6 +691,7 @@ are not uploaded; `phase8-entries` rebuilds them from the pinned file.
 ```bash
 $PY $S mine-md-members && $PY $S phase8-entries && $PY $S phase8-window
 $PY $S phase8-check && $PY $S phase8-prototypes && $PY $S phase8-report
+$PY $S phase8-md-polymorphs    # 2026-10-28
 ```
 
 The plan's Phase 8 was written for generated structures. Here its candidates are the 34
@@ -766,7 +839,8 @@ so this is a blind rediscovery.
 
 It is a known composition family in an unreported polymorph. Its fastest member is
 Li4TiS4. None of LeMat's ten Li4TiS4 entries is ICSD-backed, no report of it was found,
-and it has the narrow sulfide window.
+and it has the narrow sulfide window. In the Pnma polymorph, 0.025 eV/atom lower, Li does
+not move ([below](#md-on-the-pnma-polymorphs-phase8-md-polymorphs)).
 
 **Cluster 10, the CdI2-type layers: LiYTe2 and 17 members.** Several known structure
 types share one Li-free framework:
@@ -912,6 +986,31 @@ Every framework passes the 1000 K filter. What the members change:
   that does not move at 500 K. The cluster's tier rests on LiYTe2.
 - **Cluster 16:** in LiErTeO and LiLuTeO Li does not move. The cluster's tier rests on
   LiLaSbO, which is not ionic.
+
+### MD on the Pnma polymorphs (`phase8-md-polymorphs`)
+
+Cluster 3's members are Cmcm. `phase8-md-polymorphs` (2026-10-28 03:00–03:32, both
+GPUs, `phase8/md_polymorphs/`, keys in `phase8.md_polymorphs`) ran the same MD on two
+Pnma polymorphs:
+- Li4SnSe4 `mp-1194700`, the measured one: ICSD 193768, about 2e-5 S/cm at 20 °C
+  (Kaib et al. 2013);
+- Li4TiS4 `mp-766540`, LeMat's lowest Li4TiS4.
+
+Alexandria's `agm003244253` and `agm003244254` are the same structures.
+
+| compound | LeMat id | e_hull (eV/atom) | σ_500K (S/cm) | Li max MSD, 500 K (Å²) | σ_300K (S/cm) | σ_300K − 1 s.e.m. (S/cm) | tier |
+|---|---|---|---|---|---|---|---|
+| Li4SnSe4 (Pnma) | mp-1194700 | 0.003 | 0.065 ± 0.042 | 6.5 | 4.7e-5 | 1.7e-5 | coating |
+| Li4TiS4 (Pnma) | mp-766540 | 0.013 | ≈ 0 | 0.9 | — | < 0 | Li immobile; framework moves |
+
+- **The measured polymorph lands near its measurement.** Kaib et al.'s 2e-5 S/cm lies
+  between σ_300K − 1 s.e.m. and σ_300K. It is one compound, and the extrapolation's
+  E_a = 0.5 eV is the plan's pessimistic choice, not a fit. The Cmcm Li4SnSe4 of cluster 3
+  scores about 4 times higher (6.4e-5).
+- **Li4TiS4's fast transport is a property of the Cmcm cell only.** In Pnma Li4TiS4, Li
+  does not move at 500 K. At 1000 K its slowest non-Li species moves 3.1 Å² over the
+  100 ps (filter ≤ 2 Å²). The electrolyte-tier Cmcm member (`mp-756811`) is 0.025
+  eV/atom above Pnma.
 
 ### DFT and AIMD
 

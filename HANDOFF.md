@@ -1,15 +1,17 @@
 # Handoff: SE new-families campaign, after Phase 8 on the mined candidates
 
-Written 2026-10-28 on hera. The session before pushed the Phase 2 candidates ("DB
-candidates") through the plan's Phase 8 checks; Phase 8 ran on hera. **On 2026-10-28 the
+Written 2026-10-28 on hera, updated after the control run. The session before pushed the
+Phase 2 candidates ("DB candidates") through the plan's Phase 8 checks; Phase 8 ran on
+hera. The co-author summary is [`docs/se_new_families_results.md`](docs/se_new_families_results.md). **On 2026-10-28 the
 user decided that no DFT or AIMD inputs are prepared.** Nothing is to be generated. No
 task is open (see [Open](#open)).
 
 ## Read first
 
 1. `CLAUDE.local.md` → `docs/platforms/hera/agent_brief.md` and `environment.md`; `AGENTS.md`.
-2. [`docs/se_new_families_campaign.md`](docs/se_new_families_campaign.md): the status block
-   and "Phase 8". It is the record and must stay current.
+2. [`docs/se_new_families_results.md`](docs/se_new_families_results.md), the summary for
+   co-authors, then [`docs/se_new_families_campaign.md`](docs/se_new_families_campaign.md),
+   the record. Both must stay current.
 3. [`docs/se_new_families_campaign_plan.md`](docs/se_new_families_campaign_plan.md), Phases 7–8.
 4. [`docs/e_hull_definitions.md`](docs/e_hull_definitions.md) and
    [`docs/energy_fields.md`](docs/energy_fields.md) before touching any LeMat energy.
@@ -27,8 +29,19 @@ User rules that apply here (beyond AGENTS.md):
 
 ## Status
 
-- **Branch `se-new-families`. Phase 8 is uncommitted on top of `8c0e0a3`.** Nothing has
-  been committed or pushed since. The changes:
+- **2026-10-28, uncommitted on top of `1fb5a24`:** steps 1 and 2 of the next steps, run
+  at the user's request.
+  - Stages `mine-md-control` (a random control for Phase 2's MD tiers) and
+    `phase8-md-polymorphs` (MD on Pnma Li4SnSe4 and Li4TiS4), with the shared helpers
+    `survivor_percentiles` (it reproduces `hits.parquet` exactly) and `run_md_set`.
+  - Config keys `mining.md_control` and `phase8.md_polymorphs`, dated, added before the
+    stages ran.
+  - Outputs in `mine/md_control/` and `phase8/md_polymorphs/`. W&B `-mining:v1` and
+    `-phase8:v1`, uploaded 2026-10-28 17:43 UTC. `-phase8:v1` no longer holds the
+    withdrawn bundle.
+  - The doc and this file. Not committed: commit only when asked.
+- **Branch `se-new-families`, commit `1fb5a24`: Phase 8, committed 2026-10-28 at the
+  user's request, not pushed.** It holds:
   - new `src/wyckoff_transformer/transport/electrochem.py`;
   - `scripts/se_new_families_campaign.py` (stages `mine-md-members`, `phase8-entries`,
     `phase8-window`, `phase8-check`, `phase8-prototypes`, `phase8-report`);
@@ -76,10 +89,29 @@ Run directory: `~/.local/share/wyformer/runs/se-new-families-hera-20261025/`, Ph
 - **Clusters 10, 16, 21, 28:** known types, coating tier, narrow windows. In Li2ZrN2 and
   Li2HfN2, the only members stable against Li metal, Li does not move.
 
+## What the 2026-10-28 runs found
+
+- **Random control (`mine-md-control`):** 40 survivors outside E_2D's line, each a
+  framework with cations, one per framework, run with the same MD. 2 of 40 are tiered,
+  against 7 of 20 for `mine-md`.
+  - The pre-registered one-sided Fisher p is 0.0044, so the line enriches the MD tiers.
+  - The electrolyte tier alone does not differ (2/20 against 1/40, p = 0.26).
+  - Post hoc, the enrichment holds both among soft-anion compounds (4/15 against 0/15)
+    and among the rest (3/5 against 2/25).
+  - The control's electrolyte-tier structure is another Li2HN ordering.
+- **Pnma polymorphs (`phase8-md-polymorphs`):**
+  - Li4SnSe4 `mp-1194700`, the measured polymorph: σ_300K − 1 s.e.m. = 1.7e-5 S/cm,
+    σ_300K 4.7e-5. Kaib et al. measured about 2e-5 S/cm.
+  - Li4TiS4 `mp-766540`, the lowest polymorph: Li does not move and the framework moves
+    at 1000 K. Cmcm Li4TiS4's electrolyte tier belongs to that metastable cell only.
+
 ## Open
 
-- **A commit** of the Phase 8 work, if the user wants one.
-- **Phase 4**, after the authors decide on G1.
+- **A commit** of the 2026-10-28 work, if the user wants one.
+- **Phase 4**, after the authors decide on G1. The control is new evidence for that
+  decision: the line ranks frameworks with cations under ORB MD, but no better than
+  random in the electrolyte tier, and its tiered picks were mostly known compounds and
+  types.
 
 ## Caveats to keep in view
 
