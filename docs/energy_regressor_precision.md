@@ -14,6 +14,8 @@ difference in targets. The corresponding decomposition for novel genes remains
 unmeasured because their minima are unknown.
 
 The repeat retaining one lowest-energy observed structure per gene is in §E.
+Architectural hypotheses for the out-of-distribution gap, especially for unseen
+templates, are reviewed in [`energy_regressor_ood_architecture.md`](energy_regressor_ood_architecture.md).
 
 ## Energy normalization and coverage
 
