@@ -9,6 +9,20 @@
 >   ([Phase 2](#phase-2-mining-lemat-mine-)). Of the 20 best clusters, 7 reach an MD tier
 >   ([Results](#results)). The two in the electrolyte tier are Li4B4Sb2SO16, a computed MP
 >   structure, and Li2HN, a known conductor that OBELiX lacks.
+> - Phase 8's checks on those 7 clusters ran on hera without DFT
+>   ([Phase 8](#phase-8-the-mined-candidates-phase8-)): literature and ICSD, structure
+>   types, windows and interface reactions (Richards 2016, MP2020), joins, a structure
+>   check and MD on further members.
+>   - The one new-framework family in the electrolyte tier, the borate-sulfates
+>     Li4B4Sb2SO16 and Li6Sn2B4SO16 (tychite-derived), is stable only from 3.4 and
+>     2.1 V up. It is a high-voltage material, not an electrolyte against Li or
+>     graphite. MD on the Sn member reached only the coating tier.
+>   - MD on further members put a third structure in the electrolyte tier: Cmcm
+>     Li4TiS4, in the Li4GeO4-type chalcogenide cluster (window 1.7–2.1 V).
+>   - The other clusters are known compounds, known structure types or compositions in
+>     unreported polymorphs, with narrow windows.
+>   - No DFT or AIMD inputs are prepared (the user, 2026-10-28). The energies are
+>     LeMat-Bulk-fixed's PBE ones, and the transport numbers come from ORB MD.
 > - Phase 3 has no target, since no gene-level descriptor passed G1. Nothing has been
 >   generated, and Phase 4 waits for the authors' decision on G1.
 >
@@ -21,8 +35,9 @@
 > `se-new-families-hera-20261025/` and in W&B run
 > [`symmetry-advantage/WyckoffTransformer/se-new-families-hera-20261025`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/se-new-families-hera-20261025)
 > (uploaded 2026-10-27), as artifacts `se-new-families-hera-20261025-benchmark`, `-gates`
-> and `-mining`. Everything up to that upload ran on uncommitted code on base `b31fb2d`;
-> the run's config records `code_dirty: true`.
+> and `-mining` (all v0). Everything up to that upload ran on uncommitted code on base `b31fb2d`;
+> the run's config records `code_dirty: true`. Phase 8 is artifact `-phase8:v0`
+> (uploaded 2026-10-27 13:19 UTC, uncommitted code on `8c0e0a3`).
 
 ```bash
 PY=.venv/bin/python S=scripts/se_new_families_campaign.py
@@ -592,3 +607,321 @@ PES (Deng 2025), and σ_300K is extrapolated from 500 K with E_a = 0.5 eV.
 
 Nothing has been generated. Phase 3 has no target (no gene-level descriptor passed G1),
 and Phase 4 waits for the authors' decision on G1.
+
+## Phase 8: the mined candidates (`phase8-*`)
+
+Run on hera on 2026-10-27, on the uncommitted tree on `8c0e0a3` (branch `se-new-families`).
+Outputs are in `phase8/` of the run directory and in the W&B artifact
+`se-new-families-hera-20261025-phase8:v0` (run `se-new-families-hera-20261025`, tables
+`phase8_report` and `phase8_interfaces`). LeMat-Bulk-fixed's rows (`entries.parquet`)
+are not uploaded; `phase8-entries` rebuilds them from the pinned file.
+
+```bash
+$PY $S mine-md-members && $PY $S phase8-entries && $PY $S phase8-window
+$PY $S phase8-check && $PY $S phase8-prototypes && $PY $S phase8-report
+```
+
+The plan's Phase 8 was written for generated structures. Here its candidates are the 34
+hits in the 7 clusters whose MD reached a tier. Each is a LeMat entry already relaxed with
+PBE, so:
+- its e_hull is LeMat-Bulk-fixed's PBE one; the plan's "free and fixed-symmetry e_hull"
+  has no counterpart;
+- what needs checking is that the ORB structure MD ran on is still the DFT one;
+- DFT would add only r2SCAN energies. On 2026-10-28 the user decided that no DFT or AIMD
+  inputs are prepared ([below](#dft-and-aimd)).
+
+### Data and method
+
+**Reference.** hera had only upstream LeMat-Bulk, whose MP energies are stale
+([lemat_stale_mp_energies.md](lemat_stale_mp_energies.md)). LeMat-Bulk-fixed's
+`lemat_pbe_ehull.csv.gz`, the reference of every e_hull in this campaign, was copied from
+zeus (sha256 pinned in the config). `phase8-entries` keeps its 72,778 rows whose chemical
+system lies inside one of 147 systems: each member's system, alone and joined with each
+electrode's elements (up to 7 elements). From these rows every member's raw e_hull is
+recomputed equal to LeMat-Bulk-fixed's (max |Δ| 1e-16 eV/atom).
+
+**MP2020.** pymatgen's `MaterialsProject2020Compatibility` is applied to each row's
+structure; the structure is what tells a sulfate from a sulfide and a peroxide from an
+oxide. U follows MPRelaxSet's rule: the U elements get U when the most electronegative
+element is O or F. That LeMat stores them this way on every source was checked from the
+data, not assumed (`u_scheme_check.csv`):
+- At compositions where LeMat's MP row and an Alexandria or OQMD row both lie within
+  0.1 eV/atom of the hull, the lowest energies agree. Alexandria − MP has a median of
+  +0.002 eV/atom over 521 compositions (range −0.08 to +0.08); OQMD − MP +0.031 over 29.
+- A plain-GGA row would sit 0.3–1 eV/atom lower.
+- The larger differences (up to ±1.3 eV/atom) all involve a structure far above the
+  hull, where the two lowest rows are different polymorphs.
+
+MP2020 refused no row. It does put the polysulfides LiS4, LiS5 and Li2S13 and the
+superoxide-classified LiO8 on the Li–S and Li–O hulls: it gives polysulfide S the sulfide
+correction and every O of a superoxide the superoxide one. They appear among some
+oxidation products below. The raw windows, reported beside the MP2020 ones, are the check.
+
+**Windows and interfaces** (`phase8-window`, `transport/electrochem.py`), following
+Richards et al. 2016 ([archive](archive/acs.chemmater.5b04082.pdf)):
+- *Window:* the range of μ_Li over which the composition is on the hull of the
+  Li-open grand potential. As in the paper, a member above the hull is first placed on
+  it. Its window is then the range in which its decomposition assemblage coexists; when
+  the assemblage spans a facet, the window shrinks to a single potential (LiLaSbO,
+  Li2TiN2). Windows therefore depend only on the composition.
+- *Interfaces,* against each electrode of the panel decided on 2026-10-27, at its
+  nominal potential (Li 0 V, LiC6 0.1, Li4Ti5O12 1.55, LiFePO4 3.45, LiCoO2 3.9,
+  LiMn2O4 4.0, LiNi0.5Mn1.5O4 4.7 V; the paper used computed voltages):
+  - eq. 2, the closed-system reaction, per atom;
+  - eq. 4, open to Li at the electrode's potential, per atom other than Li. The
+    electrode is held at its grand-potential equilibrium, the member on the hull;
+  - eq. 5, the x = 0 term of eq. 4: decomposition by the Li reservoir alone.
+  All are in `interfaces.csv`, with MP2020 and raw energies and their products.
+- *Join flag* (plan, Phase 6): the join runs from the Li binary to the rest of the
+  formula, one per anion that can take all of Li's charge (bond-valence states). It is
+  flagged when LeMat holds no other composition strictly between the two. A five-element
+  "rest" such as B4Sb2SO14 is not a compound, so for those members the flag says little.
+
+**Structure types** (`phase8-prototypes`). Each member is matched against LeMat's 43,407
+ICSD-backed structures with every species relabelled (`fit_anonymous`, pymatgen's
+default tolerances). The screens' framework match anonymised only the cation and anion
+roles, and only against known SEs.
+
+### The families
+
+| rank | family (structure type) | members (distinct) | MD (σ_300K − 1 s.e.m., S/cm) | window, MP2020 (V) | electrodes inside | known? |
+|---|---|---|---|---|---|---|
+| 12 | borate-sulfates (tychite-derived) | 3 (2) | Li4B4Sb2SO16 **2.6e-4**; Li6Sn2B4SO16 5.5e-6 | 3.44–4.33; 2.10–3.66 | LiFePO4, LiCoO2, LiMn2O4; LiFePO4 | theoretical |
+| 9 | Li2HN (imide) | 3 (1) | **2.3e-4** | 0.24–0.63 | — | known conductor |
+| 3 | Cmcm Li4MX4 (Li4GeO4 type) | 4 | Li4TiS4 **1.7e-4**; Li4GeSe4 9.6e-5; Li4SnSe4 6.4e-5 | 1.67–2.07 | — | known compositions, unreported polymorph |
+| 10 | CdI2-type layers (CuScS2, anti-La2O3, TlCrTe2) | 18 | LiYTe2 3.0e-5; Li2ZrN2, Li2HfN2 Li immobile | 0.58–1.62; Li2MN2 0–1.1 | Li4Ti5O12; Li2MN2 Li, LiC6 | Li2ZrN2, Li2HfN2, LiErS2 known |
+| 16 | ZrCuSiAs type, Li on the Cu site | 3 | LiLaSbO 3.4e-5; LiErTeO, LiLuTeO Li immobile | 0.80–0.83; 0.19–1.54 | — | not found |
+| 21 | Li3BiS3 (proustite type) | 2 (1) | 1.6e-6 | 1.68–2.10 | — | not found |
+| 28 | a second Cmcm Li4TiS4 | 1 | 1.2e-5 | 1.71–2.07 | — | not found |
+
+Bold marks the electrolyte tier. "Distinct" counts ORB structures that pymatgen's default
+StructureMatcher tells apart. Per-member numbers are in `phase8/report.csv`.
+
+**Cluster 12, the borate-sulfates: Li4B4Sb2SO16 and Li6Sn2B4SO16.** This is the only
+new-framework family that reached the electrolyte tier.
+- *Structure.* Li6Sn2B4SO16 (Fd-3) is a borate analogue of tychite: it matches
+  Na6Mg2(CO3)4(SO4) (mp-540866, mp-6892) and ferrotychite Na6Fe2(CO3)4(SO4)
+  (mp-21590), with BO3 for CO3. Li4B4Sb2SO16 (Fddd) matches no ICSD-backed type in
+  LeMat. Its Li-free framework clusters with Li6Sn2B4SO16's: a tychite-derived framework
+  with Sb⁵⁺ for Sn⁴⁺ and a third fewer Li.
+- *Literature.* Both are theoretical MP entries (`mp-768968`, `mp-769001`; MP provenance
+  "theoretical", no ICSD id). The Alexandria entries `agm003282527` and `agm003282630`
+  are the same structures. No report of either compound was found. Synthetic tychite is
+  a measured Na⁺ conductor, 6.0e-7 S/cm at 100 °C
+  ([Dalton Trans. 2024](https://pubs.rsc.org/en/content/articlelanding/2024/dt/d4dt00396a)).
+- *e_hull.* 0.100 and 0.065 eV/atom, identical with MP2020 (MP's own: 0.094 and 0.068).
+  They decompose to Li3B7O12 + LiSb3O8 + Li2SO4 + B2O3, and to LiBO2 + Li2SO4 + SnO2.
+- *Window.* 3.44–4.33 V and 2.10–3.66 V (MP2020; raw 3.44–3.99 and 2.04–3.32 V). Below
+  them Sb⁵⁺ and Sn⁴⁺ are reduced. Li4B4Sb2SO16's window is the only one that contains
+  LiFePO4, LiCoO2 and LiMn2O4.
+- *Interfaces.* Against every cathode, |ΔΦ| ≤ 0.04 eV per non-Li atom (LiNi0.5Mn1.5O4
+  0.13 for the Sn member). Li metal and graphite reduce both hard (−1.5 to −1.9 eV) to
+  Li2O, LiB, Li3Sb or Li17Sn4 and Li2S. Those products conduct electrons, so they will
+  not passivate.
+- *Joins:* none (flagged), but the "rest" is not a compound. *Coordination:* tested and
+  passed.
+- *Structure check.* Li4B4Sb2SO16's ORB structure is its DFT one (rms 0.007).
+  Li6Sn2B4SO16 relaxed under ORB to P1 (rms 0.10, +1.7% volume); its MD ran on that cell.
+- *MD.* Li4B4Sb2SO16 is in the electrolyte tier (2.6e-4 S/cm). Li6Sn2B4SO16 is in the
+  coating tier only (5.5e-6; σ_500K 0.032 against 0.42).
+
+On thermodynamics alone this is a high-voltage material: a catholyte or a cathode coating,
+not an electrolyte against Li, graphite or Li4Ti5O12. Its transport rests on the Sb
+member. Its PBE e_hull has no r2SCAN check: MP's r2SCAN data reaches only ternaries in
+these systems.
+
+**Cluster 9, lithium imide Li2HN.** It is a known conductor (2.5e-4 S/cm, [PCCP 2012](https://pubs.rsc.org/en/content/articlelanding/2012/cp/c2cp23636b)),
+so this is a blind rediscovery.
+- *Structure.* The three members are MP's orderings of the disordered ICSD imide (MP
+  remark "Ordering of Disordered Crystal") and match one another. LeMat holds 14 Li2HN
+  orderings. The lowest, `mp-1189725` (Pnma), is MP's "Dilithium imide – orthorhombic"
+  (ICSD 168791).
+- *e_hull.* The MD'd R3m ordering is 0.087 eV/atom above it.
+- *Structure check.* ORB relaxed that ordering to I4mm with 8% less volume (rms 0.20);
+  MD ran on this cell.
+- *Window.* 0.24–0.63 V: reduced to Li4NH, oxidised to LiNH2 + Li2N2. It is an
+  anode-side window, and every cathode oxidises it (eq. 4 −2.6 to −3.8 eV).
+- *Join.* Li3N–NH3 holds LiNH2 (ICSD) and three more.
+
+**Cluster 3, Cmcm Li4GeSe4, Li4SnSe4, Li4TiS4: the Li4GeO4 type in chalcogenides.**
+- *Framework.* The Li-free frameworks match OBELiX's LISICON group. The group is
+  unlabelled: no member reaches 1e-4 S/cm and not all are below 1e-7. "New" here only
+  meant no fast group.
+- *Structure type.* Li4GeO4 and Li4TiO4 (Cmcm), and Li4PbO4 for the Sn member.
+- *Literature.* Li4SnSe4 is known (Kaib et al., Chem. Mater. 2013, about 2e-5 S/cm at
+  20 °C), in Pnma: ICSD 193768, `mp-1194700`. That polymorph survived the Phase 2
+  screen; its E_2D, 0.205 eV, lies just outside the line. The Cmcm Li4SnSe4 is
+  0.017 eV/atom above it. Cmcm Li4GeSe4 is LeMat's lowest Li4GeSe4 (0.020 eV/atom, no
+  ICSD); no report of it was found (Li4GeS4 is Pnma). For Li4TiS4 no report was found;
+  LeMat's lowest is Pnma `mp-766540`, 0.013 eV/atom.
+- *Window.* 1.67–1.92, 1.71–1.92 and 1.71–2.07 V, the narrow thio- and selenide window.
+  Li metal and graphite reduce them, and every cathode oxidises them (−1.0 to
+  −2.1 eV). Only Li4Ti5O12 is close (−0.03 to −0.08 eV).
+- *Joins.* Populated (Li2GeSe3, Li8GeSe6, …; two ICSD-backed on Li2Se–SnSe2).
+- *MD.* All three members reach a tier. Li4TiS4 (`mp-756811`) is in the electrolyte tier
+  at 1.7e-4 S/cm, Li4GeSe4 at 9.6e-5 and Li4SnSe4 at 6.4e-5.
+- *r2SCAN (MP).* MP's r2SCAN data has Pnma Li4TiS4 (`mp-766540`) 0.026 eV/atom above
+  its hull (PBE 0.013) and Pnma Li4GeSe4 and Li4SnSe4 on it (MP API, 2026-10-27). It
+  has none of the Cmcm members.
+
+It is a known composition family in an unreported polymorph. Its fastest member is
+Li4TiS4. None of LeMat's ten Li4TiS4 entries is ICSD-backed, no report of it was found,
+and it has the narrow sulfide window.
+
+**Cluster 10, the CdI2-type layers: LiYTe2 and 17 members.** Several known structure
+types share one Li-free framework:
+- CuScS2 or LiMnTe2 type for LiYTe2 and LiLaTe2;
+- anti-La2O3 (Ce2SO2, CaAl2Si2) type for Li2MN2 (M = Zr, Hf, Ti, Sn) and for
+  Li2CdO2 and Li2ZnO2;
+- TlCrTe2 or LiCrS2 type for the P-3m1 LiErS2 and LiLaSe2.
+
+Li2ZrN2 is ICSD-backed (`mp-3216`, three ICSD ids). Li2HfN2 has been made from Li3N and
+HfN (Pauling File `pf-36313`; [Dalton Trans. 1974](https://pubs.rsc.org/en/content/articlelanding/1974/dt/dt9740002166)).
+Li2SnN2 comes from MP's computed nitride map (CNGMD). LiErS2 is known in R-3m (ICSD,
+`mp-15791`); the P-3m1 member is 0.049 eV/atom above it. No Li-conductivity report was
+found for Li2ZrN2 or Li2HfN2.
+- *Windows.* Li2ZrN2 0–1.07 V and Li2HfN2 0–1.12 V: the only members stable against Li
+  metal and graphite. LiYTe2 0.58–1.62 V, LiLaTe2 0.71–1.37 V.
+- *MD.* In Li2ZrN2 and Li2HfN2, Li does not move at 500 K (max MSD 0.10 Å²). The
+  cluster's coating tier rests on LiYTe2 (3.0e-5 S/cm).
+
+**Cluster 16, P4/nmm LiLaSbO, LiErTeO, LiLuTeO: the ZrCuSiAs (LaCuOS) type with Li on
+the Cu site.** Each matches 82–93 ICSD-backed structures, among them CeCuTeO, PrCuSO and LaFeAsO.
+No report of the Li compounds was found.
+- *LiLaSbO is not ionic.* Its bond-valence states give Sb(−2), and its GGA gap is
+  0.66 eV. The motif analysis refused it, so its coordination was never tested.
+- *Windows.* LiLaSbO 0.80–0.83 V: its assemblage La2SbO2 + Li2Sb spans a facet.
+  LiErTeO and LiLuTeO 0.19 and 0.29–1.54 V.
+- *Joins:* none (flagged).
+- *MD.* In LiErTeO and LiLuTeO, Li does not move at 500 K (max MSD 0.24–0.25 Å²). The
+  cluster's coating tier rests on LiLaSbO, which is not ionic.
+
+**Cluster 21, R3c Li3BiS3: the proustite and pyrargyrite type (Ag3AsS3, Ag3SbS3).** No
+report of Li3BiS3 was found. LeMat's lowest is R-3 (`mp-753720`, 0.025 eV/atom); the R3c
+members are at 0.049.
+- *Coordination.* No clean cation environment, so the check was not tested.
+- *Window.* 1.68–2.10 V.
+
+**Cluster 28, a second Cmcm Li4TiS4 (`agm003244046`).** It matches no ICSD-backed type,
+at 0.025 eV/atom (Pnma 0.013). Its window and interfaces are cluster 3's Li4TiS4.
+
+### Windows and interfaces
+
+| compound | window, MP2020 (V) | raw (V) | reduced to (MP2020) | oxidised to (MP2020) |
+|---|---|---|---|---|
+| Li4B4Sb2SO16 | 3.44–4.33 | 3.44–3.99 | 0.47 Li3B7O12 + 0.27 LiSb3O8 + 0.22 Li2SO4 + 0.04 SbO2 | 0.43 B2O3 + 0.32 LiSb3O8 + 0.22 Li2SO4 + 0.03 O2 |
+| Li6Sn2B4SO16 | 2.10–3.66 | 2.04–3.32 | 0.52 LiBO2 + 0.32 Li2SnO3 + 0.14 Li2SO4 + 0.02 SnS2 | 0.47 Li3B7O12 + 0.26 SnO2 + 0.22 Li2SO4 + 0.05 LiO8 |
+| Li2HN | 0.24–0.63 | 0.15–0.63 | 1.00 Li4HN | 0.75 LiH2N + 0.25 LiN |
+| Li4GeSe4 | 1.67–1.92 | 1.67–1.89 | 0.80 Li2Se + 0.20 Ge | 0.80 Li2GeSe3 + 0.20 LiSe3 |
+| Li4SnSe4 | 1.71–1.92 | 1.71–1.89 | 0.60 Li2Se + 0.40 SnSe | 0.80 Li2SnSe3 + 0.20 LiSe3 |
+| Li4TiS4 | 1.71–2.07 | 1.71–2.00 | 0.60 LiTiS2 + 0.40 Li2S | 0.80 TiS3 + 0.20 LiS4 |
+| LiYTe2 | 0.58–1.62 | 0.58–1.62 | 0.73 Y5Te6 + 0.27 Li2Te | 0.56 Y2Te3 + 0.44 YTe3 |
+| LiLaTe2 | 0.71–1.37 | 0.71–1.37 | 0.67 LaTe + 0.33 Li2Te | 1.00 LaTe2 |
+| LiLaSe2 | 0.79–1.69 | 0.79–1.69 | 0.67 LaSe + 0.33 Li2Se | 0.97 La10Se19 + 0.03 Li2Se |
+| LiErS2 | 0.64–2.28 | 0.64–2.23 | 0.78 LiEr3S4 + 0.22 Li2S | 1.00 ErS2 |
+| LiSnSeI | 1.46–2.02 | 1.46–2.02 | 0.33 Li2Se + 0.33 Sn + 0.33 LiI | 0.50 SnSe2 + 0.50 SnI2 |
+| Li2ZrN2 | 0.00–1.07 | 0.00–0.93 | stable against Li | 0.78 LiZr3N4 + 0.22 N2 |
+| Li2HfN2 | 0.00–1.12 | 0.00–0.97 | stable against Li | 0.78 LiHf3N4 + 0.22 N2 |
+| Li2TiN2 | 0.87–0.88 | 0.79–0.79 | 0.53 Li5TiN3 + 0.47 LiTi3N4 | 0.78 LiTi3N4 + 0.22 LiN |
+| Li2SnN2 | 0.67–0.90 | 0.61–0.67 | 0.67 LiN + 0.33 LiSn | 0.67 SnN + 0.33 LiN |
+| Li2CdO2 | 1.72–2.89 | 1.72–2.66 | 0.67 Li2O + 0.33 Cd | 0.67 CdO + 0.33 Li2O2 |
+| Li2ZnO2 | 1.35–2.98 | 1.35–2.76 | 0.83 Li6ZnO4 + 0.17 Zn | 0.67 ZnO + 0.33 Li2O2 |
+| LiLaSbO | 0.80–0.83 | 0.80–0.83 | 0.83 La2SbO2 + 0.17 Li3Sb | 1.00 LaSbO |
+| LiErTeO | 0.19–1.54 | 0.19–1.54 | 0.56 Er2O3 + 0.33 Li2Te + 0.11 Er | 0.83 Er2TeO2 + 0.17 LiTe3 |
+| LiLuTeO | 0.29–1.54 | 0.29–1.54 | 0.56 Lu2O3 + 0.33 Li2Te + 0.11 Lu | 0.83 Lu2TeO2 + 0.17 LiTe3 |
+| Li3BiS3 | 1.68–2.10 | 1.68–2.00 | 0.75 Li2S + 0.25 Bi | 0.75 LiBiS2 + 0.25 LiS4 |
+
+Interface reaction energies, eq. 4 with MP2020 energies (eV per non-Li atom; 0 is stable).
+Eqs. 2 and 5 and the raw energies are in `interfaces.csv`.
+
+| compound | Li | LiC6 | Li4Ti5O12 | LiFePO4 | LiCoO2 | LiMn2O4 | LiNi0.5Mn1.5O4 |
+|---|---|---|---|---|---|---|---|
+| Li4B4Sb2SO16 | -1.93 | -1.76 | -0.35 | -0.01 | -0.01 | 0.00 | -0.04 |
+| Li6Sn2B4SO16 | -1.55 | -1.38 | -0.20 | -0.04 | -0.02 | -0.03 | -0.13 |
+| Li2HN | -0.24 | -0.29 | -0.67 | -2.57 | -3.02 | -3.12 | -3.82 |
+| Li4GeSe4 | -1.63 | -1.48 | -0.08 | -1.05 | -1.41 | -1.49 | -2.05 |
+| Li4SnSe4 | -1.63 | -1.47 | -0.07 | -1.05 | -1.41 | -1.49 | -2.05 |
+| Li4TiS4 | -0.80 | -0.87 | -0.03 | -1.08 | -1.44 | -1.52 | -2.08 |
+| LiYTe2 | -0.32 | -0.32 | -0.02 | -0.65 | -1.24 | -0.94 | -1.17 |
+| LiLaTe2 | -0.24 | -0.21 | -0.06 | -0.69 | -1.14 | -0.94 | -1.18 |
+| LiLaSe2 | -0.26 | -0.23 | 0.00 | -0.58 | -0.96 | -0.79 | -1.00 |
+| LiErS2 | -0.19 | -0.29 | -0.03 | -0.52 | -0.95 | -0.74 | -0.94 |
+| LiSnSeI | -1.58 | -1.37 | 0.00 | -0.48 | -0.74 | -0.66 | -0.89 |
+| Li2ZrN2 | 0.00 | 0.00 | -0.27 | -1.53 | -1.83 | -1.89 | -2.36 |
+| Li2HfN2 | 0.00 | 0.00 | -0.28 | -1.53 | -1.83 | -1.90 | -2.36 |
+| Li2TiN2 | -0.09 | -0.09 | -0.36 | -1.57 | -1.87 | -1.94 | -2.41 |
+| Li2SnN2 | -1.14 | -0.88 | -0.40 | -1.67 | -1.97 | -2.03 | -2.50 |
+| Li2CdO2 | -1.39 | -1.22 | -0.21 | -0.29 | -0.54 | -0.61 | -1.08 |
+| Li2ZnO2 | -0.98 | -0.88 | -0.12 | -0.28 | -0.51 | -0.58 | -1.04 |
+| LiLaSbO | -0.24 | -0.20 | -0.24 | -0.87 | -1.21 | -1.06 | -1.29 |
+| LiErTeO | -0.06 | -0.11 | -0.02 | -0.59 | -0.96 | -0.82 | -1.05 |
+| LiLuTeO | -0.10 | -0.14 | -0.04 | -0.61 | -0.99 | -0.86 | -1.09 |
+| Li3BiS3 | -1.79 | -1.64 | -0.10 | -0.96 | -1.29 | -1.37 | -1.89 |
+
+What the windows show:
+- Only Li2ZrN2 and Li2HfN2 are stable against Li metal.
+- Only the borate-sulfates have small reaction energies against the cathodes.
+- No candidate is stable across a full cell.
+- The chalcogenides have the narrow 1.6–2.1 V windows Richards et al. found for the
+  thiophosphates.
+- Li4Ti5O12 is the electrode most of the sulfides, selenides and tellurides touch
+  least (|ΔΦ| ≤ 0.1 eV).
+
+### Structure check (`phase8-check`)
+
+All 34 ORB structures match their LeMat-Bulk-fixed DFT structures with pymatgen's default
+StructureMatcher. Volumes agree within 1% for 23 of them. The exceptions:
+- **Li2HN `mp-35695`,** the MD'd member: R3m → I4mm, rms 0.20, 8% denser.
+- **Li6Sn2B4SO16 `mp-769001`:** Fd-3 → P1, rms 0.10, +1.7%.
+- **Smaller changes:** the five OQMD Li2CdO2 entries +3.9–4.3%; the OQMD LiErTeO and
+  LiLuTeO +2.4%; Li2ZnO2 +1.2% with C2/m → P-3m1; Li2HN `mp-34465` −1.1%.
+
+For Li2HN the MD therefore probed an ORB-modified cell; the others are the DFT structures.
+
+### MD on further members (`mine-md-members`)
+
+The plan's Phase 7 runs MD on "up to 3 structures per candidate family". `mine-md`
+ran only each cluster's best member. `mine-md-members` (2026-10-27 11:11–13:13, both
+GPUs, `phase8/md/`) takes each tiered cluster's members by e_hull, up to 3 distinct
+structures. It skips a member whose ORB structure matches one already chosen:
+- Li2HN `agm003173795` and `mp-34465`, which match `mp-35695`;
+- Li4B4Sb2SO16 `agm003282527`, which matches `mp-768968`;
+- Li3BiS3 `mp-753677`, which matches `agm003214583`.
+
+Of the 14 distinct members chosen, 7 had already run, so 7 were new. The protocol is
+Phase 2's.
+
+| rank | compound | LeMat id | e_hull (eV/atom) | σ_500K (S/cm) | Li max MSD, 500 K (Å²) | σ_300K − 1 s.e.m. (S/cm) | tier |
+|---|---|---|---|---|---|---|---|
+| 3 | Li4TiS4 (Cmcm) | mp-756811 | 0.038 | 0.29 ± 0.06 | 18.7 | 1.7e-4 | **electrolyte** |
+| 3 | Li4SnSe4 (Cmcm) | agm006046394 | 0.017 | 0.13 ± 0.04 | 14.2 | 6.4e-5 | coating |
+| 12 | Li6Sn2B4SO16 | mp-769001 | 0.065 | 0.032 ± 0.024 | 6.5 | 5.5e-6 | coating |
+| 10 | Li2HfN2 | agm002156433 | 0 | ≈ 0 | 0.10 | < 0 | Li immobile |
+| 10 | Li2ZrN2 | mp-3216 | 0 | ≈ 0 | 0.10 | < 0 | Li immobile |
+| 16 | LiErTeO | oqmd-3271894 | 0.054 | ≈ 0 | 0.24 | < 0 | Li immobile |
+| 16 | LiLuTeO | oqmd-4527247 | 0.067 | ≈ 0 | 0.25 | < 0 | Li immobile |
+
+Every framework passes the 1000 K filter. What the members change:
+- **Cluster 3 gains an electrolyte-tier member.** Cmcm Li4TiS4 `mp-756811` scores
+  1.7e-4, between G1c's LGPS (1.4e-4) and Li7P3S11 (2.0e-4) references. Cluster 28's
+  Cmcm Li4TiS4 (`agm003244046`, 0.025 eV/atom), a different arrangement of the same
+  composition, reaches only 1.2e-5.
+- **Cluster 12's electrolyte tier rests on Li4B4Sb2SO16 alone.** Li6Sn2B4SO16 is 13 times
+  slower at 500 K. Its MD ran on the ORB P1 cell.
+- **Cluster 10:** the two members stable against Li metal, Li2ZrN2 and Li2HfN2, have Li
+  that does not move at 500 K. The cluster's tier rests on LiYTe2.
+- **Cluster 16:** in LiErTeO and LiLuTeO Li does not move. The cluster's tier rests on
+  LiLaSbO, which is not ionic.
+
+### DFT and AIMD
+
+On 2026-10-28 the user decided that the DFT and AIMD inputs are not prepared. So:
+- e_hull is LeMat-Bulk-fixed's PBE one;
+- the borate-sulfates have no r2SCAN check, since MP's r2SCAN thermo data reaches only
+  ternaries in B–Li–O–S–Sb and B–Li–O–S–Sn;
+- σ is ORB MD's ranking number.
+
+On 2026-10-27 a stage that has since been removed, `phase8-bundle`, wrote an r2SCAN
+bundle (`dft_bundle/`) and an AIMD package (`aimd_package/`). Both were withdrawn and
+deleted from the run directory; W&B's `-phase8:v0` still holds them. The config keys
+`phase8.r2scan_clusters` and `phase8.aimd_members` are no longer read.

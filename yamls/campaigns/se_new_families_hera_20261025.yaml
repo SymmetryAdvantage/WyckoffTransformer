@@ -136,6 +136,48 @@ md:
   framework_msd_max: 2.0    # A^2 over the 100 ps at 1000 K, slowest non-Li species
   li_msd_min: 4.0           # A^2, max over the 500 K run
 
+# Phase 8 on the Phase 2 candidates: the clusters whose MD reached a tier
+# (mine/md/candidates.csv).  Added 2026-10-27, before any Phase 8 stage ran.
+phase8:
+  # Phase 7's scope, "up to 3 structures per candidate family": mine-md ran only each
+  # cluster's best member.  Further members are taken by e_hull, skipping any whose ORB
+  # structure matches one already chosen (pymatgen's default StructureMatcher).
+  md_members_per_cluster: 3
+  # LeMat-Bulk-fixed v4 with its PBE hull (lemat_bulk_fixed_pbe@bf8f0b31), the reference
+  # of the campaign's e_hull; copied from zeus on 2026-10-27.  Upstream's
+  # lemat-bulk/lemat_pbe.csv.gz still has the stale MP energies (docs/lemat_stale_mp_energies.md).
+  lemat_hull: lemat-bulk-fixed/lemat_pbe_ehull.csv.gz
+  lemat_hull_sha256: 149a94f566a0771ab688161ab974b6382c406095b5a99f4a01757170376e21b9
+  # Richards et al. 2016 against an electrode panel.  Decided with the user on 2026-10-27:
+  # no electrode is fixed in advance; the outcome is which electrodes a candidate pairs
+  # with.  Nominal potentials vs Li/Li+ (V); the paper used computed average voltages.
+  electrodes:
+    Li: {formula: Li, potential: 0.0}
+    LiC6: {formula: LiC6, potential: 0.1}
+    Li4Ti5O12: {formula: Li4Ti5O12, potential: 1.55}
+    LiFePO4: {formula: LiFePO4, potential: 3.45}
+    LiCoO2: {formula: LiCoO2, potential: 3.9}
+    LiMn2O4: {formula: LiMn2O4, potential: 4.0}
+    LiNi0.5Mn1.5O4: {formula: LiNi0.5Mn1.5O4, potential: 4.7}
+  window:
+    # Decided 2026-10-27: MaterialsProject2020Compatibility, with LeMat's raw PBE/PBE+U
+    # beside it as a sensitivity check.  U by MP's rule (transport/electrochem.py).
+    energies: [mp2020, raw]
+    # A compound above the hull is placed this far below it (eV/atom), as Richards
+    # et al. placed metastable electrolytes on it.
+    hull_margin: 1.0e-4
+    # Products are read this far (eV) outside each limit of the window.
+    product_offset: 0.05
+  # DFT only where it is needed (the user, 2026-10-27: VASP on ASPIRE2A, prepared here,
+  # run by the user).  r2SCAN for the electrolyte-tier cluster that is not a known
+  # conductor (rank 12, Li4B4Sb2SO16 and Li6Sn2B4SO16; rank 9 is lithium imide), and
+  # for its systems' competing phases.
+  r2scan_clusters: [12]
+  # The co-authors' AIMD: this many tiered MD structures, best sigma_300K - 1 s.e.m. first.
+  aimd_members: 10
+  # 2026-10-28, the user: the DFT and AIMD inputs are not prepared. The stage that read
+  # r2scan_clusters and aimd_members (phase8-bundle) was removed; no stage reads them.
+
 # The families campaign's protocol arm (wide NEP89 prescreen, then ORB), used for the G1b
 # controls here and for the generated candidates in Phase 5.
 protocol:

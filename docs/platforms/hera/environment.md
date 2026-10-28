@@ -272,6 +272,14 @@ venv). It needed two inputs hera did not have:
   `rsync -a zeus:<store>/data/lemat-bulk/lemat_pbe.csv.gz <store>/data/lemat-bulk/`.
 - `data/obelix/all.csv`, OBELiX at commit `4eaac88`, downloaded from GitHub.
 
+On 2026-10-27 the new-families campaign's Phase 8 also needed LeMat-Bulk-fixed's own
+archive. It was copied from zeus with plain `rsync -a` into
+`data/lemat-bulk-fixed/`: `lemat_pbe.csv.gz` and `lemat_pbe_ehull.csv.gz`, whose
+sha256 matched zeus's, and `raw/README.md` and `raw/audit/changes.parquet`. The
+`compatible_pbe` parquet shards and `cif_prepared/` stay on zeus only. Use these files,
+not `data/lemat-bulk/`, for any LeMat energy: the upstream copy still has the stale MP
+energies.
+
 `mp_2026_gga_gap` was re-tokenised with `der_tokenizer_v1` in 54 s; the
 gene-level band-gap regressor then trained at about 82 steps/s on one RTX 6000 Ada.
 

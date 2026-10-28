@@ -1,213 +1,124 @@
-# Handoff: SE new-families campaign, Phase 8 on the mined candidates
+# Handoff: SE new-families campaign, after Phase 8 on the mined candidates
 
-Written 2026-10-27 on hera, at the end of the session that ran Phases 0–2. The next task,
-in the user's words: **"let's start with pushing the DB candidates through the plan's
-Phase 8 checks"**. The "DB candidates" are the compounds mined from LeMat in Phase 2 that
-reached an MD tier. Nothing is to be generated (see [Status](#status)).
+Written 2026-10-28 on hera. The session before pushed the Phase 2 candidates ("DB
+candidates") through the plan's Phase 8 checks; Phase 8 ran on hera. **On 2026-10-28 the
+user decided that no DFT or AIMD inputs are prepared.** Nothing is to be generated. No
+task is open (see [Open](#open)).
 
 ## Read first
 
 1. `CLAUDE.local.md` → `docs/platforms/hera/agent_brief.md` and `environment.md`; `AGENTS.md`.
-2. [`docs/se_new_families_campaign_plan.md`](docs/se_new_families_campaign_plan.md), Phases 7–8.
-3. [`docs/se_new_families_campaign.md`](docs/se_new_families_campaign.md): the status block,
-   "Gate G1", "Phase 2" and "Results". It is the record and must stay current.
+2. [`docs/se_new_families_campaign.md`](docs/se_new_families_campaign.md): the status block
+   and "Phase 8". It is the record and must stay current.
+3. [`docs/se_new_families_campaign_plan.md`](docs/se_new_families_campaign_plan.md), Phases 7–8.
 4. [`docs/e_hull_definitions.md`](docs/e_hull_definitions.md) and
    [`docs/energy_fields.md`](docs/energy_fields.md) before touching any LeMat energy.
 
 User rules that apply here (beyond AGENTS.md):
 - **PDFs: send them whole to Claude** (the Read tool on the file). Never use local
   pdf→text tools. This is also saved as a memory.
+- **Do not connect to ASPIRE2A from any host until the user says so** (also a memory).
+- **No DFT or AIMD inputs** for these candidates (the user, 2026-10-28).
 - Run code with `.venv/bin/python` from the checkout root; storage goes through
   `wyckoff_transformer.paths`; W&B runs online by default (`symmetry-advantage`).
-- Commit or push only when asked. `yamls/` is immutable once results exist. New keys
-  went in with a dated comment before the stage that reads them ran.
+- Commit or push only when asked. `yamls/` is immutable once results exist. New keys go in
+  with a dated comment before the stage that reads them runs.
 - When reporting results, give the date, commit and W&B run.
 
 ## Status
 
-- **Branch `se-new-families`, base `b31fb2d`.** On 2026-10-27 the work was committed in
-  one commit on top of `b31fb2d`, at the user's request, and not pushed:
-  `docs/se_new_families_campaign.md`, `scripts/se_new_families_campaign.py`,
-  `src/wyckoff_transformer/transport/` (with the new `screens.py`),
-  `src/wyckoff_transformer/tests/test_transport.py` (43 pass),
-  `yamls/campaigns/se_new_families_hera_20261025.yaml` and this file. The W&B upload ran
-  before that commit, on the uncommitted tree.
-- **Gates.**
-  - G1b passes, 18 of 20.
-  - G1c passes, MD AUROC 0.957.
-  - G1 passes only formally, for the empty-framework E_2D. On frameworks with cations,
-    no descriptor passes.
-- **Phase 2** is done: 5,707 survivors, 518 hits, 153 clusters, MD on the 20 best clusters
-  with cations.
-- **Phase 3** has no target: no gene-level descriptor passed G1.
-- **Phase 4 (generation) waits for the authors' decision on G1. Do not generate.**
-- Nothing is running; both GPUs were idle at handoff.
+- **Branch `se-new-families`. Phase 8 is uncommitted on top of `8c0e0a3`.** Nothing has
+  been committed or pushed since. The changes:
+  - new `src/wyckoff_transformer/transport/electrochem.py`;
+  - `scripts/se_new_families_campaign.py` (stages `mine-md-members`, `phase8-entries`,
+    `phase8-window`, `phase8-check`, `phase8-prototypes`, `phase8-report`);
+  - `src/wyckoff_transformer/tests/test_transport.py` (58 pass);
+  - the config's `phase8:` block. It was added before any Phase 8 stage ran. A comment
+    of 2026-10-28 marks `r2scan_clusters` and `aimd_members` as no longer read;
+  - `docs/se_new_families_campaign.md` and `docs/platforms/hera/environment.md`;
+  - this file.
 - **W&B run**
   [`se-new-families-hera-20261025`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/se-new-families-hera-20261025):
-  artifacts `-benchmark`, `-gates` and `-mining`, uploaded 2026-10-27 with
-  `code_dirty: true`. Each `upload` run makes new artifact versions, so run it once at the
-  end.
+  - Phase 8 is the artifact `-phase8:v0` plus the tables `phase8_report` and
+    `phase8_interfaces`, uploaded 2026-10-27 13:19 UTC with `code_dirty: true`.
+  - `-benchmark`, `-gates` and `-mining` stayed at v0.
+  - v0 still holds `phase8/dft_bundle/` and `phase8/aimd_package/`. Both came from a
+    `phase8-bundle` stage, now removed. They were withdrawn on 2026-10-28 and deleted
+    locally, together with `scripts/platforms/aspire2a/vasp/`.
+  - `report.csv` was regenerated after the code change and is byte-identical to v0's.
+- Nothing is running; both GPUs are idle.
+- **Phase 4 (generation) still waits for the authors' decision on G1. Do not generate.**
 
-Run directory: `~/.local/share/wyformer/runs/se-new-families-hera-20261025/`.
+Run directory: `~/.local/share/wyformer/runs/se-new-families-hera-20261025/`, Phase 8 in
+`phase8/`:
 
 | path | what |
 |---|---|
-| `mine/screen.parquet` | every Phase 2 flag per compound (gap, roles, coordination, known SE) |
-| `mine/hits.parquet`, `mine/clusters.csv` | the 518 hits with their `cluster`; clusters ranked |
-| `mine/md/candidates.csv`, `md_analysis.csv`, `trajectories/*.npz` | Phase 2 MD |
-| `mine/framework_dimension.parquet` | framework dimension (diagnostic) |
-| `bench/relax/…` | ORB-relaxed CIFs; `relaxed_structures(root)` maps `index` → `relaxed_cif` |
-| `g1c/references.csv` | the MD scale (Li6PS5Cl 2.2e-4 S/cm, LGPS 1.4e-4, Li3InCl6 4.8e-5) |
-| `~/.local/share/wyformer/data/lemat-bulk/lemat_pbe.csv.gz` | LeMat PBE: `immutable_id, full_formula, chemsys, energy_corrected, max_force, cif` (1 GB) |
+| `report.csv` | one row per member of the 7 tiered clusters (34): the plan's Phase 8 fields |
+| `windows.csv`, `interfaces.csv`, `joins.csv`, `e_hull.csv` | Richards 2016 windows, eqs. 2/4/5 against the electrode panel, joins; MP2020 and raw |
+| `structures.csv`, `prototypes.csv` | ORB vs LeMat structure check; ICSD structure types |
+| `md/` | MD on further members (`candidates.csv`, trajectories) |
+| `entries.parquet` | 72,778 LeMat-Bulk-fixed rows with MP2020 energies (not uploaded) |
 
-## The candidates
+## What Phase 8 found
 
-The 7 clusters that reached a tier. σ is σ_300K − 1 s.e.m. from ORB MD. The ★ member is
-the one MD ran on; e_hull is LeMat PBE, in eV/atom.
+- **Cluster 12, borate-sulfates (Li4B4Sb2SO16, Li6Sn2B4SO16; tychite-derived):**
+  - Theoretical MP entries, and the only new framework in the electrolyte tier.
+  - MP2020 windows are 3.44–4.33 V and 2.10–3.66 V; Li and graphite reduce both hard.
+  - MD on the Sn member reached only the coating tier.
+  - It is a high-voltage material, if anything.
+- **Cluster 9, Li2HN:** a known conductor; window 0.24–0.63 V.
+- **Cluster 3, Cmcm Li4MX4 (Li4GeO4 type):**
+  - MD on further members put Li4TiS4 `mp-756811` (0.038 eV/atom) in the electrolyte
+    tier (1.7e-4 S/cm).
+  - No Li4TiS4 is ICSD-backed, and no report was found.
+  - Window 1.71–2.07 V.
+- **Clusters 10, 16, 21, 28:** known types, coating tier, narrow windows. In Li2ZrN2 and
+  Li2HfN2, the only members stable against Li metal, Li does not move.
 
-| rank | tier | σ (S/cm) | members (e_hull) |
-|---|---|---|---|
-| 12 | electrolyte | 2.6e-4 | ★Li4B4Sb2SO16 mp-768968 (0.100), Li4B4Sb2SO16 agm003282527 (0.099), Li6Sn2B4SO16 mp-769001 (0.065) |
-| 9 | electrolyte | 2.3e-4 | ★Li2HN mp-35695 (0.087), Li2HN mp-34465 (0.066), Li2HN agm003173795 (0.064) |
-| 3 | coating | 9.6e-5 | ★Li4GeSe4 agm006046064 (0.020), Li4SnSe4 agm006046394 (0.017), Li4TiS4 mp-756811 and agm003222569 (0.038) |
-| 16 | coating | 3.4e-5 | ★LiLaSbO agm005202614 (0.062), LiErTeO oqmd-3271894 (0.054), LiLuTeO oqmd-4527247 (0.067) |
-| 10 | coating | 3.0e-5 | ★LiYTe2 agm003097245 (0.020) and 17 more, among them Li2ZrN2 mp-3216 (ICSD), Li2HfN2, Li2TiN2, Li2SnN2, Li2CdO2, LiLaTe2, LiErS2 |
-| 21 | coating | 1.6e-6 | ★Li3BiS3 agm003214583 (0.049), Li3BiS3 mp-753677 (0.050) |
-| 28 | coating | 1.2e-5 | ★Li4TiS4 agm003244046 (0.025) |
+## Open
 
-Already known from single web searches (not yet a literature check):
-- **Li2HN** (lithium imide) is a known Li⁺ conductor, about 2.5–3e-4 S/cm at room
-  temperature ([PCCP 2012](https://pubs.rsc.org/en/content/articlelanding/2012/cp/c2cp23636b)),
-  and above 1e-3 S/cm after a low-temperature synthesis
-  ([2025](https://pubs.rsc.org/en/content/articlehtml/2025/eb/d5eb00058k)). It is a
-  blind rediscovery. In the 500 K MD its H also moves.
-- **Li4GeSe4 and Li4SnSe4** belong to the selenido-LISICON family, which has been made and
-  measured (Kaib et al., Chem. Mater., about 2e-5 S/cm at 20 °C for the best member).
-- **Li4B4Sb2SO16:** only the computed MP entry (OSTI 1298577) was found. Its PBE e_hull
-  sits at the screen's 0.1 limit.
-- **LiYTe2's cluster** holds the ICSD compound Li2ZrN2. The anonymised matcher groups
-  nitrides, oxides and tellurides with one framework; the cluster is not one chemistry.
-- Only 14 of the 518 hits are ICSD-backed; 431 come from Alexandria.
-
-## Phase 8 for compounds that are already DFT entries
-
-The plan's Phase 8 was written for generated structures. For mined ones:
-- **The PBE relaxation exists already.** Each candidate is a relaxed LeMat PBE entry, and
-  its e_hull is LeMat's. Re-relaxing with PBE adds little. What is new is r2SCAN, which
-  tests whether the e_hull survives (it matters most for Li4B4Sb2SO16), and a check that
-  the ORB structure MD ran on still matches the DFT one (StructureMatcher between the
-  `relaxed_cif` and the LeMat `cif`).
-- **The report fields** (plan, Phase 8): framework and members; e_hull (LeMat PBE in place
-  of "free and fixed-symmetry"); descriptors and MD tiers; the window; the join flag and
-  the coordination flags (`rarest_environment_count` is in `screen.parquet`).
-
-### Suggested order
-
-1. **ICSD and literature check, per family.** Cheap; do it first, because it can remove
-   candidates (Li2HN is already known). Sources:
-   - LeMat's ICSD provenance (`icsd_backed`; cache `lemat_bulk_fixed_fmax1_stress_icsd`);
-   - MP and OQMD entry pages;
-   - web searches, reading papers as whole PDFs.
-
-   Record the outcome per family in the campaign doc.
-2. **Windows, interface reactions and the join flag** (hera, CPU; nothing like it exists
-   in the repo yet).
-   - Method: Richards 2016, a grand-potential phase diagram open in Li over LeMat entries
-     in each chemical system (`lemat_pbe.csv.gz`; filter by `chemsys` once and cache
-     it). That gives the reduction and oxidation limits against Li/Li⁺. Then pymatgen's
-     `InterfacialReactivity` (`pymatgen.analysis.interface_reactions`, installed)
-     against Li metal and a cathode.
-   - **Decisions for the user:**
-     - (a) **Electrodes, decided 2026-10-27: flexible.** No electrode is fixed in
-       advance, so the outcome for each candidate is which electrodes it pairs with.
-       Proposed panel, each against LeMat's ordered entries:
-       - anodes: Li metal (0 V), LiC6 (about 0.1 V), Li4Ti5O12 (1.55 V);
-       - cathodes: LiFePO4 (3.45 V), LiCoO2 (about 3.9 V), LiMn2O4 (about 4.0 V),
-         LiNi0.5Mn1.5O4 (4.7 V).
-
-       Compare the window with each electrode's potential first, then run
-       `InterfacialReactivity` for the pairs inside or near the window. C, Ti, Fe, Co,
-       Mn and Ni are outside the palette, but LeMat has their entries. Each one widens
-       the chemical system to load, and the oxides of Co, Fe, Mn and Ni are GGA+U
-       entries for MP2020.
-     - (b) **Energy corrections, decided 2026-10-27: apply MP2020.**
-       `energy_corrected` is raw PBE(+U), with no MP2020 anion or +U correction
-       (`docs/e_hull_definitions.md`). Richards' windows used MP-compatible energies.
-       Apply `MaterialsProject2020Compatibility`, and report the raw windows beside the
-       corrected ones as a sensitivity check. MP2020 needs to know which entries are
-       GGA+U (W is in the palette, and LiCoO2 is a +U entry), so establish that from
-       LeMat's metadata, not by guessing.
-   - Implement it as a driver stage (e.g. `phase8-window`) in the existing style. Put
-     new config keys under a new `phase8:` block with a dated comment.
-3. **DFT, only where it is really needed.** The user (2026-10-27): *"If you really
-   [need] DFT, we can run VASP on ASPIRE2a."* So the route is decided: VASP on ASPIRE2A,
-   via `~/NSCC-VASP-computer` there (MongoDB + FireWorks, MP settings;
-   `docs/platforms/aspire2a/experiment_orchestration.md`, `docs/generation.md`, "DFT
-   relaxation"). QE on zeus is out: its pslibrary set lacks most of these elements, and
-   its energies are not on LeMat's footing.
-   - **Justify each calculation first.** Steps 1, 2 and the structure check need no DFT:
-     the candidates already have LeMat PBE relaxations and energies. The case for DFT
-     is r2SCAN energies for the electrolyte-tier new family:
-     - the two Li4B4Sb2SO16 entries (PBE e_hull 0.099–0.100) and Li6Sn2B4SO16 (0.065);
-     - the competing phases of Li–B–Sb–S–O and Li–Sn–B–S–O that `mp_20260928_r2scan_gap`
-       does not cover (r2SCAN energies for 122,756 MP entries, `R2SCAN_MP`,
-       uncorrected; never mix them with PBE).
-
-     Anything beyond that (coating-tier families, gaps) needs a stated reason.
-   - **Access (the user, 2026-10-27):**
-     - ASPIRE2A accepts passwords only, not keys.
-     - zeus's `~/.ssh/config` has `Host aspire2a` (`aspire2a.nus.edu.sg`, user `kna`).
-     - It is technically reachable from hera too, but the user said **not to access it
-       for now**.
-     - Hera has no host entry for it. The failed lookup of `asp2a-login-nus02` showed
-       only that; it is not proof that hera has no route.
-
-     **Do not connect to ASPIRE2A from any host until the user says so.** Until then:
-     - build a self-contained bundle (structures, the list of calculations, settings and a
-       submit script);
-     - give the user the exact `scp` and `ssh` commands, and ask which host to stage on;
-     - have the user bring the results back to a path this session then reads.
-
-     Do not assume an allocation or a queue; ask.
-4. **AIMD, by the co-authors.** Do not run it here. Prepare a package for the best ~10
-   members: LeMat CIF, ORB-relaxed CIF, the MD supercell matrix (in `md.jsonl`), the ORB MD
-   numbers, and the trajectories (W&B `-mining` artifact).
-
-Optional, from Phase 7's scope ("up to 3 structures per candidate family"): `mine-md` ran
-only each cluster's best member. Worth adding a members option:
-- Li6Sn2B4SO16 mp-769001 has a lower e_hull (0.065) than the Li4B4Sb2SO16 that was run.
-- Li2HN has two other orderings in its cluster.
-- Li4SnSe4 is the lowest member of rank 3.
-
-One MD run took 22 min–3.4 h with 6 sharing the two GPUs. Phase 7b (doping) applies only
-to new frameworks; Li4B4Sb2SO16 is the one plausible case.
-
-The output goes into a new "Phase 8" section of `docs/se_new_families_campaign.md`,
-organised by family, plus the new files in `UPLOADS["mining"]` or a new artifact. Upload
-once at the end.
+- **A commit** of the Phase 8 work, if the user wants one.
+- **Phase 4**, after the authors decide on G1.
 
 ## Caveats to keep in view
 
-- **G1 is a formal pass.** It rests on anion-only frameworks. E_2D's line selects
-  frameworks of isolated units (22% within the line) and anion-only ones (41%), but only
-  1.5% of 3D frameworks. Oxides are nearly out of its reach.
 - **MD ranks; it does not predict σ.** Each run is one ordered cell, ORB softens the PES
-  (Deng 2025), and σ_300K is extrapolated from 500 K with E_a = 0.5 eV.
-- **The framework filter tests only the slowest non-Li species,** so H moving in Li2HN
-  passes it.
-- **"New" so far means only no match to a fast OBELiX framework.**
+  (Deng 2025), and σ_300K is extrapolated from 500 K with E_a = 0.5 eV. Li2HN and
+  Li6Sn2B4SO16 ran on ORB-modified cells (structure check).
+- **Windows are thermodynamic limits** of a placed-on-hull composition. They ignore
+  kinetic stabilisation and depend only on the composition.
+- **MP2020 puts the polysulfides LiS4, LiS5 and Li2S13 and the superoxide-classified LiO8 on
+  the hull.** Some oxidation products in the tables are these artefacts; the raw
+  windows are the check.
+- **G1 is a formal pass** resting on anion-only frameworks. "New" means only no match to
+  a fast OBELiX framework.
 
-## Gotchas met in the last session
+## Gotchas met in the last two sessions
 
+- **Use LeMat-Bulk-fixed, not upstream.** Upstream `lemat-bulk/lemat_pbe.csv.gz` has stale
+  MP energies. `data/lemat-bulk-fixed/` on hera was copied from zeus on 2026-10-27
+  (`docs/platforms/hera/environment.md`); `lemat_pbe_ehull.csv.gz`'s sha256 is pinned in
+  the config.
+- **pymatgen's `InterfacialReactivity` reads `entry.name` as a formula.** Keep PDEntry
+  names default and put ids in `attribute`.
+- **MP API:**
+  - the thermo type is `"r2SCAN"` (`"R2SCAN"` returns nothing);
+  - a `chemsys` filter returns exactly that system;
+  - MP now returns new-style ids (`mp-aaabrpyi`). Map them to legacy ids by
+    StructureMatcher against `materials/core` structures.
+- **The OQMD REST API** returned 502s or unfiltered data. LeMat's ICSD-backed rows
+  (`phase8-prototypes`) replaced it.
+- **MP2020 needs the structure** (sulfate vs sulfide, peroxide vs oxide) and the run type.
+  U follows the most electronegative element (`electrochem.mp_run_parameters`).
+- `tail` here rejects `tail -3`; use `tail -n 3`.
 - `nohup setsid … &`: `$!` is not the Python process group. Find the PGID with `ps -eo
   pid,pgid,cmd`, record it, and stop with `kill -- -PGID`.
-- **Two GPU stages at once run out of memory.** That cost 431 `mine-pes` rows. `run_pool`
-  retries rows with an `"error"` key on the next run of a stage.
+- **Two GPU stages at once run out of memory.** `run_pool` retries rows with an `"error"`
+  key on the next run of a stage.
 - `md_summary` splits a run key on its last `_`, so keys must not contain other `_`.
-  LeMat ids use `-`.
 - CPU-only tests: `CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest -q
   src/wyckoff_transformer/tests/test_transport.py`. Lint with `.venv/bin/ruff check`.
-- A long-running stage keeps the code it started with. Rerun analysis stages after a fix
-  (G1c first printed a stale 0.700 this way).
+- A long-running stage keeps the code it started with. Rerun analysis stages after a fix.
 - SSH from hera to zeus or iapetus: use `SSH_AUTH_SOCK=` so a job never depends on the
   login agent.

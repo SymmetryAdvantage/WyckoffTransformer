@@ -27,6 +27,15 @@ Phase 2 mines the palette compounds outside the families campaign's systems:
     $PY $S mine-rank                # survivors in the control's top 10%, by framework
     $PY $S mine-md                  # Phase 7 MD on the top clusters' best members
     $PY $S mine-dimension           # framework dimension: what E_2D's line selects
+
+Phase 8 takes the clusters whose MD reached a tier:
+
+    $PY $S mine-md-members          # Phase 7's MD on up to 3 structures per such cluster
+    $PY $S phase8-entries           # LeMat-Bulk-fixed rows of their systems, MP2020 (CPU)
+    $PY $S phase8-window            # windows, interface reactions, join flags (CPU)
+    $PY $S phase8-check             # ORB structure vs DFT structure, polymorphs, ICSD
+    $PY $S phase8-prototypes        # structure types among LeMat's ICSD-backed rows
+    $PY $S phase8-report            # the plan's Phase 8 fields per member
     $PY $S upload                   # the benchmark and the gate runs as W&B artifacts
 
 Outputs live in the runs store under ``<campaign_id>/``.  Every stage resumes:
@@ -1557,6 +1566,508 @@ def run_mine_md(args, config: dict) -> None:
         print(table.round(5).to_string())
 
 
+def tiered_members(root: Path) -> pd.DataFrame:
+    """Every hit in a cluster whose ``mine-md`` run reached a tier, with its cluster rank."""
+    candidates = pd.read_csv(root / "mine" / "md" / "candidates.csv", index_col=0)
+    tiered = candidates[candidates["tier"].fillna("") != ""]
+    clusters = pd.read_csv(root / "mine" / "clusters.csv")
+    clusters = clusters[clusters["rank"].isin(tiered["rank"])]
+    hits = pd.read_parquet(root / "mine" / "hits.parquet")
+    members = hits.merge(clusters[["rank", "cluster", "best_index"]], on="cluster")
+    members["md_tier"] = members["rank"].map(tiered.set_index("rank")["tier"])
+    members["is_best"] = members["index"] == members["best_index"]
+    return members.sort_values(["rank", "is_best", "energy_above_hull"],
+                               ascending=[True, False, True]).reset_index(drop=True)
+
+
+def run_mine_md_members(args, config: dict) -> None:
+    """Phase 7's MD on further members of the tiered clusters (``phase8/md/``).
+
+    ``mine-md`` ran each cluster's best member only; the plan's scope is up to three
+    structures per candidate family. Members are taken by e_hull, and one whose ORB
+    structure matches a member already chosen is skipped: MP, Alexandria and OQMD often
+    hold the same ordering.
+    """
+    import multiprocessing
+
+    from pymatgen.analysis.structure_matcher import StructureMatcher
+    from pymatgen.core import Structure
+
+    root = campaign_dir(config, args.out)
+    spec = config["md"]
+    per_cluster = config["phase8"]["md_members_per_cluster"]
+    relaxed = relaxed_structures(root).set_index("index")
+    members = tiered_members(root)
+    matcher = StructureMatcher()
+    chosen, duplicates = [], {}
+    for _, group in members.groupby("rank", sort=True):
+        picked: list[tuple[int, Structure]] = []
+        for row in group.itertuples():
+            if len(picked) == per_cluster:
+                break
+            structure = Structure.from_file(relaxed.loc[row.index, "relaxed_cif"])
+            same = next((i for i, other in picked if matcher.fit(structure, other)), None)
+            if same is not None:
+                duplicates[row.immutable_id] = int(same)
+                continue
+            picked.append((row.index, structure))
+            chosen.append(row)
+    chosen = pd.DataFrame(chosen).drop(columns="Index")
+    out_dir = root / "phase8" / "md"
+    (out_dir / "trajectories").mkdir(parents=True, exist_ok=True)
+    chosen["key"] = [f"c{row.rank:03d}-{row.immutable_id}" for row in chosen.itertuples()]
+    chosen["duplicates"] = chosen["index"].map(
+        lambda i: ", ".join(k for k, v in duplicates.items() if v == i))
+    todo = chosen[~chosen["is_best"]]
+    tasks = [(f"{row.key}_{temperature}", relaxed.loc[row.index, "relaxed_cif"], temperature,
+              spec, str(out_dir / "trajectories"))
+             for temperature in spec["temperatures"] for row in todo.itertuples()]
+    logger.info("%d tiered clusters, %d members chosen, %d new MD structures; duplicates: %s",
+                chosen["rank"].nunique(), len(chosen), len(todo), duplicates)
+    devices = (args.devices or config["benchmark"]["relax"]["devices"]).split(",")
+    slots = [d for d in devices for _ in range(args.workers_per_device or 3)]
+    counter = multiprocessing.get_context("spawn").Value("i", 0)
+    run_pool(tasks, _md_one, out_dir / "md.jsonl", len(slots), initializer=_md_init,
+             initargs=(slots, counter), label="MD runs", every=1)
+    table = md_summary(md_runs(out_dir), spec)
+    info = todo.set_index("key")[["rank", "index", "immutable_id", "reduced_formula",
+                                  "energy_above_hull", "icsd_backed", "duplicates"]]
+    table = info.join(table).sort_values(["rank", "energy_above_hull"])
+    table.to_csv(out_dir / "candidates.csv")
+    chosen.drop(columns=["environments"], errors="ignore").to_csv(out_dir / "members.csv",
+                                                                  index=False)
+    with pd.option_context("display.width", 250):
+        print(table.round(5).to_string())
+
+
+# --------------------------------------------------------------------------- #
+# Phase 8: windows, interface reactions, joins and structure checks
+# --------------------------------------------------------------------------- #
+def electrode_panel(config: dict) -> dict[str, tuple[str, float]]:
+    """``name -> (formula, potential vs Li/Li+ in V)``."""
+    return {name: (spec["formula"], float(spec["potential"]))
+            for name, spec in config["phase8"]["electrodes"].items()}
+
+
+def icsd_flags(config: dict) -> pd.Series:
+    """``icsd_backed`` by immutable_id over every split of the ICSD-provenance cache."""
+    spec = config["data"]["lemat"]
+    return pd.concat([load_split(dataset_cache_dir(spec["icsd_cache"]), split,
+                                 columns=["icsd_backed"])["icsd_backed"]
+                      for split in SPLITS]).astype(bool)
+
+
+def _mp2020_one(task: tuple) -> dict:
+    from pymatgen.core import Structure
+
+    from wyckoff_transformer.transport.electrochem import (
+        mp2020_energy,
+        mp_run_parameters,
+    )
+
+    entry_id, cif, energy = task
+    structure = Structure.from_str(cif, fmt="cif")
+    return {"index": entry_id, "energy_mp2020": mp2020_energy(structure, energy, entry_id),
+            "run_type": mp_run_parameters(structure.composition)["run_type"]}
+
+
+def run_phase8_entries(args, config: dict) -> None:
+    """LeMat-Bulk-fixed entries of every system Phase 8 needs, with MP2020 energies.
+
+    The systems are each tiered member's, alone and joined with each electrode's
+    elements. Every LeMat row whose chemical system lies inside one of them is kept with
+    its CIF, which MP2020 needs to tell a sulfate from a sulfide and a peroxide from an
+    oxide. A row MP2020 refuses keeps a missing ``energy_mp2020``.
+
+    Whether LeMat's U elements in oxides really are GGA+U on every source is checked
+    from the data: for each such composition held by MP (whose rows the fix put on MP's
+    run type) and by Alexandria or OQMD, the lowest energies per atom are compared. A
+    plain-GGA row would sit about 1 eV per U atom below a GGA+U one.
+    """
+    from itertools import combinations
+
+    from pymatgen.core import Composition
+
+    root = campaign_dir(config, args.out)
+    spec = config["phase8"]
+    out_dir = root / "phase8"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    members = tiered_members(root)
+    electrodes = [element_set(Composition(formula)) for formula, _ in electrode_panel(config).values()]
+    systems = {frozenset(system.split("-")) | electrode
+               for system in members["system"] for electrode in electrodes}
+    wanted = {"-".join(sorted(subset)) for system in systems
+              for size in range(1, len(system) + 1) for subset in combinations(system, size)}
+    path = pinned(spec, "lemat_hull", data_path(spec["lemat_hull"]))
+    frames = []
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        for chunk in pd.read_csv(handle, usecols=["immutable_id", "full_formula", "chemsys",
+                                                  "energy_corrected", "cif", "e_hull"],
+                                 chunksize=200_000):
+            frames.append(chunk[chunk["chemsys"].isin(wanted)])
+    entries = pd.concat(frames, ignore_index=True)
+    logger.info("%d systems, %d LeMat-Bulk-fixed rows in them", len(systems), len(entries))
+    tasks = [(row.immutable_id, row.cif, row.energy_corrected) for row in entries.itertuples()]
+    run_pool(tasks, _mp2020_one, out_dir / "mp2020.jsonl", args.workers, label="entries",
+             every=5000)
+    corrected = pd.DataFrame(read_jsonl(out_dir / "mp2020.jsonl")).drop_duplicates(
+        "index", keep="last").rename(columns={"index": "immutable_id"})
+    entries = entries.merge(corrected.drop(columns="error", errors="ignore"), on="immutable_id",
+                            how="left")
+    entries["icsd_backed"] = entries["immutable_id"].map(icsd_flags(config)).astype("boolean")
+    entries["source"] = entries["immutable_id"].str.extract(r"^(mp|agm|oqmd)", expand=False)
+    entries["reduced_formula"] = entries["full_formula"].map(
+        lambda f: Composition(f).reduced_formula)
+    write_parquet(entries, out_dir / "entries.parquet")
+
+    u_rows = entries[entries["run_type"] == "GGA+U"].copy()
+    u_rows["energy_per_atom"] = u_rows["energy_corrected"] / u_rows["full_formula"].map(
+        lambda f: Composition(f).num_atoms)
+    best = u_rows.sort_values("energy_per_atom").groupby(["reduced_formula", "source"]).head(1)
+    lowest = best.pivot(index="reduced_formula", columns="source", values="energy_per_atom")
+    hull = best.pivot(index="reduced_formula", columns="source", values="e_hull")
+    check = pd.DataFrame({f"{other}_minus_mp": lowest[other] - lowest["mp"]
+                          for other in ("agm", "oqmd") if other in lowest})
+    # Far above the hull the two lowest rows are often different structures; near it a
+    # plain-GGA row would stand out by about 1 eV per U atom.
+    near = pd.DataFrame({f"{other}_minus_mp_near_hull": check[f"{other}_minus_mp"].where(
+        (hull[other] <= 0.1) & (hull["mp"] <= 0.1)) for other in ("agm", "oqmd") if other in lowest})
+    check = check.join(near)
+    check.to_csv(out_dir / "u_scheme_check.csv")
+    refused = entries["energy_mp2020"].isna()
+    print(f"{len(entries)} rows; MP2020 refused {int(refused.sum())}; "
+          f"GGA+U rows {len(u_rows)} by source: {u_rows['source'].value_counts().to_dict()}")
+    print("Lowest GGA+U energy per atom at one composition, other source minus MP (eV/atom):")
+    print(check.describe().round(3).to_string())
+
+
+_PHASE8_ENTRIES = None
+
+
+def _phase8_init(path: str) -> None:
+    global _PHASE8_ENTRIES
+    _cpu_init()
+    table = pd.read_parquet(path, columns=["immutable_id", "full_formula", "chemsys",
+                                           "energy_corrected", "energy_mp2020"])
+    table["elements"] = table["chemsys"].map(lambda s: frozenset(s.split("-")))
+    _PHASE8_ENTRIES = table
+
+
+def _phase8_diagram(elements: frozenset, energies: str):
+    """The phase diagram of LeMat's rows inside *elements*, raw or MP2020."""
+    from pymatgen.analysis.phase_diagram import PDEntry, PhaseDiagram
+    from pymatgen.core import Composition
+
+    column = {"raw": "energy_corrected", "mp2020": "energy_mp2020"}[energies]
+    rows = _PHASE8_ENTRIES[_PHASE8_ENTRIES["elements"].map(lambda e: e <= elements)
+                           & _PHASE8_ENTRIES[column].notna()]
+    return PhaseDiagram([PDEntry(Composition(row.full_formula), getattr(row, column),
+                                 attribute=row.immutable_id)
+                         for row in rows.itertuples()])
+
+
+def _window_one(task: tuple) -> dict:
+    """The window of one composition on the hull, and its members' e_hull."""
+    from pymatgen.analysis.phase_diagram import PhaseDiagram
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import (
+        decomposition_at,
+        phases,
+        placed_on_hull,
+        stability_window,
+    )
+
+    key, formula, energies, member_ids, margin, offset, mobile = task
+    composition = Composition(formula)
+    base = _phase8_diagram(element_set(composition), energies)
+    placed = placed_on_hull(base, composition, "candidate", margin)
+    diagram = PhaseDiagram(base.all_entries + [placed])
+    low, high = stability_window(diagram, "candidate", mobile)
+    by_id = {entry.attribute: entry for entry in base.all_entries}
+    e_hull = {i: base.get_e_above_hull(by_id[i]) for i in member_ids if i in by_id}
+    return {"index": key, "formula": formula, "energies": energies, "mu_low": low,
+            "mu_high": high, "reduction_V": -high, "oxidation_V": -low,
+            "assemblage": phases(base.get_decomposition(composition)),
+            "reduction_products": decomposition_at(diagram, composition, high + offset, mobile)
+            if high < -1e-6 else "",
+            "oxidation_products": decomposition_at(diagram, composition, low - offset, mobile),
+            "e_hull": e_hull}
+
+
+def _interface_one(task: tuple) -> dict:
+    """Richards' eqs. 2, 4 and 5 for one composition against one electrode."""
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import (
+        chemical_reaction,
+        electrochemical_reaction,
+    )
+
+    key, formula, electrode, electrode_formula, potential, energies, mobile = task
+    composition, counterpart = Composition(formula), Composition(electrode_formula)
+    diagram = _phase8_diagram(element_set(composition) | element_set(counterpart), energies)
+    chemical = chemical_reaction(diagram, composition, counterpart)
+    electrochemical = electrochemical_reaction(diagram, composition, counterpart, -potential,
+                                               mobile)
+    return {"index": key, "formula": formula, "electrode": electrode, "potential_V": potential,
+            "energies": energies, "chemical_eV_atom": chemical["energy"],
+            "chemical_x": chemical["x"], "chemical_reaction": chemical["reaction"],
+            "no_mixing_eV_atom": electrochemical["no_mixing"],
+            "electrochemical_eV_atom": electrochemical["energy"],
+            "electrochemical_x": electrochemical["x"],
+            "electrochemical_products": electrochemical["products"]}
+
+
+def join_table(members: pd.DataFrame, entries: pd.DataFrame, mobile: str) -> pd.DataFrame:
+    """The plan's join flag for each member composition.
+
+    For each anion that can balance all of Li's charge, the join runs from the Li binary
+    to the rest of the formula. LeMat compositions strictly between the two, other than
+    the member's own, are counted: all of them, those within 0.1 eV/atom, and the
+    ICSD-backed ones (the member's own composition included). The plan flags a
+    composition when LeMat holds no other compound on its join. Oxidation states are the
+    structure's bond-valence ones where it has them: the formula stage's generic states
+    make Li2SnN2 Sn(+2) N(-2).
+    """
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import (
+        position_on_join,
+        pseudo_binary_joins,
+    )
+
+    by_formula = entries.groupby("reduced_formula").agg(
+        e_hull=("e_hull", "min"), icsd=("icsd_backed", "max"), system=("chemsys", "first"))
+    rows = []
+    members = members.assign(states=members["bv_states"].fillna(members["oxidation_states"]))
+    for formula, states in members.drop_duplicates("reduced_formula")[
+            ["reduced_formula", "states"]].itertuples(index=False):
+        composition = Composition(formula)
+        oxidation = {token.rstrip("+-0123456789."): float(token[len(token.rstrip(
+            "+-0123456789.")):]) for token in states.split()}
+        elements = {str(e) for e in composition}
+        local = by_formula[[set(s.split("-")) <= elements for s in by_formula["system"]]]
+        for anion, binary, rest in pseudo_binary_joins(composition, oxidation, mobile):
+            positions = {f: position_on_join(Composition(f), binary, rest) for f in local.index}
+            on = local[[p is not None and 1e-6 < p < 1 - 1e-6 and f != formula
+                        for f, p in positions.items()]]
+            rows.append({"formula": formula, "anion": anion,
+                         "join": f"{binary.reduced_formula}-{rest.reduced_formula}",
+                         "position": positions.get(formula),
+                         "others_on_join": len(on), "others_within_0.1": int((on["e_hull"] <= 0.1).sum()),
+                         "icsd_on_join": int(local.loc[[f for f, p in positions.items()
+                                                        if p is not None and 1e-6 < p < 1 - 1e-6],
+                                                       "icsd"].fillna(False).sum()),
+                         "compounds": ", ".join(on.sort_values("e_hull").index[:8]),
+                         "join_flag": len(on) == 0})
+    return pd.DataFrame(rows)
+
+
+def run_phase8_window(args, config: dict) -> None:
+    """Windows, interface reactions and the join flag of the tiered members (Richards 2016).
+
+    Every member composition gets its window, placed on the hull, with MP2020 and with
+    raw energies; then Richards' eq. 2 (closed), eq. 4 (open to Li at the electrode's
+    potential) and eq. 5 (the reservoir alone) against every electrode of the panel.
+    """
+    root = campaign_dir(config, args.out)
+    spec = config["phase8"]
+    mobile = config["mobile_ion"]
+    out_dir = root / "phase8"
+    members = tiered_members(root)
+    ids = members.groupby("reduced_formula")["immutable_id"].agg(list)
+    window = spec["window"]
+    tasks = [(f"window|{formula}|{energies}", formula, energies, member_ids,
+              window["hull_margin"], window["product_offset"], mobile)
+             for formula, member_ids in ids.items() for energies in window["energies"]]
+    tasks += [(f"interface|{formula}|{name}|{energies}", formula, name, electrode, potential,
+               energies, mobile)
+              for formula in ids.index for name, (electrode, potential) in
+              electrode_panel(config).items() for energies in window["energies"]]
+    entries_path = out_dir / "entries.parquet"
+    run_pool(tasks, _phase8_one, out_dir / "window.jsonl", args.workers,
+             initializer=_phase8_init, initargs=(str(entries_path),), label="tasks", every=20)
+    rows = [row for row in read_jsonl(out_dir / "window.jsonl") if "error" not in row]
+    windows = pd.DataFrame([r for r in rows if r["index"].startswith("window|")])
+    interfaces = pd.DataFrame([r for r in rows if r["index"].startswith("interface|")])
+    e_hull = pd.DataFrame([{"immutable_id": i, "energies": r["energies"], "e_hull": e}
+                           for r in rows if r["index"].startswith("window|")
+                           for i, e in r["e_hull"].items()]).pivot(
+        index="immutable_id", columns="energies", values="e_hull").add_prefix("e_hull_")
+    windows.drop(columns=["e_hull"]).to_csv(out_dir / "windows.csv", index=False)
+    interfaces.to_csv(out_dir / "interfaces.csv", index=False)
+    entries = pd.read_parquet(entries_path, columns=["immutable_id", "reduced_formula",
+                                                     "chemsys", "e_hull", "icsd_backed"])
+    lemat = entries.set_index("immutable_id")["e_hull"]
+    e_hull["e_hull_lemat"] = lemat.reindex(e_hull.index)
+    e_hull.to_csv(out_dir / "e_hull.csv")
+    joins = join_table(members, entries, mobile)
+    joins.to_csv(out_dir / "joins.csv", index=False)
+
+    worst = (e_hull["e_hull_raw"] - e_hull["e_hull_lemat"]).abs().max()
+    print(f"raw e_hull recomputed from the cached rows vs LeMat-Bulk-fixed's: max |diff| "
+          f"{worst:.2e} eV/atom over {len(e_hull)} members")
+    with pd.option_context("display.width", 250, "display.max_colwidth", 70):
+        print(windows.pivot(index="formula", columns="energies",
+                            values=["reduction_V", "oxidation_V"]).round(2).to_string())
+        wide = interfaces.pivot_table(index="formula", columns=["energies", "electrode"],
+                                      values="electrochemical_eV_atom")
+        print(wide["mp2020"][list(electrode_panel(config))].round(3).to_string())
+        print(joins.drop(columns="compounds").to_string(index=False))
+
+
+def _phase8_one(task: tuple) -> dict:
+    return (_window_one if task[0].startswith("window|") else _interface_one)(task)
+
+
+def run_phase8_check(args, config: dict) -> None:
+    """Each tiered member's ORB structure against its LeMat-Bulk-fixed DFT structure.
+
+    MD ran on the ORB structure, the e_hull is the DFT one's, so they must be the same
+    crystal. Also the formula's lowest LeMat polymorph and whether it is ICSD-backed.
+    """
+    from pymatgen.analysis.structure_matcher import StructureMatcher
+    from pymatgen.core import Structure
+    from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
+
+    root = campaign_dir(config, args.out)
+    out_dir = root / "phase8"
+    members = tiered_members(root)
+    relaxed = relaxed_structures(root).set_index("index")
+    entries = pd.read_parquet(out_dir / "entries.parquet",
+                              columns=["immutable_id", "reduced_formula", "cif", "e_hull",
+                                       "icsd_backed", "source"]).set_index("immutable_id")
+    matcher = StructureMatcher()
+    rows = []
+    for row in members.itertuples():
+        dft = Structure.from_str(entries.loc[row.immutable_id, "cif"], fmt="cif")
+        orb = Structure.from_file(relaxed.loc[row.index, "relaxed_cif"])
+        rms = matcher.get_rms_dist(orb, dft)
+        polymorphs = entries[entries["reduced_formula"] == row.reduced_formula].sort_values(
+            "e_hull")
+        lowest = polymorphs.iloc[0]
+        rows.append({
+            "rank": row.rank, "immutable_id": row.immutable_id, "formula": row.reduced_formula,
+            "md_tier": row.md_tier, "is_best": row.is_best,
+            "spacegroup_dft": SpacegroupAnalyzer(dft, symprec=0.1).get_space_group_number(),
+            "spacegroup_orb": SpacegroupAnalyzer(orb, symprec=0.1).get_space_group_number(),
+            "matches": rms is not None, "rms": None if rms is None else rms[0],
+            "volume_ratio": (orb.volume / len(orb)) / (dft.volume / len(dft)),
+            "e_hull": entries.loc[row.immutable_id, "e_hull"],
+            "icsd_backed": bool(entries.loc[row.immutable_id, "icsd_backed"] or False),
+            "polymorphs": len(polymorphs), "lowest_polymorph": polymorphs.index[0],
+            "lowest_e_hull": lowest["e_hull"],
+            "lowest_icsd": bool(lowest["icsd_backed"] or False),
+            "icsd_polymorphs": ", ".join(polymorphs.index[polymorphs["icsd_backed"].fillna(
+                False).astype(bool)]),
+            "above_lowest": entries.loc[row.immutable_id, "e_hull"] - lowest["e_hull"]})
+    table = pd.DataFrame(rows)
+    table.to_csv(out_dir / "structures.csv", index=False)
+    with pd.option_context("display.width", 250):
+        print(table.round(4).to_string(index=False))
+
+
+def run_phase8_prototypes(args, config: dict) -> None:
+    """Each tiered member's structure type among LeMat's ICSD-backed structures.
+
+    A member whose structure matches an ICSD-backed one with every species relabelled
+    (``StructureMatcher.fit_anonymous``, pymatgen's defaults) is a known structure type
+    in new chemistry. The framework match of the screens anonymised only cation and
+    anion roles, and only against known SEs.
+    """
+    from pymatgen.analysis.structure_matcher import StructureMatcher
+    from pymatgen.core import Composition, Structure
+
+    root = campaign_dir(config, args.out)
+    out_dir = root / "phase8"
+    members = tiered_members(root)
+    entries = pd.read_parquet(out_dir / "entries.parquet", columns=["immutable_id", "cif"])
+    cifs = entries.set_index("immutable_id")["cif"]
+    wanted = {Composition(f).anonymized_formula for f in members["reduced_formula"]}
+    icsd = icsd_flags(config)
+    icsd = set(icsd.index[icsd])
+    path = pinned(config["phase8"], "lemat_hull", data_path(config["phase8"]["lemat_hull"]))
+    found = []
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        for chunk in pd.read_csv(handle, usecols=["immutable_id", "full_formula", "cif"],
+                                 chunksize=200_000):
+            chunk = chunk[chunk["immutable_id"].isin(icsd)]
+            anonymous = chunk["full_formula"].map(lambda f: Composition(f).anonymized_formula)
+            found.append(chunk[anonymous.isin(wanted)].assign(anonymous=anonymous))
+    references = pd.concat(found)
+    references["structure"] = [Structure.from_str(c, fmt="cif") for c in references["cif"]]
+    matcher = StructureMatcher()
+    rows = []
+    for row in members.itertuples():
+        structure = Structure.from_str(cifs[row.immutable_id], fmt="cif")
+        same = references[references["anonymous"] == structure.composition.anonymized_formula]
+        hits = [(r.immutable_id, Composition(r.full_formula).reduced_formula)
+                for r in same.itertuples() if matcher.fit_anonymous(structure, r.structure)]
+        rows.append({"rank": row.rank, "immutable_id": row.immutable_id,
+                     "formula": row.reduced_formula, "icsd_same_anonymous_formula": len(same),
+                     "icsd_prototype_matches": len(hits),
+                     "icsd_prototypes": ", ".join(f"{f} {i}" for i, f in hits[:8])})
+    table = pd.DataFrame(rows)
+    table.to_csv(out_dir / "prototypes.csv", index=False)
+    with pd.option_context("display.width", 250, "display.max_colwidth", 120):
+        print(table.to_string(index=False))
+
+
+def md_tables(root: Path) -> pd.DataFrame:
+    """Every Phase 2 and Phase 8 MD structure's numbers, by run key."""
+    tables = [pd.read_csv(out_dir / "candidates.csv", index_col=0)
+              for out_dir in (root / "mine" / "md", root / "phase8" / "md")
+              if (out_dir / "candidates.csv").is_file()]
+    md = pd.concat(tables)
+    md["immutable_id"] = md.index.str.split("-", n=1).str[1]
+    return md
+
+
+def run_phase8_report(args, config: dict) -> None:
+    """The plan's Phase 8 fields, one row per tiered member (``phase8/report.csv``).
+
+    Framework and cluster; e_hull (LeMat's PBE, and MP2020 against the same rows); the
+    G1 descriptor and the MD numbers where MD ran; the MP2020 and raw windows and the
+    electrodes inside them; the join flag; the coordination flag.
+    """
+    root = campaign_dir(config, args.out)
+    out_dir = root / "phase8"
+    members = tiered_members(root)
+    windows = pd.read_csv(out_dir / "windows.csv").pivot(
+        index="formula", columns="energies", values=["reduction_V", "oxidation_V"])
+    windows.columns = [f"{name}_{energies}" for name, energies in windows.columns]
+    e_hull = pd.read_csv(out_dir / "e_hull.csv", index_col=0)
+    joins = pd.read_csv(out_dir / "joins.csv").groupby("formula").agg(
+        joins=("join", ", ".join), others_on_join=("others_on_join", "max"),
+        icsd_on_join=("icsd_on_join", "max"), join_flag=("join_flag", "all"))
+    structures = pd.read_csv(out_dir / "structures.csv").set_index("immutable_id")
+    md = md_tables(root).set_index("immutable_id")
+    panel = electrode_panel(config)
+    report = members[["rank", "cluster", "framework_formula", "md_tier", "index", "immutable_id",
+                      "reduced_formula", "source", "icsd_backed", "band_gap", "empty_E_2D",
+                      "empty_E_2D_percentile", "rarest_environment_count",
+                      "coordination_ok"]].copy()
+    report = report.join(e_hull[["e_hull_lemat", "e_hull_mp2020"]], on="immutable_id")
+    report = report.join(structures[["matches", "rms", "volume_ratio", "lowest_polymorph",
+                                     "above_lowest", "icsd_polymorphs"]], on="immutable_id")
+    report = report.join(md[["tier", "sigma_500K", "sigma_300K_low"]].rename(
+        columns={"tier": "own_md_tier"}), on="immutable_id")
+    report = report.join(windows, on="reduced_formula").join(joins, on="reduced_formula")
+    # No clean cation environment (or no ionic states for the motif analysis): the
+    # coordination check passed without testing anything.
+    report["coordination_tested"] = np.isfinite(report["rarest_environment_count"])
+    for energies in config["phase8"]["window"]["energies"]:
+        low, high = report[f"reduction_V_{energies}"], report[f"oxidation_V_{energies}"]
+        report[f"electrodes_in_window_{energies}"] = [
+            ", ".join(name for name, (_, v) in panel.items() if lo - 1e-6 <= v <= hi + 1e-6)
+            for lo, hi in zip(low, high)]
+    report.to_csv(out_dir / "report.csv", index=False)
+    with pd.option_context("display.width", 300, "display.max_colwidth", 40):
+        print(report.drop(columns=["index", "cluster", "icsd_polymorphs", "joins"]).round(3)
+              .to_string(index=False))
+
+
 def _dimension_one(task: tuple) -> dict:
     """Dimension of one relaxed structure's framework, the mobile ion removed."""
     import signal
@@ -1942,6 +2453,11 @@ UPLOADS = {
     "gates": ["g1b/controls.parquet", "g1b/matches.csv", "g1b_v2/controls.parquet",
               "g1b_v2/matches.csv", "g1c/references.parquet", "g1c/references.csv",
               "g1c/md.jsonl", "g1c/md_analysis.csv", "g1c/trajectories", "checks"],
+    # Not phase8/entries.parquet: LeMat-Bulk-fixed's own rows, rebuilt by phase8-entries.
+    "phase8": ["phase8/mp2020.jsonl", "phase8/u_scheme_check.csv", "phase8/window.jsonl",
+               "phase8/windows.csv", "phase8/interfaces.csv", "phase8/e_hull.csv",
+               "phase8/joins.csv", "phase8/structures.csv", "phase8/prototypes.csv",
+               "phase8/report.csv", "phase8/md"],
 }
 
 
@@ -1986,6 +2502,10 @@ def run_upload(args, config: dict) -> None:
         for tier in ("electrolyte", "coating"):
             run.summary[f"phase2_{tier}_tier"] = candidates.loc[candidates["tier"] == tier,
                                                                 "formula"].tolist()
+    for table_name, relative in (("phase8_report", "phase8/report.csv"),
+                                 ("phase8_interfaces", "phase8/interfaces.csv")):
+        if (root / relative).is_file():
+            run.log({table_name: wandb.Table(dataframe=pd.read_csv(root / relative))})
     for name, paths in UPLOADS.items():
         artifact = wandb.Artifact(f"{config['campaign_id']}-{name}", type=f"se_{name}")
         for relative in paths:
@@ -2009,7 +2529,9 @@ def main() -> None:
                                           "matcher-calibrate", "md-calibrate", "bvse-check",
                                           "mine-gap", "coordination-reference", "mine-screen",
                                           "mine-pes", "mine-rank", "mine-md", "mine-dimension",
-                                          "upload"))
+                                          "mine-md-members", "phase8-entries", "phase8-window",
+                                          "phase8-check", "phase8-prototypes",
+                                          "phase8-report", "upload"))
     parser.add_argument("--workers", type=int, default=16,
                         help="CPU stages: worker processes (hera has 24 physical cores).")
     parser.add_argument("--pes-kinds", type=str, default="frozen",
@@ -2041,6 +2563,9 @@ def main() -> None:
      "mine-gap": run_mine_gap, "coordination-reference": run_coordination_reference,
      "mine-screen": run_mine_screen, "mine-pes": run_mine_pes, "mine-rank": run_mine_rank,
      "mine-md": run_mine_md, "mine-dimension": run_mine_dimension,
+     "mine-md-members": run_mine_md_members, "phase8-entries": run_phase8_entries,
+     "phase8-window": run_phase8_window, "phase8-check": run_phase8_check,
+     "phase8-prototypes": run_phase8_prototypes, "phase8-report": run_phase8_report,
      "upload": run_upload}[args.stage](args, config)
 
 

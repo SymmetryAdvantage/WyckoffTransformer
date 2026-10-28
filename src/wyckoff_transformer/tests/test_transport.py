@@ -303,3 +303,133 @@ def test_environment_keys_keep_clean_sites_only():
             {"element": "Li", "ox": 1, "cn": 6, "geometry": "irregular", "gap": 1.5,
              "angle_rms": 25.0}]
     assert environment_keys(rows) == [("Li+1", 4, "tetrahedron")]
+
+
+# --------------------------------------------------------------------------- #
+# electrochem
+# --------------------------------------------------------------------------- #
+def _diagram(energies: dict[str, float], extra=()):
+    """A phase diagram of total energies per formula; elements at zero."""
+    from pymatgen.analysis.phase_diagram import PDEntry, PhaseDiagram
+    from pymatgen.core import Composition
+
+    entries = [PDEntry(Composition(formula), energy, attribute=formula)
+               for formula, energy in energies.items()]
+    return PhaseDiagram(entries + list(extra))
+
+
+def test_binary_window():
+    from wyckoff_transformer.transport.electrochem import stability_window
+
+    pd = _diagram({"Li": 0.0, "S": 0.0, "Li2S": -4.5})
+    low, high = stability_window(pd, "Li2S")
+    # Li2S -> S + 2 Li costs 4.5 eV: stable from Li metal down to -2.25 eV.
+    assert low == pytest.approx(-2.25) and high == pytest.approx(0.0)
+    assert stability_window(pd, "absent") is None
+
+
+def test_metastable_window_is_its_assemblage():
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import (
+        placed_on_hull,
+        stability_window,
+    )
+
+    pd = _diagram({"Li": 0.0, "S": 0.0, "Cl": 0.0, "Li2S": -4.5, "LiCl": -4.0})
+    entry = placed_on_hull(pd, Composition("Li3SCl"), "Li3SCl")
+    pd = _diagram({"Li": 0.0, "S": 0.0, "Cl": 0.0, "Li2S": -4.5, "LiCl": -4.0}, [entry])
+    low, high = stability_window(pd, "Li3SCl")
+    # Li2S + LiCl coexist from 0 to -2.25 eV (Li2S's limit); the margin widens it a little.
+    assert high == pytest.approx(0.0, abs=1e-9)
+    assert low == pytest.approx(-2.25, abs=0.01) and low <= -2.25
+
+
+def test_no_mixing_energy_vanishes_inside_the_window():
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import electrochemical_reaction
+
+    pd = _diagram({"Li": 0.0, "S": 0.0, "Li2S": -4.5})
+    inside = electrochemical_reaction(pd, Composition("Li2S"), Composition("Li"), -1.0)
+    assert inside["no_mixing"] == pytest.approx(0.0, abs=1e-9)
+    outside = electrochemical_reaction(pd, Composition("Li2S"), Composition("Li"), -3.0)
+    # Phi(Li2S) = -4.5 + 2 * 3 = +1.5 per S, Phi(S) = 0.
+    assert outside["no_mixing"] == pytest.approx(-1.5)
+    assert outside["products"] == "1.00 S"
+
+
+def test_chemical_reaction_richards_figure_3():
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import chemical_reaction
+
+    pd = _diagram({"Li": 0.0, "Zn": 0.0, "S": 0.0, "Cl": 0.0, "Li2S": -4.5, "ZnCl2": -3.0,
+                   "LiCl": -4.0, "ZnS": -2.0})
+    found = chemical_reaction(pd, Composition("Li2S"), Composition("ZnCl2"))
+    # ZnCl2 + Li2S -> 2 LiCl + ZnS: -10 - (-7.5) eV over 6 atoms, at equal atom fractions.
+    assert found["energy"] == pytest.approx(-2.5 / 6)
+    assert found["x"] == pytest.approx(0.5)
+
+
+def test_electrochemical_reaction_with_an_electrode():
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import electrochemical_reaction
+
+    pd = _diagram({"Li": 0.0, "Zn": 0.0, "S": 0.0, "Cl": 0.0, "Li2S": -4.5, "ZnCl2": -7.0,
+                   "LiCl": -4.0, "ZnS": -5.0})
+    found = electrochemical_reaction(pd, Composition("Li2S"), Composition("ZnCl2"), -1.0)
+    # At -1 eV Li2S, LiCl and ZnCl2 are stable (Phi per S, Cl: -2.5, -3). At x = 3/4
+    # of ZnCl2 the mixture forms ZnS + 2 LiCl: (-5 - 6) / 4 per non-Li atom, against
+    # 3/4 * (-7/3) + 1/4 * (-2.5).
+    assert found["no_mixing"] == pytest.approx(0.0, abs=1e-9)
+    assert found["energy"] == pytest.approx(-11 / 4 - (0.75 * -7 / 3 + 0.25 * -2.5))
+    assert found["x"] == pytest.approx(0.75)
+    assert found["products"] == "0.50 LiCl + 0.50 ZnS"     # atom fractions
+
+
+@pytest.mark.parametrize("formula, states, expected", [
+    ("Li4GeSe4", {"Li": 1, "Ge": 4, "Se": -2}, [("Se", "Li2Se", "GeSe2")]),
+    ("LiYTe2", {"Li": 1, "Y": 3, "Te": -2}, [("Te", "Li2Te", "Y2Te3")]),
+    ("Li2HN", {"Li": 1, "H": 1, "N": -3}, [("N", "Li3N", "H3N")]),
+    ("LiErTeO", {"Li": 1, "Er": 3, "Te": -2, "O": -2}, [("Te", "Li2Te", "Er2TeO2"),
+                                                         ("O", "Li2O", "Er2Te2O")]),
+    ("Li2S", {"Li": 1, "S": -2}, []),
+])
+def test_pseudo_binary_joins(formula, states, expected):
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import pseudo_binary_joins
+
+    found = pseudo_binary_joins(Composition(formula), states)
+    assert [(a, b.reduced_formula, r.reduced_formula) for a, b, r in found] == [
+        (a, Composition(b).reduced_formula, Composition(r).reduced_formula)
+        for a, b, r in expected]
+
+
+def test_position_on_join():
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import position_on_join
+
+    binary, rest = Composition("Li3N"), Composition("NH3")
+    assert position_on_join(Composition("LiNH2"), binary, rest) == pytest.approx(1 / 3)
+    assert position_on_join(Composition("Li3N"), binary, rest) == pytest.approx(1.0)
+    assert position_on_join(Composition("Li4NH"), binary, rest) is None
+    assert position_on_join(Composition("LiCl"), binary, rest) is None
+
+
+@pytest.mark.parametrize("formula, run_type, hubbards", [
+    ("LiCoO2", "GGA+U", {"Co": 3.32}),
+    ("LiFePO4", "GGA+U", {"Fe": 5.3}),
+    ("CoS2", "GGA", {}),
+    ("Li4B4Sb2SO16", "GGA", {}),
+])
+def test_mp_run_parameters(formula, run_type, hubbards):
+    from pymatgen.core import Composition
+
+    from wyckoff_transformer.transport.electrochem import mp_run_parameters
+
+    assert mp_run_parameters(Composition(formula)) == {"run_type": run_type,
+                                                       "hubbards": hubbards}
