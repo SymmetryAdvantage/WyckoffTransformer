@@ -25,6 +25,13 @@
 >     against 0.636).
 >   - The lookup followed by the least surprising 30% is best on both (0.854 and
 >     0.778).
+> - **The models retrained on LeMat-Bulk-fixed** were run through the same comparisons on
+>   zeus (2026-10-28): the surprisal replay on the CFG and unconditional backbones
+>   ([generative novelty screening](generative_novelty_screen.md#on-the-lemat-bulk-fixed-models-2026-10)),
+>   and the torpedo run on the chemical-system backbone
+>   ([below](#torpedo-run-on-the-lemat-bulk-fixed-models-2026-10-28)). They match the old
+>   models once fire-control selects. The new CFG backbone is ahead in the arms that do not
+>   rank by energy, because more of its novel structures are metastable.
 
 Generating a (M)SUN structure is an attack on the convex hull: a candidate that
 lands below it does not merely pass a threshold, it redraws the hull beneath
@@ -583,6 +590,43 @@ The table gives Wilson 95% intervals. Two caveats on the statistics:
 The chemical-system backbone reaches nearly the same MetaSUN while choosing what
 it aims at. Its SUN is half, and it is not a CFG / `der_tokenizer_v1` model. A
 chemical-system model on that recipe is the obvious next backbone.
+
+### Torpedo-run on the LeMat-Bulk-fixed models (2026-10-28)
+
+The same run, repeated with the models retrained on LeMat-Bulk-fixed. It ran on zeus with
+`scripts/platforms/zeus/roe_torpedo.sh` at commit `c6b3bd8`, and took 3 h.
+
+- **Backbone:** `chemsys_sg_uncond_adanmw_wsd_long-20261015-044354`, published as
+  WyFormer-LeMat-Chemsys.
+- **Energy predictor:** `min_energy_adamw_wsd_h7x_xl-20261015-185731`, published as
+  WyFormer-LeMat-Energy.
+- **Reference:** LeMat-Bulk-fixed for the screen, the PBE hull, the residuals and structure
+  novelty. The ORB hull is still LeMat-Bulk's published one.
+- **W&B:** run `roe_torpedo_chemsys_sg_uncond_adanmw_wsd_long-20261028`.
+- **Pool:** the same recipe, 50 ternary targets with seed 0 and 20,000 draws. After the
+  screen, 13,104 genes were unique and not in LeMat-Bulk-fixed.
+- **Residuals:** the residual correction failed held-out validation again, so the joint arm
+  ranked raw predictions with known genes at their DFT energies.
+
+| | `joint` | `reference` | `joint`, old models | `reference`, old models |
+|---|---|---|---|---|
+| **MetaSUN** (free) | **0.619** | 0.591 | 0.613 | 0.542 |
+| MetaSUN, fixed-symmetry track | 0.481 | 0.452 | 0.382 | 0.343 |
+| metastable | 0.683 | 0.649 | 0.716 | 0.629 |
+| SUN (free) | 0.030 | 0.031 | 0.018 | 0.020 |
+| trials per MetaSUN | 4.33 | 4.55 | 4.41 | 5.04 |
+| relaxation hours (RTX 6000 Ada, 10 workers) | 7.6 | 8.0 | | |
+| mean atoms per trial | 32.5 | 33.7 | 29.2 | 30.7 |
+
+- **The joint hull still leads, but no longer significantly:** +0.028 MetaSUN (p = 0.22)
+  against +0.071 before. The arms share 877 of their 1000 genes, against 791 before. With
+  the new regressor, the two hulls disagree about fewer genes.
+- **The joint arm is level with the old one** (0.619 against 0.613). The gain is in the
+  reference arm, +0.049 (p = 0.03).
+- **More hits keep their gene's symmetry.** Fixed-symmetry MetaSUN rose in both arms: 0.481
+  against 0.382 in the joint arm (p = 1e-5).
+- **SUN rose in both arms,** to 30 and 31 against 18 and 20. Neither rise is significant
+  (p = 0.11 and 0.16). The fixed reference also changes which structures count as stable.
 
 ## The architecture
 

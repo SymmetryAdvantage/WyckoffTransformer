@@ -45,10 +45,11 @@ The README's [chemical-system pipeline](../README.md#advanced-generation-chemica
 - **Hull reference:** the first `--hf-reference` run builds the hull from about 170 MB of
   the dataset. That takes about two minutes, and the result is cached in
   `~/.cache/wyckoff_transformer/hull_references/`.
-- **Why `--allow-incompatible-energy`:** the regressor was trained on upstream LeMat-Bulk
-  energies, and the hull comes from the fixed release. Without the flag,
-  `wyformer-gene-screen` refuses to compare them. A retrain on LeMat-Bulk-fixed will replace
-  it, and the flag will no longer be needed.
+- **Energy scale:** the regressor was trained on LeMat-Bulk-fixed at revision `bf8f0b31`,
+  the same revision `--hf-reference kazeevn/LeMat-Bulk-fixed` builds the hull from, so
+  `wyformer-gene-screen` compares them directly. Against a hull on another energy scale it
+  refuses unless given `--allow-incompatible-energy`. The version of WyFormer-LeMat-Energy
+  published before 2026-10-28 was trained on upstream LeMat-Bulk and needed the flag here.
 - **Outputs:** `batio_screen.csv` holds the predicted formation energy, the hull energy and
   their difference (`score`) for each kept gene. The relaxed structures and the energy of
   each are under `batio_relaxed/`, laid out as in [PyXtal placement and MLIP relaxation](#pyxtal-placement-and-mlip-relaxation). A gene

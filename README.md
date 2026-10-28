@@ -20,7 +20,15 @@ The `[relax]` extra adds the ML potentials for the 3D step, skip it if you only 
 ### Simple de novo generation
 #### Step 1: Generate genes
 ```bash
-wyformer-generate genes.json.gz --hf-model SymmetryAdvantage/WyFormer-Alex-MP20
+wyformer-generate genes.json.gz --hf-model SymmetryAdvantage/WyFormer-LeMat
+```
+For a higher yield of new metastable structures, ask the e_hull-conditioned model for genes
+near the hull instead. About 61% of its draws are formally valid at this guidance scale, so
+draw twice as many as you keep:
+```bash
+wyformer-generate genes.json.gz --hf-model SymmetryAdvantage/WyFormer-LeMat-Ehull \
+    --condition energy_above_hull=0.05 --guidance-scale 5 \
+    --initial-n-samples 2000 --firm-n-samples 1000
 ```
 Add `--device cuda` to the `wyformer-generate` and `wyformer-gene-screen` commands when a GPU is available. The
 pre-trained models are in the [HuggingFace collection](https://huggingface.co/collections/SymmetryAdvantage/wyformer).
@@ -37,7 +45,7 @@ relax the 100 best distinct ones:
 wyformer-generate batio_genes.json.gz --hf-model SymmetryAdvantage/WyFormer-LeMat-Chemsys \
     --chemical-system Ba-Ti-O --initial-n-samples 1100 --firm-n-samples 1000
 wyformer-gene-screen batio_genes.json.gz --regressor-hf-model SymmetryAdvantage/WyFormer-LeMat-Energy \
-    --hf-reference kazeevn/LeMat-Bulk-fixed --allow-incompatible-energy \
+    --hf-reference kazeevn/LeMat-Bulk-fixed \
     --unique --top 100 --out batio_screen.csv --out-genes batio_top100.json.gz
 wyformer-cryspr batio_top100.json.gz --mlip orb_conserv_inf --output-dir batio_relaxed --workers 8
 ```
@@ -46,7 +54,7 @@ the other subsystems separately. `batio_screen.csv` holds the predicted energies
 `batio_relaxed/orb_conserv_inf_results.csv` the relaxed energy and CIF of each gene.
 ORB v3 is the potential LeMat-Bulk publishes its MLIP hull for, so those energies compare
 directly with that hull. See [the pipeline notes](docs/generation.md#the-chemical-system-pipeline)
-for timings, outputs and the `--allow-incompatible-energy` flag.
+for timings and outputs.
 
 ## Documentation
 - [Generating and relaxing structures](docs/generation.md): other model sources, generation
