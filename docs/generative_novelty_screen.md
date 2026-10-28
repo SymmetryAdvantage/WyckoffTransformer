@@ -616,6 +616,61 @@ MetaSUN per slot of fire-control / lookup+plausible against the budget:
   `roe_surprisal_cfg_xl_w{3,2,1}-20261012`.
 - **Local copies:** `$WYFORMER_RUNS/roe_surprisal/cfg_xl[_w{3,2,1}]/analysis/`.
 
+### On the LeMat-Bulk-fixed models (2026-10)
+
+The same replay with the models retrained on
+[LeMat-Bulk-fixed](lemat_bulk_pipeline.md#training-the-models), run on zeus with
+`scripts/platforms/zeus/roe_surprisal.sh` on 2026-10-27/28.
+
+- **CFG backbone:** `ehull_adamw_wsd_5x_cfg_long-20261015-021519`, at
+  `energy_above_hull = 0.05`, w = 5. It is published as WyFormer-LeMat-Ehull.
+- **Unconditional backbone:** `unconditional_5x_ehull01_h3x_xl_lr7p5e-4-20261018-202012`,
+  published as WyFormer-LeMat.
+- **Energy predictor:** `min_energy_adamw_wsd_h7x_xl-20261015-185731` (val MAE 0.0246),
+  published as WyFormer-LeMat-Energy.
+- **Reference:** LeMat-Bulk-fixed for the gene lookup, structure novelty and the PBE hull of
+  the predicted `e_hull`. The ORB hull is still LeMat-Bulk's published one. The old columns
+  below were judged against upstream LeMat-Bulk, so each comparison also changes the
+  reference.
+- **Cost:** about 7 h per pool on both RTX 6000 Ada cards, 10 relaxation workers.
+- **W&B:** runs `roe_surprisal_cfg_fixed-20261027` and `roe_surprisal_uncond_fixed-20261027`.
+
+| pool | draws for 10,000 valid | unique genes | gene-novel | relaxed | MetaSUN in pool | SUN in pool |
+|---|---|---|---|---|---|---|
+| CFG, fixed | 20,000 | 9,571 | 6,877 | 9,547 | 5,040 | 90 |
+| unconditional, fixed | 12,000 | 9,985 | 4,573 | 9,971 | 3,823 | 111 |
+
+MetaSUN per slot at B = 1000, surprisal at w = 1. The Fisher p-values compare each new
+pool with its old counterpart:
+
+| arm | CFG, fixed | CFG, old | p | uncond, fixed | uncond, old | p |
+|---|---|---|---|---|---|---|
+| broadside | **0.513** | 0.458 | 0.016 | 0.382 | 0.397 | 0.52 |
+| fire-discipline / lookup | **0.615** | 0.548 | 0.003 | 0.549 | 0.550 | 1.0 |
+| fire-discipline / surprisal | **0.639** | 0.580 | 0.008 | 0.505 | 0.538 | 0.15 |
+| fire-control / energy | 0.348 | 0.365 | 0.46 | 0.257 | 0.245 | 0.57 |
+| fire-control / lookup | 0.669 | 0.647 | 0.32 | 0.629 | 0.636 | 0.78 |
+| fire-control / surprisal | 0.730 | 0.744 | 0.51 | 0.546 | 0.526 | 0.39 |
+| fire-control / lookup+plausible | **0.870** | 0.854 | 0.33 | 0.758 | 0.778 | 0.31 |
+| SUN, fire-control / lookup | 0.050 | 0.039 | 0.28 | 0.059 | 0.074 | 0.21 |
+
+**What it shows.**
+- **The new CFG backbone's novel structures are more often metastable.** Broadside
+  P(metastable | novel) is 0.684 against 0.629, while novelty is slightly lower: 705
+  gene-novel slots in the first 1000 draws, against 742. Broadside and both fire-discipline
+  arms gain 0.055–0.067, and all three gains are significant.
+- **Once fire-control ranks, the gain is gone.** The fire-control arms move by at most
+  0.022, and none of those changes is significant. The selection lands on the same MetaSUN
+  density as with the old models.
+- **The unconditional backbone matches the old xl model in every arm.** Its pool is again
+  under half gene-novel (45.7%), so the fixed surprisal band again admits known genes, and
+  the lookup arms win.
+- **The order of the arms is unchanged.** Lookup+plausible is best on both pools. Energy
+  alone is below broadside on both. Lookup fire-control has the most SUN.
+- **The budget curves have the same shape.** On the CFG pool, fire-control / lookup is
+  0.468 at B = 250 and rises to 0.737 at B = 2000. Lookup+plausible peaks at B = 1000
+  (0.870) and falls to 0.813 at 2000.
+
 ## What it was worth on `e9ywwsie` (2026-09)
 
 Measured on `generated/e9ywwsie_dft_attack` -- 4,989 relaxed representatives,

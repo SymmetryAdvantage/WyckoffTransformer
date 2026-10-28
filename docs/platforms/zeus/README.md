@@ -75,6 +75,7 @@ Two things to know before your first run:
 | `/mnt/hdd/torch_wheels/` | Flat index of locally built wheels (torch, spglib, pyg, ...) |
 | `~/.torch_profile.sh` | The build environment, sourced from `~/.profile` |
 | `scripts/platforms/zeus/env_init.sh` | Venv bootstrap: copies the uv.toml, then syncs with the right extras |
+| `scripts/platforms/zeus/roe_surprisal.sh`, `roe_torpedo.sh` | Rules-of-engagement evaluations; see [below](#rules-of-engagement-evaluations) |
 
 Storage:
 
@@ -82,6 +83,40 @@ Storage:
 | --- | --- | --- | --- | --- |
 | `/` | `nvme0n1p3` | 3.4 T | 712 G | home, the checkouts and their `.venv`s, the data store (45 G), `~/.cache/huggingface` (279 G) |
 | `/mnt/hdd` | `sda1` | 15 T | 4.5 T | `torch_wheels/`, bulk data |
+
+---
+
+## Rules-of-engagement evaluations
+
+Two drivers run the [rules of engagement](../../rules_of_engagement.md) on both GPUs
+without a scheduler. They are the zeus counterparts of the aspire2a PBS launchers
+`roe_surprisal_in_pbs.sh` and `roe_torpedo_in_pbs.sh`, set up for the models trained on
+`lemat_bulk_fixed_*`. The gene lookup, structure novelty, the PBE hull of the predicted
+`e_hull` and the torpedo residuals all use LeMat-Bulk-fixed. The ORB hull is still
+LeMat-Bulk's published one.
+
+```bash
+R=$(.venv/bin/python -c "from wyckoff_transformer.paths import runs_root; print(runs_root())")
+# One fully relaxed 10,000-gene pool, every mode replayed from it
+# (docs/generative_novelty_screen.md). --backbone cfg_fixed or uncond_fixed.
+nohup bash scripts/platforms/zeus/roe_surprisal.sh --backbone cfg_fixed \
+    > "$R/roe_surprisal/cfg_fixed.log" 2>&1 &
+# Chemical-system targets, one 20,000-gene pool, joint- and reference-hull arms.
+nohup bash scripts/platforms/zeus/roe_torpedo.sh > "$R/roe/torpedo.log" 2>&1 &
+```
+
+- **`--pilot`** runs a 200-gene pool (surprisal) or 3 targets with 10 genes per arm
+  (torpedo) in 15–20 minutes and uploads nothing. Run one before a full pool.
+- **Every step is skipped if its output exists**, so rerunning the same command resumes.
+- **Outputs** go under `$WYFORMER_RUNS/roe_surprisal/<backbone>` and
+  `$WYFORMER_RUNS/roe/torpedo_<backbone>`, with a copy of the driver as `driver.sh`.
+  Results are uploaded to W&B under `symmetry-advantage`.
+- **Devices and workers:** `DEVICES=0,1`, `WORKERS_PER_DEVICE=5` and `PYXTAL_CORES=20` are
+  environment overrides. At the defaults a CFG pool relaxes at about 0.8 s per trial,
+  about 6 h for its 26,000 trials.
+- **Model directories must hold a plain `config.yaml`.** The `config.yaml` among a W&B
+  run's files is W&B's wrapped `{value: ...}` format and fails to load. Write
+  `OmegaConf.create(dict(run.config))` instead.
 
 ---
 
