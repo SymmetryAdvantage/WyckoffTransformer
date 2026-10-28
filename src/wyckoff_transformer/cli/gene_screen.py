@@ -132,6 +132,22 @@ def drop_repeated_genes(scored: pd.DataFrame, genes: Sequence[dict]) -> pd.DataF
     return scored[~pd.Series(keys, index=scored.index).duplicated().to_numpy()]
 
 
+def drop_large_cells(scored: pd.DataFrame, genes: Sequence[dict], max_atoms: int) -> pd.DataFrame:
+    """Keep the rows whose gene puts at most *max_atoms* atoms in its conventional cell.
+
+    The regressor's lowest predictions favour large cells, and relaxation cost grows
+    with the atom count. A gene whose count cannot be read is kept: it has no score and
+    sorts last anyway.
+    """
+    keep = []
+    for index in scored.index:
+        try:
+            keep.append(sum(int(count) for count in genes[index]["numIons"]) <= max_atoms)
+        except (KeyError, TypeError, ValueError):
+            keep.append(True)
+    return scored[np.asarray(keep, dtype=bool)]
+
+
 def write_genes(genes: Sequence[dict], path: Path) -> None:
     """Write *genes* as the JSON list ``wyformer-cryspr`` reads, gzipped for ``.gz``."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -326,6 +342,10 @@ def main() -> None:
     parser.add_argument("--unique", action="store_true",
                         help="Write each gene once, before --top: a generator repeats its "
                              "likeliest genes, and a repeat is a wasted relaxation.")
+    parser.add_argument("--max-atoms", type=int, default=None,
+                        help="Write only genes with at most this many atoms in the "
+                             "conventional cell, before --top. The lowest predictions favour "
+                             "large cells, which are slow to relax.")
     parser.add_argument("--augmentation-samples", type=int, default=1)
     parser.add_argument("--device", type=torch.device, default=torch.device("cpu"))
     parser.add_argument("--allow-incompatible-energy", action="store_true",
@@ -364,6 +384,8 @@ def main() -> None:
     )
     if args.below_hull_only:
         scored = scored[scored["predicted_below_hull"].eq(True)]
+    if args.max_atoms is not None:
+        scored = drop_large_cells(scored, genes, args.max_atoms)
     if args.unique:
         scored = drop_repeated_genes(scored, genes)
     if args.top is not None:

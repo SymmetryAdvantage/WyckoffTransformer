@@ -214,6 +214,18 @@ class TestGeneScreen(unittest.TestCase):
         kept = gene_screen.drop_repeated_genes(scored, [nacl, kcl, clna])
         self.assertEqual(list(kept.index), [2, 1])
 
+    def test_large_cells_are_dropped_in_score_order(self):
+        # The cap counts the conventional cell, the sum of numIons, and keeps a gene
+        # whose count cannot be read rather than silently losing it.
+        small = {"group": 225, "species": ["Na", "Cl"], "numIons": [4, 4],
+                 "sites": [["4a"], ["4b"]]}
+        large = {"group": 225, "species": ["Na", "Cl"], "numIons": [32, 32],
+                 "sites": [["32f"], ["32f"]]}
+        unreadable = {"group": 225, "species": ["Na"], "sites": [["4a"]]}
+        scored = pd.DataFrame({"score": [-0.3, -0.2, 0.1]}, index=[1, 2, 0])
+        kept = gene_screen.drop_large_cells(scored, [small, large, unreadable], max_atoms=8)
+        self.assertEqual(list(kept.index), [2, 0])
+
     def test_written_genes_round_trip(self):
         import gzip
         import json

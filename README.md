@@ -40,17 +40,19 @@ Alternatively, the structures can be obtained with [GeoCSP](https://github.com/k
 ### Advanced generation, chemical system conditioning
 Generate genes that contain only the given elements, rank them by predicted distance to the
 PBE hull of [LeMat-Bulk-fixed](https://huggingface.co/datasets/kazeevn/LeMat-Bulk-fixed), and
-relax the 100 best distinct ones:
+relax the 100 best distinct ones of at most 40 atoms:
 ```bash
 wyformer-generate batio_genes.json.gz --hf-model SymmetryAdvantage/WyFormer-LeMat-Chemsys \
     --chemical-system Ba-Ti-O --initial-n-samples 1100 --firm-n-samples 1000
 wyformer-gene-screen batio_genes.json.gz --regressor-hf-model SymmetryAdvantage/WyFormer-LeMat-Energy \
     --hf-reference kazeevn/LeMat-Bulk-fixed \
-    --unique --top 100 --out batio_screen.csv --out-genes batio_top100.json.gz
+    --max-atoms 40 --unique --top 100 --out batio_screen.csv --out-genes batio_top100.json.gz
 wyformer-cryspr batio_top100.json.gz --mlip orb_conserv_inf --output-dir batio_relaxed --workers 8
 ```
 `--chemical-system Ba-Ti-O` asks for compounds that contain all three elements; run TiO2 and
-the other subsystems separately. `batio_screen.csv` holds the predicted energies, and
+the other subsystems separately. `--max-atoms 40` drops genes with more than 40 atoms in the
+conventional cell: the lowest predicted energies favour large cells, which are slow to relax.
+`batio_screen.csv` holds the predicted energies, and
 `batio_relaxed/orb_conserv_inf_results.csv` the relaxed energy and CIF of each gene.
 ORB v3 is the potential LeMat-Bulk publishes its MLIP hull for, so those energies compare
 directly with that hull. See [the pipeline notes](docs/generation.md#the-chemical-system-pipeline)
