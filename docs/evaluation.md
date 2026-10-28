@@ -1,5 +1,9 @@
 # Screening, ranking and evaluating generated structures
 
+The [energy regressor precision study](energy_regressor_precision.md) evaluates
+the published LeMat energy model against saved archive ORB, protocol ORB and
+generated-structure DFT energies, with gene and structure novelty splits.
+
 ## Screening generated genes
 ### DFT fixed-hull screening
 
@@ -50,11 +54,12 @@ uv run wyformer-protocol generated/<run>/wyckoff_genes.json.gz \
     --cores 20            # or --devices cuda:0,cuda:1
 ```
 
-Filters that need no potential — validity, uniqueness, novelty against
-LeMat-Bulk — run first, so only gene-novel structures are relaxed, and the
-relaxation itself uses one PyXtal trial and two stages. That is about 3.5×
-cheaper than the full CrySPR protocol at equal statistical power. The headline
-number is `metasun_per_sampled_gene` in `<output-dir>/funnel.json`.
+Gene validity, uniqueness and novelty against LeMat-Bulk are checked first.
+Every unique valid gene is relaxed, including known genes: a known gene can
+produce a novel structure. The default budget is one to three PyXtal trials
+per gene and the four-stage CrySPR cascade, with fixed-symmetry and free
+readouts scored separately. The headline number in each track is
+`metasun_per_sampled_gene` in `<output-dir>/funnel.json`.
 
 `--mlip` is restricted to potentials LeMat-Bulk publishes a convex hull for
 (ORB by default), because `e_above_hull` is only meaningful when the energy and
