@@ -20,6 +20,7 @@ stage at trial granularity).
 from __future__ import annotations
 
 import argparse
+import csv
 import gzip
 import hashlib
 import json
@@ -174,6 +175,33 @@ def prototype_formulas(config: dict) -> dict[str, str]:
             for family in config["families"] for prototype in family["prototypes"]}
 
 
+def load_additional_known(config: dict) -> dict[str, list[str]]:
+    """Pinned formula references in addition to OBELiX; fail on an unparsed row.
+
+    Quoted oxide/sulfide mixtures are expanded algebraically by Composition. Their
+    bulk ratios are excluded conservatively, without calling them crystal phases.
+    """
+    from pymatgen.core import Composition
+
+    formulas: dict[str, list[str]] = {}
+    for spec in config["screens"].get("known_compositions", []):
+        path = data_path(spec["path"])
+        if hashlib.sha256(path.read_bytes()).hexdigest() != spec["sha256"]:
+            raise ValueError(f"Known-composition reference checksum mismatch: {path}")
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            for row in csv.DictReader(handle):
+                text = row["composition"].strip().strip('"')
+                try:
+                    composition = Composition(text, strict=True)
+                    if "Li" not in composition or not composition.valid:
+                        raise ValueError("Not a valid Li composition")
+                except (ValueError, KeyError, TypeError) as error:
+                    raise ValueError(f"{path}: ID {row['ID']}: {text!r}") from error
+                formulas.setdefault(composition.reduced_formula, []).append(
+                    f"{spec['name']}:{row['ID']}")
+    return formulas
+
+
 def reference_formulas(config: dict, systems) -> dict[str, tuple[int, float]]:
     """The novelty reference's reduced formulas in *systems*: entries, lowest e_hull.
 
@@ -184,14 +212,16 @@ def reference_formulas(config: dict, systems) -> dict[str, tuple[int, float]]:
     from pymatgen.core import Composition
 
     wanted = {frozenset(system.split("-")) for system in systems}
-    cache = cache_root() / config["screens"]["novelty_reference_cache"]
+    from wyckoff_transformer.dataset_cache import load_split
+
+    dataset = config["screens"]["novelty_reference_cache"]
     found: dict[str, list[float]] = {}
     for split in ("train", "val", "test"):
-        table = pq.read_table(cache / f"{split}.parquet",
-                              columns=["composition", "energy_above_hull"]).to_pandas()
+        table = load_split(cache_root() / dataset, split,
+                           columns=["composition", "energy_above_hull"])
         for composition, e_hull in zip(table["composition"], table["energy_above_hull"]):
-            if frozenset(element for element, _ in composition) in wanted:
-                found.setdefault(Composition(dict(composition)).reduced_formula,
+            if frozenset(element.symbol for element in composition) in wanted:
+                found.setdefault(Composition(composition).reduced_formula,
                                  []).append(e_hull)
     return {formula: (len(e_hulls), min(e_hulls)) for formula, e_hulls in found.items()}
 
@@ -199,6 +229,42 @@ def reference_formulas(config: dict, systems) -> dict[str, tuple[int, float]]:
 # --------------------------------------------------------------------------- #
 # generate
 # --------------------------------------------------------------------------- #
+def run_preflight(args, config: dict) -> None:
+    """Check the pinned inputs and element coverage without generating anything."""
+    from wyckoff_transformer.chemical_system import parse_chemical_system
+
+    root = campaign_dir(config, args.out)
+    root.mkdir(parents=True, exist_ok=True)
+    systems = expand_systems(config)
+    load_obelix(config)
+    known = load_additional_known(config)
+    coverage = {}
+    specifications = [("generator", config["generation"]), ("energy", config["screens"]["energy"])]
+    for name, spec in specifications:
+        trainer = load_hf(spec["hf_model"], spec["hf_revision"], torch.device("cpu"))
+        for system in systems["system"]:
+            parse_chemical_system(system, trainer.tokenisers["elements"])
+        coverage[name] = list(systems["system"])
+        del trainer
+    spec = config["screens"]["band_gap"]
+    for name, run in [("band_gap", spec["wandb_run"]), *[
+            (extra["name"], extra["wandb_run"]) for extra in spec.get("also_predict", [])]]:
+        trainer = load_band_gap_regressor(run, torch.device("cpu"))
+        supported = []
+        for system in systems["system"]:
+            try:
+                parse_chemical_system(system, trainer.tokenisers["elements"])
+                supported.append(system)
+            except (ValueError, KeyError):
+                if name == "band_gap":
+                    raise
+                logger.warning("%s has no vocabulary for %s; prediction will be missing", name, system)
+        coverage[name] = supported
+        del trainer
+    (root / "preflight.json").write_text(json.dumps({
+        "systems": len(systems), "known_formulas": len(known), "coverage": coverage}, indent=2))
+
+
 def load_hf(repo: str, revision: str, device: torch.device) -> WyckoffTrainer:
     trainer = WyckoffTrainer.from_huggingface(repo, device=device, revision=revision)
     if hasattr(trainer.model, "_orig_mod"):
@@ -231,6 +297,7 @@ def run_generate(args, config: dict) -> None:
         cache_root() / screens["novelty_reference_cache"] / screens["novelty_key_table"])
     logger.info("Novelty reference: %d gene keys, %s", len(key_table), key_table.meta)
     obelix_formulas, obelix_systems = load_obelix(config)
+    additional_known = load_additional_known(config)
     fingerprinter = GeneFingerprinter()
     raw_dir = root / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -269,6 +336,9 @@ def run_generate(args, config: dict) -> None:
             lambda f: ",".join(obelix_formulas.get(f, [])) if f else "")
         pool["obelix_known"] = pool["obelix_ids"] != ""
         pool["obelix_same_chemsys"] = pool["chemsys"].isin(obelix_systems)
+        if config["screens"].get("known_compositions"):
+            pool["known_composition_ids"] = pool["reduced_formula"].map(
+                lambda f: ",".join(additional_known.get(f, [])))
         pool["requested_system"] = system
         pool["spacegroup_number"] = pool["gene"].map(lambda g: int(g["group"]))
         pool["n_atoms"] = pool["gene"].map(lambda g: int(sum(g["numIons"])))
@@ -394,7 +464,11 @@ def select_system(pool: pd.DataFrame, config: dict) -> tuple[pd.DataFrame, dict]
         "exact_system": pool["exact_system"],
         "gene_novel": pool["gene_novel"],
         "not_obelix": ~pool["obelix_known"],
+        **({"not_additional_known": pool["known_composition_ids"] == ""}
+           if config["screens"].get("known_compositions") else {}),
         "charge_balanced": pool["oxidation_states"].notna(),
+        **({"ionic_in_family": pool["ionic_oxidation_states"].notna()}
+           if config["screens"].get("family_ionic_roles") else {}),
         "band_gap": pool["band_gap_pred"] >= min_gap,
         "energy_scored": pool["predicted_e_hull"].notna(),
         "max_atoms": pool["n_atoms"] <= selection.get("max_atoms_per_gene", float("inf")),
@@ -423,6 +497,11 @@ def run_select(args, config: dict) -> None:
     funnel, chosen_all = [], []
     for row in systems.itertuples():
         pool = pd.read_parquet(system_file(root, row.system))
+        if config["screens"].get("family_ionic_roles"):
+            family = next(f for f in config["families"] if f["name"] == row.family)
+            pool["ionic_oxidation_states"] = pool["reduced_formula"].map(
+                lambda f: ionic_oxidation_states(f, row.family, tuple(family["anions"]))
+                if isinstance(f, str) else None)
         if "band_gap_pred" not in pool.columns:
             raise SystemExit(f"{row.system}: run the bandgap stage first")
         with open(root / "systems" / f"{row.system}.json", encoding="utf-8") as handle:
@@ -754,6 +833,13 @@ def run_relax(args, config: dict) -> None:
 # --------------------------------------------------------------------------- #
 # report
 # --------------------------------------------------------------------------- #
+def exclusion_labels(reasons: pd.DataFrame) -> pd.Series:
+    """Label excluded rows, retaining Series shape even when no row is excluded."""
+    return pd.Series(
+        [",".join(reasons.columns[row]) for row in reasons.to_numpy(dtype=bool)],
+        index=reasons.index, dtype="str")
+
+
 #: The anions of each family's templates. The selection's charge balance only asks
 #: that anions be more electronegative than cations, which admits N+3 and S+2 under a
 #: halide (LiNCl4, LiSI3: molecular N-Cl and S-I solids) and halogen oxoanions in
@@ -769,7 +855,8 @@ FAMILY_ANIONS = {
 
 
 @cache
-def ionic_oxidation_states(formula: str, family: str) -> str | None:
+def ionic_oxidation_states(formula: str, family: str,
+                           anion_override: tuple[str, ...] | None = None) -> str | None:
     """Common oxidation states summing to zero with the family's anions negative.
 
     Every other element is a cation, except that hydrogen next to nitrogen takes either
@@ -780,7 +867,7 @@ def ionic_oxidation_states(formula: str, family: str) -> str | None:
 
     composition = Composition(formula).reduced_composition
     elements = list(composition.elements)
-    anions = FAMILY_ANIONS[family]
+    anions = set(anion_override) if anion_override is not None else FAMILY_ANIONS[family]
     choices = []
     for element in elements:
         states = [state for state in element.common_oxidation_states if state != 0]
@@ -853,9 +940,12 @@ def run_report(args, config: dict) -> None:
     root = campaign_dir(config, args.out)
     selected = pd.read_parquet(root / "selected" / "selected.parquet")
     obelix_formulas, _ = load_obelix(config)
+    additional_known = load_additional_known(config)
     prototypes = prototype_formulas(config)
     reference = reference_formulas(config, selected["requested_system"].unique())
-    missing_anions = {family["name"] for family in config["families"]} - set(FAMILY_ANIONS)
+    family_anions = {family["name"]: tuple(family.get(
+        "anions", FAMILY_ANIONS.get(family["name"], ()))) for family in config["families"]}
+    missing_anions = {name for name, anions in family_anions.items() if not anions}
     if missing_anions:
         raise ValueError(f"FAMILY_ANIONS has no entry for {sorted(missing_anions)}")
     tiers = config["report"]["e_hull_tiers"]
@@ -902,19 +992,22 @@ def run_report(args, config: dict) -> None:
     candidates["obelix_ids_relaxed"] = candidates["relaxed_formula"].map(
         lambda f: ",".join(obelix_formulas.get(f, [])) if f else "")
     formula = candidates["relaxed_formula"].fillna(candidates["reduced_formula"])
+    candidates["known_composition_ids_relaxed"] = formula.map(
+        lambda f: ",".join(additional_known.get(f, [])))
     candidates["prototype_of"] = formula.map(prototypes).fillna("")
     candidates["ionic_oxidation_states"] = [
-        ionic_oxidation_states(f, family) for f, family in zip(formula, candidates["family"])]
+        ionic_oxidation_states(f, family, family_anions[family])
+        for f, family in zip(formula, candidates["family"])]
     candidates["reference_entries"] = [reference.get(f, (0, None))[0] for f in formula]
     candidates["reference_min_e_hull"] = [reference.get(f, (0, None))[1] for f in formula]
     candidates["new_composition"] = candidates["reference_entries"] == 0
     reasons = pd.DataFrame({
         "known_se_obelix": candidates["obelix_ids_relaxed"] != "",
+        "known_se_additional": candidates["known_composition_ids_relaxed"] != "",
         "known_se_prototype": candidates["prototype_of"] != "",
         "not_ionic_in_family": candidates["ionic_oxidation_states"].isna()})
     excluded = candidates[reasons.any(axis=1)].assign(
-        excluded_because=reasons[reasons.any(axis=1)].apply(
-            lambda row: ",".join(row.index[row]), axis=1))
+        excluded_because=exclusion_labels(reasons[reasons.any(axis=1)]))
     excluded.to_csv(report_dir / "excluded.csv", index=False)
     logger.info("Excluded at e_above_hull <= %s: %s", max(tiers),
                 reasons.sum().to_dict())
@@ -1002,7 +1095,7 @@ def upload(root: Path, config: dict, summary: pd.DataFrame, n_headline: int) -> 
 # --------------------------------------------------------------------------- #
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("stage", choices=("systems", "generate", "bandgap", "select",
+    parser.add_argument("stage", choices=("systems", "preflight", "generate", "bandgap", "select",
                                           "relax", "report"))
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--out", type=Path, default=None,
@@ -1038,7 +1131,7 @@ def main() -> None:
         print(systems.groupby(["family", "run"], sort=False).size().to_string())
         print(f"{len(systems)} systems in {systems['run'].nunique()} protocol runs")
         return
-    {"generate": run_generate, "bandgap": run_bandgap, "select": run_select,
+    {"preflight": run_preflight, "generate": run_generate, "bandgap": run_bandgap, "select": run_select,
      "relax": run_relax, "report": run_report}[args.stage](args, config)
 
 

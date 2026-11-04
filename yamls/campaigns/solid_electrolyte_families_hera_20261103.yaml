@@ -1,0 +1,174 @@
+# Follow-up to the completed October campaign; only the 19 new exact systems.
+# Source audit and rationale: docs/solid_electrolyte_campaign.md#liverpool-ionics-extension-2026-11-03
+campaign_id: se-families-hera-20261103
+date: '2026-11-03'
+mobile_ion: Li
+families:
+- name: rocksalt
+  label: Liverpool Rocksalt (oxides and halides)
+  anions:
+  - O
+  - Cl
+  - I
+  - F
+  prototypes:
+  - Li2TiO3
+  - Li2Ti0.75Ta0.25O3.125
+  - Li1.9Mg0.1TiO3.05
+  - Li2MgZrO4
+  - Li6FeCl8
+  - Li6CoCl8
+  - Li6NiCl8
+  - LiI
+  - LiF
+  templates:
+  - - Li
+    - Ti
+    - O
+  - - Li
+    - Ti
+    - Ta
+    - O
+  - - Li
+    - Mg
+    - Ti
+    - O
+  - - Li
+    - Mg
+    - Zr
+    - O
+  - - Li
+    - - Fe
+      - Co
+      - Ni
+    - Cl
+  - - Li
+    - I
+  - - Li
+    - F
+- name: zircon
+  label: Liverpool Zircon phosphates
+  anions:
+  - O
+  prototypes:
+  - (YPO4)0.8(Li3PO4)0.2
+  templates:
+  - - Li
+    - Y
+    - P
+    - O
+- name: phenakite
+  label: Liverpool Phenakite gallium silicates
+  anions:
+  - O
+  prototypes:
+  - LiGaSiO4
+  templates:
+  - - Li
+    - Ga
+    - Si
+    - O
+- name: olivine
+  label: Liverpool Olivine phosphates
+  anions:
+  - O
+  prototypes:
+  - LiFePO4
+  - LiMgPO4
+  - Li0.95Mg0.95In0.05PO4
+  templates:
+  - - Li
+    - - Fe
+      - Mg
+    - P
+    - O
+  - - Li
+    - Mg
+    - In
+    - P
+    - O
+- name: molybdate
+  label: Liverpool Lysonite molybdates
+  anions:
+  - O
+  prototypes:
+  - Li2Mg2(MoO4)3
+  - Li3Fe(MoO4)3
+  - Li3Cr(MoO4)3
+  - Li1.5Mg2.5V0.5Mo2.5O12
+  templates:
+  - - Li
+    - - Mg
+      - Fe
+      - Cr
+    - Mo
+    - O
+  - - Li
+    - Mg
+    - V
+    - Mo
+    - O
+- name: nasicon
+  label: Liverpool Lysonite phosphate row 314
+  anions:
+  - O
+  prototypes:
+  - Li0.95Hf1.95Ta0.05(PO4)3
+  templates:
+  - - Li
+    - Hf
+    - Ta
+    - P
+    - O
+generation:
+  hf_model: SymmetryAdvantage/WyFormer-LeMat-Chemsys
+  hf_revision: 5ebcbaf6eddf0f039b792eaafccef622297a7396
+  n_draws: 20000
+  batch: 10000
+  seed: 20261103
+screens:
+  novelty_reference_cache: lemat_bulk_fmax1_stress
+  novelty_key_table: gene_keys.npz
+  obelix:
+    path: obelix/all.csv
+    sha256: 54f6265ef84d16a919d08c6815f14b0fd7465fa00090bee2511c16c042e57f3c
+  charge_balance: common_oxidation_states_single_valence
+  band_gap:
+    wandb_run: 3t16iys0
+    min_ev: 0.5
+    augmentation_samples: 8
+    also_predict:
+    - name: r2scan
+      wandb_run: xy2dr9us
+  energy:
+    hf_model: SymmetryAdvantage/WyFormer-LeMat-Energy
+    hf_revision: 378e042a0e036f2a092e73e4e148314b16ddee2c
+    hull_reference: kazeevn/LeMat-Bulk-fixed@bf8f0b3112a0c522ccd7f90da9748e9240ee80a5
+    allow_incompatible_energy: true
+    augmentation_samples: 8
+  known_compositions:
+  - name: Liverpool
+    path: LiIonDatabase.csv
+    sha256: a1c38869a356c4e1cc0047d4ef53a7a60bb045a6b9241fc180d9a64a157bbe61
+  family_ionic_roles: true
+selection:
+  top_k_per_system: 400
+  max_per_formula: 40
+  atom_budget_per_system: 12000
+  max_atoms_per_gene: 300
+protocol:
+  mlip: orb_conserv_inf
+  trial_multiplier: 10
+  pyxtal_cores: 16
+  pyxtal_timeout: 60
+  prescreen_cores: 16
+  devices: cuda:0,cuda:1
+  workers_per_device: 4
+  remote_relax: []
+report:
+  e_hull_tiers:
+  - 0.0
+  - 0.1
+  - 0.2
+  headline_e_hull: 0.1
+parent_campaign: se-families-hera-20261022

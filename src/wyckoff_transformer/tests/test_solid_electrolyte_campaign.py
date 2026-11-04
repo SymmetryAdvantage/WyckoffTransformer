@@ -1,7 +1,10 @@
 """The pure parts of scripts/solid_electrolyte_campaign.py: systems, screens, selection."""
 import sys
+import hashlib
+import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import pandas as pd
@@ -15,15 +18,42 @@ from solid_electrolyte_campaign import (
     CpuQueue,
     RelaxQueue,
     expand_systems,
+    exclusion_labels,
     ionic_oxidation_states,
     load_config,
+    load_additional_known,
     oxidation_states,
     prototype_formulas,
     select_system,
 )
 
 
+class TestReportExclusions(unittest.TestCase):
+    def test_no_exclusions_still_produces_a_single_column(self):
+        reasons = pd.DataFrame({"known": [False], "not_ionic": [False]}, index=[7])
+        excluded = reasons[reasons.any(axis=1)]
+        result = excluded.assign(excluded_because=exclusion_labels(excluded))
+        self.assertEqual(list(result.columns), ["known", "not_ionic", "excluded_because"])
+        self.assertTrue(result.empty)
+
+    def test_multiple_reasons_keep_the_candidate_index(self):
+        reasons = pd.DataFrame({"known": [True, False], "not_ionic": [True, True]},
+                               index=[7, 12])
+        self.assertEqual(exclusion_labels(reasons).to_dict(),
+                         {7: "known,not_ionic", 12: "not_ionic"})
+
+
 class TestSystems(unittest.TestCase):
+    def test_liverpool_extension_is_disjoint(self):
+        original = expand_systems(load_config(DEFAULT_CONFIG))
+        config = load_config(DEFAULT_CONFIG.with_name(
+            "solid_electrolyte_families_hera_20261103.yaml"))
+        extension = expand_systems(config)
+        self.assertEqual(len(extension), 19)
+        self.assertFalse(set(extension.system) & set(original.system))
+        for family in config["families"]:
+            self.assertTrue(family["anions"])
+
     def test_templates_expand_to_canonical_systems_and_runs(self):
         config = {"families": [
             {"name": "halide", "templates": [["Li", ["Y", "In"], ["Cl", "Br"]]],
@@ -63,6 +93,10 @@ class TestChargeBalance(unittest.TestCase):
 
 
 class TestIonicRoles(unittest.TestCase):
+    def test_configured_oxide_roles_keep_framework_cations_positive(self):
+        self.assertIsNotNone(ionic_oxidation_states("Li3Fe(MoO4)3", "molybdate", ("O",)))
+        self.assertIsNone(ionic_oxidation_states("Li3P", "phosphate", ("O",)))
+
     def test_every_prototype_is_ionic_in_its_family(self):
         config = load_config(DEFAULT_CONFIG)
         self.assertEqual({family["name"] for family in config["families"]},
@@ -97,11 +131,39 @@ def _pool(rows):
     return pd.DataFrame(rows, columns=columns).assign(n_atoms=10)
 
 
+class TestAdditionalKnown(unittest.TestCase):
+    def test_bom_mixtures_fractional_formulas_and_checksum(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "known.csv"
+            path.write_text('ID,composition\n1,Li5GaS4\n2,(YPO4)0.8(Li3PO4)0.2\n'
+                            '3,Li0.6Y0.8PO4\n', encoding="utf-8-sig")
+            spec = {"name": "Liverpool", "path": "known.csv",
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            config = {"screens": {"known_compositions": [spec]}}
+            with patch("solid_electrolyte_campaign.data_path", return_value=path):
+                known = load_additional_known(config)
+                self.assertEqual(known["Li5GaS4"], ["Liverpool:1"])
+                self.assertIn(["Liverpool:2", "Liverpool:3"], list(known.values()))
+                path.write_text('ID,composition\n4,LiF\n')
+                with self.assertRaisesRegex(ValueError, "checksum"):
+                    load_additional_known(config)
+
+
 _SELECTION_CONFIG = {"screens": {"band_gap": {"min_ev": 0.5}},
                      "selection": {"top_k_per_system": 3, "max_per_formula": 2}}
 
 
 class TestSelection(unittest.TestCase):
+    def test_liverpool_known_formula_removed_before_selection(self):
+        pool = _pool([("Li5GaS4", 0.0, 2.0, True, False, True, 1),
+                      ("LiGaS2", 0.1, 2.0, True, False, True, 1)])
+        pool["known_composition_ids"] = ["Liverpool:902", ""]
+        config = {**_SELECTION_CONFIG, "screens": {
+            **_SELECTION_CONFIG["screens"], "known_compositions": [{"name": "Liverpool"}]}}
+        chosen, counts = select_system(pool, config)
+        self.assertEqual(list(chosen.reduced_formula), ["LiGaS2"])
+        self.assertEqual(counts["not_additional_known"], 1)
+
 
     def test_filters_in_order_then_rank_with_a_per_formula_cap(self):
         pool = _pool([

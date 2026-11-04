@@ -11,6 +11,8 @@
 > and 2,556 of them are new to LeMat-Bulk. See [Relaxation and hull](#relaxation-and-hull).
 > Nothing here has been checked against ICSD or by DFT. The two band-gap regressors are
 > on Hugging Face (2026-10-25); see [Screens](#screens-and-why-each-is-there).
+> A [Liverpool Ionics extension](#liverpool-ionics-extension-2026-11-03) adds 19
+> further chemical systems in a separate follow-up run, reported on 2026-11-04.
 
 The pipeline is the one of the ICML 2026 AI4Science paper
 ([archive/101_Generative_Pipeline_for_Di.pdf](archive/101_Generative_Pipeline_for_Di.pdf)),
@@ -70,6 +72,125 @@ means a compound of all three.
 | hydride | LiBH4, Li2B12H12, Li4BN3H10 | Li-B-H, Li-Al-H, Li-B-N-H | 3 |
 
 126 systems in all. Na conductors were left out by choice.
+
+### Liverpool Ionics extension (2026-11-03)
+
+**Status: completed, reported 2026-11-04.** This extends the known-family search above using the local
+`LiIonDatabase.csv` from the [Liverpool Ionics Dataset](https://pcwww.liv.ac.uk/~msd30/lmds/LiIonDatabase.html).
+The comparison was made on 2026-11-03 at repository commit
+`9c157a1f66a3e9a992f872b375b46fe99491ded9`, with the working-tree changes archived
+in W&B alongside the exact source files. Follow-up run:
+[`se-families-hera-20261103`](https://wandb.ai/symmetry-advantage/WyckoffTransformer/runs/se-families-hera-20261103).
+The October campaign's immutable YAML, 126 systems and results below remain the
+record of that completed search. This extension is separate from the
+[search for unknown frameworks](se_new_families_campaign_plan.md): these are
+additional families already represented in an experimental compilation.
+
+The source is the data-store file resolved by `data_path("LiIonDatabase.csv")`
+(`/home/kna/.local/share/wyformer/data/LiIonDatabase.csv` on the machine used for
+this comparison), with SHA-256
+`a1c38869a356c4e1cc0047d4ef53a7a60bb045a6b9241fc180d9a64a157bbe61`.
+Read it as UTF-8 with BOM (`utf-8-sig`). It contains 820 records and 15 values of
+`family`; its `ID` column is the source identifier, not a consecutive row number.
+Repeated measurements count as records, not distinct compounds or systems.
+
+Five crystalline-family labels have no counterpart in the original table.
+The table below takes **only the exact element sets present in those rows**,
+including doped compositions; it does not expand them by speculative substitutions.
+An element set is counted once regardless of the number of measurements or formulas.
+
+| CSV family | records | representative source compositions (ID) | additional exact systems | n new |
+|---|---|---|---|---|
+| Rocksalt | 26 | Li2TiO3 (491), Li2MgZrO4 (837), Li6FeCl8 (737), Li6CoCl8 (884), Li6NiCl8 (883), LiI (708), LiF (921) | Li-Ti-O; Li-Ti-Ta-O; Li-Mg-Ti-O; Li-Mg-Zr-O; Li-M-Cl, M ∈ {Fe, Co, Ni}; Li-I; Li-F | 9 |
+| Zircon | 17 | (YPO4)0.8(Li3PO4)0.2 (15) | Li-Y-P-O | 1 |
+| Phenakite | 12 | LiGaSiO4 (525), Li0.68Ga0.68Si2.33O6 (526) | Li-Ga-Si-O | 1 |
+| Olivine | 11 | LiFePO4 (495), LiMgPO4 (903), Li0.95Mg0.95In0.05PO4 (904) | Li-Fe-P-O; Li-Mg-P-O; Li-Mg-In-P-O | 3 |
+| Lysonite (source spelling) | 9 | Li2Mg2(MoO4)3 (692), Li3Fe(MoO4)3 (693), Li3Cr(MoO4)3 (694), Li1.5Mg2.5V0.5Mo2.5O12 (487), Li0.95Hf1.95Ta0.05(PO4)3 (314) | Li-M-Mo-O, M ∈ {Mg, Fe, Cr}; Li-Mg-V-Mo-O; Li-Hf-Ta-P-O | 5 |
+| **total** | **75** | | | **19** |
+
+These 75 records span 21 distinct systems. The two omitted from the additions are
+Li-N-Br (Li6NBr3, ID 703), already in `nitride`, and Li-Sn-S (Li2SnS3, ID 791),
+already in `thio`. The union would therefore contain **145 systems**, with
+**380,000 additional draws** at 20,000 per system. Retaining the original caps
+gives upper bounds of 7,600 selected genes and 228,000 conventional-cell atoms
+for the extension; these are budgets, not predicted yields or measured costs.
+
+The source labels are evidence for choosing chemistry, not a structural constraint
+on WyFormer. In particular, `Rocksalt` includes oxides, chlorides, LiI and LiF;
+its members need separate oxide and halide anion roles. `Lysonite` groups
+molybdates with a Hf-Ta phosphate. Keep the CSV label for provenance, but report
+Li-Hf-Ta-P-O with the phosphates and the four Mo-containing systems as molybdates.
+The [source molybdate study](https://doi.org/10.1039/B301189E) reports structures
+and Li-ion conductivity for Li2Mg2(MoO4)3 and Li3M(MoO4)3 (M = Cr, Fe).
+Do not infer a common framework from the CSV label alone.
+
+The remaining CSV labels reconcile as follows: `Anti-Perovskite` →
+`antiperovskite`, `Argyrodite` → `argyrodite`, `Thio-LISICON` → `thio`/`lgps`,
+`LISICON` → `lisicon_oxide`, `Garnet`/`Perovskite` → `garnet_perovskite`, and
+`NASICON` → `nasicon`. Those are family correspondences, not complete chemical-system
+coverage: for example, Li-V-O and doped garnets introduce systems outside the
+original 126. Adding every dopant combination in those existing families is outside
+this extension. `Glass` (102 records) and `Glass-Ceramic` (12) describe material
+forms rather than one crystal family; their bulk mixture compositions must not be
+treated as single crystalline prototypes. `Other` (28) supplies no family label.
+The campaign does not apply a conductivity threshold to choose these families;
+presence in this compilation does not establish fast room-temperature transport.
+
+The separate
+[`solid_electrolyte_families_hera_20261103.yaml`](../yamls/campaigns/solid_electrolyte_families_hera_20261103.yaml)
+pins this CSV alongside OBELiX and defines only the 19 new systems. It reuses the
+generation, gap, selection and wide NEP89 → ORB settings above, with seed
+`20261103`, local relaxation, and these additions:
+
+- Exclude reduced formulas from **both** OBELiX and this CSV during selection and
+  again after relaxation, and retain the matching source IDs. Parse fractional and
+  parenthesised formulas without rounding. All 820 rows parse into 458 distinct
+  reduced formulas; `source_formula_audit.csv` records the normalisation and the
+  83 rows containing quoted mixture notation. Mixture ratios are excluded
+  conservatively without treating them as crystal phases. An unparsed row aborts.
+- Apply ionic roles during selection and reporting: O is negative in oxides,
+  silicates, phosphates and molybdates; Cl, I and F are negative in their respective
+  halide systems. P and Mo are framework cations in the oxides. Check model
+  vocabulary coverage for every added system before generation and gap prediction.
+- Archive the pinned sources, campaign configuration, formula audit and launch
+  patch in the W&B `-inputs` artifact. Each completed stage archives its outputs
+  and log; report the extension's funnel and hull tiers separately from October's.
+
+The [Hera driver](../scripts/platforms/hera/run_se_families_followup.py) queues
+preflight → generation → band gaps → selection → relaxation → report and stops on
+a failed stage. Re-launching resumes completed systems and protocol trials; a
+file lock prevents concurrent drivers. See the
+[launch and monitoring instructions](platforms/hera/solid_electrolytes.md).
+Generation, band-gap screening, selection, relaxation and scoring finished on
+2026-11-03. Reporting completed on 2026-11-04 after fixing an empty-exclusion
+table error; a subsequent W&B summary-cleanup error was also fixed. Both fixes
+are archived in the same run, under `-inputs:v1` and `-completion-fix`, together
+with the working-tree changes against the base commit above. The October inputs
+and results were retained.
+
+| run group | systems | selected and relaxed | free structures ≤ 0.1 eV/atom | compositions ≤ 0.1 | new compositions ≤ 0.1 |
+|---|---|---|---|---|---|
+| rocksalt | 9 | 1,683 | 927 | 206 | 182 |
+| zircon | 1 | 97 | 52 | 22 | 21 |
+| phenakite | 1 | 165 | 66 | 24 | 22 |
+| olivine | 3 | 428 | 215 | 87 | 71 |
+| molybdate | 4 | 587 | 222 | 99 | 96 |
+| nasicon (additional phosphate system) | 1 | 98 | 2 | 2 | 2 |
+| **total** | **19** | **3,058** | **1,484** | **440** | **394** |
+
+The five added source family labels are implemented as six run groups because
+the `Lysonite` phosphate is assigned to the existing NASICON group. Selection
+sent 188,861 conventional-cell atoms to the protocol. The 1,484 free-track
+candidates pass validity, uniqueness, structure novelty and known-composition
+checks; `report/shortlist.csv` keeps one per composition. Of its 440 compositions,
+394 are new to the LeMat novelty reference. None has been validated for transport
+or by DFT. The tables and full report artifacts are on the follow-up W&B run.
+
+The original shortlist used OBELiX and named prototypes only. For example, its
+Li5GaS4 entry below occurs in this CSV as ID 902. It remains an October result,
+but must be excluded as a known composition in the extended search. Any combined
+shortlist needs the expanded known-composition check applied to the old candidates
+as well. No transport, ICSD or DFT validation is implied by adding these families.
 
 ## Screens, and why each is there
 
