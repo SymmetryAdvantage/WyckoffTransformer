@@ -1,0 +1,146 @@
+campaign_group,campaign_id,family,family_label,requested_chemsys,chemsys,icsd_candidate_count,icsd_ordered_count,icsd_disordered_count
+Liverpool Ionics extension,se-families-hera-20261103,molybdate,Liverpool Lysonite molybdates,Li-Cr-Mo-O,Cr-Li-Mo-O,5,1,4
+Liverpool Ionics extension,se-families-hera-20261103,molybdate,Liverpool Lysonite molybdates,Li-Fe-Mo-O,Fe-Li-Mo-O,3,2,1
+Liverpool Ionics extension,se-families-hera-20261103,molybdate,Liverpool Lysonite molybdates,Li-Mg-Mo-O,Li-Mg-Mo-O,1,0,1
+Liverpool Ionics extension,se-families-hera-20261103,molybdate,Liverpool Lysonite molybdates,Li-Mg-V-Mo-O,Li-Mg-Mo-O-V,1,0,1
+Liverpool Ionics extension,se-families-hera-20261103,nasicon,Liverpool Lysonite phosphate row 314,Li-Hf-Ta-P-O,Hf-Li-O-P-Ta,0,0,0
+Liverpool Ionics extension,se-families-hera-20261103,olivine,Liverpool Olivine phosphates,Li-Fe-P-O,Fe-Li-O-P,30,9,21
+Liverpool Ionics extension,se-families-hera-20261103,olivine,Liverpool Olivine phosphates,Li-Mg-In-P-O,In-Li-Mg-O-P,3,0,3
+Liverpool Ionics extension,se-families-hera-20261103,olivine,Liverpool Olivine phosphates,Li-Mg-P-O,Li-Mg-O-P,3,3,0
+Liverpool Ionics extension,se-families-hera-20261103,phenakite,Liverpool Phenakite gallium silicates,Li-Ga-Si-O,Ga-Li-O-Si,5,4,1
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Co-Cl,Cl-Co-Li,4,2,2
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-F,F-Li,1,1,0
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Fe-Cl,Cl-Fe-Li,8,2,6
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-I,I-Li,3,3,0
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Mg-Ti-O,Li-Mg-O-Ti,9,0,9
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Mg-Zr-O,Li-Mg-O-Zr,1,0,1
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Ni-Cl,Cl-Li-Ni,0,0,0
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Ti-O,Li-O-Ti,43,8,35
+Liverpool Ionics extension,se-families-hera-20261103,rocksalt,Liverpool Rocksalt (oxides and halides),Li-Ti-Ta-O,Li-O-Ta-Ti,0,0,0
+Liverpool Ionics extension,se-families-hera-20261103,zircon,Liverpool Zircon phosphates,Li-Y-P-O,Li-O-P-Y,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,antiperovskite,Antiperovskites and chalcohalides,Li-O-Br,Br-Li-O,3,3,0
+OBELiX-origin campaign,se-families-hera-20261022,antiperovskite,Antiperovskites and chalcohalides,Li-O-Cl,Cl-Li-O,3,3,0
+OBELiX-origin campaign,se-families-hera-20261022,antiperovskite,Antiperovskites and chalcohalides,Li-O-I,I-Li-O,6,6,0
+OBELiX-origin campaign,se-families-hera-20261022,antiperovskite,Antiperovskites and chalcohalides,Li-S-Br,Br-Li-S,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,antiperovskite,Antiperovskites and chalcohalides,Li-S-Cl,Cl-Li-S,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,antiperovskite,Antiperovskites and chalcohalides,Li-S-I,I-Li-S,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-Ge-S-Br,Br-Ge-Li-S,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-Ge-S-Cl,Cl-Ge-Li-S,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-Ge-S-I,Ge-I-Li-S,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-P-S-Br,Br-Li-P-S,7,0,7
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-P-S-Cl,Cl-Li-P-S,5,1,4
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-P-S-I,I-Li-P-S,4,2,2
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-Si-S-Br,Br-Li-S-Si,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-Si-S-Cl,Cl-Li-S-Si,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,argyrodite,Argyrodite and sulfide-halides,Li-Si-S-I,I-Li-S-Si,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Al-F,Al-F-Li,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Ga-F,F-Ga-Li,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Hf-F,F-Hf-Li,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-In-F,F-In-Li,2,1,1
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Mg-F,F-Li-Mg,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Nb-F,F-Li-Nb,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Sc-F,F-Li-Sc,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Ta-F,F-Li-Ta,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Y-F,F-Li-Y,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,fluoride,Fluorides (coating-type),Li-Zr-F,F-Li-Zr,5,5,0
+OBELiX-origin campaign,se-families-hera-20261022,garnet_perovskite,"La oxides (garnet, perovskite)",Li-La-Hf-O,Hf-La-Li-O,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,garnet_perovskite,"La oxides (garnet, perovskite)",Li-La-Nb-O,La-Li-Nb-O,13,2,11
+OBELiX-origin campaign,se-families-hera-20261022,garnet_perovskite,"La oxides (garnet, perovskite)",Li-La-Sn-O,La-Li-O-Sn,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,garnet_perovskite,"La oxides (garnet, perovskite)",Li-La-Ta-O,La-Li-O-Ta,10,3,7
+OBELiX-origin campaign,se-families-hera-20261022,garnet_perovskite,"La oxides (garnet, perovskite)",Li-La-Ti-O,La-Li-O-Ti,21,2,19
+OBELiX-origin campaign,se-families-hera-20261022,garnet_perovskite,"La oxides (garnet, perovskite)",Li-La-Zr-O,La-Li-O-Zr,4,1,3
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Al-Br,Al-Br-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Al-Cl,Al-Cl-Li,2,1,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Al-I,Al-I-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Bi-Br,Bi-Br-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Bi-Cl,Bi-Cl-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Bi-I,Bi-I-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Er-Br,Br-Er-Li,1,0,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Er-Cl,Cl-Er-Li,1,0,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Er-I,Er-I-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Ga-Br,Br-Ga-Li,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Ga-Cl,Cl-Ga-Li,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Ga-I,Ga-I-Li,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Hf-Br,Br-Hf-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Hf-Cl,Cl-Hf-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Hf-I,Hf-I-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-In-Br,Br-In-Li,1,0,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-In-Cl,Cl-In-Li,5,0,5
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-In-I,I-In-Li,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-La-Br,Br-La-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-La-Cl,Cl-La-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-La-I,I-La-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Lu-Br,Br-Li-Lu,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Lu-Cl,Cl-Li-Lu,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Lu-I,I-Li-Lu,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Mg-Br,Br-Li-Mg,3,2,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Mg-Cl,Cl-Li-Mg,4,0,4
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Mg-I,I-Li-Mg,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Nb-Br,Br-Li-Nb,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Nb-Cl,Cl-Li-Nb,3,2,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Nb-I,I-Li-Nb,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Sc-Br,Br-Li-Sc,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Sc-Cl,Cl-Li-Sc,2,0,2
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Sc-I,I-Li-Sc,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Ta-Br,Br-Li-Ta,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Ta-Cl,Cl-Li-Ta,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Ta-I,I-Li-Ta,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Y-Br,Br-Li-Y,3,0,3
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Y-Cl,Cl-Li-Y,3,0,3
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Y-I,I-Li-Y,1,0,1
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Zr-Br,Br-Li-Zr,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Zr-Cl,Cl-Li-Zr,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,halide,Chloride/bromide/iodide halides,Li-Zr-I,I-Li-Zr,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,hydride,Complex hydrides,Li-Al-H,Al-H-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,hydride,Complex hydrides,Li-B-H,B-H-Li,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,hydride,Complex hydrides,Li-B-N-H,B-H-Li-N,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,lgps,LGPS-type,Li-Ge-P-S,Ge-Li-P-S,4,0,4
+OBELiX-origin campaign,se-families-hera-20261022,lgps,LGPS-type,Li-Si-P-S,Li-P-S-Si,5,1,4
+OBELiX-origin campaign,se-families-hera-20261022,lgps,LGPS-type,Li-Sn-P-S,Li-P-S-Sn,3,1,2
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-Al-O,Al-Li-O,7,4,3
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-B-O,B-Li-O,14,11,3
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-Ge-O,Ge-Li-O,11,10,1
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-Nb-O,Li-Nb-O,25,10,15
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-P-O,Li-O-P,11,11,0
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-Si-O,Li-O-Si,9,9,0
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-Ta-O,Li-O-Ta,14,8,6
+OBELiX-origin campaign,se-families-hera-20261022,lisicon_oxide,LISICON and Li oxides,Li-Zr-O,Li-O-Zr,8,4,4
+OBELiX-origin campaign,se-families-hera-20261022,nasicon,NASICON phosphates,Li-Ge-P-O,Ge-Li-O-P,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,nasicon,NASICON phosphates,Li-Hf-P-O,Hf-Li-O-P,2,0,2
+OBELiX-origin campaign,se-families-hera-20261022,nasicon,NASICON phosphates,Li-Sn-P-O,Li-O-P-Sn,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,nasicon,NASICON phosphates,Li-Ti-P-O,Li-O-P-Ti,7,5,2
+OBELiX-origin campaign,se-families-hera-20261022,nasicon,NASICON phosphates,Li-Zr-P-O,Li-O-P-Zr,6,2,4
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-Al-N,Al-Li-N,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-B-N,B-Li-N,4,3,1
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-Ga-N,Ga-Li-N,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-Ge-N,Ge-Li-N,2,1,1
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-N-Br,Br-Li-N,6,5,1
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-N-Cl,Cl-Li-N,3,2,1
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-N-I,I-Li-N,2,1,1
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-P-N,Li-N-P,6,5,1
+OBELiX-origin campaign,se-families-hera-20261022,nitride,Nitrides and nitride halides,Li-Si-N,Li-N-Si,4,2,2
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Al-O-Br,Al-Br-Li-O,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Al-O-Cl,Al-Cl-Li-O,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Hf-O-Br,Br-Hf-Li-O,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Hf-O-Cl,Cl-Hf-Li-O,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Nb-O-Br,Br-Li-Nb-O,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Nb-O-Cl,Cl-Li-Nb-O,3,2,1
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Ta-O-Br,Br-Li-O-Ta,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Ta-O-Cl,Cl-Li-O-Ta,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Zr-O-Br,Br-Li-O-Zr,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,oxyhalide,Oxyhalides,Li-Zr-O-Cl,Cl-Li-O-Zr,0,0,0
+OBELiX-origin campaign,se-families-hera-20261022,phosphide,Phosphides,Li-Al-P,Al-Li-P,4,2,2
+OBELiX-origin campaign,se-families-hera-20261022,phosphide,Phosphides,Li-Ga-P,Ga-Li-P,3,1,2
+OBELiX-origin campaign,se-families-hera-20261022,phosphide,Phosphides,Li-Ge-P,Ge-Li-P,6,3,3
+OBELiX-origin campaign,se-families-hera-20261022,phosphide,Phosphides,Li-In-P,In-Li-P,2,1,1
+OBELiX-origin campaign,se-families-hera-20261022,phosphide,Phosphides,Li-Si-P,Li-P-Si,7,3,4
+OBELiX-origin campaign,se-families-hera-20261022,phosphide,Phosphides,Li-Sn-P,Li-P-Sn,6,1,5
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-Al-S,Al-Li-S,1,1,0
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-As-S,As-Li-S,3,3,0
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-B-S,B-Li-S,5,2,3
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-Ga-S,Ga-Li-S,3,2,1
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-Ge-S,Ge-Li-S,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-P-S,Li-P-S,10,4,6
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-Sb-S,Li-S-Sb,8,5,3
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-Si-S,Li-S-Si,2,2,0
+OBELiX-origin campaign,se-families-hera-20261022,thio,"Thio-LISICON, thiophosphates and thioborates",Li-Sn-S,Li-S-Sn,7,4,3

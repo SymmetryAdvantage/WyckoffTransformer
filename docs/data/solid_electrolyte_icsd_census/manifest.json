@@ -1,0 +1,33 @@
+{
+  "campaign_system_counts": {
+    "liverpool": 19,
+    "obelix_origin": 126,
+    "union": 145
+  },
+  "excluded_source_fields": [
+    "cif"
+  ],
+  "generated_on": "2026-11-10",
+  "generator": "scripts/build_solid_electrolyte_icsd_census.py",
+  "git_commit": "3d78f832141a9ec301a84aa0560043129ada5b0f",
+  "icsd_exact_disordered_matches": 255,
+  "icsd_exact_matches": 484,
+  "icsd_exact_ordered_matches": 229,
+  "icsd_sha256": "bcae4ddcaef7cce41529c4c98a64e76491523d2b1e51c16f82edf94284146ea6",
+  "icsd_source": "/home/user/workspace/MCP-kappagen/data/utils/ICSD2025_valid_reference_unique_Xtal_family_dic.csv",
+  "icsd_source_rows": 103326,
+  "mineral_name_source_field": null,
+  "record_fields": [
+    "campaign_group",
+    "campaign_id",
+    "family",
+    "family_label",
+    "requested_chemsys",
+    "chemsys",
+    "icsd_collection_code",
+    "formula",
+    "sword_label",
+    "is_disorder",
+    "mineral_name"
+  ]
+}
