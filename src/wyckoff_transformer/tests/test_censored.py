@@ -89,26 +89,28 @@ class TestRecoversTheMinimum(unittest.TestCase):
         self.assertGreater(observations.mean().item() - location, 0.5 * true_scale)
 
     def test_a_gene_seen_more_often_is_pinned_more_tightly(self):
-        """The frequency handling, which is what makes this better than min-of-observed.
-
-        The gap for any one gene is a random variable; only its mean shrinks as
-        ``s / n``, so this averages over replicates rather than trusting a draw.
-        """
-        torch.manual_seed(1)
-        true_min, true_scale, replicates = 0.0, 0.4, 12
+        """More observations bring the fitted floor closer to the true minimum."""
+        true_min, true_scale, noise = 0.0, 0.4, 1e-3
+        locations = torch.linspace(-0.05, 0.5, 2001, dtype=torch.float64)
         gaps = {}
         for n in (1, 4, 64):
-            drawn = [_fit(true_min + torch.distributions.Exponential(1 / true_scale).sample((n,)),
-                          steps=1500)[0] - true_min
-                     for _ in range(replicates)]
-            gaps[n] = sum(drawn) / replicates
+            # Midpoint quantiles give deterministic exponential observations.
+            # A few random replicates need not have ordered sample minima.
+            quantiles = (torch.arange(n, dtype=torch.float64) + 0.5) / n
+            observations = true_min - true_scale * torch.log1p(-quantiles)
+            # Hold the known scale fixed: jointly fitting location and scale
+            # to one observation is poorly identified. A grid also avoids
+            # depending on Adam's convergence at a sharp noise-width boundary.
+            nll = censored_min_nll(
+                observations, locations[:, None],
+                torch.tensor(math.log(true_scale), dtype=torch.float64),
+                noise=noise).mean(dim=1)
+            location = locations[nll.argmin()].item()
+            self.assertAlmostEqual(location, observations.min().item(), delta=4 * noise)
+            gaps[n] = location - true_min
         self.assertGreater(gaps[1], gaps[4])
         self.assertGreater(gaps[4], gaps[64])
-        # Only the ordering is asserted. The gap does not match `expected_min_bias`
-        # here: at n = 1 the isolated location-scale fit is the degenerate case the
-        # module documents, and where it lands depends on the optimiser rather than
-        # on the likelihood. The s/n law itself is checked against the order
-        # statistic directly, in test_expected_min_bias_matches_the_order_statistic.
+        # The s/n expectation for random draws is checked separately below.
 
     def test_expected_min_bias_matches_the_order_statistic(self):
         torch.manual_seed(2)
@@ -246,6 +248,7 @@ if __name__ == "__main__":
 def test_tight_rows_are_fitted_as_the_optimum_itself():
     """A tight row costs the Gaussian 0.5 t^2 and gives the scale head no gradient; others are unchanged."""
     import torch
+
     from wyckoff_transformer.censored import CensoredMinLoss
 
     criterion = CensoredMinLoss(reduction="none", noise=0.1, tight_field="icsd_backed")
